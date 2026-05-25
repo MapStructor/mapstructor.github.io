@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MapStructor</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      background: #141414;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      padding: 16px 48px;
+      background: linear-gradient(to bottom, #000 0%, transparent 100%);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .logo-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+      text-decoration: none;
+    }
+
+    .logo-img {
+      height: 36px;
+      width: auto;
+    }
+
+    .logo {
+      font-size: 28px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.02em;
+    }
+
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: 1;
+    }
+
+    .nav-login {
+      margin-left: auto;
+    }
+
+    nav a {
+      color: #ccc;
+      text-decoration: none;
+      font-size: 13px;
+      padding: 7px 14px;
+      border-radius: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+
+    nav a:hover { color: #fff; background: rgba(255,255,255,0.08); }
+
+    .btn-primary {
+      background: #fff;
+      color: #141414 !important;
+      font-weight: 600;
+      border-radius: 4px;
+    }
+
+    .btn-primary:hover { background: #e0e0e0 !important; color: #141414 !important; }
+
+    /* ── Main content ── */
+    main {
+      padding: 32px 48px 64px;
+    }
+
+    /* ── Row ── */
+    .row {
+      margin-bottom: 40px;
+    }
+
+    .row-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #aaa;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    /* ── Card ── */
+    .card {
+      background: #1e1e1e;
+      border-radius: 5px;
+      overflow: hidden;
+      text-decoration: none;
+      color: inherit;
+      transition: transform 0.15s, box-shadow 0.15s;
+      display: block;
+    }
+
+    .card:hover {
+      transform: scale(1.03);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+
+    .card-thumb {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #2a2a2a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .card-thumb svg { opacity: 0.15; }
+
+    .card-info {
+      padding: 10px 12px 12px;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: #ddd;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card:hover .card-title { color: #fff; }
+
+    /* ── Footer ── */
+    footer {
+      padding: 24px 48px;
+      border-top: 1px solid #222;
+      font-size: 11px;
+      color: #333;
+    }
+
+    footer a { color: #444; text-decoration: none; }
+    footer a:hover { color: #666; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <a class="logo-wrap" href="/">
+      <img class="logo-img" src="../images/nittygrittymapping_logo.png" alt="MapStructor logo">
+      <span class="logo">MapStructor</span>
+    </a>
+    <nav>
+      <a href="#" class="btn-primary">Create a Map</a>
+      <a href="#">Map Services</a>
+      <a href="#">About</a>
+      <a href="#" class="nav-login">Login</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="row">
+      <div class="row-label">Maps</div>
+      <div class="cards">
+
+        <a class="card" href="https://github.com/MapStructor/ames_history_museum" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">Ames History Museum</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/mapping_early_new_york" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">Mapping Early New York</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/mapping_early_new_york_reconcile" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">Mapping Early New York (Reconcile)</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/globalhistorymap" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">Global History Map</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/rewildingmap" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">Rewilding Map</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/bakkenpipelinemap" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">Bakken Pipeline Map</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/cougarsuitability" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">Cougar Suitability</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/electorates" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">Electorates</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/rasteranimation" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">Raster Animation</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/app" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">App</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/gcm" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">GCM</div></div>
+        </a>
+
+        <a class="card" href="https://github.com/MapStructor/1.0" target="_blank">
+          <div class="card-thumb">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          </div>
+          <div class="card-info"><div class="card-title">1.0</div></div>
+        </a>
+
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <a href="https://github.com/MapStructor" target="_blank">github.com/MapStructor</a>
+  </footer>
+
+</body>
+</html>

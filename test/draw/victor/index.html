@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Map Structur - Create Static Maps</title>
+    <meta
+      name="viewport"
+      content="initial-scale=1,maximum-scale=1,user-scalable=no"
+    />
+    <link
+      href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css"
+      rel="stylesheet"
+    />
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css"
+      rel="stylesheet"
+    />
+    <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="../../../js/mapbox-token.js"></script>
+    <script>
+      // Firebase stubbed out — no persistence in this test page
+      const MAPBOX_TOKEN = mapboxToken;
+      window.updateDoc = function() {};
+      window.doc = function() {};
+      window.db = null;
+      window.getDoc = function() { return Promise.resolve({ data: () => null }); };
+    </script>
+    <link
+      rel="stylesheet"
+      href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css"
+      type="text/css"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <form>
+      <div id="button-group">
+        <h3 class="font-bold">Project Name</h3>
+        <input
+          value="Untitled Project"
+          id="title"
+          onchange="titleOnChange(event)"
+        />
+        <h3 class="font-bold">Project ID</h3>
+        <input value="Example ID" disabled id="project-id" />
+        <button onclick="showLayerModal(event)">Add Layer</button>
+        <button onclick="showLoadProjectModal(event)">
+          Load project from id
+        </button>
+        
+        <div id="layers-container"></div>
+        </div>
+      </div>
+      <div id="draw-controls"></div>
+    </form>
+    <div id="modal" onclick="hideModalOuterDiv(event)">
+      <div id="add-layer-modal" onclick="hideModalInnerDiv(event)" class="inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50">
+        <div class="bg-white p-6 rounded-lg shadow-lg w-full max-w-md">
+          <h2 class="text-xl font-semibold mb-4">Add Layer</h2>
+          <div class="mb-4">
+            <label class="block text-gray-700">Name:</label>
+            <input id="layer-name" type="text" class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring focus:ring-blue-200">
+          </div>
+          <div class="mb-4">
+            <label class="block text-gray-700">Type:</label>
+            <select id="layer-type" class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring focus:ring-blue-200">
+              <option value="default">Type</option>
+              <option>Point</option>
+              <option>LineString</option>
+              <option>Polygon</option>
+            </select>
+          </div>
+          <button id="add-layer-button" class="w-full py-2 px-4 bg-blue-500 text-white font-semibold rounded-md shadow hover:bg-blue-600 focus:outline-none focus:ring focus:ring-blue-300 mx-auto">Add Layer</button>
+        </div>
+      </div>
+      
+      <div id="load-project-modal" onclick="hideModalInnerDiv(event)">
+        <h2>Load Project</h2>
+        <div>
+          <label>Project ID: </label>
+          <input
+            id="project-id-input"
+            placeholder="paste project id"
+            oninput="validateProjectIdInput(event)"
+          />
+        </div>
+        <button id="load-project-button" onclick="loadProjectById()" disabled>
+          Load Project
+        </button>
+      </div>
+    </div>
+    <div id="feature-editor" class="p-4">
+      <div>
+        <label class="font-bold">Label</label>
+        <input type="text" class="block border px-2 py-1" id="feature-label-value" onchange="handleLabelInputChange(event)"/>
+      </div>
+
+      <div>
+        <label class="font-bold">Info</label>
+        <textarea type="text" class="block border px-2 py-1" id="feature-info-value" onchange="handleInfoInputChange(event)" onkeydown="handleInfoCharacterChange(event)" maxlength="300"></textarea>
+        <div><span id="min-info-length">0</span>/<span id="max-info-length">300</span></div>
+      </div>
+    </div>
+    <div id="data-table" class="absolute right-20 top-10 z-10 bg-white p-4 border">
+      <table class="border border-collapse max-h-50">
+        <thead>
+          <tr>
+            <th>Label</th>
+            <th>Info</th>
+          </tr>
+        </thead>
+        <tbody id="data-table-entries">
+        </tbody>
+      </table>
+    </div>
+    <div id="map"></div>
+    <script src="utils.js"></script>
+    
+
+<script src="mapConfig.js" defer></script>
+<script src="eventHandlers.js" defer></script>
+<script src="projectManagement.js" defer></script>
+<script src="uiManipulation.js" defer></script>
+<script src="layerManagement.js" defer></script>
+
+  </body>
+</html>

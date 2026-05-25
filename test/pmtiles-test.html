@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PMTiles Test — Ames Buildings</title>
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet">
+  <script src="../js/engine/pmtiles.js"></script>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { width: 100vw; height: 100vh; }
+    #status {
+      position: absolute; top: 10px; left: 10px; z-index: 10;
+      background: white; padding: 8px 12px; border-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.3); font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="status">Loading…</div>
+  <script>
+    const protocol = new pmtiles.Protocol();
+    maplibregl.addProtocol("pmtiles", protocol.tile.bind(protocol));
+
+    const PMTILES_URL = "pmtiles://https://pub-411b8477c87c4a26b335ecde4062e140.r2.dev/buildings.pmtiles";
+
+    const map = new maplibregl.Map({
+      container: "map",
+      style: {
+        version: 8,
+        glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+        sources: {
+          osm: {
+            type: "raster",
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: "© OpenStreetMap contributors"
+          },
+          buildings: {
+            type: "vector",
+            url: PMTILES_URL
+          }
+        },
+        layers: [
+          { id: "osm-bg", type: "raster", source: "osm" },
+          {
+            id: "buildings-fill",
+            type: "fill",
+            source: "buildings",
+            "source-layer": "buildings",
+            paint: { "fill-color": "#e05", "fill-opacity": 0.5 }
+          },
+          {
+            id: "buildings-outline",
+            type: "line",
+            source: "buildings",
+            "source-layer": "buildings",
+            paint: { "line-color": "#900", "line-width": 1 }
+          }
+        ]
+      },
+      center: [-93.63661, 42.03112],
+      zoom: 13
+    });
+
+    map.on("load", () => {
+      document.getElementById("status").textContent = "Loaded ✓ — zoom in to see buildings";
+    });
+
+    map.on("error", (e) => {
+      document.getElementById("status").textContent = "Error: " + (e.error?.message || JSON.stringify(e));
+      console.error(e);
+    });
+
+    map.addControl(new maplibregl.NavigationControl(), "bottom-right");
+  </script>
+</body>
+</html>

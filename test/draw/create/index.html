@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Mapstructor — Create a Map</title>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet"/>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="../../../js/mapbox-token.js"></script>
+  <link rel="stylesheet" href="create.css"/>
+</head>
+<body>
+
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <span id="project-name" contenteditable="true" spellcheck="false">Untitled Map</span>
+    </div>
+
+    <div id="layer-list"></div>
+
+    <div id="sidebar-footer">
+      <button id="add-layer-btn">+ Add Layer</button>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <div id="feature-panel" class="hidden">
+    <div id="feature-panel-header">
+      <span id="feature-panel-layer-name"></span>
+      <button id="feature-panel-close">✕</button>
+    </div>
+    <div id="feature-fields">
+      <label>Label</label>
+      <input type="text" id="feature-label" placeholder="Name this feature"/>
+      <label>Notes</label>
+      <textarea id="feature-notes" placeholder="Add notes..."></textarea>
+    </div>
+    <div id="feature-panel-footer">
+      <button id="delete-feature-btn">Delete</button>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="create.js"></script>
+</body>
+</html>

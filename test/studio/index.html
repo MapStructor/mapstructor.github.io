@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Mapstructor Studio</title>
+  <link href="https://fonts.googleapis.com/css?family=Source+Sans+Pro:400,600,700" rel="stylesheet"/>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet"/>
+  <script src="../../js/mapbox-token.js"></script>
+  <script src="../../js/lists/restrictedToken.js"></script>
+  <script src="../../js/lists/mapData.js"></script>
+  <script src="../../js/lists/layersList.js"></script>
+  <link rel="stylesheet" href="studio.css"/>
+</head>
+<body>
+  <div id="studio-wrap">
+
+    <div id="studio-sidebar">
+      <div id="sidebar-header">Layers</div>
+      <div id="layer-list"></div>
+      <div id="add-layer-bar">
+        <button id="add-layer-btn">+ Add Layer</button>
+      </div>
+      <div id="add-layer-form" style="display:none">
+        <input type="text" id="new-layer-label" class="s-input" placeholder="Layer name"/>
+        <select id="new-layer-type" class="s-input">
+          <option value="line">Line</option>
+          <option value="fill">Fill</option>
+        </select>
+        <div class="al-actions">
+          <button id="create-layer-btn">Create</button>
+          <button id="cancel-layer-btn">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="map-preview"></div>
+
+    <div id="studio-panel">
+      <div id="studio-form-wrap">
+        <div id="no-selection">&#8592; Select a layer to edit</div>
+
+        <div id="studio-editor" style="display:none">
+          <div id="layer-title-bar">
+            <span id="layer-title"></span>
+            <span id="layer-type-badge"></span>
+          </div>
+
+          <div class="tab-bar">
+            <button class="tab-btn active" data-tab="form">Form</button>
+            <button class="tab-btn" data-tab="json">JSON</button>
+          </div>
+
+          <div id="tab-form"></div>
+          <div id="tab-json" style="display:none">
+            <textarea id="json-editor" spellcheck="false"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div id="studio-footer" style="display:none">
+        <button id="copy-btn">Copy JS</button>
+        <span id="copy-note">Functions (e.g. panel.render) are excluded — add them back from original.</span>
+        <span id="copy-feedback"></span>
+      </div>
+    </div>
+
+  </div>
+  <script src="studio.js"></script>
+</body>
+</html>

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Buildings Filter Test</title>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; }
+    #map { position: absolute; inset: 0; bottom: 60px; }
+    #controls {
+      position: absolute; bottom: 0; left: 0; right: 0; height: 60px;
+      background: #1a1a1a; color: #fff;
+      display: flex; align-items: center; gap: 16px; padding: 0 20px;
+    }
+    #year-label { font-size: 18px; font-weight: bold; min-width: 50px; }
+    #slider { flex: 1; }
+    #info { font-size: 12px; color: #aaa; }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="controls">
+  <span id="year-label">1900</span>
+  <input id="slider" type="range" min="1850" max="2026" value="1900" step="1" />
+  <span id="info">drag slider to filter</span>
+</div>
+
+<script>
+  mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
+
+  var WORKER_URL = "https://ames-tiles.mapstructor.workers.dev";
+
+  var map = new mapboxgl.Map({
+    container: "map",
+    style: "mapbox://styles/nittyjee/cjg705tp9c5xw2rlhsukbq0bs",
+    center: [-93.63661, 42.03112],
+    zoom: 13.63,
+  });
+
+  map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
+
+  map.on("load", function () {
+    map.addSource("buildings", {
+      type: "vector",
+      tiles: [WORKER_URL + "/buildings/{z}/{x}/{y}.pbf"],
+      minzoom: 10,
+      maxzoom: 16,
+    });
+
+    map.addLayer({
+      id: "buildings-fill",
+      type: "fill",
+      source: "buildings",
+      "source-layer": "buildings",
+      paint: {
+        "fill-color": "#ffb255",
+        "fill-opacity": 0.8,
+        "fill-outline-color": "#cc7700",
+      },
+    });
+
+    applyFilter(1900);
+  });
+
+  function applyFilter(year) {
+    var date = year * 10000 + 101; // YYYYMMDD: Jan 1 of that year
+    map.setFilter("buildings-fill", [
+      "all",
+      ["<=", "DayStart", date],
+      [">=", "DayEnd",   date],
+    ]);
+  }
+
+  var slider = document.getElementById("slider");
+  var label  = document.getElementById("year-label");
+
+  slider.addEventListener("input", function () {
+    var year = parseInt(this.value);
+    label.textContent = year;
+    applyFilter(year);
+  });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,171 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  font-size: 13px;
+  background: #1a1a1a;
+  color: #e0e0e0;
+}
+
+/* ── Sidebar ── */
+#sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #242424;
+  border-right: 1px solid #333;
+  z-index: 10;
+  overflow: hidden;
+}
+
+#sidebar-header {
+  padding: 14px 12px 10px;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+#page-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+
+/* ── Geocoder ── */
+#geocoder-container {
+  padding: 10px 12px;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+/* Override Mapbox geocoder to fit dark sidebar */
+#geocoder-container .mapboxgl-ctrl-geocoder {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-shadow: none;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+#geocoder-container .mapboxgl-ctrl-geocoder input {
+  font-size: 13px;
+  padding: 8px 36px 8px 36px;
+  height: auto;
+}
+
+#geocoder-container .mapboxgl-ctrl-geocoder .suggestions {
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+#geocoder-container .mapboxgl-ctrl-geocoder--icon-search {
+  top: 9px;
+  left: 9px;
+  width: 16px;
+  height: 16px;
+}
+
+/* ── Place list ── */
+#place-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0 8px;
+}
+
+.empty-state {
+  padding: 20px 12px;
+  font-size: 12px;
+  color: #555;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.place-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 9px 10px 9px 12px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  gap: 8px;
+}
+
+.place-item:hover {
+  background: #2e2e2e;
+  border-left-color: #4a9eff;
+}
+
+.place-item.active {
+  background: #2a2a2a;
+  border-left-color: #4a9eff;
+}
+
+.place-pin {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.place-info {
+  flex: 1;
+  overflow: hidden;
+}
+
+.place-name {
+  color: #ccc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.place-item:hover .place-name,
+.place-item.active .place-name { color: #fff; }
+
+.place-coords {
+  font-size: 11px;
+  color: #555;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.place-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #444;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  margin-top: 1px;
+}
+
+.place-remove:hover { color: #e05050; }
+
+/* ── Map ── */
+#map {
+  flex: 1;
+  height: 100vh;
+}
+
+/* ── Toast ── */
+#toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #333;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  z-index: 100;
+  pointer-events: none;
+}
+
+#toast.hidden { display: none; }

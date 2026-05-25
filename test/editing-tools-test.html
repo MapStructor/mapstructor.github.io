@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Editing Tools Test — Copy / Paste / Merge / Split</title>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+  <link  href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+  <link  href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css" rel="stylesheet" />
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; }
+    #map { position: absolute; inset: 0; bottom: 56px; }
+    #toolbar {
+      position: absolute; bottom: 0; left: 0; right: 0; height: 56px;
+      background: #1a1a1a; color: #fff;
+      display: flex; align-items: center; gap: 8px; padding: 0 14px;
+    }
+    button {
+      padding: 6px 13px; border: none; border-radius: 4px;
+      background: #3a3a3a; color: #ddd; cursor: pointer; font-size: 13px;
+      white-space: nowrap;
+    }
+    button:hover:not(:disabled) { background: #555; }
+    button.active  { background: #c96; color: #fff; }
+    button:disabled { opacity: 0.35; cursor: default; }
+    .sep { width: 1px; height: 28px; background: #444; flex-shrink: 0; }
+    #status { font-size: 12px; color: #aaa; margin-left: auto; max-width: 380px; text-align: right; }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="toolbar">
+  <button id="btn-undo" title="Ctrl+Z" disabled>Undo</button>
+  <button id="btn-redo" title="Ctrl+Y" disabled>Redo</button>
+  <div class="sep"></div>
+  <button id="btn-copy"  title="Ctrl+C" disabled>Copy</button>
+  <button id="btn-paste" title="Ctrl+V" disabled>Paste</button>
+  <div class="sep"></div>
+  <button id="btn-merge"               disabled>Merge Selected</button>
+  <div class="sep"></div>
+  <button id="btn-split"               disabled>Split Mode</button>
+  <button id="btn-cancel-split" style="display:none">Cancel Split (Esc)</button>
+  <span id="status">Draw polygons, then select to copy / merge / split</span>
+</div>
+
+<script>
+  mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
+
+  var clipboard         = null;   // GeoJSON geometry stored on copy
+  var splitMode         = false;  // true while waiting for user to draw a cut line
+  var splitTarget       = null;   // draw feature id of the polygon being split
+  var _suppressUndo     = false;  // prevents event handlers double-pushing during programmatic ops
+  var _selectedSnapshot = {};     // featureId → geometry, captured on selection for draw.update undo
+
+  var undoStack = [];
+  var redoStack = [];
+
+  var map = new mapboxgl.Map({
+    container: "map",
+    style: "mapbox://styles/nittyjee/cjg705tp9c5xw2rlhsukbq0bs",
+    center: [-93.63661, 42.03112],
+    zoom: 14,
+  });
+
+  var draw = new MapboxDraw({
+    displayControlsDefault: false,
+    controls: { polygon: true, trash: true },
+  });
+  map.addControl(draw, 'top-right');
+  map.addControl(new mapboxgl.NavigationControl(), 'bottom-right');
+
+  // ── Undo / Redo ───────────────────────────────────────────────────────────────
+
+  function pushUndo(undoFn, redoFn) {
+    undoStack.push({ undo: undoFn, redo: redoFn });
+    redoStack = [];
+    updateUndoButtons();
+  }
+
+  function performUndo() {
+    if (!undoStack.length) return;
+    var action = undoStack.pop();
+    _suppressUndo = true;
+    action.undo();
+    _suppressUndo = false;
+    redoStack.push(action);
+    updateUndoButtons();
+    updateButtons();
+  }
+
+  function performRedo() {
+    if (!redoStack.length) return;
+    var action = redoStack.pop();
+    _suppressUndo = true;
+    action.redo();
+    _suppressUndo = false;
+    undoStack.push(action);
+    updateUndoButtons();
+    updateButtons();
+  }
+
+  function updateUndoButtons() {
+    document.getElementById('btn-undo').disabled = !undoStack.length;
+    document.getElementById('btn-redo').disabled = !redoStack.length;
+  }
+
+  // Replace a feature's geometry in-place (delete + re-add preserving id).
+  function _setGeometry(id, geom) {
+    draw.delete([id]);
+    draw.add({ type: 'Feature', id: id, geometry: geom, properties: {} });
+  }
+
+  // ── Status + button state ─────────────────────────────────────────────────────
+
+  function setStatus(msg) {
+    document.getElementById('status').textContent = msg;
+  }
+
+  function updateButtons() {
+    var selected = draw.getSelected().features;
+    var allPolys = selected.length > 0 && selected.every(function(f) {
+      return f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon';
+    });
+    var oneOnly  = selected.length === 1 && allPolys;
+
+    document.getElementById('btn-copy').disabled  = !oneOnly  || splitMode;
+    document.getElementById('btn-paste').disabled = !clipboard || splitMode;
+    document.getElementById('btn-merge').disabled = selected.length < 2 || !allPolys || splitMode;
+    document.getElementById('btn-split').disabled = !oneOnly  || splitMode;
+  }
+
+  // ── Copy ─────────────────────────────────────────────────────────────────────
+
+  function doCopy() {
+    var f = draw.getSelected().features[0];
+    if (!f) return;
+    clipboard = JSON.parse(JSON.stringify(f.geometry));
+    document.getElementById('btn-paste').disabled = false;
+    setStatus('Copied. Ctrl+V or Paste to place a duplicate on top.');
+  }
+
+  // ── Paste ─────────────────────────────────────────────────────────────────────
+
+  function doPaste() {
+    if (!clipboard) return;
+    var geom = JSON.parse(JSON.stringify(clipboard));  // exact copy, no offset
+    var ids  = draw.add({ type: 'Feature', geometry: geom, properties: {} });
+    var id   = ids[0];
+    draw.changeMode('simple_select', { featureIds: ids });
+
+    pushUndo(
+      function() { _suppressUndo = true; draw.delete([id]);                                                                              _suppressUndo = false; },
+      function() { _suppressUndo = true; draw.add({ type: 'Feature', id: id, geometry: JSON.parse(JSON.stringify(geom)), properties: {} }); _suppressUndo = false; }
+    );
+    setStatus('Pasted on top — drag to move.');
+    updateButtons();
+  }
+
+  // ── Merge ─────────────────────────────────────────────────────────────────────
+
+  function doMerge() {
+    var selected = draw.getSelected().features;
+    if (selected.length < 2) return;
+
+    var result = turf.feature(selected[0].geometry);
+    for (var i = 1; i < selected.length; i++) {
+      result = turf.union(result, turf.feature(selected[i].geometry));
+      if (!result) { setStatus('Merge failed — invalid geometry.'); return; }
+    }
+
+    var originals = selected.map(function(f) {
+      return { id: f.id, geom: JSON.parse(JSON.stringify(f.geometry)) };
+    });
+
+    _suppressUndo = true;
+    draw.delete(originals.map(function(o) { return o.id; }));
+    var newIds     = draw.add(result);
+    var mergedId   = newIds[0];
+    var mergedGeom = JSON.parse(JSON.stringify(result.geometry));
+    draw.changeMode('simple_select', { featureIds: newIds });
+    _suppressUndo = false;
+
+    pushUndo(
+      function() {
+        _suppressUndo = true;
+        draw.delete([mergedId]);
+        originals.forEach(function(o) {
+          draw.add({ type: 'Feature', id: o.id, geometry: o.geom, properties: {} });
+        });
+        _suppressUndo = false;
+      },
+      function() {
+        _suppressUndo = true;
+        draw.delete(originals.map(function(o) { return o.id; }));
+        draw.add({ type: 'Feature', id: mergedId, geometry: mergedGeom, properties: {} });
+        _suppressUndo = false;
+      }
+    );
+    setStatus('Merged ' + selected.length + ' polygons.');
+    updateButtons();
+  }
+
+  // ── Split ─────────────────────────────────────────────────────────────────────
+
+  function enterSplitMode() {
+    var selected = draw.getSelected().features;
+    if (selected.length !== 1) return;
+    splitTarget = selected[0].id;
+    splitMode   = true;
+    draw.changeMode('draw_line_string');
+    document.getElementById('btn-split').style.display        = 'none';
+    document.getElementById('btn-cancel-split').style.display = 'inline-block';
+    document.getElementById('btn-cancel-split').classList.add('active');
+    setStatus('Draw a line through the polygon to split it. Esc to cancel.');
+    updateButtons();
+  }
+
+  function cancelSplitMode() {
+    splitMode   = false;
+    splitTarget = null;
+    draw.changeMode('simple_select');
+    document.getElementById('btn-split').style.display        = 'inline-block';
+    document.getElementById('btn-cancel-split').style.display = 'none';
+    document.getElementById('btn-cancel-split').classList.remove('active');
+    setStatus('Split cancelled.');
+    updateButtons();
+  }
+
+  function doSplit(lineFeature) {
+    var allFeatures = draw.getAll().features;
+    var polygon = allFeatures.find(function(f) { return f.id === splitTarget; });
+    if (!polygon) { cancelSplitMode(); return; }
+
+    var origId   = splitTarget;
+    var origGeom = JSON.parse(JSON.stringify(polygon.geometry));
+    var halves   = splitPolygonWithLine(polygon, lineFeature);
+
+    _suppressUndo = true;
+    draw.delete([lineFeature.id]);
+    _suppressUndo = false;
+
+    if (halves.length < 2) {
+      setStatus('Split failed — the line must cross the polygon completely.');
+      cancelSplitMode();
+      return;
+    }
+
+    _suppressUndo = true;
+    draw.delete([origId]);
+    var newIds = [];
+    halves.forEach(function(h) { newIds = newIds.concat(draw.add(h)); });
+    draw.changeMode('simple_select', { featureIds: newIds });
+    _suppressUndo = false;
+
+    var halfData = halves.map(function(h, i) {
+      return { id: newIds[i], geom: JSON.parse(JSON.stringify(h.geometry)) };
+    });
+
+    splitMode   = false;
+    splitTarget = null;
+    document.getElementById('btn-split').style.display        = 'inline-block';
+    document.getElementById('btn-cancel-split').style.display = 'none';
+    document.getElementById('btn-cancel-split').classList.remove('active');
+
+    pushUndo(
+      function() {
+        _suppressUndo = true;
+        draw.delete(halfData.map(function(d) { return d.id; }));
+        draw.add({ type: 'Feature', id: origId, geometry: origGeom, properties: {} });
+        _suppressUndo = false;
+      },
+      function() {
+        _suppressUndo = true;
+        draw.delete([origId]);
+        halfData.forEach(function(d) {
+          draw.add({ type: 'Feature', id: d.id, geometry: d.geom, properties: {} });
+        });
+        _suppressUndo = false;
+      }
+    );
+    setStatus('Split into ' + halfData.length + ' polygons.');
+    updateButtons();
+  }
+
+  // Build two half-plane polygons from an extended cut line, intersect each with the polygon.
+  function splitPolygonWithLine(polygon, lineFeature) {
+    var coords = lineFeature.geometry.coordinates;
+    var p1 = coords[0];
+    var p2 = coords[coords.length - 1];
+
+    var dx = p2[0] - p1[0], dy = p2[1] - p1[1];
+    var len = Math.sqrt(dx * dx + dy * dy);
+    if (len === 0) return [];
+
+    var nx = dx / len, ny = dy / len;   // line direction (normalized)
+    var px = -ny,      py = nx;         // perpendicular (left side)
+    var far = 2.0;                      // degrees — safely beyond any local polygon
+
+    var eA = [p1[0] - nx * far, p1[1] - ny * far];
+    var eB = [p2[0] + nx * far, p2[1] + ny * far];
+
+    var leftHalf = turf.polygon([[
+      eA, eB,
+      [eB[0] + px * far, eB[1] + py * far],
+      [eA[0] + px * far, eA[1] + py * far],
+      eA,
+    ]]);
+    var rightHalf = turf.polygon([[
+      eA, eB,
+      [eB[0] - px * far, eB[1] - py * far],
+      [eA[0] - px * far, eA[1] - py * far],
+      eA,
+    ]]);
+
+    var poly   = turf.feature(polygon.geometry);
+    var piece1 = turf.intersect(poly, leftHalf);
+    var piece2 = turf.intersect(poly, rightHalf);
+
+    return [piece1, piece2].filter(Boolean);
+  }
+
+  // ── Draw events ───────────────────────────────────────────────────────────────
+
+  map.on('draw.create', function(e) {
+    var f = e.features[0];
+    if (splitMode && f.geometry.type === 'LineString') {
+      doSplit(f);
+      return;
+    }
+    if (_suppressUndo) { updateButtons(); return; }
+    // User drew a new polygon — push undo/redo for the creation
+    var id   = f.id;
+    var geom = JSON.parse(JSON.stringify(f.geometry));
+    pushUndo(
+      function() { _suppressUndo = true; draw.delete([id]);                                                                                 _suppressUndo = false; },
+      function() { _suppressUndo = true; draw.add({ type: 'Feature', id: id, geometry: JSON.parse(JSON.stringify(geom)), properties: {} }); _suppressUndo = false; }
+    );
+    updateButtons();
+  });
+
+  map.on('draw.delete', function(e) {
+    if (_suppressUndo) return;
+    // User deleted via trash/keyboard — capture the features from the event
+    var deleted = e.features.map(function(f) {
+      return { id: f.id, geom: JSON.parse(JSON.stringify(f.geometry)) };
+    });
+    pushUndo(
+      function() {
+        _suppressUndo = true;
+        deleted.forEach(function(d) {
+          draw.add({ type: 'Feature', id: d.id, geometry: d.geom, properties: {} });
+        });
+        _suppressUndo = false;
+      },
+      function() {
+        _suppressUndo = true;
+        draw.delete(deleted.map(function(d) { return d.id; }));
+        _suppressUndo = false;
+      }
+    );
+    updateButtons();
+  });
+
+  map.on('draw.selectionchange', function(e) {
+    if (!_suppressUndo) {
+      // Snapshot geometry of newly selected features as the "before" state for draw.update
+      _selectedSnapshot = {};
+      e.features.forEach(function(f) {
+        _selectedSnapshot[f.id] = JSON.parse(JSON.stringify(f.geometry));
+      });
+    }
+    updateButtons();
+  });
+
+  map.on('draw.update', function(e) {
+    if (_suppressUndo) return;
+    // User moved or edited vertices — one undo entry per feature changed
+    e.features.forEach(function(f) {
+      var id       = f.id;
+      var prevGeom = _selectedSnapshot[id];
+      var newGeom  = JSON.parse(JSON.stringify(f.geometry));
+      if (!prevGeom) return;
+      var pg = JSON.parse(JSON.stringify(prevGeom));
+      pushUndo(
+        function() { _suppressUndo = true; _setGeometry(id, pg);      _suppressUndo = false; },
+        function() { _suppressUndo = true; _setGeometry(id, newGeom); _suppressUndo = false; }
+      );
+      _selectedSnapshot[id] = newGeom;  // update snapshot for next consecutive edit
+    });
+    updateButtons();
+  });
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────────
+
+  document.addEventListener('keydown', function(e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    var mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); performUndo(); }
+    if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); performRedo(); }
+    if (mod && e.key === 'c') { e.preventDefault(); doCopy(); }
+    if (mod && e.key === 'v') { e.preventDefault(); doPaste(); }
+    if (e.key === 'Escape' && splitMode) cancelSplitMode();
+  });
+
+  // ── Button wiring ─────────────────────────────────────────────────────────────
+
+  document.getElementById('btn-undo').addEventListener('click',         performUndo);
+  document.getElementById('btn-redo').addEventListener('click',         performRedo);
+  document.getElementById('btn-copy').addEventListener('click',         doCopy);
+  document.getElementById('btn-paste').addEventListener('click',        doPaste);
+  document.getElementById('btn-merge').addEventListener('click',        doMerge);
+  document.getElementById('btn-split').addEventListener('click',        enterSplitMode);
+  document.getElementById('btn-cancel-split').addEventListener('click', cancelSplitMode);
+</script>
+
+</body>
+</html>

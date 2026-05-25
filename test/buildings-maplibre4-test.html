@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Buildings MapLibre v4 Test</title>
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/pmtiles@3/dist/pmtiles.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; }
+    #map { position: absolute; inset: 0; bottom: 60px; }
+    #controls {
+      position: absolute; bottom: 0; left: 0; right: 0; height: 60px;
+      background: #1a1a1a; color: #fff;
+      display: flex; align-items: center; gap: 16px; padding: 0 20px;
+    }
+    #year-label { font-size: 18px; font-weight: bold; min-width: 50px; }
+    #slider { flex: 1; }
+    #info { font-size: 12px; color: #aaa; }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="controls">
+  <span id="year-label">1900</span>
+  <input id="slider" type="range" min="1850" max="2026" value="1900" step="1" />
+  <span id="info">MapLibre v4 + PMTiles direct (no Worker)</span>
+</div>
+
+<script>
+  var PMTILES_URL = "https://pub-411b8477c87c4a26b335ecde4062e140.r2.dev/buildings.pmtiles";
+  var MAPBOX_TOKEN = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
+
+  var protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol("pmtiles", protocol.tile.bind(protocol));
+
+  var map = new maplibregl.Map({
+    container: "map",
+    style: "https://demotiles.maplibre.org/style.json",
+    center: [-93.63661, 42.03112],
+    zoom: 13.63,
+  });
+
+  map.addControl(new maplibregl.NavigationControl(), "bottom-right");
+
+  map.on("load", function () {
+    map.addSource("buildings", {
+      type: "vector",
+      url: "pmtiles://" + PMTILES_URL,
+    });
+
+    map.addLayer({
+      id: "buildings-fill",
+      type: "fill",
+      source: "buildings",
+      "source-layer": "buildings",
+      paint: {
+        "fill-color": "#ffb255",
+        "fill-opacity": 0.8,
+        "fill-outline-color": "#cc7700",
+      },
+    });
+
+    applyFilter(1900);
+  });
+
+  function applyFilter(year) {
+    var date = year * 10000 + 101;
+    map.setFilter("buildings-fill", [
+      "all",
+      ["<=", "DayStart", date],
+      [">=", "DayEnd",   date],
+    ]);
+  }
+
+  var slider = document.getElementById("slider");
+  var label  = document.getElementById("year-label");
+
+  slider.addEventListener("input", function () {
+    var year = parseInt(this.value);
+    label.textContent = year;
+    applyFilter(year);
+  });
+</script>
+
+</body>
+</html>

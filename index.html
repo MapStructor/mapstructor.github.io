@@ -7,115 +7,365 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
+    :root { --p: #7c5cbf; --p-dark: #6246a8; --p-light: #d9d9d9; }
+
     body {
       font-family: 'Helvetica Neue', Arial, sans-serif;
-      background: #1a1a1a;
-      color: #e0e0e0;
+      background: #f0eaff;
+
+      /*
+      ADDITIONAL BACKGROUND COLORS:
+      #f5c58b
+      #c4adfd
+      */
+    
+      color: #1e1b2e;
       min-height: 100vh;
-      padding: 48px 24px;
     }
 
-    .container {
-      max-width: 640px;
+    /* ── Nav ── */
+    nav {
+      position: fixed;
+      top: 0;
+      right: 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 16px clamp(16px, 4vw, 40px);
+      z-index: 20;
+    }
+
+    nav a {
+      color: #6e6585;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 7px 14px;
+      border-radius: 6px;
+      transition: color 0.15s, background 0.15s;
+      white-space: nowrap;
+    }
+
+    nav a:hover { color: #1e1b2e; background: rgba(255,255,255,0.5); }
+
+    .btn-nav { border: 1px solid rgba(124,92,191,0.3); color: #1e1b2e !important; background: rgba(255,255,255,0.6); }
+    .btn-nav:hover { background: var(--p) !important; color: #fff !important; border-color: var(--p) !important; }
+
+    /* ── Hero ── */
+    .hero {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: clamp(80px, 14vw, 140px) clamp(20px, 6vw, 80px) clamp(56px, 10vw, 100px);
+    }
+
+    .hero-logo {
+      height: clamp(44px, 7vw, 80px);
+      width: auto;
+      margin-bottom: clamp(14px, 2.5vw, 24px);
+    }
+
+    .hero-title {
+      font-size: clamp(44px, 9vw, 92px);
+      font-weight: 800;
+      color: #1e1b2e;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      margin-bottom: clamp(10px, 2vw, 18px);
+    }
+
+    .hero-sub {
+      font-size: clamp(14px, 1.8vw, 18px);
+      color: #9490a8;
+      margin-bottom: clamp(32px, 5vw, 52px);
+      font-weight: 400;
+    }
+
+    .btn-hero {
+      display: inline-block;
+      background: #1e1b2e;
+      color: #fff;
+      font-size: clamp(15px, 2vw, 19px);
+      font-weight: 700;
+      padding: clamp(13px, 1.8vw, 18px) clamp(28px, 4.5vw, 52px);
+      border-radius: 8px;
+      text-decoration: none;
+      letter-spacing: -0.01em;
+      transition: background 0.15s, transform 0.12s;
+    }
+
+    .btn-hero:hover { background: #2e2848; transform: translateY(-1px); }
+
+    /* ── Divider ── */
+    .section-divider { border: none; border-top: 1px solid rgba(124,92,191,0.15); margin: 0; }
+
+    /* ── Maps section ── */
+    main {
+      padding: clamp(32px, 5vw, 56px) clamp(20px, 5vw, 64px) clamp(56px, 8vw, 88px);
+      max-width: 1600px;
       margin: 0 auto;
     }
 
-    h1 {
-      font-size: 22px;
-      font-weight: 600;
-      color: #fff;
-      margin-bottom: 6px;
-    }
+    .row { margin-bottom: clamp(32px, 4vw, 56px); }
 
-    .subtitle {
-      font-size: 13px;
-      color: #555;
-      margin-bottom: 40px;
-    }
-
-    .section-label {
+    .row-label {
       font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
+      font-weight: 700;
+      color: var(--p);
+      letter-spacing: 0.1em;
       text-transform: uppercase;
-      color: #444;
-      margin-bottom: 12px;
+      margin-bottom: 16px;
     }
 
-    .project-list {
-      list-style: none;
-      border-top: 1px solid #2a2a2a;
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(clamp(150px, 18vw, 340px), 1fr));
+      gap: clamp(10px, 1.4vw, 18px);
     }
 
-    .project-list li {
-      border-bottom: 1px solid #2a2a2a;
+    /* ── Card ── */
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s;
+      box-shadow: 0 2px 8px rgba(100,80,160,0.08), 0 1px 2px rgba(100,80,160,0.04);
+      border: 1px solid #ece9f5;
     }
 
-    .project-list li a {
+    .card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 10px 32px rgba(100,80,160,0.14), 0 2px 6px rgba(100,80,160,0.06);
+      border-color: #ddd8f0;
+    }
+
+    .card-thumb {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: var(--p-light);
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 13px 4px;
-      color: #ccc;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card-thumb svg { opacity: 0.3; }
+
+    .card-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    .card-badge {
+      position: absolute;
+      top: 7px;
+      right: 7px;
+      background: rgba(255,255,255,0.88);
+      color: var(--p-dark);
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 7px;
+      border-radius: 4px;
+      letter-spacing: 0.03em;
+      backdrop-filter: blur(4px);
+    }
+
+    .card-info { padding: 11px 13px 13px; }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #3d3660;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card:hover .card-title { color: var(--p-dark); }
+
+    /* ── Modal ── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(30, 27, 46, 0.45);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      backdrop-filter: blur(3px);
+    }
+
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: #fff;
+      border-radius: 12px;
+      padding: 28px 28px 24px;
+      width: 100%;
+      max-width: 380px;
+      position: relative;
+      box-shadow: 0 20px 60px rgba(100,80,160,0.2), 0 4px 16px rgba(100,80,160,0.08);
+      border: 1px solid #ece9f5;
+    }
+
+    .modal-title {
+      font-size: 17px;
+      font-weight: 700;
+      color: #1e1b2e;
+      margin-bottom: 18px;
+      padding-right: 28px;
+    }
+
+    .modal-links { display: flex; flex-direction: column; gap: 8px; }
+
+    .modal-link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 11px 14px;
+      border-radius: 7px;
+      background: var(--p-light);
+      color: #3d3660;
       text-decoration: none;
-      font-size: 14px;
-      transition: color 0.1s;
+      font-size: 13px;
+      border: 1px solid #ddd8f0;
+      transition: background 0.13s, border-color 0.13s, color 0.13s;
     }
 
-    .project-list li a:hover {
-      color: #4a9eff;
+    .modal-link:hover { background: #e4dff5; border-color: var(--p); color: var(--p-dark); }
+
+    .modal-link svg { flex-shrink: 0; opacity: 0.5; }
+    .modal-link:hover svg { opacity: 1; }
+
+    .modal-link-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .modal-close {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      background: none;
+      border: none;
+      color: #b8b0d4;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 5px;
+      transition: color 0.13s, background 0.13s;
     }
 
-    .project-list li a .arrow {
-      color: #333;
-      font-size: 16px;
-      transition: color 0.1s;
-    }
+    .modal-close:hover { color: #1e1b2e; background: var(--p-light); }
 
-    .project-list li a:hover .arrow {
-      color: #4a9eff;
-    }
-
+    /* ── Footer ── */
     footer {
-      margin-top: 48px;
+      padding: 24px clamp(20px, 5vw, 64px);
+      border-top: 1px solid #ece9f5;
       font-size: 11px;
-      color: #333;
+      color: #b8b0d4;
     }
 
-    footer a {
-      color: #444;
-      text-decoration: none;
-    }
-
-    footer a:hover {
-      color: #666;
-    }
+    footer a { color: #b8b0d4; text-decoration: none; }
+    footer a:hover { color: var(--p); }
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>MapStructor</h1>
-    <p class="subtitle">Map projects</p>
 
-    <div class="section-label">Projects</div>
-    <ul class="project-list">
-      <li><a href="https://github.com/MapStructor/ames_history_museum" target="_blank">Ames History Museum <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/mapping_early_new_york" target="_blank">Mapping Early New York <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/mapping_early_new_york_reconcile" target="_blank">Mapping Early New York (Reconcile) <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/globalhistorymap" target="_blank">Global History Map <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/rewildingmap" target="_blank">Rewilding Map <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/bakkenpipelinemap" target="_blank">Bakken Pipeline Map <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/cougarsuitability" target="_blank">Cougar Suitability <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/electorates" target="_blank">Electorates <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/rasteranimation" target="_blank">Raster Animation <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/app" target="_blank">App <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/gcm" target="_blank">GCM <span class="arrow">›</span></a></li>
-      <li><a href="https://github.com/MapStructor/1.0" target="_blank">1.0 <span class="arrow">›</span></a></li>
-    </ul>
+  <nav>
+    <a href="#">Map Services</a>
+    <a href="#">About</a>
+    <a href="#" class="btn-nav">Login</a>
+  </nav>
 
-    <footer>
-      <a href="https://github.com/MapStructor" target="_blank">github.com/MapStructor</a>
-    </footer>
+  <div class="hero">
+    <img class="hero-logo" src="images/nittygrittymapping_logo.png" alt="MapStructor logo">
+    <div class="hero-title">MapStructor</div>
+    <p class="hero-sub">Create and explore maps</p>
+    <a href="https://mapstructor.github.io/ames_history_museum/dev/test/draw/create/" class="btn-hero">Create a Map</a>
   </div>
+
+  <hr class="section-divider">
+
+  <main>
+    <div class="row">
+      <div class="row-label">Maps</div>
+      <div class="cards" id="cards"></div>
+    </div>
+  </main>
+
+  <footer>
+    <a href="https://github.com/MapStructor" target="_blank">github.com/MapStructor</a>
+  </footer>
+
+  <!-- Modal -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal">
+      <button class="modal-close" id="modal-close">&times;</button>
+      <div class="modal-title" id="modal-title"></div>
+      <div class="modal-links" id="modal-links"></div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script>
+    var PLACEHOLDER = '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#9b8ec4" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>';
+
+    var githubIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>';
+    var linkIcon   = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
+
+    // Render cards
+    var container = document.getElementById('cards');
+    PROJECTS.forEach(function(p) {
+      var thumbHtml = p.thumb
+        ? '<img src="' + p.thumb + '" alt="' + p.title + '">' + (p.badge ? '<span class="card-badge">' + p.badge + '</span>' : '')
+        : PLACEHOLDER;
+      var card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = '<div class="card-thumb">' + thumbHtml + '</div>'
+                     + '<div class="card-info"><div class="card-title">' + p.title + '</div></div>';
+      card.addEventListener('click', function() { openModal(p); });
+      container.appendChild(card);
+    });
+
+    // Modal
+    var overlay    = document.getElementById('modal-overlay');
+    var modalTitle = document.getElementById('modal-title');
+    var modalLinks = document.getElementById('modal-links');
+
+    function openModal(p) {
+      modalTitle.textContent = p.title;
+      modalLinks.innerHTML = '';
+
+      if (p.github) {
+        var a = document.createElement('a');
+        a.className = 'modal-link';
+        a.href = p.github;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.innerHTML = githubIcon + '<span class="modal-link-label">' + p.github.replace('https://', '') + '</span>';
+        modalLinks.appendChild(a);
+      }
+
+      if (p.live) {
+        var b = document.createElement('a');
+        b.className = 'modal-link';
+        b.href = p.live;
+        b.target = '_blank';
+        b.rel = 'noopener';
+        b.innerHTML = linkIcon + '<span class="modal-link-label">' + p.live.replace('https://', '') + '</span>';
+        modalLinks.appendChild(b);
+      }
+
+      overlay.classList.add('open');
+    }
+
+    function closeModal() { overlay.classList.remove('open'); }
+
+    document.getElementById('modal-close').addEventListener('click', closeModal);
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) closeModal(); });
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+  </script>
+
 </body>
 </html>

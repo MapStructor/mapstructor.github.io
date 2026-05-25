@@ -1,0 +1,224 @@
+@import url("https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,100..900;1,100..900&display=swap");
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: "Archivo", sans-serif;
+  font-optical-sizing: auto;
+  font-style: normal;
+  font-variation-settings: "wdth" 100;
+}
+#map {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 100%;
+}
+form {
+  position: absolute;
+  left: 0;
+  /* top: 1rem; */
+  background-color: white;
+  padding: 1rem .5rem;
+  z-index: 1000;
+  border-color: #666;
+  
+  /* border-width: 2px; */
+  /* border-radius: .5rem; */
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+button {
+  padding: 10px 20px;
+  background-color: #007bff;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  display: block;
+  margin-bottom: 10px;
+}
+
+button:hover {
+  background-color: #0056b3;
+}
+
+#button-group {
+  display: flex;
+  flex-direction: column;
+}
+
+#modal {
+  position: absolute;
+  background-color: #00000052;
+  z-index: 10;
+  width: 100vw;
+  height: 100vh;
+  place-items: center;
+  display: none;
+}
+
+#add-layer-modal,
+#load-project-modal {
+  background-color: #fff;
+  padding: 1rem 2rem;
+  display: none;
+}
+
+#add-layer-modal h2,
+#load-project-modal h2 {
+  margin-bottom: 1rem;
+  color: #333;
+}
+
+#add-layer-modal div,
+#load-project-modal div {
+  margin-bottom: 1rem;
+}
+
+#add-layer-modal label,
+#load-project-modal label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: bold;
+  color: #555;
+}
+
+#add-layer-modal input[type="text"],
+#load-project-modal input[type="text"],
+#load-project-modal input[type="text"] {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+#add-layer-modal input[type="text"]:focus,
+#load-project-modal input[type="text"]:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+}
+
+#add-layer-link-section {
+  display: none;
+}
+
+#draw-controls {
+  position: relative;
+  margin-top: 1rem;
+  display: grid;
+  place-items: center;
+}
+
+#title {
+  margin-bottom: 10px;
+  display: block;
+  border: #ccc solid 2px;
+  padding: 0.3rem 0.3rem;
+}
+
+#project-id {
+  display: block;
+  padding: 0.3rem 0.3rem;
+  margin-bottom: 10px;
+}
+
+#draw-controls > .mapboxgl-ctrl-group {
+  display: flex;
+  flex-direction: row;
+  margin: auto initial;
+}
+
+#draw-controls .mapbox-gl-draw_ctrl-draw-btn {
+  margin-bottom: 0;
+  margin-right: 0;
+}
+
+h5,
+h3 {
+  margin-block-start: 10px;
+  margin-block-end: 10px;
+}
+
+.type-btn{
+  cursor: pointer;
+}
+
+.type-btn:hover{
+  background-color: #666;
+}
+
+.selected {
+  background-color: #666;
+  border-radius: 2rem;
+}
+
+#feature-editor{
+  position: absolute;
+  right: 4rem;
+  top: 1rem;
+  background-color: #fff;
+  z-index: 10;
+  display: none;
+}
+
+#add-layer-button:disabled {
+  background-color: #cbd5e0; /* Tailwind's bg-gray-300 */
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+#data-table td, #data-table th,#data-table td {
+  border-width: 1px;
+  border-style: solid;
+  border-color: currentColor;
+  padding: .5rem;
+}
+
+.feature-tray td, .feature-tray th {
+  border-width: 1px;
+  border-style: solid;
+  border-color: currentColor;
+  padding: .1rem;
+}
+
+#data-table{
+  max-height: 30rem;
+  overflow-y: auto;
+  display: none;
+}
+
+.features-container{
+  background-color: #ddd;
+  max-height: 80px;
+  overflow-y: auto;
+  margin-bottom: 3px;
+}
+
+.viewDataTableIcon{
+  background-color: burlywood;
+  border-top-right-radius: .5rem;
+  border-bottom-right-radius: .5rem;
+  cursor: pointer;
+}
+
+.viewDataTableIcon:active {
+  filter: brightness(60%);
+}
+
+.layer-feature{
+  cursor: pointer;
+}
+
+.layer-feature:hover{
+  background-color: #868383f1;
+}
+
+.selected-layer-feature{
+  border-width: 3px;
+  border-color: #FFD700;
+}
