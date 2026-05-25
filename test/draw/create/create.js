@@ -1,3 +1,38 @@
+/*
+  GRAYING VERSION — see Additional features/graying_version/
+  ─────────────────────────────────────────────────────────────────────────────
+  This file is duplicated into Additional features/graying_version/ as a
+  reference. The main create.js (this folder) has the graying logic removed
+  to keep things simple and avoid the risk of users getting stuck with a
+  grayed-out button they can't click.
+
+  HOW THE GRAYING WORKS
+  ─────────────────────────────────────────────────────────────────────────────
+  The rule: a draw button (polygon / line / point) is grayed out only if a
+  layer of that geometry type already exists AND the currently active layer
+  is a different type. If no layer of that type exists yet, the button stays
+  available — drawing it auto-creates a new layer for it.
+
+  Technically, this lives in updateDrawControls(), which runs after every
+  layer change or feature draw. For each geometry type it checks:
+
+    typeExists  = any layer in the layers array has that type
+    enabled     = activeType is null (typeless layer — all buttons open)
+                  OR no layer of that type exists yet (!typeExists)
+                  OR the active layer IS that type (activeType === geomType)
+
+  Grayed buttons get opacity 0.3 and pointerEvents: none so they cannot be
+  clicked. The active layer's type gets a blue inset box-shadow highlight.
+
+  WHY THIS APPROACH
+  ─────────────────────────────────────────────────────────────────────────────
+  The goal is to let users start drawing immediately without clicking Add Layer
+  first. Drawing auto-creates a typed layer behind the scenes. Other geometry
+  types stay available until their own layer is created. Once a type has a
+  layer, you must activate that layer (or add a new one) to draw more of it —
+  this keeps geometry types from mixing into the wrong layer by accident.
+*/
+
 (function () {
 
   // ── Config ──────────────────────────────────────────────────────────────────
@@ -208,11 +243,8 @@
   }
 
   function updateDrawControls() {
-    var layer = layers.find(function (l) { return l.id === activeLayerId; });
-    var type = layer ? layer.type : null; // null = no active layer or typeless
-
-    var allDrawBtns = document.querySelectorAll('.mapbox-gl-draw_ctrl-draw-btn');
-    console.log('draw btns:', Array.from(allDrawBtns).map(function(b) { return b.className; }));
+    var activeLayer = layers.find(function (l) { return l.id === activeLayerId; });
+    var activeType = activeLayer ? activeLayer.type : null;
 
     var buttons = {
       Polygon:    document.querySelector('.mapbox-gl-draw_polygon'),
@@ -223,11 +255,12 @@
     Object.keys(buttons).forEach(function (geomType) {
       var btn = buttons[geomType];
       if (!btn) return;
-      var enabled = !type || type === geomType; // typeless = all enabled
+      var typeExists = layers.some(function (l) { return l.type === geomType; });
+      var enabled = activeType === null || !typeExists || activeType === geomType;
       btn.style.opacity = enabled ? '' : '0.3';
       btn.style.pointerEvents = enabled ? '' : 'none';
       btn.style.cursor = enabled ? '' : 'not-allowed';
-      btn.style.boxShadow = (type && enabled) ? 'inset 0 0 0 2px #4a9eff' : '';
+      btn.style.boxShadow = activeType === geomType ? 'inset 0 0 0 2px #4a9eff' : '';
     });
   }
 
