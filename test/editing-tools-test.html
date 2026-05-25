@@ -47,9 +47,8 @@
   <span id="status">Draw polygons, then select to copy / merge / split</span>
 </div>
 
+<script src="../secrets/mapbox-token.js"></script>
 <script>
-  mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
-
   var clipboard         = null;   // GeoJSON geometry stored on copy
   var splitMode         = false;  // true while waiting for user to draw a cut line
   var splitTarget       = null;   // draw feature id of the polygon being split

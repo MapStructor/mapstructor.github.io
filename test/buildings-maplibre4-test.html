@@ -32,8 +32,6 @@
 
 <script>
   var PMTILES_URL = "https://pub-411b8477c87c4a26b335ecde4062e140.r2.dev/buildings.pmtiles";
-  var MAPBOX_TOKEN = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
-
   var protocol = new pmtiles.Protocol();
   maplibregl.addProtocol("pmtiles", protocol.tile.bind(protocol));
 
