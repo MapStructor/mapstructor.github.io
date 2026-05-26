@@ -690,11 +690,7 @@
 
   // ── Add Layer button ─────────────────────────────────────────────────────────
   document.getElementById('add-layer-btn').addEventListener('click', function () {
-    var name = prompt('Layer name:');
-    if (!name) return;
-    var layer = createLayer(null);
-    layer.name = name;
-    renderLayerList();
+    createLayer(null);
   });
 
   // ── Project name ─────────────────────────────────────────────────────────────
