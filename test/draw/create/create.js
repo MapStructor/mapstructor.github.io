@@ -5,18 +5,17 @@
   overlap. This means merging two non-adjacent polygons produces one draw
   feature with multiple separate rings — valid GeoJSON, but a single object.
 
-  This is intentionally left allowed. Non-contiguous territories are a real
-  case in historical mapping (countries with detached regions, island chains,
-  exclaves, etc.) and a MultiPolygon is the correct representation.
+  MultiPolygon is not supported. Merge is blocked if turf.union returns a
+  MultiPolygon (i.e. the source polygons don't touch or overlap). Users get
+  an error: "Polygons must touch or overlap to merge."
 
-  If revisiting:
-    - Block non-adjacent merges — detect MultiPolygon result and show an
-      error ("Polygons must touch or overlap to merge")
-    - Allow but warn — merge succeeds but a toast flags it as non-contiguous
-    - Allow silently (current behaviour) — trust the user knew what they did
-
-  Downstream concern: selection, attributes, split, and export all need to
-  handle MultiPolygon features gracefully if this stays allowed.
+  If revisiting (e.g. for non-contiguous territories — countries with
+  detached regions, island chains, exclaves):
+    - Remove the MultiPolygon check in doMerge()
+    - Add a "Separate Parts" function to split a MultiPolygon back into
+      individual Polygon features (was implemented, then removed)
+    - Ensure Split, Copy, export, and attribute handling all cope with
+      MultiPolygon geometry
 
   DRAW BUTTON FEEDBACK (not implemented here — see Additional features/graying_version/)
   ─────────────────────────────────────────────────────────────────────────────
@@ -629,21 +628,19 @@
   }
 
   function updateToolbar() {
-    var selected  = draw.getSelected().features;
-    var allPolys  = selected.length > 0 && selected.every(function (f) {
-      return f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon';
+    var selected = draw.getSelected().features;
+    var allPolys = selected.length > 0 && selected.every(function (f) {
+      return f.geometry.type === 'Polygon';
     });
-    var oneOnly   = selected.length === 1;
-    var onePoly   = oneOnly && allPolys;
+    var oneOnly  = selected.length === 1;
+    var onePoly  = oneOnly && allPolys;
 
     document.getElementById('btn-undo').disabled  = !undoStack.length;
     document.getElementById('btn-redo').disabled  = !redoStack.length;
     document.getElementById('btn-copy').disabled  = !oneOnly || splitMode;
     document.getElementById('btn-paste').disabled = !clipboard || splitMode;
-    var isMultiPoly = oneOnly && selected[0].geometry.type === 'MultiPolygon';
-    document.getElementById('btn-merge').disabled    = selected.length < 2 || !allPolys || splitMode;
-    document.getElementById('btn-split').disabled    = !onePoly || splitMode;
-    document.getElementById('btn-separate').disabled = !isMultiPoly || splitMode;
+    document.getElementById('btn-merge').disabled = selected.length < 2 || !allPolys || splitMode;
+    document.getElementById('btn-split').disabled = !onePoly || splitMode;
   }
 
   // ── Copy / Paste ─────────────────────────────────────────────────────────────
@@ -718,6 +715,10 @@
     for (var i = 1; i < selected.length; i++) {
       result = turf.union(result, turf.feature(selected[i].geometry));
       if (!result) { showToast('Merge failed — invalid geometry', true); return; }
+    }
+    if (result.geometry.type === 'MultiPolygon') {
+      showToast('Merge failed — polygons must touch or overlap', true);
+      return;
     }
 
     var originals = selected.map(function (f) {
@@ -934,64 +935,6 @@
     if (e.key === 'Escape' && splitMode)                             cancelSplitMode();
   });
 
-  // ── Separate Parts ───────────────────────────────────────────────────────────
-  function doSeparate() {
-    var f = draw.getSelected().features[0];
-    if (!f || f.geometry.type !== 'MultiPolygon') return;
-
-    var origId   = f.id;
-    var origGeom = JSON.parse(JSON.stringify(f.geometry));
-    var origMeta = JSON.parse(JSON.stringify(features[origId] || {}));
-    var layerId  = origMeta.layerId;
-    var layer    = layers.find(function (l) { return l.id === layerId; });
-
-    _suppressUndo = true;
-    draw.delete([origId]);
-    removeFeatureFromState(origId);
-
-    var newIds = [];
-    f.geometry.coordinates.forEach(function (polyCoords) {
-      var ids = draw.add({ type: 'Feature', geometry: { type: 'Polygon', coordinates: polyCoords }, properties: {} });
-      var nid = ids[0];
-      features[nid] = { label: origMeta.label || '', notes: origMeta.notes || '', layerId: layerId };
-      if (layer && layer.featureIds.indexOf(nid) === -1) layer.featureIds.push(nid);
-      newIds.push(nid);
-    });
-    draw.changeMode('simple_select', { featureIds: newIds });
-    _suppressUndo = false;
-
-    renderLayerList();
-    scheduleSave();
-
-    pushUndo(
-      function () {
-        _suppressUndo = true;
-        newIds.forEach(function (nid) { draw.delete([nid]); removeFeatureFromState(nid); });
-        draw.add({ type: 'Feature', id: origId, geometry: JSON.parse(JSON.stringify(origGeom)), properties: {} });
-        features[origId] = origMeta;
-        if (layer && layer.featureIds.indexOf(origId) === -1) layer.featureIds.push(origId);
-        renderLayerList();
-        scheduleSave();
-        _suppressUndo = false;
-      },
-      function () {
-        _suppressUndo = true;
-        draw.delete([origId]);
-        removeFeatureFromState(origId);
-        newIds.forEach(function (nid, i) {
-          draw.add({ type: 'Feature', id: nid, geometry: { type: 'Polygon', coordinates: origGeom.coordinates[i] }, properties: {} });
-          features[nid] = { label: origMeta.label || '', notes: origMeta.notes || '', layerId: layerId };
-          if (layer && layer.featureIds.indexOf(nid) === -1) layer.featureIds.push(nid);
-        });
-        renderLayerList();
-        scheduleSave();
-        _suppressUndo = false;
-      }
-    );
-    showToast('Separated into ' + newIds.length + ' polygons');
-    updateToolbar();
-  }
-
   // ── Toolbar buttons ──────────────────────────────────────────────────────────
   document.getElementById('btn-undo').addEventListener('click',         performUndo);
   document.getElementById('btn-redo').addEventListener('click',         performRedo);
@@ -1000,7 +943,6 @@
   document.getElementById('btn-merge').addEventListener('click',        doMerge);
   document.getElementById('btn-split').addEventListener('click',        enterSplitMode);
   document.getElementById('btn-cancel-split').addEventListener('click', cancelSplitMode);
-  document.getElementById('btn-separate').addEventListener('click',     doSeparate);
 
   // ── Toast ────────────────────────────────────────────────────────────────────
   var _toastTimer = null;
