@@ -193,6 +193,19 @@ body {
 #toolbar button.active               { background: #b87333; color: #fff; }
 #toolbar button:disabled             { opacity: 0.35; cursor: default; }
 
+#basemap-select {
+  background: #333;
+  color: #ccc;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+
+#basemap-select:hover { background: #3a3a3a; color: #fff; }
+
 .toolbar-sep {
   width: 1px;
   height: 22px;

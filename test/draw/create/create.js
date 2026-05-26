@@ -40,6 +40,16 @@
   // Layer colours — cycle through these for new layers
   var LAYER_COLORS = ['#4a9eff','#ff6b4a','#4aff9e','#ff4adb','#ffe04a','#4af0ff','#ff9e4a'];
 
+  // Basemaps — add entries here to extend the switcher
+  var BASEMAPS = [
+    { id: 'streets',   label: 'Streets',   style: 'mapbox://styles/mapbox/streets-v12' },
+    { id: 'satellite', label: 'Satellite', style: 'mapbox://styles/mapbox/satellite-v9' },
+    { id: 'hybrid',    label: 'Hybrid',    style: 'mapbox://styles/mapbox/satellite-streets-v12' },
+    { id: 'outdoors',  label: 'Outdoors',  style: 'mapbox://styles/mapbox/outdoors-v12' },
+    { id: 'light',     label: 'Light',     style: 'mapbox://styles/mapbox/light-v11' },
+    { id: 'dark',      label: 'Dark',      style: 'mapbox://styles/mapbox/dark-v11' },
+  ];
+
   // ── State ───────────────────────────────────────────────────────────────────
   var db          = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
   var map         = null;
@@ -63,8 +73,10 @@
   var _selectedSnapshot = {};
   var undoStack         = [];
   var redoStack         = [];
-  var _dragState        = null;
-  var _dragOverEl       = null;
+  var _dragState           = null;
+  var _dragOverEl          = null;
+  var drawLayerIds         = [];
+  var _mapEventsRegistered = false;
 
   function fmt(n, dec) {
     return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -88,13 +100,12 @@
     controls: { polygon: true, line_string: true, point: true, trash: true }
   });
   map.addControl(draw, 'top-left');
-  map.on('load', function () {
-    // Highlight source — used for both sidebar→map and map→sidebar hover
+  map.on('style.load', function () {
+    // Re-add custom sources and layers after every style change
     map.addSource('hover-highlight', {
       type: 'geojson',
       data: { type: 'FeatureCollection', features: [] }
     });
-    // Insert below draw layers so the feature itself stays unchanged
     var firstDrawLayer = map.getStyle().layers.find(function (l) { return l.id.indexOf('gl-draw') > -1; });
     var beforeId = firstDrawLayer ? firstDrawLayer.id : undefined;
 
@@ -107,8 +118,7 @@
       paint: { 'circle-color': '#fff', 'circle-radius': 16, 'circle-opacity': 1, 'circle-blur': 0 }
     }, beforeId);
 
-    // Map → sidebar hover
-    var drawLayerIds = map.getStyle().layers
+    drawLayerIds = map.getStyle().layers
       .filter(function (l) { return l.id.indexOf('gl-draw') > -1; })
       .map(function (l) { return l.id; });
 
@@ -130,48 +140,52 @@
       paint: { 'circle-radius': 5, 'circle-color': '#ffcc00', 'circle-stroke-width': 2, 'circle-stroke-color': '#1a1a1a' }
     });
 
-    map.on('click', function (e) {
-      if (!measureMode || measureDone) return;
-      measurePoints.push([e.lngLat.lng, e.lngLat.lat]);
-      refreshMeasureSource(null);
-      updateMeasureDisplay(null);
-    });
+    if (!_mapEventsRegistered) {
+      _mapEventsRegistered = true;
 
-    map.on('dblclick', function (e) {
-      if (!measureMode || measureDone) return;
-      e.preventDefault();
-      if (measurePoints.length > 0) measurePoints.pop();
-      measureDone = true;
-      refreshMeasureSource(null);
-      updateMeasureDisplay(null);
-    });
+      map.on('click', function (e) {
+        if (!measureMode || measureDone) return;
+        measurePoints.push([e.lngLat.lng, e.lngLat.lat]);
+        refreshMeasureSource(null);
+        updateMeasureDisplay(null);
+      });
 
-    map.on('mousemove', function (e) {
-      if (measureMode && !measureDone && measurePoints.length > 0) {
-        refreshMeasureSource([e.lngLat.lng, e.lngLat.lat]);
-        updateMeasureDisplay([e.lngLat.lng, e.lngLat.lat]);
-      }
-    });
+      map.on('dblclick', function (e) {
+        if (!measureMode || measureDone) return;
+        e.preventDefault();
+        if (measurePoints.length > 0) measurePoints.pop();
+        measureDone = true;
+        refreshMeasureSource(null);
+        updateMeasureDisplay(null);
+      });
 
-    map.on('mousemove', function (e) {
-      var rendered = map.queryRenderedFeatures(e.point, { layers: drawLayerIds });
-      var fid = rendered.length ? (rendered[0].id || (rendered[0].properties && rendered[0].properties.id)) : null;
-      if (fid === hoveredDrawId) return;
-      hoveredDrawId = fid;
-      updateSidebarHover();
-      if (fid && features[fid]) {
-        var feat = draw.get(fid);
-        if (feat) map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [feat] });
-      } else {
+      map.on('mousemove', function (e) {
+        if (measureMode && !measureDone && measurePoints.length > 0) {
+          refreshMeasureSource([e.lngLat.lng, e.lngLat.lat]);
+          updateMeasureDisplay([e.lngLat.lng, e.lngLat.lat]);
+        }
+      });
+
+      map.on('mousemove', function (e) {
+        var rendered = map.queryRenderedFeatures(e.point, { layers: drawLayerIds });
+        var fid = rendered.length ? (rendered[0].id || (rendered[0].properties && rendered[0].properties.id)) : null;
+        if (fid === hoveredDrawId) return;
+        hoveredDrawId = fid;
+        updateSidebarHover();
+        if (fid && features[fid]) {
+          var feat = draw.get(fid);
+          if (feat) map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [feat] });
+        } else {
+          map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [] });
+        }
+      });
+
+      map.getCanvas().addEventListener('mouseleave', function () {
+        hoveredDrawId = null;
+        updateSidebarHover();
         map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [] });
-      }
-    });
-
-    map.getCanvas().addEventListener('mouseleave', function () {
-      hoveredDrawId = null;
-      updateSidebarHover();
-      map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [] });
-    });
+      });
+    }
   });
 
   // Anonymous sign-in — no friction
@@ -1218,6 +1232,18 @@
     if (measureMode && measureType === 'area') exitMeasureMode(); else enterMeasureMode('area');
   });
   document.getElementById('btn-measure-clear').addEventListener('click', exitMeasureMode);
+
+  // ── Basemap switcher ─────────────────────────────────────────────────────────
+  var basemapSelect = document.getElementById('basemap-select');
+  BASEMAPS.forEach(function (b) {
+    var opt = document.createElement('option');
+    opt.value = b.style;
+    opt.textContent = b.label;
+    basemapSelect.appendChild(opt);
+  });
+  basemapSelect.addEventListener('change', function () {
+    map.setStyle(this.value);
+  });
 
   // ── Toast ────────────────────────────────────────────────────────────────────
   var _toastTimer = null;
