@@ -480,13 +480,65 @@
     document.getElementById('feature-label').value = meta.label || '';
     document.getElementById('feature-notes').value = meta.notes || '';
     document.getElementById('feature-panel').classList.remove('hidden');
+    updateMeasurements(drawId);
     renderLayerList();
   }
 
   function closeFeaturePanel() {
     selectedDrawId = null;
     document.getElementById('feature-panel').classList.add('hidden');
+    document.getElementById('feature-measurements').innerHTML = '';
     renderLayerList();
+  }
+
+  function updateMeasurements(drawId) {
+    var el   = document.getElementById('feature-measurements');
+    var feat = draw.get(drawId);
+    if (!feat) { el.innerHTML = ''; return; }
+
+    function fmt(n, dec) {
+      return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+    }
+
+    var rows = [];
+    var type = feat.geometry.type;
+
+    if (type === 'Polygon') {
+      var sqm     = turf.area(feat);
+      var ha      = sqm / 10000;
+      var acre    = sqm / 4046.856;
+      var km2     = sqm / 1e6;
+      var perimKm = turf.length(turf.polygonToLine(feat), { units: 'kilometers' });
+      var perimMi = perimKm * 0.621371;
+      var perimM  = perimKm * 1000;
+      var perimFt = perimM * 3.28084;
+
+      rows.push(['Area',      ha >= 100 ? fmt(km2, 2) + ' km²' : fmt(ha, 2) + ' ha']);
+      rows.push(['',          fmt(acre, 1) + ' acres']);
+      rows.push(['Perimeter', fmt(perimKm, 2) + ' km / ' + fmt(perimMi, 2) + ' mi']);
+      rows.push(['',          fmt(perimM, 0) + ' m / ' + fmt(perimFt, 0) + ' ft']);
+
+    } else if (type === 'LineString') {
+      var km = turf.length(feat, { units: 'kilometers' });
+      var mi = km * 0.621371;
+      var m  = km * 1000;
+      var ft = m * 3.28084;
+
+      rows.push(['Length', fmt(km, 3) + ' km / ' + fmt(mi, 3) + ' mi']);
+      rows.push(['',       fmt(m, 0)  + ' m / '  + fmt(ft, 0) + ' ft']);
+
+    } else if (type === 'Point') {
+      var c = feat.geometry.coordinates;
+      rows.push(['Lon', fmt(c[0], 5)]);
+      rows.push(['Lat', fmt(c[1], 5)]);
+    }
+
+    el.innerHTML = rows.map(function (r) {
+      return '<div class="measurement-row">' +
+        '<span class="measurement-label">' + r[0] + '</span>' +
+        '<span class="measurement-value">' + r[1] + '</span>' +
+        '</div>';
+    }).join('');
   }
 
   document.getElementById('feature-panel-close').addEventListener('click', function () {

@@ -272,6 +272,33 @@ body {
 
 #feature-notes { height: 80px; }
 
+#feature-measurements {
+  padding: 10px 12px;
+  border-top: 1px solid #2e2e2e;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#feature-measurements:empty { display: none; }
+
+.measurement-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.measurement-label {
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.measurement-value {
+  color: #aaa;
+  font-variant-numeric: tabular-nums;
+}
+
 #feature-panel-footer {
   padding: 10px 12px;
   border-top: 1px solid #333;
