@@ -63,6 +63,8 @@
   var _selectedSnapshot = {};
   var undoStack         = [];
   var redoStack         = [];
+  var _dragState        = null;
+  var _dragOverEl       = null;
 
   function fmt(n, dec) {
     return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -386,10 +388,65 @@
   }
 
   // ── Sidebar rendering ────────────────────────────────────────────────────────
+  function setupDrag(el, type, li, fi) {
+    el.draggable = true;
+
+    el.addEventListener('dragstart', function (e) {
+      _dragState = { type: type, li: li, fi: fi };
+      e.dataTransfer.effectAllowed = 'move';
+      setTimeout(function () { el.classList.add('dragging'); }, 0);
+    });
+
+    el.addEventListener('dragend', function () {
+      el.classList.remove('dragging');
+      if (_dragOverEl) { _dragOverEl.classList.remove('drag-over-top', 'drag-over-bottom'); _dragOverEl = null; }
+      _dragState = null;
+    });
+
+    el.addEventListener('dragover', function (e) {
+      if (!_dragState || _dragState.type !== type) return;
+      e.preventDefault();
+      if (_dragOverEl && _dragOverEl !== el) _dragOverEl.classList.remove('drag-over-top', 'drag-over-bottom');
+      var rect   = el.getBoundingClientRect();
+      var before = e.clientY < rect.top + rect.height / 2;
+      el.classList.toggle('drag-over-top',    before);
+      el.classList.toggle('drag-over-bottom', !before);
+      _dragOverEl = el;
+    });
+
+    el.addEventListener('drop', function (e) {
+      e.preventDefault();
+      if (!_dragState || _dragState.type !== type) return;
+      if (_dragOverEl) { _dragOverEl.classList.remove('drag-over-top', 'drag-over-bottom'); _dragOverEl = null; }
+      var rect   = el.getBoundingClientRect();
+      var before = e.clientY < rect.top + rect.height / 2;
+
+      if (type === 'layer') {
+        var from = _dragState.li, to = li;
+        if (from === to) { _dragState = null; return; }
+        var moved = layers.splice(from, 1)[0];
+        var adj   = (from < to ? to - 1 : to) + (before ? 0 : 1);
+        layers.splice(adj, 0, moved);
+      } else {
+        if (_dragState.li !== li) { _dragState = null; return; }
+        var fids = layers[li].featureIds;
+        var from = _dragState.fi, to = fi;
+        if (from === to) { _dragState = null; return; }
+        var movedId = fids.splice(from, 1)[0];
+        var adj     = (from < to ? to - 1 : to) + (before ? 0 : 1);
+        fids.splice(adj, 0, movedId);
+      }
+
+      _dragState = null;
+      renderLayerList();
+      scheduleSave();
+    });
+  }
+
   function renderLayerList() {
     var el = document.getElementById('layer-list');
     el.innerHTML = '';
-    layers.forEach(function (layer) {
+    layers.forEach(function (layer, li) {
       var div = document.createElement('div');
       div.className = 'layer-item' + (layer.id === activeLayerId ? ' active' : '');
       div.dataset.id = layer.id;
@@ -454,6 +511,7 @@
       div.appendChild(swatch);
       div.appendChild(name);
       div.appendChild(count);
+      setupDrag(div, 'layer', li, -1);
 
       div.addEventListener('click', function () {
         if (layer.id !== activeLayerId) setActiveLayer(layer.id);
@@ -462,7 +520,7 @@
       el.appendChild(div);
 
       // Feature rows beneath the layer
-      layer.featureIds.forEach(function (fid) {
+      layer.featureIds.forEach(function (fid, fi) {
         var meta = features[fid];
         if (!meta) return;
 
@@ -477,6 +535,7 @@
         fName.textContent = meta.label || ('Untitled ' + (layer.type || 'Feature'));
 
         fDiv.appendChild(fName);
+        setupDrag(fDiv, 'feature', li, fi);
 
         fDiv.addEventListener('click', function (e) {
           e.stopPropagation();

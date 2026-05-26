@@ -124,6 +124,16 @@ body {
 
 .feature-item.active .feature-item-label { color: #fff; }
 
+/* ── Drag-to-reorder ── */
+.layer-item.dragging,
+.feature-item.dragging { opacity: 0.35; }
+
+.layer-item.drag-over-top,
+.feature-item.drag-over-top    { box-shadow: inset 0 2px 0 #4a9eff; }
+
+.layer-item.drag-over-bottom,
+.feature-item.drag-over-bottom { box-shadow: inset 0 -2px 0 #4a9eff; }
+
 #sidebar-footer {
   padding: 10px 12px;
   border-top: 1px solid #333;
