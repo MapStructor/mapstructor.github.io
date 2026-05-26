@@ -1,3 +1,17 @@
+/*
+  DRAW BUTTON FEEDBACK (not implemented here — see Additional features/graying_version/)
+  ─────────────────────────────────────────────────────────────────────────────
+  An earlier version grayed out draw buttons when their geometry type was
+  already claimed by an existing layer. That version is preserved in
+  Additional features/graying_version/ for reference.
+
+  If revisiting: making buttons fully unclickable (pointerEvents: none) is
+  probably too heavy-handed. Softer options worth considering:
+    - Outline/highlight the active layer's button type only (least intrusive)
+    - Dim the other buttons (opacity) without disabling them
+    - Change the icon color of unavailable buttons
+    - Show a tooltip explaining why a type is "taken" and which layer owns it
+*/
 (function () {
 
   // ── Config ──────────────────────────────────────────────────────────────────
@@ -39,8 +53,6 @@
   });
   map.addControl(draw, 'top-left');
   map.on('load', function () {
-    updateDrawControls();
-
     // Highlight source — used for both sidebar→map and map→sidebar hover
     map.addSource('hover-highlight', {
       type: 'geojson',
@@ -132,7 +144,6 @@
       // Active typeless layer claims this type
       activeLayer.type = geomType;
       typeLayer = activeLayer;
-      updateDrawControls();
     } else if (activeLayer && activeLayer.type === geomType) {
       // Active layer already matches — use it directly
       typeLayer = activeLayer;
@@ -191,41 +202,17 @@
     layers.push(layer);
     activeLayerId = layer.id;
     renderLayerList();
-    updateDrawControls();
     return layer;
   }
 
   function setActiveLayer(id) {
     activeLayerId = id;
     renderLayerList();
-    updateDrawControls();
   }
 
   function updateSidebarHover() {
     document.querySelectorAll('.feature-item').forEach(function (el) {
       el.classList.toggle('hover', el.dataset.id === hoveredDrawId);
-    });
-  }
-
-  function updateDrawControls() {
-    var activeLayer = layers.find(function (l) { return l.id === activeLayerId; });
-    var activeType = activeLayer ? activeLayer.type : null;
-
-    var buttons = {
-      Polygon:    document.querySelector('.mapbox-gl-draw_polygon'),
-      LineString: document.querySelector('.mapbox-gl-draw_line_string') || document.querySelector('.mapbox-gl-draw_line'),
-      Point:      document.querySelector('.mapbox-gl-draw_point')
-    };
-
-    Object.keys(buttons).forEach(function (geomType) {
-      var btn = buttons[geomType];
-      if (!btn) return;
-      var typeExists = layers.some(function (l) { return l.type === geomType; });
-      var enabled = activeType === null || !typeExists || activeType === geomType;
-      btn.style.opacity = enabled ? '' : '0.3';
-      btn.style.pointerEvents = enabled ? '' : 'none';
-      btn.style.cursor = enabled ? '' : 'not-allowed';
-      btn.style.boxShadow = activeType === geomType ? 'inset 0 0 0 2px #4a9eff' : '';
     });
   }
 
