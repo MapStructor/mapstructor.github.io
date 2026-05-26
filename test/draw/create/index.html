@@ -9,6 +9,7 @@
   <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
   <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css"/>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
   <script src="../../mapbox-token.js"></script>
   <link rel="stylesheet" href="create.css"/>
 </head>
@@ -26,7 +27,23 @@
     </div>
   </div>
 
-  <div id="map"></div>
+  <div id="map-area">
+    <div id="map"></div>
+    <div id="toolbar">
+      <button id="btn-undo" disabled title="Ctrl+Z">Undo</button>
+      <button id="btn-redo" disabled title="Ctrl+Y">Redo</button>
+      <div class="toolbar-sep"></div>
+      <button id="btn-copy"  disabled title="Ctrl+C">Copy</button>
+      <button id="btn-paste" disabled title="Ctrl+V">Paste</button>
+      <div class="toolbar-sep"></div>
+      <button id="btn-merge" disabled>Merge</button>
+      <div class="toolbar-sep"></div>
+      <button id="btn-split"        disabled>Split</button>
+      <button id="btn-cancel-split" style="display:none">Cancel Split (Esc)</button>
+      <div class="toolbar-sep"></div>
+      <button id="btn-separate" disabled>Separate Parts</button>
+    </div>
+  </div>
 
   <div id="feature-panel" class="hidden">
     <div id="feature-panel-header">

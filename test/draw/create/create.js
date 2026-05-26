@@ -162,20 +162,24 @@
   // ── Draw events ─────────────────────────────────────────────────────────────
   map.on('draw.create', function (e) {
     var feature = e.features[0];
-    var geomType = feature.geometry.type;
 
+    if (splitMode && feature.geometry.type === 'LineString') {
+      doSplit(feature);
+      return;
+    }
+
+    if (_suppressUndo) { updateToolbar(); return; }
+
+    var geomType = feature.geometry.type;
     var activeLayer = layers.find(function (l) { return l.id === activeLayerId; });
     var typeLayer;
 
     if (activeLayer && activeLayer.type === null) {
-      // Active typeless layer claims this type
       activeLayer.type = geomType;
       typeLayer = activeLayer;
     } else if (activeLayer && activeLayer.type === geomType) {
-      // Active layer already matches — use it directly
       typeLayer = activeLayer;
     } else {
-      // Active layer is wrong type or missing — find or auto-create
       typeLayer = layers.find(function (l) { return l.type === geomType; });
       if (!typeLayer) {
         typeLayer = createLayer(geomType);
@@ -186,32 +190,112 @@
       }
     }
 
-    features[feature.id] = { label: '', notes: '', layerId: typeLayer.id };
-    typeLayer.featureIds.push(feature.id);
+    var id      = feature.id;
+    var geom    = JSON.parse(JSON.stringify(feature.geometry));
+    var layerId = typeLayer.id;
+
+    features[id] = { label: '', notes: '', layerId: layerId };
+    typeLayer.featureIds.push(id);
     renderLayerList();
-    openFeaturePanel(feature.id);
+    openFeaturePanel(id);
     scheduleSave();
+
+    pushUndo(
+      function () {
+        _suppressUndo = true;
+        draw.delete([id]);
+        removeFeatureFromState(id);
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      },
+      function () {
+        _suppressUndo = true;
+        draw.add({ type: 'Feature', id: id, geometry: JSON.parse(JSON.stringify(geom)), properties: {} });
+        var layer = layers.find(function (l) { return l.id === layerId; });
+        if (layer && layer.featureIds.indexOf(id) === -1) {
+          features[id] = { label: '', notes: '', layerId: layerId };
+          layer.featureIds.push(id);
+        }
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      }
+    );
   });
 
   map.on('draw.update', function (e) {
+    if (_suppressUndo) return;
+    e.features.forEach(function (f) {
+      var id       = f.id;
+      var prevGeom = _selectedSnapshot[id];
+      var newGeom  = JSON.parse(JSON.stringify(f.geometry));
+      if (!prevGeom) return;
+      var pg = JSON.parse(JSON.stringify(prevGeom));
+      pushUndo(
+        function () { _suppressUndo = true; _setGeometry(id, pg);      _suppressUndo = false; },
+        function () { _suppressUndo = true; _setGeometry(id, newGeom); _suppressUndo = false; }
+      );
+      _selectedSnapshot[id] = newGeom;
+    });
     scheduleSave();
+    updateToolbar();
   });
 
   map.on('draw.delete', function (e) {
-    e.features.forEach(function (f) {
-      removeFeatureFromState(f.id);
+    if (_suppressUndo) return;
+    var deleted = e.features.map(function (f) {
+      return {
+        id:   f.id,
+        geom: JSON.parse(JSON.stringify(f.geometry)),
+        meta: JSON.parse(JSON.stringify(features[f.id] || {}))
+      };
     });
+    deleted.forEach(function (d) { removeFeatureFromState(d.id); });
     closeFeaturePanel();
     renderLayerList();
     scheduleSave();
+
+    pushUndo(
+      function () {
+        _suppressUndo = true;
+        deleted.forEach(function (d) {
+          draw.add({ type: 'Feature', id: d.id, geometry: JSON.parse(JSON.stringify(d.geom)), properties: {} });
+          features[d.id] = d.meta;
+          var layer = layers.find(function (l) { return l.id === d.meta.layerId; });
+          if (layer && layer.featureIds.indexOf(d.id) === -1) layer.featureIds.push(d.id);
+        });
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      },
+      function () {
+        _suppressUndo = true;
+        deleted.forEach(function (d) {
+          draw.delete([d.id]);
+          removeFeatureFromState(d.id);
+        });
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      }
+    );
+    updateToolbar();
   });
 
   map.on('draw.selectionchange', function (e) {
+    if (!_suppressUndo) {
+      _selectedSnapshot = {};
+      e.features.forEach(function (f) {
+        _selectedSnapshot[f.id] = JSON.parse(JSON.stringify(f.geometry));
+      });
+    }
     if (e.features.length === 0) {
       closeFeaturePanel();
     } else {
       openFeaturePanel(e.features[0].id);
     }
+    updateToolbar();
   });
 
   // ── Layer management ────────────────────────────────────────────────────────
@@ -511,6 +595,412 @@
     renderLayerList();
     showToast('Project loaded');
   }
+
+  // ── Undo / Redo ──────────────────────────────────────────────────────────────
+  function pushUndo(undoFn, redoFn) {
+    undoStack.push({ undo: undoFn, redo: redoFn });
+    redoStack = [];
+    updateToolbar();
+  }
+
+  function performUndo() {
+    if (!undoStack.length) return;
+    var action = undoStack.pop();
+    _suppressUndo = true;
+    action.undo();
+    _suppressUndo = false;
+    redoStack.push(action);
+    updateToolbar();
+  }
+
+  function performRedo() {
+    if (!redoStack.length) return;
+    var action = redoStack.pop();
+    _suppressUndo = true;
+    action.redo();
+    _suppressUndo = false;
+    undoStack.push(action);
+    updateToolbar();
+  }
+
+  function _setGeometry(id, geom) {
+    draw.delete([id]);
+    draw.add({ type: 'Feature', id: id, geometry: geom, properties: {} });
+  }
+
+  function updateToolbar() {
+    var selected  = draw.getSelected().features;
+    var allPolys  = selected.length > 0 && selected.every(function (f) {
+      return f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon';
+    });
+    var oneOnly   = selected.length === 1;
+    var onePoly   = oneOnly && allPolys;
+
+    document.getElementById('btn-undo').disabled  = !undoStack.length;
+    document.getElementById('btn-redo').disabled  = !redoStack.length;
+    document.getElementById('btn-copy').disabled  = !oneOnly || splitMode;
+    document.getElementById('btn-paste').disabled = !clipboard || splitMode;
+    var isMultiPoly = oneOnly && selected[0].geometry.type === 'MultiPolygon';
+    document.getElementById('btn-merge').disabled    = selected.length < 2 || !allPolys || splitMode;
+    document.getElementById('btn-split').disabled    = !onePoly || splitMode;
+    document.getElementById('btn-separate').disabled = !isMultiPoly || splitMode;
+  }
+
+  // ── Copy / Paste ─────────────────────────────────────────────────────────────
+  function doCopy() {
+    var f = draw.getSelected().features[0];
+    if (!f) return;
+    clipboard = {
+      geometry: JSON.parse(JSON.stringify(f.geometry)),
+      meta:     JSON.parse(JSON.stringify(features[f.id] || {}))
+    };
+    updateToolbar();
+    showToast('Copied');
+  }
+
+  function doPaste() {
+    if (!clipboard) return;
+    var geom     = JSON.parse(JSON.stringify(clipboard.geometry));
+    var geomType = geom.type.replace('Multi', '');
+
+    var activeLayer = layers.find(function (l) { return l.id === activeLayerId; });
+    var typeLayer;
+    if (activeLayer && (activeLayer.type === null || activeLayer.type === geomType || activeLayer.type === geom.type)) {
+      typeLayer = activeLayer;
+      if (activeLayer.type === null) activeLayer.type = geomType;
+    } else {
+      typeLayer = layers.find(function (l) { return l.type === geomType || l.type === geom.type; });
+      if (!typeLayer) typeLayer = createLayer(geomType);
+    }
+
+    var layerId = typeLayer.id;
+    var ids     = draw.add({ type: 'Feature', geometry: geom, properties: {} });
+    var id      = ids[0];
+
+    features[id] = { label: clipboard.meta.label || '', notes: clipboard.meta.notes || '', layerId: layerId };
+    typeLayer.featureIds.push(id);
+    draw.changeMode('simple_select', { featureIds: ids });
+    renderLayerList();
+    scheduleSave();
+
+    pushUndo(
+      function () {
+        _suppressUndo = true;
+        draw.delete([id]);
+        removeFeatureFromState(id);
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      },
+      function () {
+        _suppressUndo = true;
+        draw.add({ type: 'Feature', id: id, geometry: JSON.parse(JSON.stringify(geom)), properties: {} });
+        var layer = layers.find(function (l) { return l.id === layerId; });
+        if (layer && layer.featureIds.indexOf(id) === -1) {
+          features[id] = { label: clipboard.meta.label || '', notes: clipboard.meta.notes || '', layerId: layerId };
+          layer.featureIds.push(id);
+        }
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      }
+    );
+    showToast('Pasted — drag to move');
+    updateToolbar();
+  }
+
+  // ── Merge ────────────────────────────────────────────────────────────────────
+  function doMerge() {
+    var selected = draw.getSelected().features;
+    if (selected.length < 2) return;
+
+    var result = turf.feature(selected[0].geometry);
+    for (var i = 1; i < selected.length; i++) {
+      result = turf.union(result, turf.feature(selected[i].geometry));
+      if (!result) { showToast('Merge failed — invalid geometry', true); return; }
+    }
+
+    var originals = selected.map(function (f) {
+      return {
+        id:   f.id,
+        geom: JSON.parse(JSON.stringify(f.geometry)),
+        meta: JSON.parse(JSON.stringify(features[f.id] || {}))
+      };
+    });
+
+    var layerId = originals[0].meta.layerId;
+    var layer   = layers.find(function (l) { return l.id === layerId; });
+
+    _suppressUndo = true;
+    draw.delete(originals.map(function (o) { return o.id; }));
+    originals.forEach(function (o) { removeFeatureFromState(o.id); });
+    var newIds     = draw.add(result);
+    var mergedId   = newIds[0];
+    var mergedGeom = JSON.parse(JSON.stringify(result.geometry));
+    features[mergedId] = { label: originals[0].meta.label || '', notes: '', layerId: layerId };
+    if (layer && layer.featureIds.indexOf(mergedId) === -1) layer.featureIds.push(mergedId);
+    draw.changeMode('simple_select', { featureIds: newIds });
+    _suppressUndo = false;
+
+    renderLayerList();
+    scheduleSave();
+
+    pushUndo(
+      function () {
+        _suppressUndo = true;
+        draw.delete([mergedId]);
+        removeFeatureFromState(mergedId);
+        originals.forEach(function (o) {
+          draw.add({ type: 'Feature', id: o.id, geometry: JSON.parse(JSON.stringify(o.geom)), properties: {} });
+          features[o.id] = o.meta;
+          var l = layers.find(function (l) { return l.id === o.meta.layerId; });
+          if (l && l.featureIds.indexOf(o.id) === -1) l.featureIds.push(o.id);
+        });
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      },
+      function () {
+        _suppressUndo = true;
+        originals.forEach(function (o) {
+          draw.delete([o.id]);
+          removeFeatureFromState(o.id);
+        });
+        draw.add({ type: 'Feature', id: mergedId, geometry: JSON.parse(JSON.stringify(mergedGeom)), properties: {} });
+        features[mergedId] = { label: originals[0].meta.label || '', notes: '', layerId: layerId };
+        var l = layers.find(function (l) { return l.id === layerId; });
+        if (l && l.featureIds.indexOf(mergedId) === -1) l.featureIds.push(mergedId);
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      }
+    );
+    showToast('Merged ' + selected.length + ' polygons');
+    updateToolbar();
+  }
+
+  // ── Split ────────────────────────────────────────────────────────────────────
+  function enterSplitMode() {
+    var selected = draw.getSelected().features;
+    if (selected.length !== 1) return;
+    splitTarget = selected[0].id;
+    splitMode   = true;
+    draw.changeMode('draw_line_string');
+    document.getElementById('btn-split').style.display        = 'none';
+    document.getElementById('btn-cancel-split').style.display = 'inline-block';
+    document.getElementById('btn-cancel-split').classList.add('active');
+    showToast('Draw a line through the polygon to split it');
+    updateToolbar();
+  }
+
+  function cancelSplitMode() {
+    splitMode   = false;
+    splitTarget = null;
+    draw.changeMode('simple_select');
+    document.getElementById('btn-split').style.display        = 'inline-block';
+    document.getElementById('btn-cancel-split').style.display = 'none';
+    document.getElementById('btn-cancel-split').classList.remove('active');
+    updateToolbar();
+  }
+
+  function doSplit(lineFeature) {
+    var allFeats = draw.getAll().features;
+    var polygon  = allFeats.find(function (f) { return f.id === splitTarget; });
+    if (!polygon) { cancelSplitMode(); return; }
+
+    var origId   = splitTarget;
+    var origGeom = JSON.parse(JSON.stringify(polygon.geometry));
+    var origMeta = JSON.parse(JSON.stringify(features[origId] || {}));
+    var halves   = splitPolygonWithLine(polygon, lineFeature);
+
+    _suppressUndo = true;
+    draw.delete([lineFeature.id]);
+    _suppressUndo = false;
+
+    if (halves.length < 2) {
+      showToast('Split failed — line must cross the polygon completely', true);
+      cancelSplitMode();
+      return;
+    }
+
+    var layerId = origMeta.layerId;
+    var layer   = layers.find(function (l) { return l.id === layerId; });
+
+    _suppressUndo = true;
+    draw.delete([origId]);
+    removeFeatureFromState(origId);
+    var newIds = [];
+    halves.forEach(function (h) { newIds = newIds.concat(draw.add(h)); });
+    newIds.forEach(function (nid) {
+      features[nid] = { label: origMeta.label || '', notes: origMeta.notes || '', layerId: layerId };
+      if (layer && layer.featureIds.indexOf(nid) === -1) layer.featureIds.push(nid);
+    });
+    draw.changeMode('simple_select', { featureIds: newIds });
+    _suppressUndo = false;
+
+    var halfData = halves.map(function (h, i) {
+      return { id: newIds[i], geom: JSON.parse(JSON.stringify(h.geometry)) };
+    });
+
+    splitMode   = false;
+    splitTarget = null;
+    document.getElementById('btn-split').style.display        = 'inline-block';
+    document.getElementById('btn-cancel-split').style.display = 'none';
+    document.getElementById('btn-cancel-split').classList.remove('active');
+
+    renderLayerList();
+    scheduleSave();
+
+    pushUndo(
+      function () {
+        _suppressUndo = true;
+        halfData.forEach(function (d) {
+          draw.delete([d.id]);
+          removeFeatureFromState(d.id);
+        });
+        draw.add({ type: 'Feature', id: origId, geometry: JSON.parse(JSON.stringify(origGeom)), properties: {} });
+        features[origId] = origMeta;
+        if (layer && layer.featureIds.indexOf(origId) === -1) layer.featureIds.push(origId);
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      },
+      function () {
+        _suppressUndo = true;
+        draw.delete([origId]);
+        removeFeatureFromState(origId);
+        halfData.forEach(function (d) {
+          draw.add({ type: 'Feature', id: d.id, geometry: JSON.parse(JSON.stringify(d.geom)), properties: {} });
+          features[d.id] = { label: origMeta.label || '', notes: origMeta.notes || '', layerId: layerId };
+          if (layer && layer.featureIds.indexOf(d.id) === -1) layer.featureIds.push(d.id);
+        });
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      }
+    );
+    showToast('Split into ' + halfData.length + ' polygons');
+    updateToolbar();
+  }
+
+  function splitPolygonWithLine(polygon, lineFeature) {
+    var coords = lineFeature.geometry.coordinates;
+    var p1 = coords[0];
+    var p2 = coords[coords.length - 1];
+
+    var dx = p2[0] - p1[0], dy = p2[1] - p1[1];
+    var len = Math.sqrt(dx * dx + dy * dy);
+    if (len === 0) return [];
+
+    var nx = dx / len, ny = dy / len;
+    var px = -ny,      py = nx;
+
+    // far must exceed the polygon's extent so the half-planes cover it fully.
+    // 2.0 degrees (original value) only works for city-scale polygons.
+    var bbox = turf.bbox(turf.feature(polygon.geometry));
+    var far  = Math.sqrt(Math.pow(bbox[2] - bbox[0], 2) + Math.pow(bbox[3] - bbox[1], 2)) * 2 + 1;
+
+    var eA = [p1[0] - nx * far, p1[1] - ny * far];
+    var eB = [p2[0] + nx * far, p2[1] + ny * far];
+
+    var leftHalf = turf.polygon([[
+      eA, eB,
+      [eB[0] + px * far, eB[1] + py * far],
+      [eA[0] + px * far, eA[1] + py * far],
+      eA
+    ]]);
+    var rightHalf = turf.polygon([[
+      eA, eB,
+      [eB[0] - px * far, eB[1] - py * far],
+      [eA[0] - px * far, eA[1] - py * far],
+      eA
+    ]]);
+
+    var poly   = turf.feature(polygon.geometry);
+    var piece1 = turf.intersect(poly, leftHalf);
+    var piece2 = turf.intersect(poly, rightHalf);
+
+    return [piece1, piece2].filter(Boolean);
+  }
+
+  // ── Keyboard shortcuts ───────────────────────────────────────────────────────
+  document.addEventListener('keydown', function (e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    var mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key === 'z' && !e.shiftKey)                        { e.preventDefault(); performUndo(); }
+    if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey)))    { e.preventDefault(); performRedo(); }
+    if (mod && e.key === 'c')                                        { e.preventDefault(); doCopy(); }
+    if (mod && e.key === 'v')                                        { e.preventDefault(); doPaste(); }
+    if (e.key === 'Escape' && splitMode)                             cancelSplitMode();
+  });
+
+  // ── Separate Parts ───────────────────────────────────────────────────────────
+  function doSeparate() {
+    var f = draw.getSelected().features[0];
+    if (!f || f.geometry.type !== 'MultiPolygon') return;
+
+    var origId   = f.id;
+    var origGeom = JSON.parse(JSON.stringify(f.geometry));
+    var origMeta = JSON.parse(JSON.stringify(features[origId] || {}));
+    var layerId  = origMeta.layerId;
+    var layer    = layers.find(function (l) { return l.id === layerId; });
+
+    _suppressUndo = true;
+    draw.delete([origId]);
+    removeFeatureFromState(origId);
+
+    var newIds = [];
+    f.geometry.coordinates.forEach(function (polyCoords) {
+      var ids = draw.add({ type: 'Feature', geometry: { type: 'Polygon', coordinates: polyCoords }, properties: {} });
+      var nid = ids[0];
+      features[nid] = { label: origMeta.label || '', notes: origMeta.notes || '', layerId: layerId };
+      if (layer && layer.featureIds.indexOf(nid) === -1) layer.featureIds.push(nid);
+      newIds.push(nid);
+    });
+    draw.changeMode('simple_select', { featureIds: newIds });
+    _suppressUndo = false;
+
+    renderLayerList();
+    scheduleSave();
+
+    pushUndo(
+      function () {
+        _suppressUndo = true;
+        newIds.forEach(function (nid) { draw.delete([nid]); removeFeatureFromState(nid); });
+        draw.add({ type: 'Feature', id: origId, geometry: JSON.parse(JSON.stringify(origGeom)), properties: {} });
+        features[origId] = origMeta;
+        if (layer && layer.featureIds.indexOf(origId) === -1) layer.featureIds.push(origId);
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      },
+      function () {
+        _suppressUndo = true;
+        draw.delete([origId]);
+        removeFeatureFromState(origId);
+        newIds.forEach(function (nid, i) {
+          draw.add({ type: 'Feature', id: nid, geometry: { type: 'Polygon', coordinates: origGeom.coordinates[i] }, properties: {} });
+          features[nid] = { label: origMeta.label || '', notes: origMeta.notes || '', layerId: layerId };
+          if (layer && layer.featureIds.indexOf(nid) === -1) layer.featureIds.push(nid);
+        });
+        renderLayerList();
+        scheduleSave();
+        _suppressUndo = false;
+      }
+    );
+    showToast('Separated into ' + newIds.length + ' polygons');
+    updateToolbar();
+  }
+
+  // ── Toolbar buttons ──────────────────────────────────────────────────────────
+  document.getElementById('btn-undo').addEventListener('click',         performUndo);
+  document.getElementById('btn-redo').addEventListener('click',         performRedo);
+  document.getElementById('btn-copy').addEventListener('click',         doCopy);
+  document.getElementById('btn-paste').addEventListener('click',        doPaste);
+  document.getElementById('btn-merge').addEventListener('click',        doMerge);
+  document.getElementById('btn-split').addEventListener('click',        enterSplitMode);
+  document.getElementById('btn-cancel-split').addEventListener('click', cancelSplitMode);
+  document.getElementById('btn-separate').addEventListener('click',     doSeparate);
 
   // ── Toast ────────────────────────────────────────────────────────────────────
   var _toastTimer = null;
