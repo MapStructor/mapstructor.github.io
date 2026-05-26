@@ -153,6 +153,108 @@ body {
 
 #add-layer-btn:hover { background: #3a3a3a; color: #fff; }
 
+/* ── Attribute panel ── */
+#attr-panel {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #242424;
+  border-right: 1px solid #333;
+  z-index: 10;
+  overflow: hidden;
+}
+
+#attr-panel.hidden  { display: none; }
+#attr-panel.expanded { width: 420px; }
+
+#attr-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+#attr-panel-header-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#btn-attr-expand {
+  background: #333;
+  border: none;
+  border-radius: 3px;
+  color: #888;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 7px;
+}
+
+#btn-attr-expand:hover { background: #3a3a3a; color: #fff; }
+
+#attr-panel-close {
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+  line-height: 1;
+}
+
+#attr-panel-close:hover { color: #ccc; }
+
+#attr-table-wrap {
+  flex: 1;
+  overflow: auto;
+}
+
+#attr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+#attr-table th {
+  position: sticky;
+  top: 0;
+  background: #242424;
+  text-align: left;
+  padding: 6px 10px;
+  color: #666;
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid #333;
+  white-space: nowrap;
+}
+
+#attr-table td {
+  padding: 5px 10px;
+  color: #aaa;
+  border-bottom: 1px solid #2a2a2a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+#attr-table tbody tr { cursor: pointer; }
+
+#attr-table tbody tr:hover td,
+#attr-table tbody tr.hover td { background: #2e2e2e; color: #fff; }
+
+#attr-table tbody tr.active td { background: #2a2a2a; color: #fff; }
+
 /* ── Map area ── */
 #map-area {
   flex: 1;

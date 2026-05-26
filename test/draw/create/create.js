@@ -77,6 +77,7 @@
   var _dragOverEl          = null;
   var drawLayerIds         = [];
   var _mapEventsRegistered = false;
+  var attrExpanded         = false;
 
   function fmt(n, dec) {
     return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -389,6 +390,13 @@
     document.querySelectorAll('.feature-item').forEach(function (el) {
       el.classList.toggle('hover', el.dataset.id === hoveredDrawId);
     });
+    updateAttrTableHover();
+  }
+
+  function updateAttrTableHover() {
+    document.querySelectorAll('#attr-table tbody tr').forEach(function (tr) {
+      tr.classList.toggle('hover', tr.dataset.id === hoveredDrawId);
+    });
   }
 
   function removeFeatureFromState(drawId) {
@@ -578,6 +586,90 @@
         el.appendChild(fDiv);
       });
     });
+
+    renderAttrTable();
+  }
+
+  function renderAttrTable() {
+    var panel = document.getElementById('attr-panel');
+    if (panel.classList.contains('hidden')) return;
+
+    var layer = layers.find(function (l) { return l.id === activeLayerId; });
+    document.getElementById('attr-panel-layer-name').textContent = layer ? layer.name : '';
+
+    var table = document.getElementById('attr-table');
+    table.innerHTML = '';
+
+    if (!layer) return;
+
+    var thead = document.createElement('thead');
+    var hrow  = document.createElement('tr');
+    var cols  = ['Label'].concat(attrExpanded ? ['Type', 'Notes'] : []);
+    cols.forEach(function (col) {
+      var th = document.createElement('th');
+      th.textContent = col;
+      hrow.appendChild(th);
+    });
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+
+    var tbody = document.createElement('tbody');
+    layer.featureIds.forEach(function (fid) {
+      var meta = features[fid];
+      if (!meta) return;
+
+      var tr = document.createElement('tr');
+      tr.dataset.id = fid;
+      if (fid === selectedDrawId) tr.classList.add('active');
+
+      var tdLabel = document.createElement('td');
+      tdLabel.textContent = meta.label || ('Untitled ' + (layer.type || 'Feature'));
+      tr.appendChild(tdLabel);
+
+      if (attrExpanded) {
+        var feat    = draw.get(fid);
+        var tdType  = document.createElement('td');
+        tdType.textContent = feat ? feat.geometry.type : (layer.type || '');
+        var tdNotes = document.createElement('td');
+        tdNotes.textContent = meta.notes || '';
+        tr.appendChild(tdType);
+        tr.appendChild(tdNotes);
+      }
+
+      tr.addEventListener('click', function () {
+        draw.changeMode('simple_select', { featureIds: [fid] });
+        openFeaturePanel(fid);
+        var feat = draw.get(fid);
+        if (feat) {
+          if (feat.geometry.type === 'Point') {
+            map.flyTo({ center: feat.geometry.coordinates, zoom: Math.max(map.getZoom(), 14), duration: 600 });
+          } else {
+            var bbox = turf.bbox(feat);
+            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 80, duration: 600 });
+          }
+        }
+      });
+
+      tr.addEventListener('mouseenter', function () {
+        hoveredDrawId = fid;
+        updateSidebarHover();
+        var feat = draw.get(fid);
+        if (feat && map.getSource('hover-highlight')) {
+          map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [feat] });
+        }
+      });
+
+      tr.addEventListener('mouseleave', function () {
+        hoveredDrawId = null;
+        updateSidebarHover();
+        if (map.getSource('hover-highlight')) {
+          map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [] });
+        }
+      });
+
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
   }
 
   function toggleLayerVisibility(layerId, visible) {
@@ -1228,6 +1320,26 @@
     if (measureMode && measureType === 'area') exitMeasureMode(); else enterMeasureMode('area');
   });
   document.getElementById('btn-measure-clear').addEventListener('click', exitMeasureMode);
+
+  // ── Attribute table ──────────────────────────────────────────────────────────
+  document.getElementById('btn-attr-table').addEventListener('click', function () {
+    var panel = document.getElementById('attr-panel');
+    var open  = panel.classList.toggle('hidden') === false;
+    this.classList.toggle('active', !panel.classList.contains('hidden'));
+    if (!panel.classList.contains('hidden')) renderAttrTable();
+  });
+
+  document.getElementById('btn-attr-expand').addEventListener('click', function () {
+    attrExpanded = !attrExpanded;
+    this.textContent = attrExpanded ? 'Collapse' : 'Expand';
+    document.getElementById('attr-panel').classList.toggle('expanded', attrExpanded);
+    renderAttrTable();
+  });
+
+  document.getElementById('attr-panel-close').addEventListener('click', function () {
+    document.getElementById('attr-panel').classList.add('hidden');
+    document.getElementById('btn-attr-table').classList.remove('active');
+  });
 
   // ── Basemap switcher ─────────────────────────────────────────────────────────
   var basemapSelect = document.getElementById('basemap-select');

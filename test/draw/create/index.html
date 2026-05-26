@@ -27,6 +27,19 @@
     </div>
   </div>
 
+  <div id="attr-panel" class="hidden">
+    <div id="attr-panel-header">
+      <span id="attr-panel-layer-name">Attributes</span>
+      <div id="attr-panel-header-btns">
+        <button id="btn-attr-expand">Expand</button>
+        <button id="attr-panel-close">✕</button>
+      </div>
+    </div>
+    <div id="attr-table-wrap">
+      <table id="attr-table"></table>
+    </div>
+  </div>
+
   <div id="map-area">
     <div id="map"></div>
     <div id="toolbar">
@@ -44,6 +57,8 @@
       <button id="btn-measure-dist">Distance</button>
       <button id="btn-measure-area">Area</button>
       <button id="btn-measure-clear" style="display:none">Clear (Esc)</button>
+      <div class="toolbar-sep"></div>
+      <button id="btn-attr-table">Table</button>
       <div class="toolbar-sep"></div>
       <select id="basemap-select"></select>
     </div>
