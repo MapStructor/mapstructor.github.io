@@ -537,6 +537,15 @@
           setActiveLayer(layer.id);
           draw.changeMode('simple_select', { featureIds: [fid] });
           openFeaturePanel(fid);
+          var feat = draw.get(fid);
+          if (feat) {
+            if (feat.geometry.type === 'Point') {
+              map.flyTo({ center: feat.geometry.coordinates, zoom: Math.max(map.getZoom(), 14), duration: 600 });
+            } else {
+              var bbox = turf.bbox(feat);
+              map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 80, duration: 600 });
+            }
+          }
         });
 
         fDiv.addEventListener('mouseenter', function () {
