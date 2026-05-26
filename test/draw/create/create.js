@@ -503,14 +503,9 @@
         }
       });
 
-      var count = document.createElement('span');
-      count.className = 'layer-count';
-      count.textContent = layer.featureIds.length || '';
-
       div.appendChild(chk);
       div.appendChild(swatch);
       div.appendChild(name);
-      div.appendChild(count);
       setupDrag(div, 'layer', li, -1);
 
       div.addEventListener('click', function () {

@@ -93,11 +93,6 @@ body {
 
 .layer-item.active .layer-name { color: #fff; }
 
-.layer-count {
-  font-size: 11px;
-  color: #666;
-}
-
 .feature-item {
   display: flex;
   align-items: center;
