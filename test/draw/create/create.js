@@ -1,4 +1,23 @@
 /*
+  MERGE — MULTIPOLYGON BEHAVIOUR
+  ─────────────────────────────────────────────────────────────────────────────
+  turf.union returns a MultiPolygon when the source polygons don't touch or
+  overlap. This means merging two non-adjacent polygons produces one draw
+  feature with multiple separate rings — valid GeoJSON, but a single object.
+
+  This is intentionally left allowed. Non-contiguous territories are a real
+  case in historical mapping (countries with detached regions, island chains,
+  exclaves, etc.) and a MultiPolygon is the correct representation.
+
+  If revisiting:
+    - Block non-adjacent merges — detect MultiPolygon result and show an
+      error ("Polygons must touch or overlap to merge")
+    - Allow but warn — merge succeeds but a toast flags it as non-contiguous
+    - Allow silently (current behaviour) — trust the user knew what they did
+
+  Downstream concern: selection, attributes, split, and export all need to
+  handle MultiPolygon features gracefully if this stays allowed.
+
   DRAW BUTTON FEEDBACK (not implemented here — see Additional features/graying_version/)
   ─────────────────────────────────────────────────────────────────────────────
   An earlier version grayed out draw buttons when their geometry type was
@@ -33,6 +52,14 @@
   var activeLayerId = null;
   var selectedDrawId = null;
   var hoveredDrawId  = null;
+
+  var clipboard         = null;
+  var splitMode         = false;
+  var splitTarget       = null;
+  var _suppressUndo     = false;
+  var _selectedSnapshot = {};
+  var undoStack         = [];
+  var redoStack         = [];
 
   // ── Init ────────────────────────────────────────────────────────────────────
   mapboxgl.accessToken = MAPBOX_TOKEN;
