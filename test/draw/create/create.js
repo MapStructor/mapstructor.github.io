@@ -53,12 +53,20 @@
   var hoveredDrawId  = null;
 
   var clipboard         = null;
+  var measureMode       = false;
+  var measureType       = 'distance';  // 'distance' | 'area'
+  var measurePoints     = [];
+  var measureDone       = false;
   var splitMode         = false;
   var splitTarget       = null;
   var _suppressUndo     = false;
   var _selectedSnapshot = {};
   var undoStack         = [];
   var redoStack         = [];
+
+  function fmt(n, dec) {
+    return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  }
 
   // ── Init ────────────────────────────────────────────────────────────────────
   mapboxgl.accessToken = MAPBOX_TOKEN;
@@ -101,6 +109,47 @@
     var drawLayerIds = map.getStyle().layers
       .filter(function (l) { return l.id.indexOf('gl-draw') > -1; })
       .map(function (l) { return l.id; });
+
+    // ── Measure overlay ──────────────────────────────────────────────────────
+    map.addSource('measure-source', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+    map.addLayer({ id: 'measure-fill', type: 'fill', source: 'measure-source',
+      filter: ['==', '$type', 'Polygon'],
+      paint: { 'fill-color': '#ffcc00', 'fill-opacity': 0.15 }
+    });
+    map.addLayer({ id: 'measure-line', type: 'line', source: 'measure-source',
+      filter: ['in', '$type', 'LineString', 'Polygon'],
+      paint: { 'line-color': '#ffcc00', 'line-width': 2, 'line-dasharray': [4, 3] }
+    });
+    map.addLayer({ id: 'measure-points', type: 'circle', source: 'measure-source',
+      filter: ['==', '$type', 'Point'],
+      paint: { 'circle-radius': 5, 'circle-color': '#ffcc00', 'circle-stroke-width': 2, 'circle-stroke-color': '#1a1a1a' }
+    });
+
+    map.on('click', function (e) {
+      if (!measureMode || measureDone) return;
+      measurePoints.push([e.lngLat.lng, e.lngLat.lat]);
+      refreshMeasureSource(null);
+      updateMeasureDisplay(null);
+    });
+
+    map.on('dblclick', function (e) {
+      if (!measureMode || measureDone) return;
+      e.preventDefault();
+      if (measurePoints.length > 0) measurePoints.pop();
+      measureDone = true;
+      refreshMeasureSource(null);
+      updateMeasureDisplay(null);
+    });
+
+    map.on('mousemove', function (e) {
+      if (measureMode && !measureDone && measurePoints.length > 0) {
+        refreshMeasureSource([e.lngLat.lng, e.lngLat.lat]);
+        updateMeasureDisplay([e.lngLat.lng, e.lngLat.lat]);
+      }
+    });
 
     map.on('mousemove', function (e) {
       var rendered = map.queryRenderedFeatures(e.point, { layers: drawLayerIds });
@@ -495,10 +544,6 @@
     var el   = document.getElementById('feature-measurements');
     var feat = draw.get(drawId);
     if (!feat) { el.innerHTML = ''; return; }
-
-    function fmt(n, dec) {
-      return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
-    }
 
     var rows = [];
     var type = feat.geometry.type;
@@ -976,6 +1021,113 @@
     return [piece1, piece2].filter(Boolean);
   }
 
+  // ── Active measure tool ──────────────────────────────────────────────────────
+  function enterMeasureMode(type) {
+    measureMode   = true;
+    measureType   = type;
+    measurePoints = [];
+    measureDone   = false;
+    map.doubleClickZoom.disable();
+    map.getCanvas().style.cursor = 'crosshair';
+    document.getElementById('btn-measure-dist').classList.toggle('active', type === 'distance');
+    document.getElementById('btn-measure-area').classList.toggle('active', type === 'area');
+    document.getElementById('btn-measure-clear').style.display = 'inline-block';
+    refreshMeasureSource(null);
+    updateMeasureDisplay(null);
+  }
+
+  function exitMeasureMode() {
+    measureMode   = false;
+    measurePoints = [];
+    measureDone   = false;
+    map.doubleClickZoom.enable();
+    map.getCanvas().style.cursor = '';
+    document.getElementById('btn-measure-dist').classList.remove('active');
+    document.getElementById('btn-measure-area').classList.remove('active');
+    document.getElementById('btn-measure-clear').style.display = 'none';
+    if (map.getSource('measure-source')) {
+      map.getSource('measure-source').setData({ type: 'FeatureCollection', features: [] });
+    }
+    document.getElementById('measure-display').classList.add('hidden');
+  }
+
+  function refreshMeasureSource(rubberCoord) {
+    var features = measurePoints.map(function (p) {
+      return { type: 'Feature', geometry: { type: 'Point', coordinates: p }, properties: {} };
+    });
+    if (measureType === 'distance') {
+      var lineCoords = measurePoints.slice();
+      if (rubberCoord && !measureDone) lineCoords.push(rubberCoord);
+      if (lineCoords.length >= 2) {
+        features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: lineCoords }, properties: {} });
+      }
+    } else {
+      var polyPts = measurePoints.slice();
+      if (rubberCoord && !measureDone) polyPts.push(rubberCoord);
+      if (polyPts.length >= 3) {
+        features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [polyPts.concat([polyPts[0]])] }, properties: {} });
+      } else if (polyPts.length === 2) {
+        features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: polyPts }, properties: {} });
+      }
+    }
+    if (map.getSource('measure-source')) {
+      map.getSource('measure-source').setData({ type: 'FeatureCollection', features: features });
+    }
+  }
+
+  function updateMeasureDisplay(rubberCoord) {
+    var el = document.getElementById('measure-display');
+    if (!measureMode) { el.classList.add('hidden'); return; }
+
+    var hint = measureDone
+      ? '<span class="measure-hint"> — Esc to clear</span>'
+      : '<span class="measure-hint"> — double-click to finish, Esc to clear</span>';
+
+    if (measurePoints.length === 0) {
+      el.innerHTML = (measureType === 'distance' ? 'Click to measure distance' : 'Click to measure area') + hint;
+      el.classList.remove('hidden');
+      return;
+    }
+
+    if (measureType === 'distance') {
+      var coords = measurePoints.slice();
+      if (rubberCoord && !measureDone) coords.push(rubberCoord);
+      var totalKm = 0;
+      for (var i = 1; i < coords.length; i++) {
+        totalKm += turf.length(turf.lineString([coords[i - 1], coords[i]]), { units: 'kilometers' });
+      }
+      var totalMi = totalKm * 0.621371;
+      var totalM  = totalKm * 1000;
+      var totalFt = totalM  * 3.28084;
+      el.innerHTML =
+        fmt(totalKm, 3) + ' km &nbsp;/&nbsp; ' + fmt(totalMi, 3) + ' mi' +
+        '<br>' + fmt(totalM, 0) + ' m &nbsp;/&nbsp; ' + fmt(totalFt, 0) + ' ft' + hint;
+
+    } else {
+      var polyPts = measurePoints.slice();
+      if (rubberCoord && !measureDone) polyPts.push(rubberCoord);
+      if (polyPts.length < 3) {
+        el.innerHTML = 'Keep clicking to define the area' + hint;
+        el.classList.remove('hidden');
+        return;
+      }
+      var closed  = polyPts.concat([polyPts[0]]);
+      var sqm     = turf.area(turf.polygon([closed]));
+      var ha      = sqm / 10000;
+      var km2     = sqm / 1e6;
+      var acre    = sqm / 4046.856;
+      var sqft    = sqm * 10.7639;
+      var perimKm = turf.length(turf.lineString(closed), { units: 'kilometers' });
+      var perimMi = perimKm * 0.621371;
+      el.innerHTML =
+        (ha >= 100 ? fmt(km2, 2) + ' km²' : fmt(ha, 2) + ' ha') +
+        ' &nbsp;/&nbsp; ' + fmt(acre, 1) + ' acres' +
+        '<br>' + fmt(sqm, 0) + ' m² &nbsp;/&nbsp; ' + fmt(sqft, 0) + ' ft²' +
+        '<br>Perimeter: ' + fmt(perimKm, 2) + ' km &nbsp;/&nbsp; ' + fmt(perimMi, 2) + ' mi' + hint;
+    }
+    el.classList.remove('hidden');
+  }
+
   // ── Keyboard shortcuts ───────────────────────────────────────────────────────
   document.addEventListener('keydown', function (e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -985,6 +1137,7 @@
     if (mod && e.key === 'c')                                        { e.preventDefault(); doCopy(); }
     if (mod && e.key === 'v')                                        { e.preventDefault(); doPaste(); }
     if (e.key === 'Escape' && splitMode)                             cancelSplitMode();
+    if (e.key === 'Escape' && measureMode)                           exitMeasureMode();
   });
 
   // ── Toolbar buttons ──────────────────────────────────────────────────────────
@@ -995,6 +1148,13 @@
   document.getElementById('btn-merge').addEventListener('click',        doMerge);
   document.getElementById('btn-split').addEventListener('click',        enterSplitMode);
   document.getElementById('btn-cancel-split').addEventListener('click', cancelSplitMode);
+  document.getElementById('btn-measure-dist').addEventListener('click', function () {
+    if (measureMode && measureType === 'distance') exitMeasureMode(); else enterMeasureMode('distance');
+  });
+  document.getElementById('btn-measure-area').addEventListener('click', function () {
+    if (measureMode && measureType === 'area') exitMeasureMode(); else enterMeasureMode('area');
+  });
+  document.getElementById('btn-measure-clear').addEventListener('click', exitMeasureMode);
 
   // ── Toast ────────────────────────────────────────────────────────────────────
   var _toastTimer = null;
