@@ -20,6 +20,7 @@ var map;
 		hash: true,
 		zoom: mapConfig.zoom,
 		attributionControl: true,
+		projection: "mercator",
 	};
 
 	const afterMapConfig  = {
@@ -29,6 +30,7 @@ var map;
 		hash: true,
 		zoom: mapConfig.zoom,
 		attributionControl: true,
+		projection: "mercator",
 	};
 	
 	//ADD MAP CONTAINER
