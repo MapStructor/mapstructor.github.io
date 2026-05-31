@@ -1,3 +1,6 @@
 docs/
 secrets/
 test/mapbox-token.js
+hardcoded_template/js/mapbox-token.js
+hardcoded_template/ahm_twin/js/mapbox-token.js
+hardcoded_template/ahm_05.29.2026_READ_ONLY/js/mapbox-token.js
