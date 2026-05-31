@@ -3,7 +3,7 @@ const siteAnalytics = {
 };
 
 const siteConfig = {
-  mapboxUsername:  "YOUR_MAPBOX_USERNAME",
+  mapboxUsername:  "mapbox", // Use "mapbox" for public styles; replace with your username for custom styles
   mobileRedirect:  "./mobile.html",
   desktopRedirect: "./index.html",
 };
