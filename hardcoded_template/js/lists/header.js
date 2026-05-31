@@ -1,44 +1,33 @@
-const siteFirebase = {
-  apiKey:            "AIzaSyC2lueQJPOT2DqZMvGhnXkSHGd1ELXJNYg",
-  authDomain:        "meny-firebase.firebaseapp.com",
-  projectId:         "meny-firebase",
-  storageBucket:     "meny-firebase.appspot.com",
-  messagingSenderId: "426318777741",
-  appId:             "1:426318777741:web:52cf7896f3f4ed410a81c4",
-  measurementId:     "G-H32RX557FG",
-};
-
 const siteAnalytics = {
-  trackingId:        "UA-159545294-1",
-  legacyTrackingId:  "UA-28801666-1",
+  trackingId: "G-XXXXXXXXXX", // Replace with your Google Analytics measurement ID
 };
 
 const siteConfig = {
-  mapboxUsername:  "nittyjee",
+  mapboxUsername:  "YOUR_MAPBOX_USERNAME",
   mobileRedirect:  "./mobile.html",
   desktopRedirect: "./index.html",
 };
 
 const siteMeta = {
-  title:       "AHM - Discover Ames, Iowa History Map",
-  description: "Ames Historical Society is engaging to Discover Ames, Iowa History by Our Interactive Timeline Map",
-  themeColor:  "#00A2E5",
-  ogImage:     "./icons/AHM.jpg",
-  ogUrl:       "https://ameshistory.org/",
-  ogSiteName:       "AHM - Ames, Iowa History Map",
-  twitterCard:      "ahm_icon",
-  twitterImageAlt:  "AHM Icon",
+  title:           "Your Map Title",
+  description:     "A short description of your map.",
+  themeColor:      "#00A2E5",
+  ogImage:         "./icons/banner_thumbnail.png",
+  ogUrl:           "https://your-site.com/",
+  ogSiteName:      "Your Map Title",
+  twitterCard:     "summary_large_image",
+  twitterImageAlt: "Map preview image",
 };
 
-const siteLogoLink   = "https://ameshistory.org/";
+const siteLogoLink   = "https://your-site.com/";
 const siteHeaderText = "Map";
 
 const zoomButtons = [
 
   {
-    label:  "Zoom to Iowa",
+    label:  "Zoom to Region", // Replace label and target with your region (defined in bounds.js)
     icon:   "fa-location-crosshairs",
-    target: "Iowa",
+    target: "Region",
   },
 
   {
@@ -59,18 +48,8 @@ const headerButtons = [
 
   {
     label: "ABOUT",
-    type: "modal",
-    id: "about",
+    type:  "modal",
+    id:    "about",
   },
-
-  /*
-  {
-    label: "Visit Site",
-    type: "link",
-    url: "https://ameshistory.org/",
-    newTab: true,   // default true; false opens in same tab
-  },
-  */
-  
 
 ];
