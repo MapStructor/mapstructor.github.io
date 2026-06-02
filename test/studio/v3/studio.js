@@ -19,6 +19,10 @@ var _UPLOAD_CIRCLE = 'studio-upload-circle';
 
 var UPLOAD_COLORS = ['#4a9eff','#ff6b4a','#4aff9e','#ff4adb','#ffe04a','#4af0ff','#ff9e4a'];
 
+var dragId         = null;
+var insertBeforeId = null;
+var dropIntoId     = null;
+
 // MapboxDraw styles: only editing handles + dashed outline while actively drawing.
 // The actual fill/stroke is handled by _DRAW_FILL / _DRAW_LINE via setPaintProperty.
 var DRAW_STYLES = [
@@ -44,6 +48,8 @@ window.addEventListener('load', function () {
   initTabs();
   document.getElementById('copy-btn').addEventListener('click', copyJS);
   document.getElementById('add-layer-btn').addEventListener('click', openAddLayerForm);
+  document.getElementById('add-group-btn').addEventListener('click', function () { openStudioAddInput('group'); });
+  document.getElementById('add-section-btn').addEventListener('click', function () { openStudioAddInput('section'); });
   document.getElementById('cancel-layer-btn').addEventListener('click', cancelAddLayer);
   document.getElementById('create-layer-btn').addEventListener('click', createLayer);
   document.getElementById('new-layer-label').addEventListener('keydown', function (e) {
@@ -57,6 +63,8 @@ window.addEventListener('load', function () {
     Array.from(this.files).forEach(handleUploadFile);
     this.value = '';
   });
+  initLayerListDrag();
+  initStudioAddInput();
 });
 
 // ---- Map preview ----
@@ -307,37 +315,62 @@ function walkCoords(coords, fn) {
 function stripExt(filename) { return filename.replace(/\.[^.]+$/, ''); }
 
 // ---- Layer list ----
-function flattenLayers(arr) {
-  var out = [];
+function buildLayerHTML(arr, depth) {
+  var html = '';
+  var indent = 8 + depth * 16;
   (arr || []).forEach(function (item) {
-    if (item.type === 'group' || item.type === 'section') {
-      out.push({ isGroup: true, label: item.label });
-      (item.children || []).forEach(function (c) {
-        if (c.id) out.push({ isGroup: false, layer: c });
-      });
+    var isContainer = item.type === 'group' || item.type === 'section';
+    if (isContainer) {
+      var isOpen = item.open !== undefined ? item.open : !item.collapsed;
+      html += '<div class="row list-container ' + item.type + '" data-id="' + esc(item.id) + '"'
+            + ' style="padding-left:' + indent + 'px" draggable="true">'
+            + '<span class="row-toggle">' + (isOpen ? '▾' : '▸') + '</span> '
+            + esc(item.label || item.id) + '</div>';
+      if (isOpen && item.children && item.children.length) {
+        html += buildLayerHTML(item.children, depth + 1);
+      }
     } else if (item.id) {
-      out.push({ isGroup: false, layer: item });
+      html += '<div class="row list-layer' + (item._new ? ' is-new' : '') + '" data-id="' + esc(item.id) + '"'
+            + ' style="padding-left:' + indent + 'px" draggable="true">'
+            + '<span class="l-swatch" style="background:' + esc(item.iconColor || '#888') + '"></span>'
+            + esc(item.label || item.id) + '</div>';
     }
   });
-  return out;
+  return html;
 }
 
 function renderLayerList() {
-  var flat = flattenLayers(layers);
-  var html = '';
-  flat.forEach(function (item) {
-    if (item.isGroup) {
-      html += '<div class="list-group">' + esc(item.label) + '</div>';
-    } else {
-      var l = item.layer;
-      html += '<div class="list-layer' + (l._new ? ' is-new' : '') + '" data-id="' + esc(l.id) + '">' +
-        '<span class="l-swatch" style="background:' + esc(l.iconColor || '#888') + '"></span>' +
-        esc(l.label || l.id) + '</div>';
-    }
-  });
-  document.getElementById('layer-list').innerHTML = html;
-  document.querySelectorAll('.list-layer').forEach(function (el) {
+  var list = document.getElementById('layer-list');
+  list.innerHTML = buildLayerHTML(layers, 0);
+
+  list.querySelectorAll('.list-layer').forEach(function (el) {
     el.addEventListener('click', function () { selectLayer(this.dataset.id); });
+  });
+
+  list.querySelectorAll('.row-toggle').forEach(function (el) {
+    el.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var row = e.target.closest('[data-id]');
+      if (!row) return;
+      var found = findItem(row.dataset.id);
+      if (!found) return;
+      var cur = found.item.open !== undefined ? found.item.open : !found.item.collapsed;
+      found.item.open = !cur;
+      renderLayerList();
+    });
+  });
+
+  list.querySelectorAll('[draggable]').forEach(function (el) {
+    el.addEventListener('dragstart', function (e) {
+      dragId = el.dataset.id;
+      e.dataTransfer.effectAllowed = 'move';
+      setTimeout(function () { el.classList.add('dragging'); }, 0);
+    });
+    el.addEventListener('dragend', function () {
+      el.classList.remove('dragging');
+      dragId = null;
+      clearDragIndicator();
+    });
   });
 }
 
@@ -348,6 +381,140 @@ function findLayer(id, arr) {
     if (arr[i].children) { var f = findLayer(id, arr[i].children); if (f) return f; }
   }
   return null;
+}
+
+function findItem(id, arr, parentType) {
+  arr = arr || layers;
+  parentType = parentType || null;
+  for (var i = 0; i < arr.length; i++) {
+    if (arr[i].id === id) return { item: arr[i], arr: arr, idx: i, parentType: parentType };
+    if (arr[i].children) {
+      var r = findItem(id, arr[i].children, arr[i].type);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
+function moveItemInto(fromId, containerId) {
+  var from = findItem(fromId);
+  if (!from) return;
+  var cont = findItem(containerId);
+  if (!cont || !cont.item.children) return;
+  if (from.item.type === 'section') return;
+  if (from.item.type === 'group' && cont.item.type === 'group') return;
+
+  from.arr.splice(from.idx, 1);
+  var cont2 = findItem(containerId);
+  if (!cont2) { from.arr.splice(from.idx, 0, from.item); return; }
+  cont2.item.children.push(from.item);
+  cont2.item.open = true;
+}
+
+function moveItemBefore(fromId, toId) {
+  var from = findItem(fromId);
+  if (!from) return;
+
+  if (toId === null) {
+    if (from.arr === layers && from.idx === layers.length - 1) return;
+    from.arr.splice(from.idx, 1);
+    layers.push(from.item);
+    return;
+  }
+
+  var check = findItem(toId);
+  if (check && check.arr === from.arr && check.idx === from.idx + 1) return;
+
+  from.arr.splice(from.idx, 1);
+  var to = findItem(toId);
+  if (!to) { from.arr.splice(from.idx, 0, from.item); return; }
+
+  if (from.item.type === 'section' && to.parentType !== null) {
+    from.arr.splice(from.idx, 0, from.item); return;
+  }
+  if (from.item.type === 'group' && to.parentType === 'group') {
+    from.arr.splice(from.idx, 0, from.item); return;
+  }
+
+  to.arr.splice(to.idx, 0, from.item);
+}
+
+// ---- Drag (container-level) ----
+function initLayerListDrag() {
+  var list = document.getElementById('layer-list');
+
+  list.addEventListener('dragover', function (e) {
+    e.preventDefault();
+    if (dragId === null) return;
+
+    var els = Array.from(list.querySelectorAll('.row:not(.dragging)'));
+    var cursor = e.clientY;
+    var newInsert = null;
+    var newInto   = null;
+
+    for (var i = 0; i < els.length; i++) {
+      var r = els[i].getBoundingClientRect();
+      var isContainer = els[i].classList.contains('list-container');
+      var mid = r.top + r.height / 2;
+
+      if (cursor < mid) {
+        if (isContainer && cursor >= r.top + r.height * 0.35) {
+          newInto = els[i].dataset.id;
+        } else {
+          newInsert = els[i].dataset.id;
+        }
+        break;
+      } else if (isContainer && cursor < r.bottom) {
+        newInto = els[i].dataset.id;
+        break;
+      }
+    }
+
+    if (newInsert === insertBeforeId && newInto === dropIntoId) return;
+    insertBeforeId = newInsert;
+    dropIntoId     = newInto;
+    clearDragIndicator();
+
+    if (dropIntoId !== null) {
+      var t = list.querySelector('[data-id="' + dropIntoId + '"]');
+      if (t) t.classList.add('drop-into');
+    } else if (insertBeforeId !== null) {
+      var t2 = list.querySelector('[data-id="' + insertBeforeId + '"]');
+      if (t2) t2.classList.add('drop-before');
+    } else {
+      list.classList.add('drop-after-last');
+    }
+  });
+
+  list.addEventListener('dragleave', function (e) {
+    if (!list.contains(e.relatedTarget)) {
+      clearDragIndicator();
+      insertBeforeId = null;
+      dropIntoId     = null;
+    }
+  });
+
+  list.addEventListener('drop', function (e) {
+    e.preventDefault();
+    clearDragIndicator();
+    if (dragId === null) return;
+    if (dropIntoId !== null) {
+      moveItemInto(dragId, dropIntoId);
+    } else {
+      moveItemBefore(dragId, insertBeforeId);
+    }
+    insertBeforeId = null;
+    dropIntoId     = null;
+    dragId         = null;
+    renderLayerList();
+  });
+}
+
+function clearDragIndicator() {
+  document.querySelectorAll('#layer-list .drop-before').forEach(function (el) { el.classList.remove('drop-before'); });
+  document.querySelectorAll('#layer-list .drop-into').forEach(function (el) { el.classList.remove('drop-into'); });
+  var list = document.getElementById('layer-list');
+  if (list) list.classList.remove('drop-after-last');
 }
 
 // ---- Select ----
@@ -709,6 +876,44 @@ function hasFunctions(obj) {
     if (typeof obj[k] === 'object' && obj[k] !== null && hasFunctions(obj[k])) return true;
   }
   return false;
+}
+
+// ---- Add group / section ----
+var _studioPendingType = null;
+var _studioAddBtns = null;
+var _studioAddInput = null;
+
+function initStudioAddInput() {
+  _studioAddBtns = ['add-layer-btn', 'add-group-btn', 'add-section-btn', 'upload-layer-btn'].map(function (id) {
+    return document.getElementById(id);
+  });
+  _studioAddInput = document.getElementById('add-input');
+  _studioAddInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      var name = _studioAddInput.value.trim();
+      if (name && _studioPendingType) {
+        var id = _studioPendingType + '-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        layers.push({ id: id, type: _studioPendingType, label: name, open: true, children: [] });
+        renderLayerList();
+      }
+      closeStudioAddInput();
+    }
+    if (e.key === 'Escape') closeStudioAddInput();
+  });
+}
+
+function openStudioAddInput(type) {
+  _studioPendingType = type;
+  _studioAddBtns.forEach(function (b) { b.style.display = 'none'; });
+  _studioAddInput.style.display = '';
+  _studioAddInput.value = '';
+  _studioAddInput.focus();
+}
+
+function closeStudioAddInput() {
+  _studioAddInput.style.display = 'none';
+  _studioAddBtns.forEach(function (b) { b.style.display = ''; });
+  _studioPendingType = null;
 }
 
 // ---- Add layer ----

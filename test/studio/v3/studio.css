@@ -42,13 +42,39 @@ body {
   padding: 6px 0;
 }
 
-.list-group {
-  padding: 10px 16px 3px;
+.list-container {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 16px 5px;
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #555;
+  color: #666;
+  cursor: grab;
+}
+.list-container:hover { background: #2a2a2a; color: #888; }
+.list-container.section {
+  justify-content: center;
+  background: #1a1a1a;
+  border-top: 1px solid #2e2e2e;
+  border-bottom: 1px solid #2e2e2e;
+  color: #888;
+  margin-top: 2px;
+}
+.list-container.section:hover { background: #212121; }
+.row-toggle { font-size: 9px; flex-shrink: 0; }
+
+#add-layer-bar #add-input {
+  flex: 1;
+  background: #2a2a2a;
+  border: 1px solid #4a9eff;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
 }
 
 .list-layer {
@@ -57,12 +83,19 @@ body {
   gap: 9px;
   padding: 7px 16px;
   font-size: 13px;
-  cursor: pointer;
+  cursor: grab;
   color: #bbb;
   transition: background 0.1s;
 }
 .list-layer:hover  { background: #2a2a2a; color: #e0e0e0; }
-.list-layer.active { background: #1e3048; color: #fff; }
+.list-layer.active { background: #1e3048; color: #fff; cursor: pointer; }
+
+/* ---- Drag-to-reorder ---- */
+.row { user-select: none; }
+.row.dragging      { opacity: 0.25; }
+.row.drop-before   { box-shadow: inset 0 2px 0 #4a9eff; }
+.row.drop-into     { background: rgba(74,158,255,0.1) !important; box-shadow: inset 0 0 0 1px #4a9eff; }
+#layer-list.drop-after-last { box-shadow: inset 0 -2px 0 #4a9eff; }
 
 .l-swatch {
   width: 9px;
@@ -80,18 +113,19 @@ body {
   gap: 6px;
 }
 
-#add-layer-btn, #upload-layer-btn {
+#add-layer-btn, #add-group-btn, #add-section-btn, #upload-layer-btn {
   flex: 1;
-  padding: 7px;
+  padding: 6px 4px;
   background: none;
   border: 1px dashed #3a3a3a;
   border-radius: 4px;
   color: #666;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
   transition: all 0.1s;
+  white-space: nowrap;
 }
-#add-layer-btn:hover, #upload-layer-btn:hover { color: #4a9eff; border-color: #4a9eff; }
+#add-layer-btn:hover, #add-group-btn:hover, #add-section-btn:hover, #upload-layer-btn:hover { color: #4a9eff; border-color: #4a9eff; }
 
 #add-layer-form {
   flex-shrink: 0;

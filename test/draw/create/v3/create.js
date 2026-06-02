@@ -73,14 +73,86 @@
   var _selectedSnapshot = {};
   var undoStack         = [];
   var redoStack         = [];
-  var _dragState           = null;
-  var _dragOverEl          = null;
+  var dragId         = null;
+  var insertBeforeId = null;
+  var dropIntoId     = null;
   var drawLayerIds         = [];
   var _mapEventsRegistered = false;
   var attrExpanded         = false;
 
   function fmt(n, dec) {
     return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function flatLayers(arr) {
+    var out = [];
+    (arr || layers).forEach(function (item) {
+      if (item.type === 'group' || item.type === 'section') {
+        flatLayers(item.children || []).forEach(function (c) { out.push(c); });
+      } else {
+        out.push(item);
+      }
+    });
+    return out;
+  }
+
+  function findLayer(id, arr) {
+    arr = arr || layers;
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].id === id) return arr[i];
+      if (arr[i].children) { var f = findLayer(id, arr[i].children); if (f) return f; }
+    }
+    return null;
+  }
+
+  function findItem(id, arr, parentType) {
+    arr = arr || layers;
+    parentType = parentType || null;
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].id === id) return { item: arr[i], arr: arr, idx: i, parentType: parentType };
+      if (arr[i].children) {
+        var r = findItem(id, arr[i].children, arr[i].type);
+        if (r) return r;
+      }
+    }
+    return null;
+  }
+
+  function moveItemInto(fromId, containerId) {
+    var from = findItem(fromId);
+    if (!from) return;
+    var cont = findItem(containerId);
+    if (!cont || !cont.item.children) return;
+    if (from.item.type === 'section') return;
+    if (from.item.type === 'group' && cont.item.type === 'group') return;
+    from.arr.splice(from.idx, 1);
+    var cont2 = findItem(containerId);
+    if (!cont2) { from.arr.splice(from.idx, 0, from.item); return; }
+    cont2.item.children.push(from.item);
+    cont2.item.open = true;
+  }
+
+  function moveItemBefore(fromId, toId) {
+    var from = findItem(fromId);
+    if (!from) return;
+    if (toId === null) {
+      if (from.arr === layers && from.idx === layers.length - 1) return;
+      from.arr.splice(from.idx, 1);
+      layers.push(from.item);
+      return;
+    }
+    var check = findItem(toId);
+    if (check && check.arr === from.arr && check.idx === from.idx + 1) return;
+    from.arr.splice(from.idx, 1);
+    var to = findItem(toId);
+    if (!to) { from.arr.splice(from.idx, 0, from.item); return; }
+    if (from.item.type === 'section' && to.parentType !== null) { from.arr.splice(from.idx, 0, from.item); return; }
+    if (from.item.type === 'group' && to.parentType === 'group') { from.arr.splice(from.idx, 0, from.item); return; }
+    to.arr.splice(to.idx, 0, from.item);
   }
 
   // ── Init ────────────────────────────────────────────────────────────────────
@@ -236,7 +308,7 @@
     if (_suppressUndo) { updateToolbar(); return; }
 
     var geomType = feature.geometry.type;
-    var activeLayer = layers.find(function (l) { return l.id === activeLayerId; });
+    var activeLayer = findLayer(activeLayerId);
     var typeLayer;
 
     if (activeLayer && activeLayer.type === null) {
@@ -245,7 +317,7 @@
     } else if (activeLayer && activeLayer.type === geomType) {
       typeLayer = activeLayer;
     } else {
-      typeLayer = layers.find(function (l) { return l.type === geomType; });
+      typeLayer = flatLayers().find(function (l) { return l.type === geomType; });
       if (!typeLayer) {
         typeLayer = createLayer(geomType);
       } else {
@@ -277,7 +349,7 @@
       function () {
         _suppressUndo = true;
         draw.add({ type: 'Feature', id: id, geometry: JSON.parse(JSON.stringify(geom)), properties: {} });
-        var layer = layers.find(function (l) { return l.id === layerId; });
+        var layer = findLayer(layerId);
         if (layer && layer.featureIds.indexOf(id) === -1) {
           features[id] = { label: '', notes: '', layerId: layerId };
           layer.featureIds.push(id);
@@ -327,7 +399,7 @@
         deleted.forEach(function (d) {
           draw.add({ type: 'Feature', id: d.id, geometry: JSON.parse(JSON.stringify(d.geom)), properties: {} });
           features[d.id] = d.meta;
-          var layer = layers.find(function (l) { return l.id === d.meta.layerId; });
+          var layer = findLayer(d.meta.layerId);
           if (layer && layer.featureIds.indexOf(d.id) === -1) layer.featureIds.push(d.id);
         });
         renderLayerList();
@@ -364,12 +436,12 @@
   });
 
   // ── Layer management ────────────────────────────────────────────────────────
-  function createLayer(type) {
-    var color = LAYER_COLORS[layers.length % LAYER_COLORS.length];
+  function createLayer(type, name) {
+    var color = LAYER_COLORS[flatLayers().length % LAYER_COLORS.length];
     var names = { Polygon: 'Polygons', LineString: 'Lines', Point: 'Points' };
     var layer = {
       id: 'layer-' + Date.now() + '-' + Math.random().toString(36).slice(2),
-      name: type ? (names[type] || type) : 'New Layer',
+      name: name || (type ? (names[type] || type) : 'New Layer'),
       type: type || null,
       color: color,
       visible: true,
@@ -402,7 +474,7 @@
   function removeFeatureFromState(drawId) {
     var meta = features[drawId];
     if (!meta) return;
-    var layer = layers.find(function (l) { return l.id === meta.layerId; });
+    var layer = findLayer(meta.layerId);
     if (layer) {
       layer.featureIds = layer.featureIds.filter(function (fid) { return fid !== drawId; });
     }
@@ -410,183 +482,199 @@
   }
 
   // ── Sidebar rendering ────────────────────────────────────────────────────────
-  function setupDrag(el, type, li, fi) {
-    el.draggable = true;
-
-    el.addEventListener('dragstart', function (e) {
-      _dragState = { type: type, li: li, fi: fi };
-      e.dataTransfer.effectAllowed = 'move';
-      setTimeout(function () { el.classList.add('dragging'); }, 0);
-    });
-
-    el.addEventListener('dragend', function () {
-      el.classList.remove('dragging');
-      if (_dragOverEl) { _dragOverEl.classList.remove('drag-over-top', 'drag-over-bottom'); _dragOverEl = null; }
-      _dragState = null;
-    });
-
-    el.addEventListener('dragover', function (e) {
-      if (!_dragState || _dragState.type !== type) return;
-      e.preventDefault();
-      if (_dragOverEl && _dragOverEl !== el) _dragOverEl.classList.remove('drag-over-top', 'drag-over-bottom');
-      var rect   = el.getBoundingClientRect();
-      var before = e.clientY < rect.top + rect.height / 2;
-      el.classList.toggle('drag-over-top',    before);
-      el.classList.toggle('drag-over-bottom', !before);
-      _dragOverEl = el;
-    });
-
-    el.addEventListener('drop', function (e) {
-      e.preventDefault();
-      if (!_dragState || _dragState.type !== type) return;
-      if (_dragOverEl) { _dragOverEl.classList.remove('drag-over-top', 'drag-over-bottom'); _dragOverEl = null; }
-      var rect   = el.getBoundingClientRect();
-      var before = e.clientY < rect.top + rect.height / 2;
-
-      if (type === 'layer') {
-        var from = _dragState.li, to = li;
-        if (from === to) { _dragState = null; return; }
-        var moved = layers.splice(from, 1)[0];
-        var adj   = (from < to ? to - 1 : to) + (before ? 0 : 1);
-        layers.splice(adj, 0, moved);
+  function buildLayerHTML(arr, depth) {
+    var html = '';
+    var indent = 8 + depth * 16;
+    (arr || []).forEach(function (item) {
+      var isContainer = item.type === 'group' || item.type === 'section';
+      if (isContainer) {
+        var isOpen = item.open !== false;
+        html += '<div class="container-item ' + item.type + '" data-id="' + esc(item.id) + '"'
+              + ' style="padding-left:' + indent + 'px" draggable="true">'
+              + '<span class="toggle">' + (isOpen ? '▾' : '▸') + '</span>'
+              + ' <span class="container-name">' + esc(item.name) + '</span>'
+              + ((!item.children || item.children.length === 0) ? '<span class="delete-btn">&#x2715;</span>' : '')
+              + '</div>';
+        if (isOpen && item.children && item.children.length) {
+          html += buildLayerHTML(item.children, depth + 1);
+        }
       } else {
-        if (_dragState.li !== li) { _dragState = null; return; }
-        var fids = layers[li].featureIds;
-        var from = _dragState.fi, to = fi;
-        if (from === to) { _dragState = null; return; }
-        var movedId = fids.splice(from, 1)[0];
-        var adj     = (from < to ? to - 1 : to) + (before ? 0 : 1);
-        fids.splice(adj, 0, movedId);
+        var svgIcons = {
+          Point:      '<circle cx="8" cy="8" r="5" fill="CLR"/>',
+          LineString: '<line x1="2" y1="14" x2="14" y2="2" stroke="CLR" stroke-width="2.5" stroke-linecap="round"/>',
+          Polygon:    '<polygon points="8,2 14,6 12,13 4,13 2,6" fill="none" stroke="CLR" stroke-width="2" stroke-linejoin="round"/>'
+        };
+        var iconSvg = svgIcons[item.type] || '<rect x="3" y="3" width="10" height="10" rx="2" fill="CLR"/>';
+        var svgStr  = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+                    + iconSvg.replace(/CLR/g, item.color || '#888') + '</svg>';
+        html += '<div class="layer-item' + (item.id === activeLayerId ? ' active' : '') + '"'
+              + ' data-id="' + esc(item.id) + '" style="padding-left:' + indent + 'px" draggable="true">'
+              + '<input type="checkbox" class="layer-visibility"' + (item.visible ? ' checked' : '') + ' title="Toggle visibility"/>'
+              + '<div class="layer-swatch">' + svgStr + '</div>'
+              + '<span class="layer-name" title="Double-click to rename">' + esc(item.name) + '</span>'
+              + '</div>';
+        (item.featureIds || []).forEach(function (fid) {
+          var meta = features[fid];
+          if (!meta) return;
+          var cls = 'feature-item' + (fid === selectedDrawId ? ' active' : '') + (fid === hoveredDrawId ? ' hover' : '');
+          html += '<div class="' + cls + '" data-id="' + fid + '"'
+                + ' style="padding-left:' + (indent + 20) + 'px">'
+                + '<span class="feature-item-label">' + esc(meta.label || ('Untitled ' + (item.type || 'Feature'))) + '</span>'
+                + '</div>';
+        });
+      }
+    });
+    return html;
+  }
+
+  function attachLayerListeners() {
+    var el = document.getElementById('layer-list');
+
+    el.querySelectorAll('[draggable]').forEach(function (div) {
+      div.addEventListener('dragstart', function (e) {
+        dragId = div.dataset.id;
+        e.dataTransfer.effectAllowed = 'move';
+        setTimeout(function () { div.classList.add('dragging'); }, 0);
+      });
+      div.addEventListener('dragend', function () {
+        div.classList.remove('dragging');
+        dragId = null;
+        clearDragIndicator();
+      });
+    });
+
+    el.querySelectorAll('.container-item').forEach(function (div) {
+      var id = div.dataset.id;
+
+      var toggle = div.querySelector('.toggle');
+      if (toggle) {
+        toggle.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var found = findItem(id);
+          if (found) found.item.open = found.item.open === false;
+          renderLayerList();
+        });
       }
 
-      _dragState = null;
-      renderLayerList();
-      scheduleSave();
+      var del = div.querySelector('.delete-btn');
+      if (del) {
+        del.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var found = findItem(id);
+          if (found) found.arr.splice(found.idx, 1);
+          renderLayerList();
+          scheduleSave();
+        });
+      }
+
+      var nameEl = div.querySelector('.container-name');
+      if (nameEl) {
+        nameEl.addEventListener('dblclick', function (e) {
+          e.stopPropagation();
+          nameEl.contentEditable = 'true';
+          nameEl.focus();
+          var range = document.createRange();
+          range.selectNodeContents(nameEl);
+          window.getSelection().removeAllRanges();
+          window.getSelection().addRange(range);
+        });
+        nameEl.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); nameEl.blur(); }
+          if (e.key === 'Escape') {
+            var found = findItem(id);
+            if (found) nameEl.textContent = found.item.name;
+            nameEl.blur();
+          }
+        });
+        nameEl.addEventListener('blur', function () {
+          nameEl.contentEditable = 'false';
+          var found = findItem(id);
+          if (found) {
+            var newName = nameEl.textContent.trim();
+            if (newName && newName !== found.item.name) { found.item.name = newName; scheduleSave(); }
+            else nameEl.textContent = found.item.name;
+          }
+        });
+      }
+    });
+
+    el.querySelectorAll('.layer-item').forEach(function (div) {
+      var id = div.dataset.id;
+
+      div.querySelector('.layer-visibility').addEventListener('change', function (e) {
+        e.stopPropagation();
+        toggleLayerVisibility(id, this.checked);
+      });
+
+      var nameEl = div.querySelector('.layer-name');
+      nameEl.addEventListener('dblclick', function (e) {
+        e.stopPropagation();
+        nameEl.contentEditable = 'true';
+        nameEl.focus();
+        var range = document.createRange();
+        range.selectNodeContents(nameEl);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+      });
+      nameEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); nameEl.blur(); }
+        if (e.key === 'Escape') {
+          var layer = findLayer(id);
+          if (layer) nameEl.textContent = layer.name;
+          nameEl.blur();
+        }
+      });
+      nameEl.addEventListener('blur', function () {
+        nameEl.contentEditable = 'false';
+        var layer = findLayer(id);
+        if (layer) {
+          var newName = nameEl.textContent.trim();
+          if (newName && newName !== layer.name) { layer.name = newName; scheduleSave(); }
+          else nameEl.textContent = layer.name;
+        }
+      });
+
+      div.addEventListener('click', function () {
+        if (id !== activeLayerId) setActiveLayer(id);
+      });
+    });
+
+    el.querySelectorAll('.feature-item').forEach(function (fDiv) {
+      var fid = fDiv.dataset.id;
+      fDiv.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var meta = features[fid];
+        if (meta) setActiveLayer(meta.layerId);
+        draw.changeMode('simple_select', { featureIds: [fid] });
+        openFeaturePanel(fid);
+        var feat = draw.get(fid);
+        if (feat) {
+          if (feat.geometry.type === 'Point') {
+            map.flyTo({ center: feat.geometry.coordinates, zoom: Math.max(map.getZoom(), 14), duration: 600 });
+          } else {
+            var bbox = turf.bbox(feat);
+            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 80, duration: 600 });
+          }
+        }
+      });
+      fDiv.addEventListener('mouseenter', function () {
+        var feat = draw.get(fid);
+        if (feat && map.getSource('hover-highlight')) {
+          map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [feat] });
+        }
+      });
+      fDiv.addEventListener('mouseleave', function () {
+        if (map.getSource('hover-highlight')) {
+          map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [] });
+        }
+      });
     });
   }
 
   function renderLayerList() {
     var el = document.getElementById('layer-list');
-    el.innerHTML = '';
-    layers.forEach(function (layer, li) {
-      var div = document.createElement('div');
-      div.className = 'layer-item' + (layer.id === activeLayerId ? ' active' : '');
-      div.dataset.id = layer.id;
-
-      var chk = document.createElement('input');
-      chk.type = 'checkbox';
-      chk.className = 'layer-visibility';
-      chk.checked = layer.visible;
-      chk.title = 'Toggle visibility';
-      chk.addEventListener('change', function (e) {
-        e.stopPropagation();
-        toggleLayerVisibility(layer.id, chk.checked);
-      });
-
-      var swatch = document.createElement('div');
-      swatch.className = 'layer-swatch';
-      var svgIcons = {
-        Point:      '<circle cx="8" cy="8" r="5" fill="COLOR"/>',
-        LineString: '<line x1="2" y1="14" x2="14" y2="2" stroke="COLOR" stroke-width="2.5" stroke-linecap="round"/>',
-        Polygon:    '<polygon points="8,2 14,6 12,13 4,13 2,6" fill="none" stroke="COLOR" stroke-width="2" stroke-linejoin="round"/>'
-      };
-      var iconSvg = svgIcons[layer.type] || '<rect x="3" y="3" width="10" height="10" rx="2" fill="COLOR"/>';
-      swatch.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">' + iconSvg.replace(/COLOR/g, layer.color) + '</svg>';
-
-      var name = document.createElement('span');
-      name.className = 'layer-name';
-      name.textContent = layer.name;
-      name.title = 'Double-click to rename';
-
-      name.addEventListener('dblclick', function (e) {
-        e.stopPropagation();
-        name.contentEditable = 'true';
-        name.focus();
-        // Select all text
-        var range = document.createRange();
-        range.selectNodeContents(name);
-        window.getSelection().removeAllRanges();
-        window.getSelection().addRange(range);
-      });
-
-      name.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); name.blur(); }
-        if (e.key === 'Escape') { name.textContent = layer.name; name.blur(); }
-      });
-
-      name.addEventListener('blur', function () {
-        name.contentEditable = 'false';
-        var newName = name.textContent.trim();
-        if (newName && newName !== layer.name) {
-          layer.name = newName;
-          scheduleSave();
-        } else {
-          name.textContent = layer.name;
-        }
-      });
-
-      div.appendChild(chk);
-      div.appendChild(swatch);
-      div.appendChild(name);
-      setupDrag(div, 'layer', li, -1);
-
-      div.addEventListener('click', function () {
-        if (layer.id !== activeLayerId) setActiveLayer(layer.id);
-      });
-
-      el.appendChild(div);
-
-      // Feature rows beneath the layer
-      layer.featureIds.forEach(function (fid, fi) {
-        var meta = features[fid];
-        if (!meta) return;
-
-        var fDiv = document.createElement('div');
-        fDiv.className = 'feature-item' +
-          (fid === selectedDrawId ? ' active' : '') +
-          (fid === hoveredDrawId ? ' hover' : '');
-        fDiv.dataset.id = fid;
-
-        var fName = document.createElement('span');
-        fName.className = 'feature-item-label';
-        fName.textContent = meta.label || ('Untitled ' + (layer.type || 'Feature'));
-
-        fDiv.appendChild(fName);
-        setupDrag(fDiv, 'feature', li, fi);
-
-        fDiv.addEventListener('click', function (e) {
-          e.stopPropagation();
-          setActiveLayer(layer.id);
-          draw.changeMode('simple_select', { featureIds: [fid] });
-          openFeaturePanel(fid);
-          var feat = draw.get(fid);
-          if (feat) {
-            if (feat.geometry.type === 'Point') {
-              map.flyTo({ center: feat.geometry.coordinates, zoom: Math.max(map.getZoom(), 14), duration: 600 });
-            } else {
-              var bbox = turf.bbox(feat);
-              map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 80, duration: 600 });
-            }
-          }
-        });
-
-        fDiv.addEventListener('mouseenter', function () {
-          var feat = draw.get(fid);
-          if (feat && map.getSource('hover-highlight')) {
-            map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [feat] });
-          }
-        });
-
-        fDiv.addEventListener('mouseleave', function () {
-          if (map.getSource('hover-highlight')) {
-            map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [] });
-          }
-        });
-
-        el.appendChild(fDiv);
-      });
-    });
-
+    el.innerHTML = buildLayerHTML(layers, 0);
+    attachLayerListeners();
     renderAttrTable();
   }
 
@@ -594,7 +682,7 @@
     var panel = document.getElementById('attr-panel');
     if (panel.classList.contains('hidden')) return;
 
-    var layer = layers.find(function (l) { return l.id === activeLayerId; });
+    var layer = findLayer(activeLayerId);
     document.getElementById('attr-panel-layer-name').textContent = layer ? layer.name : '';
 
     var table = document.getElementById('attr-table');
@@ -673,7 +761,7 @@
   }
 
   function toggleLayerVisibility(layerId, visible) {
-    var layer = layers.find(function (l) { return l.id === layerId; });
+    var layer = findLayer(layerId);
     if (!layer) return;
     layer.visible = visible;
     layer.featureIds.forEach(function (fid) {
@@ -692,7 +780,7 @@
     selectedDrawId = drawId;
     var meta = features[drawId];
     if (!meta) return;
-    var layer = layers.find(function (l) { return l.id === meta.layerId; });
+    var layer = findLayer(meta.layerId);
 
     document.getElementById('feature-panel-layer-name').textContent = layer ? layer.name : '';
     document.getElementById('feature-label').value = meta.label || '';
@@ -780,10 +868,49 @@
     renderLayerList();
   });
 
-  // ── Add Layer button ─────────────────────────────────────────────────────────
-  document.getElementById('add-layer-btn').addEventListener('click', function () {
-    createLayer(null);
+  // ── Add Layer / Group / Section ───────────────────────────────────────────────
+  var _pendingAddType = null;
+  var _addBtns = ['add-layer-btn', 'add-group-btn', 'add-section-btn'].map(function (id) {
+    return document.getElementById(id);
   });
+  var _addInput = document.getElementById('add-input');
+
+  function openAddInput(type) {
+    _pendingAddType = type;
+    _addBtns.forEach(function (b) { b.style.display = 'none'; });
+    _addInput.style.display = '';
+    _addInput.value = '';
+    _addInput.focus();
+  }
+
+  function closeAddInput() {
+    _addInput.style.display = 'none';
+    _addBtns.forEach(function (b) { b.style.display = ''; });
+    _pendingAddType = null;
+  }
+
+  _addInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      var name = _addInput.value.trim();
+      if (name && _pendingAddType) {
+        if (_pendingAddType === 'layer') {
+          createLayer(null, name);
+        } else if (_pendingAddType === 'group') {
+          layers.push({ id: 'group-' + Date.now() + '-' + Math.random().toString(36).slice(2), name: name, type: 'group', open: true, children: [] });
+          renderLayerList(); scheduleSave();
+        } else if (_pendingAddType === 'section') {
+          layers.push({ id: 'section-' + Date.now() + '-' + Math.random().toString(36).slice(2), name: name, type: 'section', open: true, children: [] });
+          renderLayerList(); scheduleSave();
+        }
+      }
+      closeAddInput();
+    }
+    if (e.key === 'Escape') closeAddInput();
+  });
+
+  document.getElementById('add-layer-btn').addEventListener('click', function () { openAddInput('layer'); });
+  document.getElementById('add-group-btn').addEventListener('click', function () { openAddInput('group'); });
+  document.getElementById('add-section-btn').addEventListener('click', function () { openAddInput('section'); });
 
   // ── Project name ─────────────────────────────────────────────────────────────
   document.getElementById('project-name').addEventListener('blur', function () {
@@ -852,7 +979,7 @@
     });
 
     draw.set({ type: 'FeatureCollection', features: savedFeatures });
-    if (layers.length) activeLayerId = layers[layers.length - 1].id;
+    var fl = flatLayers(); if (fl.length) activeLayerId = fl[fl.length - 1].id;
     renderLayerList();
     showToast('Project loaded');
   }
@@ -922,13 +1049,13 @@
     var geom     = JSON.parse(JSON.stringify(clipboard.geometry));
     var geomType = geom.type.replace('Multi', '');
 
-    var activeLayer = layers.find(function (l) { return l.id === activeLayerId; });
+    var activeLayer = findLayer(activeLayerId);
     var typeLayer;
     if (activeLayer && (activeLayer.type === null || activeLayer.type === geomType || activeLayer.type === geom.type)) {
       typeLayer = activeLayer;
       if (activeLayer.type === null) activeLayer.type = geomType;
     } else {
-      typeLayer = layers.find(function (l) { return l.type === geomType || l.type === geom.type; });
+      typeLayer = flatLayers().find(function (l) { return l.type === geomType || l.type === geom.type; });
       if (!typeLayer) typeLayer = createLayer(geomType);
     }
 
@@ -954,7 +1081,7 @@
       function () {
         _suppressUndo = true;
         draw.add({ type: 'Feature', id: id, geometry: JSON.parse(JSON.stringify(geom)), properties: {} });
-        var layer = layers.find(function (l) { return l.id === layerId; });
+        var layer = findLayer(layerId);
         if (layer && layer.featureIds.indexOf(id) === -1) {
           features[id] = { label: clipboard.meta.label || '', notes: clipboard.meta.notes || '', layerId: layerId };
           layer.featureIds.push(id);
@@ -992,7 +1119,7 @@
     });
 
     var layerId = originals[0].meta.layerId;
-    var layer   = layers.find(function (l) { return l.id === layerId; });
+    var layer   = findLayer(layerId);
 
     _suppressUndo = true;
     draw.delete(originals.map(function (o) { return o.id; }));
@@ -1016,7 +1143,7 @@
         originals.forEach(function (o) {
           draw.add({ type: 'Feature', id: o.id, geometry: JSON.parse(JSON.stringify(o.geom)), properties: {} });
           features[o.id] = o.meta;
-          var l = layers.find(function (l) { return l.id === o.meta.layerId; });
+          var l = findLayer(o.meta.layerId);
           if (l && l.featureIds.indexOf(o.id) === -1) l.featureIds.push(o.id);
         });
         renderLayerList();
@@ -1031,7 +1158,7 @@
         });
         draw.add({ type: 'Feature', id: mergedId, geometry: JSON.parse(JSON.stringify(mergedGeom)), properties: {} });
         features[mergedId] = { label: originals[0].meta.label || '', notes: '', layerId: layerId };
-        var l = layers.find(function (l) { return l.id === layerId; });
+        var l = findLayer(layerId);
         if (l && l.featureIds.indexOf(mergedId) === -1) l.featureIds.push(mergedId);
         renderLayerList();
         scheduleSave();
@@ -1087,7 +1214,7 @@
     }
 
     var layerId = origMeta.layerId;
-    var layer   = layers.find(function (l) { return l.id === layerId; });
+    var layer   = findLayer(layerId);
 
     _suppressUndo = true;
     draw.delete([origId]);
@@ -1352,6 +1479,86 @@
   basemapSelect.addEventListener('change', function () {
     map.setStyle(this.value);
   });
+
+  // ── Layer-list drag (container-level) ────────────────────────────────────────
+  function initLayerListDrag() {
+    var list = document.getElementById('layer-list');
+
+    list.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      if (dragId === null) return;
+
+      var els = Array.from(list.querySelectorAll('[draggable]:not(.dragging)'));
+      var cursor = e.clientY;
+      var newInsert = null;
+      var newInto   = null;
+
+      for (var i = 0; i < els.length; i++) {
+        var r = els[i].getBoundingClientRect();
+        var isContainer = els[i].classList.contains('container-item');
+        var mid = r.top + r.height / 2;
+        if (cursor < mid) {
+          if (isContainer && cursor >= r.top + r.height * 0.35) {
+            newInto = els[i].dataset.id;
+          } else {
+            newInsert = els[i].dataset.id;
+          }
+          break;
+        } else if (isContainer && cursor < r.bottom) {
+          newInto = els[i].dataset.id;
+          break;
+        }
+      }
+
+      if (newInsert === insertBeforeId && newInto === dropIntoId) return;
+      insertBeforeId = newInsert;
+      dropIntoId     = newInto;
+      clearDragIndicator();
+
+      if (dropIntoId !== null) {
+        var t = list.querySelector('[data-id="' + dropIntoId + '"]');
+        if (t) t.classList.add('drop-into');
+      } else if (insertBeforeId !== null) {
+        var t2 = list.querySelector('[data-id="' + insertBeforeId + '"]');
+        if (t2) t2.classList.add('drop-before');
+      } else {
+        list.classList.add('drop-after-last');
+      }
+    });
+
+    list.addEventListener('dragleave', function (e) {
+      if (!list.contains(e.relatedTarget)) {
+        clearDragIndicator();
+        insertBeforeId = null;
+        dropIntoId     = null;
+      }
+    });
+
+    list.addEventListener('drop', function (e) {
+      e.preventDefault();
+      clearDragIndicator();
+      if (dragId === null) return;
+      if (dropIntoId !== null) {
+        moveItemInto(dragId, dropIntoId);
+      } else {
+        moveItemBefore(dragId, insertBeforeId);
+      }
+      insertBeforeId = null;
+      dropIntoId     = null;
+      dragId         = null;
+      renderLayerList();
+      scheduleSave();
+    });
+  }
+
+  function clearDragIndicator() {
+    document.querySelectorAll('#layer-list .drop-before').forEach(function (el) { el.classList.remove('drop-before'); });
+    document.querySelectorAll('#layer-list .drop-into').forEach(function (el) { el.classList.remove('drop-into'); });
+    var list = document.getElementById('layer-list');
+    if (list) list.classList.remove('drop-after-last');
+  }
+
+  initLayerListDrag();
 
   // ── Toast ────────────────────────────────────────────────────────────────────
   var _toastTimer = null;
