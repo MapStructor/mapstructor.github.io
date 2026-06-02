@@ -7,10 +7,12 @@
   <link href="https://fonts.googleapis.com/css?family=Source+Sans+Pro:400,600,700" rel="stylesheet"/>
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet"/>
-  <script src="../mapbox-token.js"></script>
-  <script src="../../js/lists/restrictedToken.js"></script>
-  <script src="../../js/lists/mapData.js"></script>
-  <script src="../../js/lists/layersList.js"></script>
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson/dist/togeojson.umd.js"></script>
+  <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.js"></script>
+  <script src="../../mapbox-token.js"></script>
+  <script src="../../../hardcoded_template/ahm_twin/js/lists/layersList.js"></script>
   <link rel="stylesheet" href="studio.css"/>
 </head>
 <body>
@@ -20,13 +22,17 @@
       <div id="sidebar-header">Layers</div>
       <div id="layer-list"></div>
       <div id="add-layer-bar">
-        <button id="add-layer-btn">+ Add Layer</button>
+        <button id="add-layer-btn">+ Add</button>
+        <button id="upload-layer-btn">↑ Upload</button>
+        <input type="file" id="upload-file-input" style="display:none" multiple
+          accept=".geojson,.json,.kml,.zip">
       </div>
       <div id="add-layer-form" style="display:none">
         <input type="text" id="new-layer-label" class="s-input" placeholder="Layer name"/>
         <select id="new-layer-type" class="s-input">
           <option value="line">Line</option>
           <option value="fill">Fill</option>
+          <option value="draw">Draw</option>
         </select>
         <div class="al-actions">
           <button id="create-layer-btn">Create</button>
