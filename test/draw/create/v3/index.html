@@ -67,6 +67,24 @@
     </div>
   </div>
 
+  <div id="draw-panel">
+    <div id="no-selection">&#8592; Select a layer to style</div>
+    <div id="draw-editor" style="display:none">
+      <div id="draw-title-bar">
+        <span id="draw-layer-name"></span>
+        <span id="draw-type-badge"></span>
+      </div>
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="form">Form</button>
+        <button class="tab-btn" data-tab="json">JSON</button>
+      </div>
+      <div id="tab-form"></div>
+      <div id="tab-json" style="display:none">
+        <textarea id="json-editor" spellcheck="false"></textarea>
+      </div>
+    </div>
+  </div>
+
   <div id="measure-display" class="hidden"></div>
 
   <div id="feature-panel" class="hidden">

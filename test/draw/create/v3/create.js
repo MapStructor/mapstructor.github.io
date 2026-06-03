@@ -80,6 +80,15 @@
   var _mapEventsRegistered = false;
   var attrExpanded         = false;
 
+  // ── Style panel state ──────────────────────────────────────────────────────
+  var _DRAW_SRC    = 'draw-src';
+  var _DRAW_FILL   = 'draw-fill';
+  var _DRAW_LINE   = 'draw-line';
+  var _DRAW_CIRCLE = 'draw-circle';
+  var _origLayer = null;
+  var _layer     = null;
+  var _activeTab = 'form';
+
   function fmt(n, dec) {
     return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
   }
@@ -168,9 +177,26 @@
 
   map.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
+  var DRAW_STYLES = [
+    { id: 'draw-active-stroke', type: 'line',
+      filter: ['all', ['==', '$type', 'Polygon'], ['==', 'active', 'true']],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#fff', 'line-width': 2, 'line-dasharray': [2, 2] }
+    },
+    { id: 'draw-vertex', type: 'circle',
+      filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'vertex']],
+      paint: { 'circle-radius': 4, 'circle-color': '#fff', 'circle-stroke-width': 2, 'circle-stroke-color': '#888' }
+    },
+    { id: 'draw-midpoint', type: 'circle',
+      filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']],
+      paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' }
+    },
+  ];
+
   draw = new MapboxDraw({
     displayControlsDefault: false,
-    controls: { polygon: true, line_string: true, point: true, trash: true }
+    controls: { polygon: true, line_string: true, point: true, trash: true },
+    styles: DRAW_STYLES
   });
   map.addControl(draw, 'top-left');
   map.on('style.load', function () {
@@ -194,6 +220,35 @@
     drawLayerIds = map.getStyle().layers
       .filter(function (l) { return l.id.indexOf('gl-draw') > -1; })
       .map(function (l) { return l.id; });
+
+    // ── Draw display layers (before handles so handles render on top) ─────────
+    map.addSource(_DRAW_SRC, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: _DRAW_FILL, type: 'fill', source: _DRAW_SRC,
+      filter: ['==', '$type', 'Polygon'],
+      paint: {
+        'fill-color':   ['coalesce', ['get', '_c'], '#888888'],
+        'fill-opacity': ['coalesce', ['get', '_a'], 0.5]
+      }
+    }, beforeId);
+    map.addLayer({ id: _DRAW_LINE, type: 'line', source: _DRAW_SRC,
+      filter: ['in', '$type', 'LineString', 'Polygon'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': ['coalesce', ['get', '_o'], '#000000'],
+        'line-width': 2
+      }
+    }, beforeId);
+    map.addLayer({ id: _DRAW_CIRCLE, type: 'circle', source: _DRAW_SRC,
+      filter: ['==', '$type', 'Point'],
+      paint: {
+        'circle-color':        ['coalesce', ['get', '_c'], '#888888'],
+        'circle-radius':       6,
+        'circle-opacity':      ['coalesce', ['get', '_a'], 0.8],
+        'circle-stroke-color': ['coalesce', ['get', '_o'], '#000000'],
+        'circle-stroke-width': 2
+      }
+    }, beforeId);
+    syncDrawDisplay();
 
     // ── Measure overlay ──────────────────────────────────────────────────────
     map.addSource('measure-source', {
@@ -258,6 +313,8 @@
         updateSidebarHover();
         map.getSource('hover-highlight').setData({ type: 'FeatureCollection', features: [] });
       });
+
+      map.on('draw.update', syncDrawDisplay);
     }
   });
 
@@ -445,7 +502,12 @@
       type: type || null,
       color: color,
       visible: true,
-      featureIds: []
+      featureIds: [],
+      paint: {
+        'fill-color':         color,
+        'fill-outline-color': '#000000',
+        'fill-opacity':       0.5
+      }
     };
     layers.push(layer);
     activeLayerId = layer.id;
@@ -455,6 +517,10 @@
 
   function setActiveLayer(id) {
     activeLayerId = id;
+    _origLayer = findLayer(id);
+    _layer = _origLayer;
+    openEditor();
+    liveUpdateDraw();
     renderLayerList();
   }
 
@@ -676,6 +742,7 @@
     el.innerHTML = buildLayerHTML(layers, 0);
     attachLayerListeners();
     renderAttrTable();
+    syncDrawDisplay();
   }
 
   function renderAttrTable() {
@@ -702,7 +769,7 @@
     table.appendChild(thead);
 
     var tbody = document.createElement('tbody');
-    layer.featureIds.forEach(function (fid) {
+    (layer.featureIds || []).forEach(function (fid) {
       var meta = features[fid];
       if (!meta) return;
 
@@ -1559,6 +1626,165 @@
   }
 
   initLayerListDrag();
+
+  // ── Draw display / live update ────────────────────────────────────────────────
+  function syncDrawDisplay() {
+    if (!map || !map.getSource(_DRAW_SRC)) return;
+    var raw = draw.getAll();
+    var annotated = {
+      type: 'FeatureCollection',
+      features: raw.features.map(function (f) {
+        var meta  = features[f.id];
+        var layer = meta ? findLayer(meta.layerId) : null;
+        var p     = (layer && layer.paint) || {};
+        return {
+          type: 'Feature', id: f.id, geometry: f.geometry,
+          properties: {
+            _c: p['fill-color']         || (layer && layer.color) || '#888888',
+            _o: p['fill-outline-color'] || '#000000',
+            _a: p['fill-opacity'] !== undefined ? p['fill-opacity'] : 0.5
+          }
+        };
+      })
+    };
+    map.getSource(_DRAW_SRC).setData(annotated);
+  }
+
+  function liveUpdateDraw() { syncDrawDisplay(); }
+
+  // ── Style panel ───────────────────────────────────────────────────────────────
+  function openEditor() {
+    if (!_layer) {
+      document.getElementById('no-selection').style.display = '';
+      document.getElementById('draw-editor').style.display  = 'none';
+      return;
+    }
+    document.getElementById('no-selection').style.display  = 'none';
+    document.getElementById('draw-editor').style.display   = '';
+    document.getElementById('draw-layer-name').textContent = _layer.name;
+    document.getElementById('draw-type-badge').textContent = _layer.type || 'draw';
+    if (_activeTab === 'form') { renderForm(); syncJSON(); }
+    else                       { syncJSON(); }
+  }
+
+  function renderForm() {
+    if (!_layer) return;
+    var l = _layer;
+    var html = '';
+    html += fSection('Basic', [
+      fRow('Name',       fText('f-name',       l.name  || '')),
+      fRow('Icon Color', fColor('f-icon-color', l.color || '#888888')),
+    ]);
+    html += fSection('Style', [
+      fRow('Fill Color',    fColor('f-fill-color',   paintVal(l, 'fill-color',         '#888888'))),
+      fRow('Outline Color', fColor('f-fill-outline', paintVal(l, 'fill-outline-color', '#000000'))),
+      fRow('Opacity',       fRange('f-fill-opacity', paintVal(l, 'fill-opacity',        0.5), 0, 1, 0.05)),
+    ]);
+    document.getElementById('tab-form').innerHTML = html;
+    bindForm();
+  }
+
+  function bindForm() {
+    var form = document.getElementById('tab-form');
+    form.addEventListener('input', function (e) {
+      var t = e.target;
+      if (t.classList.contains('s-color')) {
+        var txt = document.getElementById(t.id + '-txt');
+        if (txt) txt.value = t.value;
+      }
+      if (t.classList.contains('s-color-txt')) {
+        if (/^#[0-9a-fA-F]{6}$/.test(t.value)) {
+          var picker = document.getElementById(t.id.replace('-txt', ''));
+          if (picker) picker.value = t.value;
+        }
+      }
+      if (t.classList.contains('s-range')) {
+        var disp = document.getElementById(t.id + '-disp');
+        if (disp) disp.textContent = parseFloat(t.value).toFixed(2).replace(/\.?0+$/, '') || '0';
+      }
+      collect();
+    });
+  }
+
+  function collect() {
+    if (!_layer) return;
+    var el;
+    if ((el = document.getElementById('f-name')))           _layer.name  = el.value;
+    if ((el = document.getElementById('f-icon-color-txt'))) _layer.color = el.value;
+    if (!_layer.paint) _layer.paint = {};
+    if ((el = document.getElementById('f-fill-color-txt')))   _layer.paint['fill-color']         = el.value;
+    if ((el = document.getElementById('f-fill-outline-txt'))) _layer.paint['fill-outline-color']  = el.value;
+    if ((el = document.getElementById('f-fill-opacity')))     _layer.paint['fill-opacity']        = parseFloat(el.value);
+    syncJSON();
+    liveUpdateDraw();
+    scheduleSave();
+  }
+
+  function syncJSON() {
+    if (_activeTab === 'json') return;
+    var ta = document.getElementById('json-editor');
+    if (ta && _layer) ta.value = JSON.stringify(_layer, null, 2);
+  }
+
+  function initTabs() {
+    document.querySelectorAll('.tab-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var to = this.dataset.tab;
+        if (to === _activeTab) return;
+        if (_activeTab === 'json' && to === 'form') {
+          var ta = document.getElementById('json-editor');
+          try {
+            var parsed = JSON.parse(ta.value);
+            if (_layer) {
+              if (parsed.name  !== undefined) _layer.name  = parsed.name;
+              if (parsed.color !== undefined) _layer.color = parsed.color;
+              if (parsed.paint !== undefined) _layer.paint = parsed.paint;
+            }
+            ta.classList.remove('json-error');
+          } catch (e) { ta.classList.add('json-error'); return; }
+        }
+        _activeTab = to;
+        document.querySelectorAll('.tab-btn').forEach(function (b) {
+          b.classList.toggle('active', b.dataset.tab === to);
+        });
+        document.getElementById('tab-form').style.display = to === 'form' ? '' : 'none';
+        document.getElementById('tab-json').style.display  = to === 'json' ? '' : 'none';
+        if (to === 'form') { renderForm(); syncJSON(); }
+        if (to === 'json') { document.getElementById('json-editor').value = JSON.stringify(_layer, null, 2); }
+      });
+    });
+  }
+
+  // ── Form builders ─────────────────────────────────────────────────────────────
+  function fSection(title, rows) {
+    return '<div class="f-section"><div class="f-section-title">' + esc(title) + '</div>' +
+      rows.filter(Boolean).join('') + '</div>';
+  }
+  function fRow(label, ctrl) {
+    return '<div class="f-row"><div class="f-label">' + esc(label) + '</div><div class="f-ctrl">' + ctrl + '</div></div>';
+  }
+  function fText(id, val) {
+    return '<input type="text" class="s-input" id="' + id + '" value="' + esc(String(val)) + '"/>';
+  }
+  function fColor(id, val) {
+    val = String(val || '#888888');
+    var hex = /^#[0-9a-fA-F]{6}$/.test(val) ? val : '#888888';
+    return '<div class="color-pair">' +
+      '<input type="color" class="s-color" id="' + id + '" value="' + hex + '"/>' +
+      '<input type="text" class="s-input s-color-txt" id="' + id + '-txt" value="' + esc(val) + '" maxlength="7"/>' +
+      '</div>';
+  }
+  function fRange(id, val, min, max, step) {
+    var v = parseFloat(val) || 0;
+    return '<div class="range-pair">' +
+      '<input type="range" class="s-range" id="' + id + '" min="' + min + '" max="' + max + '" step="' + step + '" value="' + v + '"/>' +
+      '<span class="range-disp" id="' + id + '-disp">' + v + '</span></div>';
+  }
+  function paintVal(layer, prop, def) {
+    return (layer.paint && layer.paint[prop] !== undefined) ? layer.paint[prop] : def;
+  }
+
+  initTabs();
 
   // ── Toast ────────────────────────────────────────────────────────────────────
   var _toastTimer = null;
