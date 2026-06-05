@@ -101,43 +101,6 @@
   var _layer     = null;
   var _activeTab = 'form';
 
-  // ── Debug logger ─────────────────────────────────────────────────────────────
-  var _dbgLines = [];
-  function dbg(msg, type) {
-    var ts  = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    var txt = ts + '  ' + msg;
-    console.log(txt);
-    _dbgLines.push({ txt: txt, type: type || '' });
-    if (_dbgLines.length > 200) _dbgLines.shift();
-    var log = document.getElementById('dbg-log');
-    if (!log) return;
-    var line = document.createElement('div');
-    line.className = 'dbg-line' + (type ? ' dbg-' + type : '');
-    line.textContent = txt;
-    log.appendChild(line);
-    log.scrollTop = log.scrollHeight;
-  }
-
-  document.addEventListener('DOMContentLoaded', function () {
-    document.getElementById('dbg-copy').addEventListener('click', function () {
-      var text = _dbgLines.map(function (l) { return l.txt; }).join('\n');
-      navigator.clipboard.writeText(text).then(function () {
-        var btn = document.getElementById('dbg-copy');
-        btn.textContent = 'Copied!';
-        setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
-      });
-    });
-    document.getElementById('dbg-clear').addEventListener('click', function () {
-      _dbgLines = [];
-      document.getElementById('dbg-log').innerHTML = '';
-    });
-    document.getElementById('dbg-toggle').addEventListener('click', function () {
-      var panel = document.getElementById('dbg-panel');
-      var collapsed = panel.classList.toggle('collapsed');
-      this.textContent = collapsed ? '▸' : '▾';
-    });
-  });
-
   function fmt(n, dec) {
     return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
   }
@@ -942,14 +905,8 @@
       var id = div.dataset.id;
 
       var cb = div.querySelector('.layer-visibility');
-      cb.addEventListener('click', function (e) {
-        e.stopPropagation();
-        dbg('checkbox click id=' + id + ' checked=' + e.target.checked, 'vis');
-      });
-      cb.addEventListener('change', function () {
-        dbg('checkbox change id=' + id + ' visible=' + this.checked, 'vis');
-        toggleLayerVisibility(id, this.checked);
-      });
+      cb.addEventListener('click', function (e) { e.stopPropagation(); });
+      cb.addEventListener('change', function () { toggleLayerVisibility(id, this.checked); });
 
       var nameEl = div.querySelector('.layer-name');
       nameEl.addEventListener('dblclick', function (e) {
@@ -980,7 +937,6 @@
       });
 
       div.addEventListener('click', function () {
-        dbg('layer click id=' + id, 'click');
         if (id !== activeLayerId) setActiveLayer(id);
       });
     });
@@ -989,7 +945,6 @@
       var fid = fDiv.dataset.id;
       fDiv.addEventListener('click', function (e) {
         e.stopPropagation();
-        dbg('feature click fid=' + fid, 'feat');
         var meta = features[fid];
         if (meta) setActiveLayer(meta.layerId);
         draw.changeMode('simple_select', { featureIds: [fid] });
@@ -1112,23 +1067,19 @@
     var layer = findLayer(layerId);
     if (!layer) return;
     layer.visible = visible;
-    dbg('toggleLayerVisibility id=' + layerId + ' visible=' + visible + ' isTileset=' + isTileset(layer), 'vis');
     if (isTileset(layer)) {
       var srcId = 'ext-' + layerId;
       var vis = visible ? 'visible' : 'none';
       if (map.getLayer(srcId + '-fill')) map.setLayoutProperty(srcId + '-fill', 'visibility', vis);
       if (map.getLayer(srcId + '-line')) map.setLayoutProperty(srcId + '-line', 'visibility', vis);
-      dbg('  tileset vis=' + vis, 'vis');
     } else if (isUpload(layer)) {
       var uSrcId = 'upl-' + layerId;
       var uVis   = visible ? 'visible' : 'none';
       ['fill', 'line', 'circle'].forEach(function (t) {
         if (map.getLayer(uSrcId + '-' + t)) map.setLayoutProperty(uSrcId + '-' + t, 'visibility', uVis);
       });
-      dbg('  upload vis=' + uVis, 'vis');
     } else {
       syncDrawDisplay();
-      dbg('  draw layer synced featureIds=' + JSON.stringify(layer.featureIds), 'vis');
     }
     scheduleSave();
   }
