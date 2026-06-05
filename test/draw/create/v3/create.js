@@ -56,7 +56,19 @@
   var draw        = null;
   var projectId   = null;
   var userId      = null;
-  var layers      = [];   // [{ id, name, type, color, visible, featureIds:[] }]
+  var layers      = [
+    { id: 'section-reference', name: 'Reference', type: 'section', open: true, children: [
+      { id: 'ts-curr-builds', name: 'Current Buildings', type: 'fill', visible: true, color: '#ffb255', featureIds: [],
+        source: { type: 'vector', url: 'mapbox://nittyjee.du0aopr8' }, 'source-layer': 'buildings_ames_2026-9v0yur',
+        paint: { 'fill-color': '#ffb255', 'fill-opacity': 0.7, 'fill-outline-color': '#ff6600' } },
+      { id: 'ts-city-limits', name: 'City Limits', type: 'line', visible: true, color: '#00c610', featureIds: [],
+        source: { type: 'vector', url: 'mapbox://nittyjee.41zrmwvc' }, 'source-layer': 'city_limits_lines_2026-a8hdoi',
+        paint: { 'line-color': '#00c610', 'line-width': 3, 'line-opacity': 1 } },
+      { id: 'ts-conf-roads', name: 'Confirmed Roads', type: 'line', visible: true, color: '#A9A9A9', featureIds: [],
+        source: { type: 'vector', url: 'mapbox://nittyjee.5u39kagk' }, 'source-layer': 'roads_maps_ames_iowa-4rufgk',
+        paint: { 'line-color': '#A9A9A9', 'line-width': 2, 'line-opacity': 1 } },
+    ]},
+  ];
   var features    = {};   // { drawId: { label, notes, layerId } }
   var activeLayerId = null;
   var selectedDrawId = null;
@@ -88,6 +100,43 @@
   var _origLayer = null;
   var _layer     = null;
   var _activeTab = 'form';
+
+  // ── Debug logger ─────────────────────────────────────────────────────────────
+  var _dbgLines = [];
+  function dbg(msg, type) {
+    var ts  = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    var txt = ts + '  ' + msg;
+    console.log(txt);
+    _dbgLines.push({ txt: txt, type: type || '' });
+    if (_dbgLines.length > 200) _dbgLines.shift();
+    var log = document.getElementById('dbg-log');
+    if (!log) return;
+    var line = document.createElement('div');
+    line.className = 'dbg-line' + (type ? ' dbg-' + type : '');
+    line.textContent = txt;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('dbg-copy').addEventListener('click', function () {
+      var text = _dbgLines.map(function (l) { return l.txt; }).join('\n');
+      navigator.clipboard.writeText(text).then(function () {
+        var btn = document.getElementById('dbg-copy');
+        btn.textContent = 'Copied!';
+        setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+      });
+    });
+    document.getElementById('dbg-clear').addEventListener('click', function () {
+      _dbgLines = [];
+      document.getElementById('dbg-log').innerHTML = '';
+    });
+    document.getElementById('dbg-toggle').addEventListener('click', function () {
+      var panel = document.getElementById('dbg-panel');
+      var collapsed = panel.classList.toggle('collapsed');
+      this.textContent = collapsed ? '▸' : '▾';
+    });
+  });
 
   function fmt(n, dec) {
     return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -164,6 +213,71 @@
     to.arr.splice(to.idx, 0, from.item);
   }
 
+  // ── Tileset helpers ──────────────────────────────────────────────────────────
+  function isTileset(l) { return l && (l.type === 'fill' || l.type === 'line'); }
+
+  function addTilesetToMap(layer) {
+    if (!map) return;
+    var srcId = 'ext-' + layer.id;
+    if (map.getSource(srcId)) return;
+    var url  = layer.source && layer.source.url;
+    var tile = layer.source && layer.source.tiles && layer.source.tiles[0];
+    if (!url && !tile) return;
+    // Sit below draw display but above basemap
+    var beforeId = map.getLayer('hover-highlight-line') ? 'hover-highlight-line'
+                 : (function () { var fd = map.getStyle().layers.find(function (l) { return l.id.indexOf('gl-draw') > -1; }); return fd ? fd.id : undefined; }());
+    var vis = layer.visible !== false ? 'visible' : 'none';
+    try {
+      map.addSource(srcId, layer.source);
+      var p = layer.paint || {};
+      if (layer.type === 'fill') {
+        map.addLayer({ id: srcId + '-fill', type: 'fill', source: srcId,
+          'source-layer': layer['source-layer'] || '', layout: { visibility: vis },
+          paint: { 'fill-color': p['fill-color'] || '#888888',
+                   'fill-opacity': p['fill-opacity'] !== undefined ? p['fill-opacity'] : 0.5,
+                   'fill-outline-color': p['fill-outline-color'] || '#000000' }
+        }, beforeId);
+      } else {
+        map.addLayer({ id: srcId + '-line', type: 'line', source: srcId,
+          'source-layer': layer['source-layer'] || '',
+          layout: { 'line-cap': 'round', 'line-join': 'round', visibility: vis },
+          paint: { 'line-color': p['line-color'] || '#888888',
+                   'line-opacity': p['line-opacity'] !== undefined ? p['line-opacity'] : 1,
+                   'line-width': p['line-width'] !== undefined ? p['line-width'] : 2 }
+        }, beforeId);
+      }
+    } catch (e) { console.warn('[tileset]', e.message); }
+  }
+
+  function removeTilesetFromMap(layerId) {
+    if (!map) return;
+    var srcId = 'ext-' + layerId;
+    if (map.getLayer(srcId + '-fill')) map.removeLayer(srcId + '-fill');
+    if (map.getLayer(srcId + '-line')) map.removeLayer(srcId + '-line');
+    if (map.getSource(srcId))          map.removeSource(srcId);
+  }
+
+  function syncTilesetLayers() {
+    flatLayers().forEach(function (l) { if (isTileset(l)) addTilesetToMap(l); });
+  }
+
+  function liveUpdateTileset() {
+    if (!_layer || !map) return;
+    var l = _layer;
+    var srcId = 'ext-' + l.id;
+    var p = l.paint || {};
+    if (l.type === 'fill' && map.getLayer(srcId + '-fill')) {
+      try { map.setPaintProperty(srcId + '-fill', 'fill-color',         p['fill-color']         || '#888888'); } catch (e) {}
+      try { map.setPaintProperty(srcId + '-fill', 'fill-opacity',       p['fill-opacity']        !== undefined ? p['fill-opacity'] : 0.5); } catch (e) {}
+      try { map.setPaintProperty(srcId + '-fill', 'fill-outline-color', p['fill-outline-color']  || '#000000'); } catch (e) {}
+    }
+    if (l.type === 'line' && map.getLayer(srcId + '-line')) {
+      try { map.setPaintProperty(srcId + '-line', 'line-color',   p['line-color']   || '#888888'); } catch (e) {}
+      try { map.setPaintProperty(srcId + '-line', 'line-opacity', p['line-opacity'] !== undefined ? p['line-opacity'] : 1); } catch (e) {}
+      try { map.setPaintProperty(srcId + '-line', 'line-width',   p['line-width']   !== undefined ? p['line-width']   : 2); } catch (e) {}
+    }
+  }
+
   // ── Init ────────────────────────────────────────────────────────────────────
   mapboxgl.accessToken = MAPBOX_TOKEN;
 
@@ -179,7 +293,7 @@
 
   var DRAW_STYLES = [
     { id: 'draw-active-stroke', type: 'line',
-      filter: ['all', ['==', '$type', 'Polygon'], ['==', 'active', 'true']],
+      filter: ['all', ['in', '$type', 'LineString', 'Polygon'], ['==', 'active', 'true']],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': '#fff', 'line-width': 2, 'line-dasharray': [2, 2] }
     },
@@ -249,6 +363,7 @@
       }
     }, beforeId);
     syncDrawDisplay();
+    if (!new URLSearchParams(location.search).get('id')) syncTilesetLayers();
 
     // ── Measure overlay ──────────────────────────────────────────────────────
     map.addSource('measure-source', {
@@ -295,8 +410,10 @@
       });
 
       map.on('mousemove', function (e) {
-        var rendered = map.queryRenderedFeatures(e.point, { layers: drawLayerIds });
-        var fid = rendered.length ? (rendered[0].id || (rendered[0].properties && rendered[0].properties.id)) : null;
+        var hoverLayers = [_DRAW_FILL, _DRAW_LINE, _DRAW_CIRCLE].filter(function (id) { return !!map.getLayer(id); });
+        var rendered = hoverLayers.length ? map.queryRenderedFeatures(e.point, { layers: hoverLayers }) : [];
+        var fid = rendered.length ? (rendered[0].properties && rendered[0].properties._id) || rendered[0].id || null : null;
+        dbg('hover rendered=' + rendered.length + ' fid=' + fid, 'feat');
         if (fid === hoveredDrawId) return;
         hoveredDrawId = fid;
         updateSidebarHover();
@@ -343,7 +460,7 @@
     var result = await db.from('map_projects_testing').insert({
       user_id: userId,
       name: 'Untitled Map',
-      layers_data: [],
+      layers_data: layers,
       features_data: []
     }).select().single();
     if (result.error) { showToast('Could not initialize project'); return; }
@@ -521,6 +638,7 @@
     _layer = _origLayer;
     openEditor();
     liveUpdateDraw();
+    if (_layer && isTileset(_layer)) { removeTilesetFromMap(id); addTilesetToMap(_layer); }
     renderLayerList();
   }
 
@@ -568,7 +686,9 @@
         var svgIcons = {
           Point:      '<circle cx="8" cy="8" r="5" fill="CLR"/>',
           LineString: '<line x1="2" y1="14" x2="14" y2="2" stroke="CLR" stroke-width="2.5" stroke-linecap="round"/>',
-          Polygon:    '<polygon points="8,2 14,6 12,13 4,13 2,6" fill="none" stroke="CLR" stroke-width="2" stroke-linejoin="round"/>'
+          Polygon:    '<polygon points="8,2 14,6 12,13 4,13 2,6" fill="none" stroke="CLR" stroke-width="2" stroke-linejoin="round"/>',
+          fill:       '<rect x="3" y="3" width="10" height="10" rx="1" fill="CLR" opacity="0.85"/>',
+          line:       '<line x1="2" y1="13" x2="14" y2="3" stroke="CLR" stroke-width="2.5" stroke-linecap="round"/>'
         };
         var iconSvg = svgIcons[item.type] || '<rect x="3" y="3" width="10" height="10" rx="2" fill="CLR"/>';
         var svgStr  = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
@@ -667,8 +787,13 @@
     el.querySelectorAll('.layer-item').forEach(function (div) {
       var id = div.dataset.id;
 
-      div.querySelector('.layer-visibility').addEventListener('change', function (e) {
+      var cb = div.querySelector('.layer-visibility');
+      cb.addEventListener('click', function (e) {
         e.stopPropagation();
+        dbg('checkbox click id=' + id + ' checked=' + e.target.checked, 'vis');
+      });
+      cb.addEventListener('change', function () {
+        dbg('checkbox change id=' + id + ' visible=' + this.checked, 'vis');
         toggleLayerVisibility(id, this.checked);
       });
 
@@ -701,6 +826,7 @@
       });
 
       div.addEventListener('click', function () {
+        dbg('layer click id=' + id, 'click');
         if (id !== activeLayerId) setActiveLayer(id);
       });
     });
@@ -709,6 +835,7 @@
       var fid = fDiv.dataset.id;
       fDiv.addEventListener('click', function (e) {
         e.stopPropagation();
+        dbg('feature click fid=' + fid, 'feat');
         var meta = features[fid];
         if (meta) setActiveLayer(meta.layerId);
         draw.changeMode('simple_select', { featureIds: [fid] });
@@ -831,15 +958,18 @@
     var layer = findLayer(layerId);
     if (!layer) return;
     layer.visible = visible;
-    layer.featureIds.forEach(function (fid) {
-      var feature = draw.get(fid);
-      if (!feature) return;
-      if (visible) {
-        draw.add(feature);
-      } else {
-        draw.delete(fid);
-      }
-    });
+    dbg('toggleLayerVisibility id=' + layerId + ' visible=' + visible + ' isTileset=' + isTileset(layer), 'vis');
+    if (isTileset(layer)) {
+      var srcId = 'ext-' + layerId;
+      var vis = visible ? 'visible' : 'none';
+      if (map.getLayer(srcId + '-fill')) map.setLayoutProperty(srcId + '-fill', 'visibility', vis);
+      if (map.getLayer(srcId + '-line')) map.setLayoutProperty(srcId + '-line', 'visibility', vis);
+      dbg('  tileset map layers updated vis=' + vis, 'vis');
+    } else {
+      syncDrawDisplay();
+      dbg('  draw layer syncDrawDisplay called featureIds=' + JSON.stringify(layer.featureIds), 'vis');
+    }
+    scheduleSave();
   }
 
   // ── Feature panel ────────────────────────────────────────────────────────────
@@ -937,7 +1067,7 @@
 
   // ── Add Layer / Group / Section ───────────────────────────────────────────────
   var _pendingAddType = null;
-  var _addBtns = ['add-layer-btn', 'add-group-btn', 'add-section-btn'].map(function (id) {
+  var _addBtns = ['add-layer-btn', 'add-group-btn', 'add-section-btn', 'add-tileset-btn'].map(function (id) {
     return document.getElementById(id);
   });
   var _addInput = document.getElementById('add-input');
@@ -968,6 +1098,17 @@
         } else if (_pendingAddType === 'section') {
           layers.push({ id: 'section-' + Date.now() + '-' + Math.random().toString(36).slice(2), name: name, type: 'section', open: true, children: [] });
           renderLayerList(); scheduleSave();
+        } else if (_pendingAddType === 'tileset') {
+          var tsColor = LAYER_COLORS[flatLayers().length % LAYER_COLORS.length];
+          var tsLayer = {
+            id: 'layer-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+            name: name, type: 'fill', visible: true, color: tsColor, featureIds: [],
+            source: { type: 'vector', url: '' }, 'source-layer': '',
+            paint: { 'fill-color': tsColor, 'fill-opacity': 0.5, 'fill-outline-color': '#000000' }
+          };
+          layers.push(tsLayer);
+          setActiveLayer(tsLayer.id);
+          scheduleSave();
         }
       }
       closeAddInput();
@@ -975,9 +1116,10 @@
     if (e.key === 'Escape') closeAddInput();
   });
 
-  document.getElementById('add-layer-btn').addEventListener('click', function () { openAddInput('layer'); });
-  document.getElementById('add-group-btn').addEventListener('click', function () { openAddInput('group'); });
+  document.getElementById('add-layer-btn').addEventListener('click',   function () { openAddInput('layer'); });
+  document.getElementById('add-group-btn').addEventListener('click',   function () { openAddInput('group'); });
   document.getElementById('add-section-btn').addEventListener('click', function () { openAddInput('section'); });
+  document.getElementById('add-tileset-btn').addEventListener('click', function () { openAddInput('tileset'); });
 
   // ── Project name ─────────────────────────────────────────────────────────────
   document.getElementById('project-name').addEventListener('blur', function () {
@@ -1048,6 +1190,13 @@
     draw.set({ type: 'FeatureCollection', features: savedFeatures });
     var fl = flatLayers(); if (fl.length) activeLayerId = fl[fl.length - 1].id;
     renderLayerList();
+    function resyncTilesets() {
+      Object.keys((map.getStyle() || {}).sources || {}).forEach(function (srcId) {
+        if (srcId.indexOf('ext-') === 0) removeTilesetFromMap(srcId.slice(4));
+      });
+      syncTilesetLayers();
+    }
+    if (map.getSource(_DRAW_SRC)) resyncTilesets(); else map.once('style.load', resyncTilesets);
     showToast('Project loaded');
   }
 
@@ -1631,23 +1780,23 @@
   function syncDrawDisplay() {
     if (!map || !map.getSource(_DRAW_SRC)) return;
     var raw = draw.getAll();
-    var annotated = {
-      type: 'FeatureCollection',
-      features: raw.features.map(function (f) {
-        var meta  = features[f.id];
-        var layer = meta ? findLayer(meta.layerId) : null;
-        var p     = (layer && layer.paint) || {};
-        return {
-          type: 'Feature', id: f.id, geometry: f.geometry,
-          properties: {
-            _c: p['fill-color']         || (layer && layer.color) || '#888888',
-            _o: p['fill-outline-color'] || '#000000',
-            _a: p['fill-opacity'] !== undefined ? p['fill-opacity'] : 0.5
-          }
-        };
-      })
-    };
-    map.getSource(_DRAW_SRC).setData(annotated);
+    var feats = [];
+    raw.features.forEach(function (f) {
+      var meta  = features[f.id];
+      var layer = meta ? findLayer(meta.layerId) : null;
+      if (layer && layer.visible === false) return;
+      var p = (layer && layer.paint) || {};
+      feats.push({
+        type: 'Feature', id: f.id, geometry: f.geometry,
+        properties: {
+          _id: f.id,
+          _c: p['fill-color']         || (layer && layer.color) || '#888888',
+          _o: p['fill-outline-color'] || '#000000',
+          _a: p['fill-opacity'] !== undefined ? p['fill-opacity'] : 0.5
+        }
+      });
+    });
+    map.getSource(_DRAW_SRC).setData({ type: 'FeatureCollection', features: feats });
   }
 
   function liveUpdateDraw() { syncDrawDisplay(); }
@@ -1675,11 +1824,33 @@
       fRow('Name',       fText('f-name',       l.name  || '')),
       fRow('Icon Color', fColor('f-icon-color', l.color || '#888888')),
     ]);
-    html += fSection('Style', [
-      fRow('Fill Color',    fColor('f-fill-color',   paintVal(l, 'fill-color',         '#888888'))),
-      fRow('Outline Color', fColor('f-fill-outline', paintVal(l, 'fill-outline-color', '#000000'))),
-      fRow('Opacity',       fRange('f-fill-opacity', paintVal(l, 'fill-opacity',        0.5), 0, 1, 0.05)),
-    ]);
+    if (l.type === 'fill') {
+      html += fSection('Style', [
+        fRow('Fill Color',    fColor('f-fill-color',   paintVal(l, 'fill-color',         '#888888'))),
+        fRow('Outline Color', fColor('f-fill-outline', paintVal(l, 'fill-outline-color', '#000000'))),
+        fRow('Opacity',       fRange('f-fill-opacity', paintVal(l, 'fill-opacity',        0.5), 0, 1, 0.05)),
+      ]);
+      html += fSection('Source', [
+        fRow('Mapbox URL',   fText('f-src-url',   (l.source && l.source.url)  || '')),
+        fRow('Source Layer', fText('f-src-layer', l['source-layer'] || '')),
+      ]);
+    } else if (l.type === 'line') {
+      html += fSection('Style', [
+        fRow('Color',   fColor('f-line-color',   paintVal(l, 'line-color',  '#888888'))),
+        fRow('Opacity', fRange('f-line-opacity', paintVal(l, 'line-opacity', 1), 0, 1, 0.05)),
+        fRow('Width',   fRange('f-line-width',   paintVal(l, 'line-width',   2), 0.5, 20, 0.5)),
+      ]);
+      html += fSection('Source', [
+        fRow('Mapbox URL',   fText('f-src-url',   (l.source && l.source.url)  || '')),
+        fRow('Source Layer', fText('f-src-layer', l['source-layer'] || '')),
+      ]);
+    } else {
+      html += fSection('Style', [
+        fRow('Fill Color',    fColor('f-fill-color',   paintVal(l, 'fill-color',         '#888888'))),
+        fRow('Outline Color', fColor('f-fill-outline', paintVal(l, 'fill-outline-color', '#000000'))),
+        fRow('Opacity',       fRange('f-fill-opacity', paintVal(l, 'fill-opacity',        0.5), 0, 1, 0.05)),
+      ]);
+    }
     document.getElementById('tab-form').innerHTML = html;
     bindForm();
   }
@@ -1712,11 +1883,22 @@
     if ((el = document.getElementById('f-name')))           _layer.name  = el.value;
     if ((el = document.getElementById('f-icon-color-txt'))) _layer.color = el.value;
     if (!_layer.paint) _layer.paint = {};
+    // draw / fill tileset
     if ((el = document.getElementById('f-fill-color-txt')))   _layer.paint['fill-color']         = el.value;
     if ((el = document.getElementById('f-fill-outline-txt'))) _layer.paint['fill-outline-color']  = el.value;
     if ((el = document.getElementById('f-fill-opacity')))     _layer.paint['fill-opacity']        = parseFloat(el.value);
+    // line tileset
+    if ((el = document.getElementById('f-line-color-txt')))   _layer.paint['line-color']          = el.value;
+    if ((el = document.getElementById('f-line-opacity')))     _layer.paint['line-opacity']        = parseFloat(el.value);
+    if ((el = document.getElementById('f-line-width')))       _layer.paint['line-width']          = parseFloat(el.value);
+    // source fields
+    if (_layer.source) {
+      if ((el = document.getElementById('f-src-url')))   _layer.source.url = el.value;
+    }
+    if ((el = document.getElementById('f-src-layer'))) _layer['source-layer'] = el.value;
     syncJSON();
     liveUpdateDraw();
+    if (isTileset(_layer)) liveUpdateTileset();
     scheduleSave();
   }
 
