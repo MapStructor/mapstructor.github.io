@@ -27,7 +27,9 @@
       <button id="add-group-btn">+ Group</button>
       <button id="add-section-btn">+ Section</button>
       <button id="add-tileset-btn">+ Tileset</button>
+      <button id="add-upload-btn">+ Upload</button>
       <input id="add-input" type="text" placeholder="Name..." autocomplete="off" spellcheck="false" style="display:none"/>
+      <input id="upload-file-input" type="file" multiple accept=".geojson,.json,.kml,.zip" style="display:none"/>
     </div>
   </div>
 
@@ -117,6 +119,8 @@
     <div id="dbg-log"></div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson/dist/togeojson.umd.js"></script>
+  <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.js"></script>
   <script src="create.js"></script>
 </body>
 </html>

@@ -213,8 +213,9 @@
     to.arr.splice(to.idx, 0, from.item);
   }
 
-  // ── Tileset helpers ──────────────────────────────────────────────────────────
+  // ── Layer type helpers ───────────────────────────────────────────────────────
   function isTileset(l) { return l && (l.type === 'fill' || l.type === 'line'); }
+  function isUpload(l)  { return l && l.type === 'upload'; }
 
   function addTilesetToMap(layer) {
     if (!map) return;
@@ -277,6 +278,156 @@
       try { map.setPaintProperty(srcId + '-line', 'line-width',   p['line-width']   !== undefined ? p['line-width']   : 2); } catch (e) {}
     }
   }
+
+  // ── Upload helpers ───────────────────────────────────────────────────────────
+  function addUploadToMap(layer) {
+    if (!map) return;
+    var srcId = 'upl-' + layer.id;
+    if (map.getSource(srcId)) return;
+    if (!layer.geojson) return;
+    var beforeId = map.getLayer('hover-highlight-line') ? 'hover-highlight-line'
+                 : (function () { var fd = map.getStyle().layers.find(function (l) { return l.id.indexOf('gl-draw') > -1; }); return fd ? fd.id : undefined; }());
+    var vis   = layer.visible !== false ? 'visible' : 'none';
+    var color = (layer.paint && layer.paint.color) || layer.color || '#4a9eff';
+    var op    = (layer.paint && layer.paint.opacity !== undefined) ? layer.paint.opacity : 0.7;
+    try {
+      map.addSource(srcId, { type: 'geojson', data: layer.geojson });
+      map.addLayer({ id: srcId + '-fill', type: 'fill', source: srcId,
+        filter: ['==', '$type', 'Polygon'],
+        layout: { visibility: vis },
+        paint: { 'fill-color': color, 'fill-opacity': op * 0.5 }
+      }, beforeId);
+      map.addLayer({ id: srcId + '-line', type: 'line', source: srcId,
+        filter: ['in', '$type', 'LineString', 'Polygon'],
+        layout: { 'line-cap': 'round', 'line-join': 'round', visibility: vis },
+        paint: { 'line-color': color, 'line-width': 2, 'line-opacity': op }
+      }, beforeId);
+      map.addLayer({ id: srcId + '-circle', type: 'circle', source: srcId,
+        filter: ['==', '$type', 'Point'],
+        layout: { visibility: vis },
+        paint: { 'circle-color': color, 'circle-radius': 6, 'circle-opacity': op,
+                 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 }
+      }, beforeId);
+    } catch (e) { console.warn('[upload]', e.message); }
+  }
+
+  function removeUploadFromMap(layerId) {
+    if (!map) return;
+    var srcId = 'upl-' + layerId;
+    ['fill', 'line', 'circle'].forEach(function (t) {
+      if (map.getLayer(srcId + '-' + t)) map.removeLayer(srcId + '-' + t);
+    });
+    if (map.getSource(srcId)) map.removeSource(srcId);
+  }
+
+  function syncUploadLayers() {
+    flatLayers().forEach(function (l) { if (isUpload(l)) addUploadToMap(l); });
+  }
+
+  function liveUpdateUpload() {
+    if (!_layer || !map) return;
+    var l = _layer;
+    var srcId = 'upl-' + l.id;
+    var color = (l.paint && l.paint.color) || l.color || '#4a9eff';
+    var op    = (l.paint && l.paint.opacity !== undefined) ? l.paint.opacity : 0.7;
+    try { map.setPaintProperty(srcId + '-fill',   'fill-color',    color);       } catch (e) {}
+    try { map.setPaintProperty(srcId + '-fill',   'fill-opacity',  op * 0.5);   } catch (e) {}
+    try { map.setPaintProperty(srcId + '-line',   'line-color',    color);       } catch (e) {}
+    try { map.setPaintProperty(srcId + '-line',   'line-opacity',  op);          } catch (e) {}
+    try { map.setPaintProperty(srcId + '-circle', 'circle-color',  color);       } catch (e) {}
+    try { map.setPaintProperty(srcId + '-circle', 'circle-opacity', op);         } catch (e) {}
+  }
+
+  // ── Upload file handling ─────────────────────────────────────────────────────
+  function handleUploadFile(file) {
+    var ext = file.name.split('.').pop().toLowerCase();
+    var reader = new FileReader();
+    if (ext === 'geojson' || ext === 'json') {
+      reader.onload = function (e) {
+        try { addUploadLayer(JSON.parse(e.target.result), file.name, 'GeoJSON'); }
+        catch (err) { showToast('Could not parse GeoJSON: ' + err.message, true); }
+      };
+      reader.readAsText(file);
+    } else if (ext === 'kml') {
+      reader.onload = function (e) {
+        try {
+          var dom = new DOMParser().parseFromString(e.target.result, 'text/xml');
+          var parseErr = dom.querySelector('parsererror');
+          if (parseErr) { showToast('KML is not valid XML', true); return; }
+          addUploadLayer(toGeoJSON.kml(dom), file.name, 'KML');
+        } catch (err) { showToast('Could not parse KML: ' + err.message, true); }
+      };
+      reader.readAsText(file);
+    } else if (ext === 'zip') {
+      reader.onload = function (e) {
+        shp(e.target.result).then(function (result) {
+          var cols = Array.isArray(result) ? result : [result];
+          cols.forEach(function (fc, i) {
+            var label = cols.length > 1 ? file.name.replace(/\.zip$/i, '') + ' (' + (i + 1) + ')' : file.name;
+            addUploadLayer(fc, label, 'SHP');
+          });
+        }).catch(function (err) { showToast('Could not parse Shapefile: ' + err.message, true); });
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      showToast('Unsupported format: .' + ext + ' — use GeoJSON, KML, or SHP (ZIP)', true);
+    }
+  }
+
+  function addUploadLayer(geojson, filename, format) {
+    if (!geojson || !geojson.features || !geojson.features.length) {
+      showToast('No features found in ' + filename, true);
+      return;
+    }
+    var color = LAYER_COLORS[flatLayers().length % LAYER_COLORS.length];
+    var layer = {
+      id: 'layer-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+      name: stripExt(filename),
+      type: 'upload',
+      visible: true,
+      color: color,
+      featureIds: [],
+      format: format,
+      featureCount: geojson.features.length,
+      geojson: geojson,
+      paint: { color: color, opacity: 0.7 }
+    };
+    layers.push(layer);
+    if (map.getSource(_DRAW_SRC)) addUploadToMap(layer);
+    setActiveLayer(layer.id);
+    var bounds = computeBounds(geojson);
+    if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 16 });
+    scheduleSave();
+    showToast(geojson.features.length + ' features loaded from ' + stripExt(filename));
+  }
+
+  function computeBounds(geojson) {
+    var w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    (geojson.features || []).forEach(function (f) {
+      collectCoords(f.geometry, function (lng, lat) {
+        if (lng < w) w = lng; if (lat < s) s = lat;
+        if (lng > e) e = lng; if (lat > n) n = lat;
+      });
+    });
+    return isFinite(w) ? [[w, s], [e, n]] : null;
+  }
+
+  function collectCoords(geometry, fn) {
+    if (!geometry) return;
+    if (geometry.type === 'GeometryCollection') {
+      (geometry.geometries || []).forEach(function (g) { collectCoords(g, fn); });
+    } else if (geometry.coordinates) {
+      walkCoords(geometry.coordinates, fn);
+    }
+  }
+
+  function walkCoords(coords, fn) {
+    if (!coords || !coords.length) return;
+    if (typeof coords[0] === 'number') { fn(coords[0], coords[1]); }
+    else { coords.forEach(function (c) { walkCoords(c, fn); }); }
+  }
+
+  function stripExt(filename) { return filename.replace(/\.[^.]+$/, ''); }
 
   // ── Init ────────────────────────────────────────────────────────────────────
   mapboxgl.accessToken = MAPBOX_TOKEN;
@@ -363,7 +514,7 @@
       }
     }, beforeId);
     syncDrawDisplay();
-    if (!new URLSearchParams(location.search).get('id')) syncTilesetLayers();
+    if (!new URLSearchParams(location.search).get('id')) { syncTilesetLayers(); syncUploadLayers(); }
 
     // ── Measure overlay ──────────────────────────────────────────────────────
     map.addSource('measure-source', {
@@ -413,7 +564,6 @@
         var hoverLayers = [_DRAW_FILL, _DRAW_LINE, _DRAW_CIRCLE].filter(function (id) { return !!map.getLayer(id); });
         var rendered = hoverLayers.length ? map.queryRenderedFeatures(e.point, { layers: hoverLayers }) : [];
         var fid = rendered.length ? (rendered[0].properties && rendered[0].properties._id) || rendered[0].id || null : null;
-        dbg('hover rendered=' + rendered.length + ' fid=' + fid, 'feat');
         if (fid === hoveredDrawId) return;
         hoveredDrawId = fid;
         updateSidebarHover();
@@ -637,8 +787,9 @@
     _origLayer = findLayer(id);
     _layer = _origLayer;
     openEditor();
-    liveUpdateDraw();
+    syncDrawDisplay();
     if (_layer && isTileset(_layer)) { removeTilesetFromMap(id); addTilesetToMap(_layer); }
+    if (_layer && isUpload(_layer))  liveUpdateUpload();
     renderLayerList();
   }
 
@@ -688,16 +839,19 @@
           LineString: '<line x1="2" y1="14" x2="14" y2="2" stroke="CLR" stroke-width="2.5" stroke-linecap="round"/>',
           Polygon:    '<polygon points="8,2 14,6 12,13 4,13 2,6" fill="none" stroke="CLR" stroke-width="2" stroke-linejoin="round"/>',
           fill:       '<rect x="3" y="3" width="10" height="10" rx="1" fill="CLR" opacity="0.85"/>',
-          line:       '<line x1="2" y1="13" x2="14" y2="3" stroke="CLR" stroke-width="2.5" stroke-linecap="round"/>'
+          line:       '<line x1="2" y1="13" x2="14" y2="3" stroke="CLR" stroke-width="2.5" stroke-linecap="round"/>',
+          upload:     '<rect x="3" y="3" width="10" height="10" rx="1" fill="CLR" opacity="0.5"/><path d="M8 10V6M6 8l2-2 2 2" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
         };
         var iconSvg = svgIcons[item.type] || '<rect x="3" y="3" width="10" height="10" rx="2" fill="CLR"/>';
         var svgStr  = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
                     + iconSvg.replace(/CLR/g, item.color || '#888') + '</svg>';
+        var metaBadge = isUpload(item) ? '<span class="layer-meta">' + esc(item.format || '') + ' · ' + (item.featureCount || '?') + '</span>' : '';
         html += '<div class="layer-item' + (item.id === activeLayerId ? ' active' : '') + '"'
               + ' data-id="' + esc(item.id) + '" style="padding-left:' + indent + 'px" draggable="true">'
               + '<input type="checkbox" class="layer-visibility"' + (item.visible ? ' checked' : '') + ' title="Toggle visibility"/>'
               + '<div class="layer-swatch">' + svgStr + '</div>'
               + '<span class="layer-name" title="Double-click to rename">' + esc(item.name) + '</span>'
+              + metaBadge
               + '</div>';
         (item.featureIds || []).forEach(function (fid) {
           var meta = features[fid];
@@ -964,10 +1118,17 @@
       var vis = visible ? 'visible' : 'none';
       if (map.getLayer(srcId + '-fill')) map.setLayoutProperty(srcId + '-fill', 'visibility', vis);
       if (map.getLayer(srcId + '-line')) map.setLayoutProperty(srcId + '-line', 'visibility', vis);
-      dbg('  tileset map layers updated vis=' + vis, 'vis');
+      dbg('  tileset vis=' + vis, 'vis');
+    } else if (isUpload(layer)) {
+      var uSrcId = 'upl-' + layerId;
+      var uVis   = visible ? 'visible' : 'none';
+      ['fill', 'line', 'circle'].forEach(function (t) {
+        if (map.getLayer(uSrcId + '-' + t)) map.setLayoutProperty(uSrcId + '-' + t, 'visibility', uVis);
+      });
+      dbg('  upload vis=' + uVis, 'vis');
     } else {
       syncDrawDisplay();
-      dbg('  draw layer syncDrawDisplay called featureIds=' + JSON.stringify(layer.featureIds), 'vis');
+      dbg('  draw layer synced featureIds=' + JSON.stringify(layer.featureIds), 'vis');
     }
     scheduleSave();
   }
@@ -1067,7 +1228,7 @@
 
   // ── Add Layer / Group / Section ───────────────────────────────────────────────
   var _pendingAddType = null;
-  var _addBtns = ['add-layer-btn', 'add-group-btn', 'add-section-btn', 'add-tileset-btn'].map(function (id) {
+  var _addBtns = ['add-layer-btn', 'add-group-btn', 'add-section-btn', 'add-tileset-btn', 'add-upload-btn'].map(function (id) {
     return document.getElementById(id);
   });
   var _addInput = document.getElementById('add-input');
@@ -1120,6 +1281,11 @@
   document.getElementById('add-group-btn').addEventListener('click',   function () { openAddInput('group'); });
   document.getElementById('add-section-btn').addEventListener('click', function () { openAddInput('section'); });
   document.getElementById('add-tileset-btn').addEventListener('click', function () { openAddInput('tileset'); });
+  document.getElementById('add-upload-btn').addEventListener('click',  function () { document.getElementById('upload-file-input').click(); });
+  document.getElementById('upload-file-input').addEventListener('change', function () {
+    Array.from(this.files).forEach(handleUploadFile);
+    this.value = '';
+  });
 
   // ── Project name ─────────────────────────────────────────────────────────────
   document.getElementById('project-name').addEventListener('blur', function () {
@@ -1188,15 +1354,17 @@
     });
 
     draw.set({ type: 'FeatureCollection', features: savedFeatures });
-    var fl = flatLayers(); if (fl.length) activeLayerId = fl[fl.length - 1].id;
-    renderLayerList();
-    function resyncTilesets() {
+    var fl = flatLayers();
+    if (fl.length) setActiveLayer(fl[fl.length - 1].id); else renderLayerList();
+    function resyncLayers() {
       Object.keys((map.getStyle() || {}).sources || {}).forEach(function (srcId) {
         if (srcId.indexOf('ext-') === 0) removeTilesetFromMap(srcId.slice(4));
+        if (srcId.indexOf('upl-') === 0) removeUploadFromMap(srcId.slice(4));
       });
       syncTilesetLayers();
+      syncUploadLayers();
     }
-    if (map.getSource(_DRAW_SRC)) resyncTilesets(); else map.once('style.load', resyncTilesets);
+    if (map.getSource(_DRAW_SRC)) resyncLayers(); else map.once('style.load', resyncLayers);
     showToast('Project loaded');
   }
 
@@ -1799,8 +1967,6 @@
     map.getSource(_DRAW_SRC).setData({ type: 'FeatureCollection', features: feats });
   }
 
-  function liveUpdateDraw() { syncDrawDisplay(); }
-
   // ── Style panel ───────────────────────────────────────────────────────────────
   function openEditor() {
     if (!_layer) {
@@ -1843,6 +2009,16 @@
       html += fSection('Source', [
         fRow('Mapbox URL',   fText('f-src-url',   (l.source && l.source.url)  || '')),
         fRow('Source Layer', fText('f-src-layer', l['source-layer'] || '')),
+      ]);
+    } else if (l.type === 'upload') {
+      var up = l.paint || {};
+      html += fSection('Style', [
+        fRow('Color',   fColor('f-upload-color',   up.color   !== undefined ? up.color   : (l.color || '#4a9eff'))),
+        fRow('Opacity', fRange('f-upload-opacity', up.opacity !== undefined ? up.opacity : 0.7, 0, 1, 0.05)),
+      ]);
+      html += fSection('Source', [
+        fRow('Format',   '<span class="f-static">' + esc(l.format || 'GeoJSON') + '</span>'),
+        fRow('Features', '<span class="f-static">' + (l.featureCount || '?') + '</span>'),
       ]);
     } else {
       html += fSection('Style', [
@@ -1891,14 +2067,21 @@
     if ((el = document.getElementById('f-line-color-txt')))   _layer.paint['line-color']          = el.value;
     if ((el = document.getElementById('f-line-opacity')))     _layer.paint['line-opacity']        = parseFloat(el.value);
     if ((el = document.getElementById('f-line-width')))       _layer.paint['line-width']          = parseFloat(el.value);
-    // source fields
+    // upload
+    if (isUpload(_layer)) {
+      if (!_layer.paint) _layer.paint = {};
+      if ((el = document.getElementById('f-upload-color-txt'))) _layer.paint.color   = el.value;
+      if ((el = document.getElementById('f-upload-opacity')))   _layer.paint.opacity = parseFloat(el.value);
+    }
+    // source fields (tilesets)
     if (_layer.source) {
       if ((el = document.getElementById('f-src-url')))   _layer.source.url = el.value;
     }
     if ((el = document.getElementById('f-src-layer'))) _layer['source-layer'] = el.value;
     syncJSON();
-    liveUpdateDraw();
+    syncDrawDisplay();
     if (isTileset(_layer)) liveUpdateTileset();
+    if (isUpload(_layer))  liveUpdateUpload();
     scheduleSave();
   }
 

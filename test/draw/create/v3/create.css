@@ -93,6 +93,19 @@ body {
 
 .layer-item.active .layer-name { color: #fff; }
 
+.layer-meta {
+  font-size: 10px;
+  color: #555;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.f-static {
+  font-size: 12px;
+  color: #666;
+  font-family: inherit;
+}
+
 .feature-item {
   display: flex;
   align-items: center;
@@ -204,11 +217,11 @@ body {
   font-weight: 600;
 }
 
-#add-layer-btn, #add-group-btn, #add-section-btn, #add-tileset-btn {
+#add-layer-btn, #add-group-btn, #add-section-btn, #add-tileset-btn, #add-upload-btn {
   background: #333;
   color: #ccc;
 }
-#add-layer-btn:hover, #add-group-btn:hover, #add-section-btn:hover, #add-tileset-btn:hover { background: #3a3a3a; color: #fff; }
+#add-layer-btn:hover, #add-group-btn:hover, #add-section-btn:hover, #add-tileset-btn:hover, #add-upload-btn:hover { background: #3a3a3a; color: #fff; }
 
 /* ── Attribute panel ── */
 #attr-panel {
