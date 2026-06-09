@@ -269,6 +269,18 @@ const sliderEndDate   = "01/01/2025";
 
 ---
 
+### `disclaimer.js`
+
+Controls whether the disclaimer overlay appears on page load.
+
+```js
+var showDisclaimer = true;
+```
+
+Set to `false` to hide it entirely. To remove the disclaimer permanently, see [Removing optional components](#6-removing-optional-components).
+
+---
+
 ### `bounds.js`
 
 Named geographic bounds used by the zoom buttons defined in `header.js`. Each entry maps a name to a bounding box `[[west, south], [east, north]]`.
@@ -325,11 +337,11 @@ Each component below can be removed independently. Work through the steps in ord
 
 ### Disclaimer overlay
 
-In `index.html`, delete the `<!-- Disclaimer -->` block:
+To hide it without removing it: set `showDisclaimer = false` in `project/lists/disclaimer.js`.
 
-```html
-<div id="disclaimer-overlay">...</div>
-```
+To remove it permanently:
+1. Delete the `<!-- Disclaimer -->` block in `index.html` (the `<div id="disclaimer-overlay">` and the `<script>` line immediately after it)
+2. Delete `project/lists/disclaimer.js` and its `document.write` line from the TESTING block in `index.html`
 
 ---
 

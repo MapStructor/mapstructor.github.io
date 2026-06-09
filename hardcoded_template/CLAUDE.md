@@ -38,6 +38,7 @@ hardcoded_template/
 | `sliderDates.js` | Timeline start and end dates |
 | `modalinfo.js` | About modal and layer info modal content |
 | `bounds.js` | Named geographic bounds for zoom buttons |
+| `disclaimer.js` | `showDisclaimer` boolean — set to `false` to hide the disclaimer overlay on load |
 
 ### Token (`project/secrets/`)
 
