@@ -3,7 +3,14 @@
   <head>
     <!-- SOURCES-->
 
-    <script src="js/lists/header.js"></script>
+    <!-- TESTING: delete this block and uncomment line below to clean up -->
+    <script src="js/lists/test-list-folder.js"></script>
+    <script>
+      var _listsPath = useTestList ? testListPath : "js/lists";
+      document.write('<script src="' + _listsPath + '/header.js"><\/script>');
+    </script>
+    <!-- END TESTING -->
+    <!-- <script src="js/lists/header.js"></script> -->
     <script>
       document.title = siteMeta.title;
       document.head.insertAdjacentHTML('beforeend', [
@@ -129,9 +136,16 @@
       referrerpolicy="no-referrer"
     />
 
-    <script src="js/lists/sliderDates.js"></script>
-    <script src="js/lists/layersList.js"></script>
-    <script src="js/lists/modalinfo.js"></script>
+    <!-- TESTING: delete this block and uncomment lines below to clean up -->
+    <script>
+      document.write('<script src="' + _listsPath + '/sliderDates.js"><\/script>');
+      document.write('<script src="' + _listsPath + '/layersList.js"><\/script>');
+      document.write('<script src="' + _listsPath + '/modalinfo.js"><\/script>');
+    </script>
+    <!-- END TESTING -->
+    <!-- <script src="js/lists/sliderDates.js"></script> -->
+    <!-- <script src="js/lists/layersList.js"></script> -->
+    <!-- <script src="js/lists/modalinfo.js"></script> -->
     <script src="js/engine/handle-mobile-devices.js"></script>
     <script src="js/engine/utils.js"></script>
     <script src="js/engine/index.js"></script>
@@ -209,7 +223,9 @@
     <div class="header">
 
       <a id="logo-link" href="" target="_blank">
-        <img id="logo-img-wide" src="./icons/banner_thumbnail.png" align="middle" />
+        <!-- TESTING: delete this line and uncomment below to clean up -->
+      <img id="logo-img-wide" src="ahm_twin/icons/banner_thumbnail.png" align="middle" />
+      <!-- <img id="logo-img-wide" src="./icons/banner_thumbnail.png" align="middle" /> -->
       </a>
 
       <div id="header_text" class="headerText">
@@ -305,14 +321,25 @@
 
     <!-- MAP.JS SOURCE -->
 
-    <script src="js/lists/bounds.js"></script>
-    <script src="js/lists/mapData.js"></script>
+    <!-- TESTING: delete this block and uncomment lines below to clean up -->
+    <script>
+      document.write('<script src="' + _listsPath + '/bounds.js"><\/script>');
+      document.write('<script src="' + _listsPath + '/mapData.js"><\/script>');
+    </script>
+    <!-- END TESTING -->
+    <!-- <script src="js/lists/bounds.js"></script> -->
+    <!-- <script src="js/lists/mapData.js"></script> -->
     <script src="js/engine/generateMaps.js"></script>
     <script src="js/engine/refreshLayers.js"></script>
     <script src="js/engine/addMapLayer.js"></script>
     <script src="js/engine/eventsHandle.js"></script>
     <script src="js/engine/addLayers.js"></script>
-    <script src="js/mapbox-token.js"></script>
+    <!-- TESTING: delete this block and uncomment line below to clean up -->
+    <script>
+      document.write('<script src="' + (useTestList ? "ahm_twin/js/mapbox-token.js" : "js/mapbox-token.js") + '"><\/script>');
+    </script>
+    <!-- END TESTING -->
+    <!-- <script src="js/mapbox-token.js"></script> -->
     <script src="js/engine/infoPanel.js"></script>
     <script src="js/engine/mapinit.js"></script>
 <script src="js/engine/sliderpopups.js"></script>
