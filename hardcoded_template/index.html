@@ -4,13 +4,13 @@
     <!-- SOURCES-->
 
     <!-- TESTING: delete this block and uncomment line below to clean up -->
-    <script src="js/lists/test-list-folder.js"></script>
+    <script src="js/lists/test-project.js"></script>
     <script>
-      var _listsPath = useTestList ? testListPath : "js/lists";
-      document.write('<script src="' + _listsPath + '/header.js"><\/script>');
+      var _project = useTestProject ? testProjectPath : "project";
+      document.write('<script src="' + _project + '/lists/header.js"><\/script>');
     </script>
     <!-- END TESTING -->
-    <!-- <script src="js/lists/header.js"></script> -->
+    <!-- <script src="project/lists/header.js"></script> -->
     <script>
       document.title = siteMeta.title;
       document.head.insertAdjacentHTML('beforeend', [
@@ -138,9 +138,9 @@
 
     <!-- TESTING: delete this block and uncomment lines below to clean up -->
     <script>
-      document.write('<script src="' + _listsPath + '/sliderDates.js"><\/script>');
-      document.write('<script src="' + _listsPath + '/layersList.js"><\/script>');
-      document.write('<script src="' + _listsPath + '/modalinfo.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/sliderDates.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/layersList.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/modalinfo.js"><\/script>');
     </script>
     <!-- END TESTING -->
     <!-- <script src="js/lists/sliderDates.js"></script> -->
@@ -223,9 +223,9 @@
     <div class="header">
 
       <a id="logo-link" href="" target="_blank">
-        <!-- TESTING: delete this line and uncomment below to clean up -->
-      <img id="logo-img-wide" src="ahm_twin/icons/banner_thumbnail.png" align="middle" />
-      <!-- <img id="logo-img-wide" src="./icons/banner_thumbnail.png" align="middle" /> -->
+        <!-- TESTING: delete this block and uncomment line below to clean up -->
+      <script>document.write('<img id="logo-img-wide" src="' + _project + '/icons/banner_thumbnail.png" align="middle" />');</script>
+      <!-- <img id="logo-img-wide" src="project/icons/banner_thumbnail.png" align="middle" /> -->
       </a>
 
       <div id="header_text" class="headerText">
@@ -323,8 +323,8 @@
 
     <!-- TESTING: delete this block and uncomment lines below to clean up -->
     <script>
-      document.write('<script src="' + _listsPath + '/bounds.js"><\/script>');
-      document.write('<script src="' + _listsPath + '/mapData.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/bounds.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/mapData.js"><\/script>');
     </script>
     <!-- END TESTING -->
     <!-- <script src="js/lists/bounds.js"></script> -->
@@ -336,7 +336,7 @@
     <script src="js/engine/addLayers.js"></script>
     <!-- TESTING: delete this block and uncomment line below to clean up -->
     <script>
-      document.write('<script src="' + (useTestList ? "ahm_twin/js/mapbox-token.js" : "js/mapbox-token.js") + '"><\/script>');
+      document.write('<script src="' + _project + '/secrets/mapbox-token.js"><\/script>');
     </script>
     <!-- END TESTING -->
     <!-- <script src="js/mapbox-token.js"></script> -->
