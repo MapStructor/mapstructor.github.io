@@ -1,2 +1,2 @@
 var useTestList = true;
-var testListPath = "ahm_twin/js/lists";
+var testListPath = "test_project/lists";
