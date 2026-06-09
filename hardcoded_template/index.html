@@ -135,6 +135,7 @@
 
     <!-- TESTING: delete this block and uncomment lines below to clean up -->
     <script>
+      document.write('<script src="' + _project + '/lists/disclaimer.js"><\/script>');
       document.write('<script src="' + _project + '/lists/sliderDates.js"><\/script>');
       document.write('<script src="' + _project + '/lists/layersList.js"><\/script>');
       document.write('<script src="' + _project + '/lists/modalinfo.js"><\/script>');
@@ -189,7 +190,7 @@
 
   <body>
     
-    <!-- Disclaimer — shown on every page load -->
+    <!-- Disclaimer — shown on every page load (toggle in project/lists/disclaimer.js) -->
     <div id="disclaimer-overlay">
       <div id="disclaimer-card">
         <div id="disclaimer-accent"></div>
@@ -200,6 +201,7 @@
         </div>
       </div>
     </div>
+    <script>if (typeof showDisclaimer !== 'undefined' && !showDisclaimer) document.getElementById('disclaimer-overlay').style.display = 'none';</script>
 
     <!-------------------->
     <!---ADD MODAL DIV---->
