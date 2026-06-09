@@ -63,28 +63,28 @@ If you just want to try it out locally, you can also download it as a ZIP file (
 **Step 2 — Open the folder**
 Open this template folder in your text editor or in Claude Code.
 
-**Step 2 — Add your Mapbox token**
-Open `js/mapbox-token.js`. Replace `YOUR_MAPBOX_TOKEN` with your actual token. Save the file. This is what allows the map to load.
+**Step 3 — Add your Mapbox token**
+Open `project/secrets/mapbox-token.js`. Replace `YOUR_MAPBOX_TOKEN` with your actual token. Save the file. This is what allows the map to load.
 
-**Step 3 — Set your map title and branding**
-Open `js/lists/header.js`. Replace the placeholder values — your site title, description, logo link, and analytics ID (if you have one).
+**Step 4 — Set your map title and branding**
+Open `project/lists/header.js`. Replace the placeholder values — your site title, description, logo link, and analytics ID (if you have one).
 
-**Step 4 — Set your map's starting view**
-Open `js/lists/mapData.js`. Set the `center` (the longitude and latitude where the map opens) and `zoom` level. Your Mapbox Studio style ID also goes here if you have a custom style.
+**Step 5 — Set your map's starting view**
+Open `project/lists/mapData.js`. Set the `center` (the longitude and latitude where the map opens) and `zoom` level. Your Mapbox Studio style ID also goes here if you have a custom style.
 
-**Step 5 — Add your layers**
-Open `js/lists/layersList.js`. This is the main file you will edit. It contains commented-out examples — copy one of the examples, uncomment it, and fill in your tileset URL and source layer name (both found in Mapbox Studio). Repeat for each dataset you want to show on the map.
+**Step 6 — Add your layers**
+Open `project/lists/layersList.js`. This is the main file you will edit. It contains commented-out examples — copy one of the examples, uncomment it, and fill in your tileset URL and source layer name (both found in Mapbox Studio). Repeat for each dataset you want to show on the map.
 
-**Step 6 — Set your timeline dates**
-Open `js/lists/sliderDates.js`. Set the start and end dates to match your data's time range.
+**Step 7 — Set your timeline dates**
+Open `project/lists/sliderDates.js`. Set the start and end dates to match your data's time range.
 
-**Step 7 — Write your About text**
-Open `js/lists/modalinfo.js`. Replace the placeholder About text with a description of your map.
+**Step 8 — Write your About text**
+Open `project/lists/modalinfo.js`. Replace the placeholder About text with a description of your map.
 
-**Step 8 — Open the map**
+**Step 9 — Open the map**
 Open `index.html` in a web browser (double-click it, or drag it into a browser window). No server or internet connection is required to run it locally. If the map loads and your layers appear, you are done.
 
-**Step 9 — Publish**
+**Step 10 — Publish**
 Copy the entire folder to any web host — GitHub Pages, Netlify, Vercel, or any web server. The map will work the same way online as it does on your computer.
 
 ---
@@ -101,8 +101,6 @@ Here is what the map looks like and what it does:
 - **Info panels** — clicking on a feature on the map (like a building or a property boundary) can open a side panel with detailed encyclopedia-style information about that feature.
 
 This template is a clean, empty starting point. It has no data layers or map styles of your own yet — just the framework. You fill in your own data.
-
-The `ahm_twin/` folder next to this one is a fully working example (the Ames History Museum map) that you can open side-by-side to see what a finished version looks like.
 
 ---
 
@@ -139,9 +137,9 @@ A `CLAUDE.md` file is included in this repo — Claude Code reads it automatical
 ## 4. Quick start
 
 1. **Get a Mapbox token** — sign up at [mapbox.com](https://www.mapbox.com), go to [account.mapbox.com/access-tokens](https://account.mapbox.com/access-tokens/), and create a token.
-2. **Paste your token** into `js/mapbox-token.js` — replace `YOUR_MAPBOX_TOKEN` with your token.
+2. **Paste your token** into `project/secrets/mapbox-token.js` — replace `YOUR_MAPBOX_TOKEN` with your token.
 3. **Open `index.html`** in a browser — the map should load with a world view and no data layers.
-4. **Edit the files in `js/lists/`** to add your own content (see below).
+4. **Edit the files in `project/lists/`** to add your own content (see below).
 
 The map works directly from your file system — no web server needed.
 
@@ -149,13 +147,13 @@ The map works directly from your file system — no web server needed.
 
 ## 5. Configuration files
 
-These are the only files you need to edit for most projects. They live in `js/lists/`.
+These are the only files you need to edit for most projects. They live in `project/lists/` and `project/secrets/`.
 
 ---
 
 ### `mapbox-token.js`
 
-Your Mapbox access token. Get it from [account.mapbox.com/access-tokens](https://account.mapbox.com/access-tokens/).
+Located in `project/secrets/`. Your Mapbox access token. Get it from [account.mapbox.com/access-tokens](https://account.mapbox.com/access-tokens/).
 
 This file is gitignored — it will never be accidentally committed to a public repository.
 
@@ -289,6 +287,8 @@ const boundsList = {
 
 ### `icons/`
 
+Located in `project/icons/`.
+
 | File | What it is |
 |------|-----------|
 | `favicon.ico` | Icon shown in the browser tab |
@@ -318,7 +318,7 @@ Each component below can be removed independently. Work through the steps in ord
 ### Google Analytics
 
 1. In `index.html`, delete the `<!-- Google Analytics -->` block — the inline `<script>` tag containing `gtag` and the dynamically appended script
-2. Delete `<script src="js/engine/google-analytics.js">` from `index.html`
+2. Delete `<script src="engine/google-analytics.js">` from `index.html`
 3. Remove `siteAnalytics` from `header.js`
 
 ---
@@ -336,7 +336,7 @@ In `index.html`, delete the `<!-- Disclaimer -->` block:
 ### Header
 
 1. In `index.html`, delete the `<!-- HEADER -->` block (`div.header` and its children)
-2. In `css/index.css`, remove header-related styles (`.header`, `.headerText`, `.header-right`, `#logo-img-wide`, `#header-right-buttons`)
+2. In `engine/engine.css`, remove header-related styles (`.header`, `.headerText`, `.header-right`, `#logo-img-wide`, `#header-right-buttons`)
 3. `siteLogoLink`, `siteHeaderText`, and `headerButtons` in `header.js` become unused — remove them
 
 ---
@@ -344,20 +344,17 @@ In `index.html`, delete the `<!-- Disclaimer -->` block:
 ### Timeline / slider
 
 1. In `index.html`, delete:
-   - `<div id="datepanel">` 
+   - `<div id="datepanel">`
    - `<div id="footer">` (contains the slider and ruler)
 2. Remove these `<script>` tags from `index.html`:
-   - `js/lists/sliderDates.js`
-   - `timeline/vendor/jquery-ui-*.js`
-   - `timeline/vendor/jquery.ui.touch-punch.min.js`
+   - `project/lists/sliderDates.js`
+   - The jQuery UI CDN script
+   - The touch-punch CDN script
    - The `moment.js` CDN script
-3. Remove these `<link>` tags from `index.html`:
-   - `timeline/vendor/.../jquery-ui-*.css`
-   - `timeline/index.css`
-4. Delete the `timeline/` folder
-5. Delete `js/lists/sliderDates.js`
-6. In `js/engine/index.js`, remove the slider initialization block (`$("#slider").slider(...)`) and `sliderStart`/`sliderEnd` variables
-7. In `js/engine/mapinit.js`, remove the `changeDate()` call inside `addLayersToMap`
+3. Remove the jQuery UI CDN stylesheet link from `index.html`
+4. Delete `project/lists/sliderDates.js`
+5. In `engine/index.js`, remove the slider initialization block (`$("#slider").slider(...)`) and `sliderStart`/`sliderEnd` variables
+6. In `engine/mapinit.js`, remove the `changeDate()` call inside `addLayersToMap`
 
 ---
 
@@ -368,19 +365,19 @@ In `index.html`, delete the `<!-- Disclaimer -->` block:
    - `<div id="studioMenu">` and all its children
    - `<div id="mobi-view-sidebar">`
 2. Remove these `<script>` tags from `index.html`:
-   - `js/engine/generateLayers.js`
-   - `js/engine/refreshLayers.js`
-   - `js/engine/addMapLayer.js`
-   - `js/engine/addLayers.js`
-   - `js/engine/generateMaps.js`
-3. `js/lists/layersList.js`, `bounds.js`, and `mapData.js` become unused — remove them and their script tags
+   - `engine/generateLayers.js`
+   - `engine/refreshLayers.js`
+   - `engine/addMapLayer.js`
+   - `engine/addLayers.js`
+   - `engine/generateMaps.js`
+3. `project/lists/layersList.js`, `bounds.js`, and `mapData.js` become unused — remove them and their script tags
 
 ---
 
 ### Info panel
 
 1. In `index.html`, delete `<div id="rightInfoBar">`
-2. Remove `<script src="js/engine/infoPanel.js">` from `index.html`
+2. Remove `<script src="engine/infoPanel.js">` from `index.html`
 3. Remove any `panel` configs from layers in `layersList.js`
 
 ---
@@ -392,7 +389,7 @@ In `index.html`, delete the `<!-- Disclaimer -->` block:
 High-level steps:
 1. Replace `<div id="comparison-container">` and its `before`/`after` children with a single `<div id="map" class="map">`
 2. Remove `mapbox-gl-compare.js` script and `mapbox-gl-compare.css` link from `index.html`
-3. Rewrite `mapinit.js` to create one `mapboxgl.Map` instead of two
+3. Rewrite `engine/mapinit.js` to create one `mapboxgl.Map` instead of two
 4. Update all `beforeMap` / `afterMap` references throughout the engine to use a single `map` variable
 
 Using Claude for this is strongly recommended.

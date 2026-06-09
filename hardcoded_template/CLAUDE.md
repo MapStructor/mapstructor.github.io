@@ -12,25 +12,40 @@ Use their answer to guide everything that follows.
 
 ## What this project is
 
-Mapstructor is a Mapbox GL JS map template with a timeline slider, before/after swipe comparison, layer sidebar, and optional info panels connected to an encyclopedia. It is meant to be configured entirely through the files in `js/lists/` — the engine files in `js/engine/` generally do not need to be touched.
+Mapstructor is a Mapbox GL JS map template with a timeline slider, before/after swipe comparison, layer sidebar, and optional info panels connected to an encyclopedia. It is configured entirely through the files in `project/lists/` and `project/secrets/` — the engine files in `engine/` generally do not need to be touched.
 
 ---
 
 ## Project structure
 
-### Configure these (`js/lists/`)
+```
+hardcoded_template/
+  engine/       ← map engine — do not edit unless removing components
+  project/
+    lists/      ← configure these
+    icons/      ← replace with your own images
+    secrets/    ← token goes here, never commit
+  index.html
+```
+
+### Configure these (`project/lists/`)
 
 | File | What it controls |
 |------|-----------------|
 | `header.js` | Site title, branding, analytics, header buttons, zoom buttons |
 | `mapData.js` | Base map styles, map center and zoom |
-| `mapbox-token.js` | Mapbox access token — gitignored, never commit |
 | `layersList.js` | All map layers — the main thing users will edit |
 | `sliderDates.js` | Timeline start and end dates |
 | `modalinfo.js` | About modal and layer info modal content |
 | `bounds.js` | Named geographic bounds for zoom buttons |
 
-### Do not edit these unless removing components (`js/engine/`)
+### Token (`project/secrets/`)
+
+| File | What it controls |
+|------|-----------------|
+| `mapbox-token.js` | Mapbox access token — gitignored, never commit |
+
+### Do not edit these unless removing components (`engine/`)
 
 `mapinit.js`, `infoPanel.js`, `addLayers.js`, `addMapLayer.js`, `generateLayers.js`, `generateMaps.js`, `refreshLayers.js`, `eventsHandle.js`, `sliderpopups.js`, `index.js`, `utils.js`, `handle-mobile-devices.js`, `google-analytics.js`
 
@@ -38,7 +53,7 @@ Mapstructor is a Mapbox GL JS map template with a timeline slider, before/after 
 
 ## Adding layers
 
-Layers go in the `layers` array in `js/lists/layersList.js`. The file has commented-out examples for all supported types: standalone layer, group, section, and info panel layer.
+Layers go in the `layers` array in `project/lists/layersList.js`. The file has commented-out examples for all supported types: standalone layer, group, section, and info panel layer.
 
 Each layer needs:
 - A Mapbox tileset URL: `mapbox://USERNAME.TILESET_ID`
@@ -66,8 +81,7 @@ Full removal instructions are in `README.md` section 6. The components that can 
 ## Key things to know
 
 - The map works via `file://` — no server needed
-- `js/mapbox-token.js` is gitignored — the user must copy it manually to any new folder
+- `project/secrets/mapbox-token.js` is gitignored — the user must copy it manually to any new folder
 - The template uses two side-by-side maps (`beforeMap`, `afterMap`) controlled by `mapboxgl.Compare` — this is the swipe comparison
 - Layer visibility is controlled by date filtering — each feature needs `DayStart` and `DayEnd` properties in the tileset for the timeline to affect it
 - The info panel requires a Drupal encyclopedia endpoint — if the user has no encyclopedia, remove `panel` configs from layers
-- `ahm_twin/` in the same folder is a working example (Ames History Museum) — refer to it when the user needs to see how something is done in practice
