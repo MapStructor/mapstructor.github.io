@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>MapStructor</title>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet">
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; font-family: 'Helvetica Neue', Arial, sans-serif; }
+
+    .toolbar {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 48px;
+      background: #1e1b2e;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+      z-index: 10;
+    }
+
+    .toolbar-logo {
+      color: #fff;
+      font-weight: 700;
+      font-size: 15px;
+      text-decoration: none;
+      letter-spacing: -0.01em;
+    }
+
+    .toolbar-logo:hover { color: #c4adfd; }
+
+    .toolbar-sep { flex: 1; }
+
+    .map-title {
+      color: #9490a8;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    #map {
+      position: absolute;
+      top: 48px;
+      bottom: 0;
+      left: 0;
+      right: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="toolbar">
+    <a href="../" class="toolbar-logo">MapStructor</a>
+    <div class="toolbar-sep"></div>
+    <span class="map-title" id="map-title">Untitled Map</span>
+  </div>
+
+  <div id="map"></div>
+
+  <script>
+    var params    = new URLSearchParams(window.location.search);
+    var projectId = params.get('id');
+
+    if (projectId) {
+      document.title = 'MapStructor — Untitled Map';
+    }
+
+    mapboxgl.accessToken = 'pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg';
+
+    var map = new mapboxgl.Map({
+      container:  'map',
+      style:      'mapbox://styles/mapbox/streets-v12',
+      center:     [0, 20],
+      zoom:       2,
+      projection: 'mercator',
+    });
+
+    map.addControl(new mapboxgl.NavigationControl(), 'bottom-right');
+  </script>
+
+</body>
+</html>

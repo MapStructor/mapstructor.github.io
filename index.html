@@ -268,7 +268,11 @@
 
     footer a { color: #b8b0d4; text-decoration: none; }
     footer a:hover { color: var(--p); }
+
+    button.btn-hero { border: none; font-family: inherit; cursor: pointer; }
+    .btn-hero:disabled { opacity: 0.6; cursor: default; transform: none !important; }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -282,7 +286,7 @@
     <img class="hero-logo" src="images/nittygrittymapping_logo.png" alt="MapStructor logo">
     <div class="hero-title">MapStructor</div>
     <p class="hero-sub">Create and explore maps</p>
-    <a href="test/draw/create/v3/index.html" class="btn-hero">Create a Map</a>
+    <button id="btn-create-map" class="btn-hero">Create a Map</button>
   </div>
 
   <hr class="section-divider">
@@ -365,6 +369,32 @@
     document.getElementById('modal-close').addEventListener('click', closeModal);
     overlay.addEventListener('click', function(e) { if (e.target === overlay) closeModal(); });
     document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+  </script>
+
+  <script>
+    var db = supabase.createClient(
+      'https://eqpxlwbjqiwfjlsuapvu.supabase.co',
+      'sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD'
+    );
+
+    document.getElementById('btn-create-map').addEventListener('click', async function () {
+      var btn = this;
+      btn.textContent = 'Creating…';
+      btn.disabled = true;
+
+      var { error: authErr } = await db.auth.signInAnonymously();
+      if (authErr) { btn.textContent = 'Create a Map'; btn.disabled = false; return; }
+
+      var { data, error } = await db
+        .from('projects')
+        .insert({ name: 'Untitled Map' })
+        .select('id')
+        .single();
+
+      if (error || !data) { btn.textContent = 'Create a Map'; btn.disabled = false; return; }
+
+      window.location.href = 'map/index.html?id=' + data.id;
+    });
   </script>
 
 </body>
