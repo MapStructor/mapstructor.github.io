@@ -20,37 +20,62 @@
     <!-- SAME CSS as MHT -->
     <link href="../hardcoded_template/engine/engine.css" rel="stylesheet" />
 
-    <!-- TOGGLE MECHANISM (inline, overrides engine.css for this test) -->
+    <!-- FLEXBOX LAYOUT (inline, overrides engine.css for this test) -->
     <style>
-      /* Lock the page so it can never scroll — absolute-positioned layout
-         pieces move with the scroll, so any scroll (incl. Chrome restoring
-         scroll position on refresh) shifts everything and opens a gap. */
-      html, body { height: 100%; margin: 0; overflow: hidden; }
-
-      :root { --header-h: 80px; --footer-h: 67px; }
-      html[data-no-header]   { --header-h: 0px; }
-      html[data-no-timeline] { --footer-h: 0px; }
-
-      .map { top: var(--header-h); bottom: var(--footer-h); }
-      html[data-no-header] .map { border-top: none; }
-
-      #studioMenu {
-        top: calc(var(--header-h) + 2px);
-        height:     calc(100% - var(--header-h) - var(--footer-h) - 24px);
-        max-height: calc(100% - var(--header-h) - var(--footer-h) - 24px);
+      /* Page is a locked vertical flex stack: header / middle / footer.
+         Header and footer take their natural height. Middle fills the rest.
+         Toggling display:none on any block causes automatic reflow — no
+         offsets, no magic numbers, no resize needed on load. */
+      html, body {
+        height: 100%; margin: 0; padding: 0;
+        overflow: hidden;
+        display: flex; flex-direction: column;
       }
-      #view-hide-layer-panel { top: calc(var(--header-h) + 8px); }
 
-      html[data-no-header]   .header { display: none; }
+      /* HEADER — natural height, stays in flow */
+      .header { flex: 0 0 auto; border-bottom: 2px solid #b0691d; }
+
+      /* MIDDLE — fills all remaining space between header and footer */
+      #middle {
+        flex: 1 1 auto;
+        position: relative;
+        min-height: 0;
+      }
+      .map { border-top: none !important; } /* header's border-bottom handles this */
+
+      /* Maps fill the middle exactly */
+      #comparison-container { position: absolute; inset: 0; }
+      .map {
+        position: absolute; inset: 0;
+        /* clear engine.css's hardcoded top/bottom offsets */
+        top: 0 !important; bottom: 0 !important;
+        width: 100%; height: 100%;
+      }
+
+      /* Sidebar and its toggle button position against #middle */
+      #studioMenu {
+        position: absolute;
+        top: 0; left: 0;
+        height: 100%; max-height: 100%;
+        box-sizing: border-box;
+      }
+      #view-hide-layer-panel { position: absolute; top: 8px; left: 325px; }
+      #datepanel { position: absolute; bottom: 20px; right: 20px; }
+
+      /* FOOTER — back into normal flow, height = its content */
+      #footer { flex: 0 0 auto; position: static; height: auto; }
+
+      /* TOGGLES — remove a block and the flex stack reflows automatically */
+      html[data-no-header]   .header  { display: none; }
       html[data-no-timeline] #datepanel,
-      html[data-no-timeline] #footer { display: none; }
+      html[data-no-timeline] #footer  { display: none; }
       html[data-no-sidebar]  #studioMenu,
       html[data-no-sidebar]  #view-hide-layer-panel,
       html[data-no-sidebar]  #mobi-view-sidebar { display: none; }
 
       /* debug toggle panel */
       #toggle-panel {
-        position: fixed; top: 90px; right: 10px; z-index: 99999;
+        position: fixed; top: 10px; right: 10px; z-index: 99999;
         background: #fff; border: 2px solid #000; border-radius: 6px;
         padding: 10px 14px; font-family: sans-serif; font-size: 14px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.3);
@@ -83,34 +108,39 @@
       </div>
     </div>
 
-    <!-- SIDEBAR TOGGLE BUTTON -->
-    <button id="view-hide-layer-panel">
-      <br />
-      <span id="dir-txt">&#9204;</span> <br /><br />
-    </button>
+    <!-- MIDDLE: maps, sidebar, datepanel all positioned inside here -->
+    <div id="middle">
 
-    <!-- SIDEBAR (empty) -->
-    <div id="studioMenu">
-      <i id="mobi-hide-sidebar" class="fa fa-arrow-circle-left fa-3x"></i>
-      <p class="title">LAYERS</p>
-      <br />
-      <div id="layers-panel-content">
-        <p style="padding: 10px; color: #999;">(empty sidebar)</p>
+      <!-- SIDEBAR TOGGLE BUTTON -->
+      <button id="view-hide-layer-panel">
+        <br />
+        <span id="dir-txt">&#9204;</span> <br /><br />
+      </button>
+
+      <!-- SIDEBAR (empty) -->
+      <div id="studioMenu">
+        <i id="mobi-hide-sidebar" class="fa fa-arrow-circle-left fa-3x"></i>
+        <p class="title">LAYERS</p>
+        <br />
+        <div id="layers-panel-content">
+          <p style="padding: 10px; color: #999;">(empty sidebar)</p>
+        </div>
       </div>
-    </div>
 
-    <!-- MAPS + SWIPE -->
-    <div id="comparison-container">
-      <div id="before" class="map"></div>
-      <div id="after" class="map"></div>
-    </div>
+      <!-- MAPS + SWIPE -->
+      <div id="comparison-container">
+        <div id="before" class="map"></div>
+        <div id="after" class="map"></div>
+      </div>
 
-    <div id="mobi-view-sidebar"><i class="fa fa-bars fa-2x"></i></div>
+      <div id="mobi-view-sidebar"><i class="fa fa-bars fa-2x"></i></div>
 
-    <!-- TIMELINE date panel -->
-    <div id="datepanel">
-      <b><span id="date">01 Jan 1900</span></b>
-    </div>
+      <!-- TIMELINE date panel -->
+      <div id="datepanel">
+        <b><span id="date">01 Jan 1900</span></b>
+      </div>
+
+    </div><!-- /#middle -->
 
     <!-- TIMELINE footer / ruler -->
     <div id="footer">
@@ -168,15 +198,22 @@
       beforeMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
       afterMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 
-      // LIVE TOGGLING — this is a runtime container change, so resize IS needed
-      // here (and only here — never in the load path).
+      // LIVE TOGGLING — debounced so rapid changes only trigger one resize
+      var resizeTimer;
+      function debouncedResize() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function () {
+          beforeMap.resize();
+          afterMap.resize();
+          measure();
+        }, 50);
+      }
+
       function wireToggle(checkboxId, key) {
         document.getElementById(checkboxId).addEventListener("change", function () {
           features[key] = this.checked;
           applyFeatures();
-          beforeMap.resize();
-          afterMap.resize();
-          setTimeout(measure, 50);
+          debouncedResize();
         });
       }
       wireToggle("t-header",   "header");
@@ -194,17 +231,17 @@
             "top="  + Math.round(b.top) +
             " bot=" + Math.round(b.bottom) +
             " h="   + Math.round(b.height) +
+            " left=" + Math.round(b.left) +
             " [" + cs.position + "]";
         }
         var lines = [
-          "viewport   h=" + window.innerHeight,
+          "viewport   h=" + window.innerWidth + "x" + window.innerHeight,
           line("header",  ".header"),
           line("compare", "#comparison-container"),
           line("before",  "#before"),
-          line("after",   "#after"),
-          line("canvas",  "#before canvas"),
           line("footer",  "#footer"),
           line("sidebar", "#studioMenu"),
+          line("btn",     "#view-hide-layer-panel"),
         ];
         document.getElementById("measure-output").textContent = lines.join("\n");
       }
