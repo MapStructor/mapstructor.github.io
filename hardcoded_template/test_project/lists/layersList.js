@@ -1,3 +1,5 @@
+var TILES_WORKER_URL = "https://ames-tiles.mapstructor.workers.dev";
+
 const layers = [
 
   // Roads
@@ -233,10 +235,12 @@ const layers = [
         type: "fill",
         source: {
           type: "vector",
-          url: "mapbox://nittyjee.du0aopr8",
+          tiles: [TILES_WORKER_URL + "/buildings/{z}/{x}/{y}.pbf"],
+          minzoom: 10,
+          maxzoom: 16,
         },
         layout: { visibility: "visible" },
-        "source-layer": "buildings_ames_2026-9v0yur",
+        "source-layer": "buildings",
         paint: {
           "fill-color": "#ffb255",
           "fill-opacity": ["case", ["boolean", ["feature-state", "hover"], false],
