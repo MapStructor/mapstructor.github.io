@@ -5,54 +5,51 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Layout Test</title>
 
-    <!-- Same font as MHT -->
     <link href="https://fonts.googleapis.com/css?family=Source+Sans+Pro:400,700,600italic" rel="stylesheet" type="text/css" />
 
-    <!-- Mapbox GL + Compare (same versions as MHT) -->
     <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
     <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
     <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css" type="text/css" />
-
-    <!-- Font Awesome (icons in header / sidebar toggle) -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
 
-    <!-- SAME CSS as MHT -->
     <link href="../hardcoded_template/engine/engine.css" rel="stylesheet" />
 
-    <!-- FLEXBOX LAYOUT (inline, overrides engine.css for this test) -->
+    <script src="features.js"></script>
+    <script>
+      // Apply features config to <html> before body parses —
+      // maps will be born at the correct size, no resize needed.
+      (function () {
+        var h = document.documentElement;
+        if (!features.header)   h.setAttribute("data-no-header",   "");
+        if (!features.timeline) h.setAttribute("data-no-timeline", "");
+        if (!features.sidebar)  h.setAttribute("data-no-sidebar",  "");
+      })();
+    </script>
+
     <style>
-      /* Page is a locked vertical flex stack: header / middle / footer.
-         Header and footer take their natural height. Middle fills the rest.
-         Toggling display:none on any block causes automatic reflow — no
-         offsets, no magic numbers, no resize needed on load. */
       html, body {
         height: 100%; margin: 0; padding: 0;
         overflow: hidden;
         display: flex; flex-direction: column;
       }
 
-      /* HEADER — natural height, stays in flow */
       .header { flex: 0 0 auto; border-bottom: 2px solid #b0691d; }
 
-      /* MIDDLE — fills all remaining space between header and footer */
       #middle {
         flex: 1 1 auto;
         position: relative;
         min-height: 0;
       }
-      .map { border-top: none !important; } /* header's border-bottom handles this */
 
-      /* Maps fill the middle exactly */
       #comparison-container { position: absolute; inset: 0; }
       .map {
         position: absolute; inset: 0;
-        /* clear engine.css's hardcoded top/bottom offsets */
         top: 0 !important; bottom: 0 !important;
         width: 100%; height: 100%;
+        border-top: none !important;
       }
 
-      /* Sidebar and its toggle button position against #middle */
       #studioMenu {
         position: absolute;
         top: 0; left: 0;
@@ -62,39 +59,19 @@
       #view-hide-layer-panel { position: absolute; top: 8px; left: 325px; }
       #datepanel { position: absolute; bottom: 20px; right: 20px; }
 
-      /* FOOTER — back into normal flow, height = its content */
       #footer { flex: 0 0 auto; position: static; height: auto; }
 
-      /* TOGGLES — remove a block and the flex stack reflows automatically */
-      html[data-no-header]   .header  { display: none; }
+      html[data-no-header]   .header   { display: none; }
       html[data-no-timeline] #datepanel,
-      html[data-no-timeline] #footer  { display: none; }
+      html[data-no-timeline] #footer   { display: none; }
       html[data-no-sidebar]  #studioMenu,
       html[data-no-sidebar]  #view-hide-layer-panel,
       html[data-no-sidebar]  #mobi-view-sidebar { display: none; }
-
-      /* debug toggle panel */
-      #toggle-panel {
-        position: fixed; top: 10px; right: 10px; z-index: 99999;
-        background: #fff; border: 2px solid #000; border-radius: 6px;
-        padding: 10px 14px; font-family: sans-serif; font-size: 14px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-      }
-      #toggle-panel label { display: block; margin: 3px 0; cursor: pointer; }
     </style>
   </head>
 
   <body>
 
-    <!-- DEBUG TOGGLE PANEL (autocomplete=off → browser won't restore stale state on refresh) -->
-    <div id="toggle-panel">
-      <label><input type="checkbox" id="t-header"   autocomplete="off" /> Header</label>
-      <label><input type="checkbox" id="t-timeline" autocomplete="off" /> Timeline</label>
-      <label><input type="checkbox" id="t-sidebar"  autocomplete="off" /> Sidebar</label>
-      <pre id="measure-output" style="margin:8px 0 0; font-size:11px; line-height:1.4; white-space:pre;"></pre>
-    </div>
-
-    <!-- HEADER (normal flow — height comes from the logo image, ~80px) -->
     <div class="header">
       <a id="logo-link" href="" target="_blank">
         <img id="logo-img-wide" src="../hardcoded_template/test_project/icons/banner_thumbnail.png" align="middle" />
@@ -108,16 +85,12 @@
       </div>
     </div>
 
-    <!-- MIDDLE: maps, sidebar, datepanel all positioned inside here -->
     <div id="middle">
 
-      <!-- SIDEBAR TOGGLE BUTTON -->
       <button id="view-hide-layer-panel">
-        <br />
-        <span id="dir-txt">&#9204;</span> <br /><br />
+        <br /><span id="dir-txt">&#9204;</span><br /><br />
       </button>
 
-      <!-- SIDEBAR (empty) -->
       <div id="studioMenu">
         <i id="mobi-hide-sidebar" class="fa fa-arrow-circle-left fa-3x"></i>
         <p class="title">LAYERS</p>
@@ -127,7 +100,6 @@
         </div>
       </div>
 
-      <!-- MAPS + SWIPE -->
       <div id="comparison-container">
         <div id="before" class="map"></div>
         <div id="after" class="map"></div>
@@ -135,14 +107,12 @@
 
       <div id="mobi-view-sidebar"><i class="fa fa-bars fa-2x"></i></div>
 
-      <!-- TIMELINE date panel -->
       <div id="datepanel">
         <b><span id="date">01 Jan 1900</span></b>
       </div>
 
-    </div><!-- /#middle -->
+    </div>
 
-    <!-- TIMELINE footer / ruler -->
     <div id="footer">
       <div id="slider">
         <div id="mobi-year">...</div>
@@ -156,33 +126,13 @@
       </div>
     </div>
 
-    <!-- MAP INIT (minimal, self-contained) -->
     <script>
       mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
 
-      // SOURCE OF TRUTH — the feature config (mirrors features.js in the real app)
-      var features = { header: true, timeline: true, sidebar: true };
-
-      // Apply the config to <html> and sync the checkboxes.
-      // Called ONCE before the maps are built, so the maps are born at the
-      // correct size — no resize needed on load.
-      function applyFeatures() {
-        var h = document.documentElement;
-        h.toggleAttribute("data-no-header",   !features.header);
-        h.toggleAttribute("data-no-timeline", !features.timeline);
-        h.toggleAttribute("data-no-sidebar",  !features.sidebar);
-        document.getElementById("t-header").checked   = features.header;
-        document.getElementById("t-timeline").checked = features.timeline;
-        document.getElementById("t-sidebar").checked  = features.sidebar;
-      }
-      applyFeatures();   // <-- state is settled BEFORE the maps exist
-
       var center = [-93.63661, 42.03112];
       var zoom   = 13.63;
-
-      // Different base map on each side so the swipe is visible
-      var leftStyle  = "mapbox://styles/nittyjee/cmmdxrf57001901qserwbevvc"; // Satellite
-      var rightStyle = "mapbox://styles/nittyjee/cmmlhhgbj00c701s915u3f0nr"; // Streets
+      var leftStyle  = "mapbox://styles/nittyjee/cmmdxrf57001901qserwbevvc";
+      var rightStyle = "mapbox://styles/nittyjee/cmmlhhgbj00c701s915u3f0nr";
 
       var beforeMap = new mapboxgl.Map({
         container: "before", style: leftStyle, center: center, zoom: zoom,
@@ -193,64 +143,10 @@
         projection: "mercator", attributionControl: true,
       });
 
-      var map = new mapboxgl.Compare(beforeMap, afterMap, "#comparison-container", {});
+      new mapboxgl.Compare(beforeMap, afterMap, "#comparison-container", {});
 
       beforeMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
       afterMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
-
-      // LIVE TOGGLING — debounced so rapid changes only trigger one resize
-      var resizeTimer;
-      function debouncedResize() {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(function () {
-          beforeMap.resize();
-          afterMap.resize();
-          measure();
-        }, 50);
-      }
-
-      function wireToggle(checkboxId, key) {
-        document.getElementById(checkboxId).addEventListener("change", function () {
-          features[key] = this.checked;
-          applyFeatures();
-          debouncedResize();
-        });
-      }
-      wireToggle("t-header",   "header");
-      wireToggle("t-timeline", "timeline");
-      wireToggle("t-sidebar",  "sidebar");
-
-      // MEASUREMENT — show the real rendered geometry of each block
-      function measure() {
-        function line(label, sel) {
-          var el = typeof sel === "string" ? document.querySelector(sel) : sel;
-          if (!el) return label.padEnd(11) + "(not found)";
-          var b = el.getBoundingClientRect();
-          var cs = getComputedStyle(el);
-          return label.padEnd(11) +
-            "top="  + Math.round(b.top) +
-            " bot=" + Math.round(b.bottom) +
-            " h="   + Math.round(b.height) +
-            " left=" + Math.round(b.left) +
-            " [" + cs.position + "]";
-        }
-        var lines = [
-          "viewport   h=" + window.innerWidth + "x" + window.innerHeight,
-          line("header",  ".header"),
-          line("compare", "#comparison-container"),
-          line("before",  "#before"),
-          line("footer",  "#footer"),
-          line("sidebar", "#studioMenu"),
-          line("btn",     "#view-hide-layer-panel"),
-        ];
-        document.getElementById("measure-output").textContent = lines.join("\n");
-      }
-
-      // readout: on resize, once the maps settle, and shortly after load
-      // (toggles call measure themselves via wireToggle)
-      window.addEventListener("resize", measure);
-      beforeMap.on("idle", measure);
-      setTimeout(measure, 500);
     </script>
   </body>
 </html>
