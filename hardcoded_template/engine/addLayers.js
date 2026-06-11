@@ -2,7 +2,7 @@ function addLayersToMap(map, side, date) {
   flatLayers(layers).forEach(layer => {
     addMapLayer(map, { ...layer, id: layer.id + "-" + side }, date);
     if (layer.highlight) {
-      const hl = { ...layer, paint: layer.highlight };
+      const hl = { ...layer, paint: layer.highlight, source: layer.id + "-" + side };
       addMapLayer(map, { ...hl, id: layer.id + "-highlighted-" + side }, date);
     }
   });
