@@ -1,0 +1,197 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Layout Test</title>
+
+    <!-- Same font as MHT -->
+    <link href="https://fonts.googleapis.com/css?family=Source+Sans+Pro:400,700,600italic" rel="stylesheet" type="text/css" />
+
+    <!-- Mapbox GL + Compare (same versions as MHT) -->
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+    <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
+    <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css" type="text/css" />
+
+    <!-- Font Awesome (icons in header / sidebar toggle) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+    <!-- SAME CSS as MHT -->
+    <link href="../hardcoded_template/engine/engine.css" rel="stylesheet" />
+
+    <!-- TOGGLE MECHANISM (inline, overrides engine.css for this test) -->
+    <style>
+      :root { --header-h: 80px; --footer-h: 67px; }
+      html[data-no-header]   { --header-h: 0px; }
+      html[data-no-timeline] { --footer-h: 0px; }
+
+      .map { top: var(--header-h); bottom: var(--footer-h); }
+      html[data-no-header] .map { border-top: none; }
+
+      #studioMenu {
+        top: calc(var(--header-h) + 2px);
+        height:     calc(100% - var(--header-h) - var(--footer-h) - 24px);
+        max-height: calc(100% - var(--header-h) - var(--footer-h) - 24px);
+      }
+      #view-hide-layer-panel { top: calc(var(--header-h) + 8px); }
+
+      html[data-no-header]   .header { display: none; }
+      html[data-no-timeline] #datepanel,
+      html[data-no-timeline] #footer { display: none; }
+      html[data-no-sidebar]  #studioMenu,
+      html[data-no-sidebar]  #view-hide-layer-panel,
+      html[data-no-sidebar]  #mobi-view-sidebar { display: none; }
+
+      /* debug toggle panel */
+      #toggle-panel {
+        position: fixed; top: 90px; right: 10px; z-index: 99999;
+        background: #fff; border: 2px solid #000; border-radius: 6px;
+        padding: 10px 14px; font-family: sans-serif; font-size: 14px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+      }
+      #toggle-panel label { display: block; margin: 3px 0; cursor: pointer; }
+    </style>
+  </head>
+
+  <body>
+
+    <!-- DEBUG TOGGLE PANEL -->
+    <div id="toggle-panel">
+      <label><input type="checkbox" id="t-header"   checked /> Header</label>
+      <label><input type="checkbox" id="t-timeline" checked /> Timeline</label>
+      <label><input type="checkbox" id="t-sidebar"  checked /> Sidebar</label>
+      <pre id="measure-output" style="margin:8px 0 0; font-size:11px; line-height:1.4; white-space:pre;"></pre>
+    </div>
+
+    <!-- HEADER (normal flow — height comes from the logo image, ~80px) -->
+    <div class="header">
+      <a id="logo-link" href="" target="_blank">
+        <img id="logo-img-wide" src="../hardcoded_template/test_project/icons/banner_thumbnail.png" align="middle" />
+      </a>
+      <div id="header_text" class="headerText">
+        <span id="headerTextSuffix">|</span>
+        <span id="header-text-value">Layout Test</span>
+      </div>
+      <div class="header-right">
+        <i class="fa fa-2x fa-info-circle" id="info"></i>
+      </div>
+    </div>
+
+    <!-- SIDEBAR TOGGLE BUTTON -->
+    <button id="view-hide-layer-panel">
+      <br />
+      <span id="dir-txt">&#9204;</span> <br /><br />
+    </button>
+
+    <!-- SIDEBAR (empty) -->
+    <div id="studioMenu">
+      <i id="mobi-hide-sidebar" class="fa fa-arrow-circle-left fa-3x"></i>
+      <p class="title">LAYERS</p>
+      <br />
+      <div id="layers-panel-content">
+        <p style="padding: 10px; color: #999;">(empty sidebar)</p>
+      </div>
+    </div>
+
+    <!-- MAPS + SWIPE -->
+    <div id="comparison-container">
+      <div id="before" class="map"></div>
+      <div id="after" class="map"></div>
+    </div>
+
+    <div id="mobi-view-sidebar"><i class="fa fa-bars fa-2x"></i></div>
+
+    <!-- TIMELINE date panel -->
+    <div id="datepanel">
+      <b><span id="date">01 Jan 1900</span></b>
+    </div>
+
+    <!-- TIMELINE footer / ruler -->
+    <div id="footer">
+      <div id="slider">
+        <div id="mobi-year">...</div>
+        <div class="timeline">
+          <div class="year"><span>1900</span><span class="timeline-ruler"></span></div>
+          <div class="year"><span>1925</span><span class="timeline-ruler"></span></div>
+          <div class="year"><span>&#8678; TIME SLIDE &#8680;</span><span class="timeline-ruler"></span></div>
+          <div class="year"><span>1975</span><span class="timeline-ruler"></span></div>
+          <div class="year"><span>2000</span><span class="timeline-ruler"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAP INIT (minimal, self-contained) -->
+    <script>
+      mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
+
+      var center = [-93.63661, 42.03112];
+      var zoom   = 13.63;
+
+      // Different base map on each side so the swipe is visible
+      var leftStyle  = "mapbox://styles/nittyjee/cmmdxrf57001901qserwbevvc"; // Satellite
+      var rightStyle = "mapbox://styles/nittyjee/cmmlhhgbj00c701s915u3f0nr"; // Streets
+
+      var beforeMap = new mapboxgl.Map({
+        container: "before", style: leftStyle, center: center, zoom: zoom,
+        projection: "mercator", attributionControl: true,
+      });
+      var afterMap = new mapboxgl.Map({
+        container: "after", style: rightStyle, center: center, zoom: zoom,
+        projection: "mercator", attributionControl: true,
+      });
+
+      var map = new mapboxgl.Compare(beforeMap, afterMap, "#comparison-container", {});
+
+      beforeMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
+      afterMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
+
+      // TOGGLE WIRING — flip a data-attribute on <html>, then resize the maps
+      function wireToggle(checkboxId, attr) {
+        document.getElementById(checkboxId).addEventListener("change", function () {
+          if (this.checked) document.documentElement.removeAttribute(attr);
+          else              document.documentElement.setAttribute(attr, "");
+          beforeMap.resize();
+          afterMap.resize();
+        });
+      }
+      wireToggle("t-header",   "data-no-header");
+      wireToggle("t-timeline", "data-no-timeline");
+      wireToggle("t-sidebar",  "data-no-sidebar");
+
+      // MEASUREMENT — show the real rendered geometry of each block
+      function measure() {
+        function line(label, sel) {
+          var el = typeof sel === "string" ? document.querySelector(sel) : sel;
+          if (!el) return label.padEnd(11) + "(not found)";
+          var b = el.getBoundingClientRect();
+          var cs = getComputedStyle(el);
+          return label.padEnd(11) +
+            "top="  + Math.round(b.top) +
+            " bot=" + Math.round(b.bottom) +
+            " h="   + Math.round(b.height) +
+            " [" + cs.position + "]";
+        }
+        var lines = [
+          "viewport   h=" + window.innerHeight,
+          line("header",  ".header"),
+          line("compare", "#comparison-container"),
+          line("before",  "#before"),
+          line("after",   "#after"),
+          line("canvas",  "#before canvas"),
+          line("footer",  "#footer"),
+          line("sidebar", "#studioMenu"),
+        ];
+        document.getElementById("measure-output").textContent = lines.join("\n");
+      }
+
+      // re-measure after toggles and on resize; once maps settle on load
+      ["t-header", "t-timeline", "t-sidebar"].forEach(function (id) {
+        document.getElementById(id).addEventListener("change", function () { setTimeout(measure, 50); });
+      });
+      window.addEventListener("resize", measure);
+      beforeMap.on("idle", measure);
+      setTimeout(measure, 500);
+    </script>
+  </body>
+</html>
