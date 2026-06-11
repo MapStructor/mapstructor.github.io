@@ -22,6 +22,11 @@
 
     <!-- TOGGLE MECHANISM (inline, overrides engine.css for this test) -->
     <style>
+      /* Lock the page so it can never scroll — absolute-positioned layout
+         pieces move with the scroll, so any scroll (incl. Chrome restoring
+         scroll position on refresh) shifts everything and opens a gap. */
+      html, body { height: 100%; margin: 0; overflow: hidden; }
+
       :root { --header-h: 80px; --footer-h: 67px; }
       html[data-no-header]   { --header-h: 0px; }
       html[data-no-timeline] { --footer-h: 0px; }
@@ -56,11 +61,11 @@
 
   <body>
 
-    <!-- DEBUG TOGGLE PANEL -->
+    <!-- DEBUG TOGGLE PANEL (autocomplete=off → browser won't restore stale state on refresh) -->
     <div id="toggle-panel">
-      <label><input type="checkbox" id="t-header"   checked /> Header</label>
-      <label><input type="checkbox" id="t-timeline" checked /> Timeline</label>
-      <label><input type="checkbox" id="t-sidebar"  checked /> Sidebar</label>
+      <label><input type="checkbox" id="t-header"   autocomplete="off" /> Header</label>
+      <label><input type="checkbox" id="t-timeline" autocomplete="off" /> Timeline</label>
+      <label><input type="checkbox" id="t-sidebar"  autocomplete="off" /> Sidebar</label>
       <pre id="measure-output" style="margin:8px 0 0; font-size:11px; line-height:1.4; white-space:pre;"></pre>
     </div>
 
@@ -125,6 +130,23 @@
     <script>
       mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
 
+      // SOURCE OF TRUTH — the feature config (mirrors features.js in the real app)
+      var features = { header: true, timeline: true, sidebar: true };
+
+      // Apply the config to <html> and sync the checkboxes.
+      // Called ONCE before the maps are built, so the maps are born at the
+      // correct size — no resize needed on load.
+      function applyFeatures() {
+        var h = document.documentElement;
+        h.toggleAttribute("data-no-header",   !features.header);
+        h.toggleAttribute("data-no-timeline", !features.timeline);
+        h.toggleAttribute("data-no-sidebar",  !features.sidebar);
+        document.getElementById("t-header").checked   = features.header;
+        document.getElementById("t-timeline").checked = features.timeline;
+        document.getElementById("t-sidebar").checked  = features.sidebar;
+      }
+      applyFeatures();   // <-- state is settled BEFORE the maps exist
+
       var center = [-93.63661, 42.03112];
       var zoom   = 13.63;
 
@@ -146,18 +168,20 @@
       beforeMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
       afterMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 
-      // TOGGLE WIRING — flip a data-attribute on <html>, then resize the maps
-      function wireToggle(checkboxId, attr) {
+      // LIVE TOGGLING — this is a runtime container change, so resize IS needed
+      // here (and only here — never in the load path).
+      function wireToggle(checkboxId, key) {
         document.getElementById(checkboxId).addEventListener("change", function () {
-          if (this.checked) document.documentElement.removeAttribute(attr);
-          else              document.documentElement.setAttribute(attr, "");
+          features[key] = this.checked;
+          applyFeatures();
           beforeMap.resize();
           afterMap.resize();
+          setTimeout(measure, 50);
         });
       }
-      wireToggle("t-header",   "data-no-header");
-      wireToggle("t-timeline", "data-no-timeline");
-      wireToggle("t-sidebar",  "data-no-sidebar");
+      wireToggle("t-header",   "header");
+      wireToggle("t-timeline", "timeline");
+      wireToggle("t-sidebar",  "sidebar");
 
       // MEASUREMENT — show the real rendered geometry of each block
       function measure() {
@@ -185,10 +209,8 @@
         document.getElementById("measure-output").textContent = lines.join("\n");
       }
 
-      // re-measure after toggles and on resize; once maps settle on load
-      ["t-header", "t-timeline", "t-sidebar"].forEach(function (id) {
-        document.getElementById(id).addEventListener("change", function () { setTimeout(measure, 50); });
-      });
+      // readout: on resize, once the maps settle, and shortly after load
+      // (toggles call measure themselves via wireToggle)
       window.addEventListener("resize", measure);
       beforeMap.on("idle", measure);
       setTimeout(measure, 500);
