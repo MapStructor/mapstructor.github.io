@@ -1,0 +1,302 @@
+<!doctype html>
+<html>
+  <head>
+    <!-- SOURCES-->
+
+    <!-- TESTING: delete this block and uncomment line below to clean up -->
+    <script src="project/lists/test-project.js"></script>
+    <script>
+      var _project = useTestProject ? testProjectPath : "project";
+      document.write('<script src="' + _project + '/lists/header.js"><\/script>');
+    </script>
+    <!-- END TESTING -->
+    <!-- <script src="project/lists/header.js"></script> -->
+    <script>
+      document.title = siteMeta.title;
+      document.head.insertAdjacentHTML('beforeend', [
+        '<meta name="description" content="'           + siteMeta.description + '"/>',
+        '<meta property="og:title" content="'         + siteMeta.title       + '"/>',
+        '<meta property="og:type" content="website"/>',
+        '<meta property="og:image" content="'         + siteMeta.ogImage     + '"/>',
+        '<meta property="og:url" content="'           + siteMeta.ogUrl       + '"/>',
+        '<meta property="og:description" content="'   + siteMeta.description + '"/>',
+        '<meta property="og:site_name" content="'     + siteMeta.ogSiteName  + '"/>',
+        '<meta name="theme-color" content="'          + siteMeta.themeColor  + '"/>',
+        '<meta name="apple-mobile-web-app-title" content="' + siteMeta.title          + '"/>',
+        '<meta name="twitter:card" content="'               + siteMeta.twitterCard    + '"/>',
+        '<meta name="twitter:image:alt" content="'          + siteMeta.twitterImageAlt + '"/>',
+      ].join(''));
+    </script>
+
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="robots" content="all" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+
+    <link rel="manifest" href="manifest.json" />
+    <link rel="shortcut icon" href="./icons/favicon.ico" type="image/vnd.microsoft.icon" />
+    <link rel="apple-touch-icon" type="image/png" href="./icons/icon.png" />
+
+    <link
+      href="https://fonts.googleapis.com/css?family=Source+Sans+Pro:400,700,600italic"
+      rel="stylesheet"
+      type="text/css"
+    />
+    <link rel="stylesheet" href="engine/vendor/jquery-ui-1.10.3.custom/css/ui-darkness/jquery-ui-1.10.3.custom.css" />
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
+    <script src="engine/vendor/jquery-ui-1.10.3.custom/js/jquery-ui-1.10.3.custom.min.js"></script>
+    <script src="engine/vendor/jquery.ui.touch-punch.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.19.1/moment.min.js"></script>
+
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+    <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
+
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+    <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <link
+      href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css"
+      type="text/css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css"
+      type="text/css"
+    />
+    <link href="engine/engine.css" rel="stylesheet" />
+    <link href="../platform/editor.css" rel="stylesheet" />
+
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css"
+      integrity="sha512-2SwdPD6INVrV/lHTZbO2nodKhrnDdJK9/kg2XD1r9uGqPo1cUbujc+IYdlYdEErWNu69gVcYgdxlmVmzTWnetw=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+
+    <!-- TESTING: delete this block and uncomment lines below to clean up -->
+    <script>
+      document.write('<script src="' + _project + '/lists/disclaimer.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/features.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/sliderDates.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/layersList.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/modalinfo.js"><\/script>');
+    </script>
+    <!-- END TESTING -->
+    <script src="engine/handle-mobile-devices.js"></script>
+    <script src="engine/utils.js"></script>
+    <script src="engine/index.js"></script>
+  </head>
+
+  <body>
+
+    <!-------------------->
+    <!---ADD MODAL DIV---->
+    <!-------------------->
+
+    <input class="checker" type="checkbox" id="o" hidden />
+    <div class="modal">
+      <div class="modal-body">
+        <div class="modal-header">
+          <h1>ABOUT</h1>
+          <label for="o" id="close" title="Close">&times;</label>
+        </div>
+        <div class="modal-content"></div>
+      </div>
+    </div>
+    <!-- HEADER -->
+    <div class="header">
+
+      <a id="logo-link" href="" target="_blank">
+        <!-- TESTING: delete this block and uncomment line below to clean up -->
+      <script>document.write('<img id="logo-img-wide" src="' + _project + '/icons/banner_thumbnail.png" align="middle" />');</script>
+      <!-- <img id="logo-img-wide" src="project/icons/banner_thumbnail.png" align="middle" /> -->
+      </a>
+
+      <div id="header_text" class="headerText">
+        <span id="headerTextSuffix">|</span>
+        <span id="header-text-value"></span>
+      </div>
+
+      <div class="header-right">
+        <label for="o" id="open-popup" style="display: none">Open PopUp</label>
+        <div id="header-right-buttons"></div>
+        <i class="fa fa-2x fa-info-circle trigger-popup" id="info"></i>
+      </div>
+    </div>
+
+    <!-- LAYER TOGGLE -->
+    <button id="view-hide-layer-panel">
+      <br />
+      <span id="dir-txt">&#9204;</span> <br /><br />
+    </button>
+    <div id="rightInfoBar" class="rightInfoBarBorder"></div>
+    <div id="studioMenu">
+      <i id="mobi-hide-sidebar" class="fa fa-arrow-circle-left fa-3x"></i>
+      <p class="title">LAYERS</p>
+      <br />
+
+      <div id="layers-panel-content"></div>
+
+      <hr />
+      <p class="title">DRAW</p>
+      <div id="draw-sidebar">
+        <div id="project-name" contenteditable="true" spellcheck="false" title="Click to rename">Untitled Map</div>
+        <span id="save-status"></span>
+        <div id="layer-list"></div>
+        <div id="sidebar-footer">
+          <button id="add-layer-btn" title="Add layer">+ Layer</button>
+          <button id="add-group-btn" title="Add group">+ Group</button>
+          <button id="add-section-btn" title="Add section">+ Section</button>
+          <input id="add-input" type="text" placeholder="Name&hellip; (Enter to add)" style="display: none" />
+        </div>
+      </div>
+
+      <br />
+      <div>
+        <script src="engine/generateLayers.js"></script>
+        <hr />
+        <p class="title">MAPS</p>
+
+        <div id="base-maps-section"></div>
+
+        <br />
+
+        <div id="zoom-buttons-section"></div>
+        <br />
+        <div id="sketch-content"></div>
+      </div>
+    </div>
+
+    <!-- MAP DIV-->
+    <div id="comparison-container">
+      <div id="before" class="map"></div>
+      <div id="after" class="map"></div>
+    </div>
+
+    <!-- BASEMAP SWITCHER DIV -->
+    <div id="mobi-view-sidebar"><i class="fa fa-bars fa-2x"></i></div>
+
+    <!-- TIMELINE PANEL DIV -->
+    <div id="datepanel">
+      <b><span id="date"></span></b>
+    </div>
+
+    <!-- EDITOR: undo/redo toolbar -->
+    <div id="editor-toolbar">
+      <button id="btn-undo" title="Undo (Ctrl+Z)" disabled>&#x21B6;</button>
+      <button id="btn-redo" title="Redo (Ctrl+Y)" disabled>&#x21B7;</button>
+    </div>
+
+    <!-- EDITOR: layer style panel -->
+    <div id="draw-panel" class="hidden">
+      <div id="draw-title-bar">
+        <span id="draw-layer-name"></span>
+        <span id="draw-type-badge"></span>
+        <button id="draw-panel-close" title="Close">&#x2715;</button>
+      </div>
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="form">Form</button>
+        <button class="tab-btn" data-tab="json">JSON</button>
+      </div>
+      <div id="tab-form"></div>
+      <div id="tab-json" style="display: none">
+        <textarea id="json-editor" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <!-- EDITOR: feature panel -->
+    <div id="feature-panel" class="hidden">
+      <div id="feature-panel-header">
+        <span id="feature-panel-layer-name"></span>
+        <button id="feature-panel-close" title="Close">&#x2715;</button>
+      </div>
+      <div id="feature-fields">
+        <label for="feature-label">Label</label>
+        <input id="feature-label" type="text" placeholder="Label&hellip;" />
+        <label for="feature-notes">Notes</label>
+        <textarea id="feature-notes" rows="3" placeholder="Notes&hellip;"></textarea>
+      </div>
+      <div id="feature-measurements"></div>
+      <div id="feature-panel-footer">
+        <button id="delete-feature-btn">Delete feature</button>
+      </div>
+    </div>
+
+    <div id="toast" class="hidden"></div>
+
+    <div id="footer">
+      <!-- TIMELINE slider DIV -->
+      <div id="slider">
+        <!-- TIMELINE mobile info -->
+        <div id="mobi-year">...</div>
+
+        <!-- TIMELINE ruler DIV -->
+        <div class="timeline">
+          <div class="year">
+            <span id="ruler-date1"> ... </span
+            ><span class="timeline-ruler"></span>
+          </div>
+          <div class="year">
+            <span id="ruler-date2"> ... </span
+            ><span class="timeline-ruler"></span>
+          </div>
+          <div class="year">
+            <span id="ruler-date3"> ... </span
+            ><span class="timeline-ruler"></span>
+          </div>
+          <div class="year">
+            <span id="ruler-date4"> ... </span
+            ><span class="timeline-ruler"></span>
+          </div>
+          <div class="year">
+            <span id="ruler-date5"> ... </span
+            ><span class="timeline-ruler"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="loading">
+      <i class="fa fa-sync fa-10x fa-spin" id="loading-icon"></i>
+    </div>
+
+    <!-- MAP.JS SOURCE -->
+
+    <!-- TESTING: delete this block and uncomment lines below to clean up -->
+    <script>
+      document.write('<script src="' + _project + '/lists/bounds.js"><\/script>');
+      document.write('<script src="' + _project + '/lists/mapData.js"><\/script>');
+    </script>
+    <!-- END TESTING -->
+    <script src="engine/generateMaps.js"></script>
+    <script src="engine/refreshLayers.js"></script>
+    <script src="engine/addMapLayer.js"></script>
+    <script src="engine/eventsHandle.js"></script>
+    <script src="engine/addLayers.js"></script>
+    <!-- TESTING: delete this block and uncomment line below to clean up -->
+    <script>
+      document.write('<script src="' + _project + '/secrets/mapbox-token.js"><\/script>');
+    </script>
+    <!-- END TESTING -->
+    <script src="engine/infoPanel.js"></script>
+    <script>
+      // Editor: a map background click must not collapse the sidebar
+      infoPanelDefaultHandle = function () {};
+    </script>
+    <script src="engine/mapinit.js"></script>
+    <script src="engine/sliderpopups.js"></script>
+    <script src="../platform/init.js" onerror="void(0)"></script>
+    <script src="../platform/draw.js"></script>
+  </body>
+</html>
