@@ -12,6 +12,9 @@ var beforeMap;
 var afterMap;
 var map;
 
+// Platform projects (?id=<uuid>) load their config asynchronously;
+// platform/projectLoader.js calls initMaps() once it arrives.
+function initMaps() {
 
 	const beforeMapConfig = {
 		container: "before",
@@ -86,7 +89,10 @@ var map;
       if (e && e.error !== "Error") console.log(e);
     });
 
+	setupMapSwitching();
+}
 
+if (typeof platformProjectId === 'undefined' || !platformProjectId) initMaps();
 
 
 function zoomtobounds(boundsName) {
@@ -114,8 +120,6 @@ function zoomToLayer(label) {
 
 
 
-
-setupMapSwitching();
 
 // on Map events
 //var urlHash = window.location.hash;

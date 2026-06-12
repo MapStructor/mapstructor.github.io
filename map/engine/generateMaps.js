@@ -15,16 +15,22 @@ function generateMapHTML(map) {
   `;
 }
 
-document.getElementById('base-maps-section').innerHTML = baseMaps.map(generateMapHTML).join('');
+function generateBaseMapsPanel() {
+  document.getElementById('base-maps-section').innerHTML = baseMaps.map(generateMapHTML).join('');
 
-document.getElementById('zoom-buttons-section').innerHTML =
-  '<center>' +
-  zoomButtons.map(function(b) {
-    return '<button onclick="zoomtobounds(\'' + b.target + '\')" class="zoom-labels">' +
-      '&nbsp; &nbsp; <i class="fa ' + b.icon + '"></i> &nbsp; <b>' + b.label + '</b> &nbsp; &nbsp; &nbsp;' +
-      '</button>';
-  }).join('<br /><br />') +
-  '</center>';
+  document.getElementById('zoom-buttons-section').innerHTML =
+    '<center>' +
+    zoomButtons.map(function(b) {
+      return '<button onclick="zoomtobounds(\'' + b.target + '\')" class="zoom-labels">' +
+        '&nbsp; &nbsp; <i class="fa ' + b.icon + '"></i> &nbsp; <b>' + b.label + '</b> &nbsp; &nbsp; &nbsp;' +
+        '</button>';
+    }).join('<br /><br />') +
+    '</center>';
+}
+
+// Platform projects (?id=<uuid>) load their config asynchronously;
+// platform/projectLoader.js calls generateBaseMapsPanel() once it arrives.
+if (typeof platformProjectId === 'undefined' || !platformProjectId) generateBaseMapsPanel();
 
 // Called from mapinit.js after maps are initialized
 function setupMapSwitching() {

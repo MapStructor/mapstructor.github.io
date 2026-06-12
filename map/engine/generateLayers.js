@@ -150,12 +150,18 @@ function processNode(node) {
   }
 }
 
-try {
-  if (typeof layers !== 'undefined') {
-    document.getElementById('layers-panel-content').innerHTML =
-      layers.map(buildContainerHTML).join('');
-    layers.forEach(node => processNode(node));
+function generateLayersPanel() {
+  try {
+    if (typeof layers !== 'undefined') {
+      document.getElementById('layers-panel-content').innerHTML =
+        layers.map(buildContainerHTML).join('');
+      layers.forEach(node => processNode(node));
+    }
+  } catch(error) {
+    console.log(error);
   }
-} catch(error) {
-  console.log(error);
 }
+
+// Platform projects (?id=<uuid>) load their config asynchronously;
+// platform/projectLoader.js calls generateLayersPanel() once it arrives.
+if (typeof platformProjectId === 'undefined' || !platformProjectId) generateLayersPanel();
