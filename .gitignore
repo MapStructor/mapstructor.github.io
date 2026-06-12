@@ -4,3 +4,4 @@ test/mapbox-token.js
 map/js/mapbox-token.js
 map/ahm_twin/js/mapbox-token.js
 map/ahm_05.29.2026_READ_ONLY/js/mapbox-token.js
+map/test_project/lists/restrictedToken.js
