@@ -19,7 +19,7 @@ Mapstructor is a Mapbox GL JS map template with a timeline slider, before/after 
 ## Project structure
 
 ```
-hardcoded_template/
+map/
   engine/       ← map engine — do not edit unless removing components
   project/
     lists/      ← configure these
@@ -39,6 +39,7 @@ hardcoded_template/
 | `modalinfo.js` | About modal and layer info modal content |
 | `bounds.js` | Named geographic bounds for zoom buttons |
 | `disclaimer.js` | `showDisclaimer` boolean — set to `false` to hide the disclaimer overlay on load |
+| `features.js` | `features` object — set `timeline`, `header`, `sidebar`, or `infoPanel` to `false` to hide that component |
 
 ### Token (`project/secrets/`)
 

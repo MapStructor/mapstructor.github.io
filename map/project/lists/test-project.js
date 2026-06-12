@@ -1,2 +1,2 @@
-var useTestProject = true;
+var useTestProject = false;
 var testProjectPath = "test_project";
