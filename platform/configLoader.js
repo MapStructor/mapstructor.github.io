@@ -1,0 +1,162 @@
+/* configLoader.js — the db → config adapter (Chunk A, dev plan 2026-06-12 review).
+
+   Synthesizes the exact `layers[]` config shape the engine consumes (the
+   layersList.js shape) from Supabase rows. The engine never knows the config
+   came from a database.
+
+   Pure synthesis lives in ConfigLoader.synthesize(bundle, registry) so the
+   round-trip acceptance test (tools/seed/) can run it without a map page.
+
+   Field mapping is the exact mirror of the seeder in tools/seed/seed.js —
+   change them together:
+
+     column                      config field
+     ------                     ------------
+     slug                        id
+     name                        label          (the config's own `name` key, when
+                                                 present, rides in raw_config)
+     color                       iconColor
+     enabled_by_default          checked
+     source_url (+min/maxzoom)   source.url | source.tiles[0]
+     source_layer                "source-layer"
+     hover_paint                 highlight
+     popup_style / popup_prop    popupStyle / prop
+     info_id                     infoId
+     zoom_center_lng/lat         zoomCenter
+     zoom_level(_left/_right)    zoomLevel / zoomLevelLeft / zoomLevelRight
+     content_base_url            panel.encyclopediaBase
+     content_id_prop             panel.nidProp
+     panel_color                 panel.color
+     raw_config                  every unmapped key (className, topLayerClass,
+                                 isSolid, iconType, groupId, toggleElement,
+                                 containerId, caretId, itemSelector, ...)
+
+   panel.render is never stored — reattached from renderRegistry by slug.
+   Mapped keys are emitted only when the column is non-null, so the
+   synthesized objects carry the same key set as the seeded source. */
+
+var ConfigLoader = (function () {
+
+  function leafFromRow(row, registry) {
+    var raw = row.raw_config || {};
+    var leaf = {};
+
+    leaf.id = row.slug;
+    Object.keys(raw).forEach(function (k) {
+      if (k !== "panel") leaf[k] = raw[k];
+    });
+    if (row.name != null) leaf.label = row.name;
+    if (row.color != null) leaf.iconColor = row.color;
+    if (row.enabled_by_default != null) leaf.checked = row.enabled_by_default;
+    if (row.type != null) leaf.type = row.type;
+
+    if (row.source_type === "vector-tiles-url") {
+      leaf.source = { type: "vector", tiles: [row.source_url] };
+      if (row.source_minzoom != null) leaf.source.minzoom = row.source_minzoom;
+      if (row.source_maxzoom != null) leaf.source.maxzoom = row.source_maxzoom;
+    } else if (row.source_url != null) {
+      leaf.source = { type: "vector", url: row.source_url };
+    }
+
+    if (row.layout != null) leaf.layout = row.layout;
+    if (row.source_layer != null) leaf["source-layer"] = row.source_layer;
+    if (row.paint != null) leaf.paint = row.paint;
+    if (row.hover_paint != null) leaf.highlight = row.hover_paint;
+    if (row.popup_style != null) leaf.popupStyle = row.popup_style;
+    if (row.popup_prop != null) leaf.prop = row.popup_prop;
+    if (row.click != null) leaf.click = row.click;
+    if (row.info_id != null) leaf.infoId = row.info_id;
+    if (row.zoom_center_lng != null) leaf.zoomCenter = [row.zoom_center_lng, row.zoom_center_lat];
+    if (row.zoom_level != null) leaf.zoomLevel = row.zoom_level;
+    if (row.zoom_level_left != null) leaf.zoomLevelLeft = row.zoom_level_left;
+    if (row.zoom_level_right != null) leaf.zoomLevelRight = row.zoom_level_right;
+
+    if (row.content_base_url != null) {
+      var panel = { encyclopediaBase: row.content_base_url };
+      if (row.content_id_prop != null) panel.nidProp = row.content_id_prop;
+      if (raw.panel) Object.keys(raw.panel).forEach(function (k) { panel[k] = raw.panel[k]; });
+      if (row.panel_color != null) panel.color = row.panel_color;
+      if (registry && registry[row.slug]) panel.render = registry[row.slug];
+      leaf.panel = panel;
+    }
+
+    return leaf;
+  }
+
+  /* bundle = { project, sections, groups, projectLayers } — projectLayers rows
+     carry their joined layers row as .layers. sort_order is one global counter
+     across all three tables, so sorting each children array (and the top level)
+     by it reconstructs the original interleaving of sections, groups, and
+     standalone layers. */
+  function synthesize(bundle, registry) {
+    var top = [];
+    var sectionNodes = {};
+    var groupNodes = {};
+
+    (bundle.sections || []).forEach(function (s) {
+      var raw = s.raw_config || {};
+      var node = { type: "section", id: s.slug };
+      if (s.name != null) node.label = s.name;
+      Object.keys(raw).forEach(function (k) { node[k] = raw[k]; });
+      sectionNodes[s.id] = { node: node, kids: [] };
+      top.push({ sort: s.sort_order, node: node });
+    });
+
+    (bundle.groups || []).forEach(function (g) {
+      var raw = g.raw_config || {};
+      var node = { type: "group", id: g.slug };
+      Object.keys(raw).forEach(function (k) { node[k] = raw[k]; });
+      if (g.name != null) node.label = g.name;
+      if (g.zoom_center_lng != null) node.zoomCenter = [g.zoom_center_lng, g.zoom_center_lat];
+      if (g.zoom_level != null) node.zoomLevel = g.zoom_level;
+      if (g.info_id != null) node.infoId = g.info_id;
+      if (g.collapsed != null) node.collapsed = g.collapsed;
+      if (g.checked != null) node.checked = g.checked;
+      groupNodes[g.id] = { node: node, kids: [] };
+      var entry = { sort: g.sort_order, node: node };
+      if (g.section_id && sectionNodes[g.section_id]) sectionNodes[g.section_id].kids.push(entry);
+      else top.push(entry);
+    });
+
+    (bundle.projectLayers || []).forEach(function (pl) {
+      if (!pl.layers) return;
+      var entry = { sort: pl.sort_order, node: leafFromRow(pl.layers, registry) };
+      if (pl.group_id && groupNodes[pl.group_id]) groupNodes[pl.group_id].kids.push(entry);
+      else if (pl.section_id && sectionNodes[pl.section_id]) sectionNodes[pl.section_id].kids.push(entry);
+      else top.push(entry);
+    });
+
+    function bySort(a, b) { return (a.sort || 0) - (b.sort || 0); }
+    function finalize(holder) {
+      holder.node.children = holder.kids.sort(bySort).map(function (e) { return e.node; });
+    }
+    Object.keys(groupNodes).forEach(function (id) { finalize(groupNodes[id]); });
+    Object.keys(sectionNodes).forEach(function (id) { finalize(sectionNodes[id]); });
+
+    return top.sort(bySort).map(function (e) { return e.node; });
+  }
+
+  async function fetchProjectBundle(db, projectId) {
+    var p = await db.from("projects").select("*").eq("id", projectId).single();
+    if (p.error) throw p.error;
+    var s = await db.from("layer_sections").select("*").eq("project_id", projectId);
+    if (s.error) throw s.error;
+    var g = await db.from("layer_groups").select("*").eq("project_id", projectId);
+    if (g.error) throw g.error;
+    var l = await db.from("project_layers").select("*, layers(*)").eq("project_id", projectId);
+    if (l.error) throw l.error;
+    return { project: p.data, sections: s.data, groups: g.data, projectLayers: l.data };
+  }
+
+  async function loadProjectConfig(db, projectId, registry) {
+    var bundle = await fetchProjectBundle(db, projectId);
+    return synthesize(bundle, registry);
+  }
+
+  return {
+    leafFromRow: leafFromRow,
+    synthesize: synthesize,
+    fetchProjectBundle: fetchProjectBundle,
+    loadProjectConfig: loadProjectConfig,
+  };
+})();
