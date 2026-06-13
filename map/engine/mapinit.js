@@ -5,7 +5,9 @@
 //ACCESS TOKEN
 
 //Restricted Token (defined in js/lists/restrictedToken.js)
-mapboxgl.accessToken = (typeof mapboxToken !== 'undefined') ? mapboxToken : restrictedToken;
+mapboxgl.accessToken =
+	(typeof mapboxToken !== 'undefined') ? mapboxToken :
+	(typeof restrictedToken !== 'undefined') ? restrictedToken : "";
 
 
 var beforeMap;
