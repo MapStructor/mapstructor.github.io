@@ -144,27 +144,24 @@
     <div id="studioMenu">
       <i id="mobi-hide-sidebar" class="fa fa-arrow-circle-left fa-3x"></i>
       <p class="title">LAYERS</p>
+      <div id="project-name" contenteditable="true" spellcheck="false" title="Click to rename">Untitled Map</div>
+      <span id="save-status"></span>
       <br />
 
+      <!-- Single editable layer tree — platform/draw.js renders the project's
+           config (tileset + drawn layers) here. The engine's read-only
+           generateLayers tree is intentionally not loaded in the editor. -->
       <div id="layers-panel-content"></div>
 
-      <hr />
-      <p class="title">DRAW</p>
-      <div id="draw-sidebar">
-        <div id="project-name" contenteditable="true" spellcheck="false" title="Click to rename">Untitled Map</div>
-        <span id="save-status"></span>
-        <div id="layer-list"></div>
-        <div id="sidebar-footer">
-          <button id="add-layer-btn" title="Add layer">+ Layer</button>
-          <button id="add-group-btn" title="Add group">+ Group</button>
-          <button id="add-section-btn" title="Add section">+ Section</button>
-          <input id="add-input" type="text" placeholder="Name&hellip; (Enter to add)" style="display: none" />
-        </div>
+      <div id="sidebar-footer">
+        <button id="add-layer-btn" title="Add layer">+ Layer</button>
+        <button id="add-group-btn" title="Add group">+ Group</button>
+        <button id="add-section-btn" title="Add section">+ Section</button>
+        <input id="add-input" type="text" placeholder="Name&hellip; (Enter to add)" style="display: none" />
       </div>
 
       <br />
       <div>
-        <script src="engine/generateLayers.js"></script>
         <hr />
         <p class="title">MAPS</p>
 

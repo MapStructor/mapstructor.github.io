@@ -5,8 +5,8 @@
    - style panel / feature panel / toolbar float over the map → dark theme (v3)
    ───────────────────────────────────────────────────────────────────────────── */
 
-/* ── Draw sidebar block (inside #studioMenu) ── */
-#draw-sidebar {
+/* ── Layer tree block (inside #studioMenu, the single LAYERS panel) ── */
+#layers-panel-content {
   font-size: 13px;
 }
 
@@ -36,7 +36,7 @@
   padding: 0 4px;
 }
 
-#layer-list {
+#layers-panel-content {
   overflow-y: auto;
   max-height: 40vh;
   padding: 4px 0;
@@ -166,7 +166,7 @@
 .layer-item.drop-before,
 .container-item.drop-before { box-shadow: inset 0 2px 0 #4a9eff; }
 .drop-into                  { background: rgba(74,158,255,0.12) !important; box-shadow: inset 0 0 0 1px #4a9eff; }
-#layer-list.drop-after-last { box-shadow: inset 0 -2px 0 #4a9eff; }
+#layers-panel-content.drop-after-last { box-shadow: inset 0 -2px 0 #4a9eff; }
 
 /* ── Add buttons ── */
 #sidebar-footer {

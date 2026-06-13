@@ -506,7 +506,7 @@
   }
 
   function attachLayerListeners() {
-    var el = document.getElementById('layer-list');
+    var el = document.getElementById('layers-panel-content');
 
     el.querySelectorAll('[draggable]').forEach(function (div) {
       div.addEventListener('dragstart', function (e) {
@@ -649,7 +649,7 @@
   }
 
   function renderLayerList() {
-    var el = document.getElementById('layer-list');
+    var el = document.getElementById('layers-panel-content');
     el.innerHTML = buildLayerHTML(layers, 0);
     attachLayerListeners();
     syncDrawDisplay();
@@ -1133,7 +1133,7 @@
 
   // ── Layer-list drag (container-level) ────────────────────────────────────────
   function initLayerListDrag() {
-    var list = document.getElementById('layer-list');
+    var list = document.getElementById('layers-panel-content');
 
     list.addEventListener('dragover', function (e) {
       e.preventDefault();
@@ -1203,9 +1203,9 @@
   }
 
   function clearDragIndicator() {
-    document.querySelectorAll('#layer-list .drop-before').forEach(function (el) { el.classList.remove('drop-before'); });
-    document.querySelectorAll('#layer-list .drop-into').forEach(function (el) { el.classList.remove('drop-into'); });
-    var list = document.getElementById('layer-list');
+    document.querySelectorAll('#layers-panel-content .drop-before').forEach(function (el) { el.classList.remove('drop-before'); });
+    document.querySelectorAll('#layers-panel-content .drop-into').forEach(function (el) { el.classList.remove('drop-into'); });
+    var list = document.getElementById('layers-panel-content');
     if (list) list.classList.remove('drop-after-last');
   }
 
