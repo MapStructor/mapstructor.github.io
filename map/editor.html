@@ -283,6 +283,7 @@
     <script src="engine/addLayers.js"></script>
     <!-- TESTING: delete this block and uncomment line below to clean up -->
     <script>
+      document.write('<script src="' + _project + '/lists/restrictedToken.js"><\/script>');
       document.write('<script src="' + _project + '/secrets/mapbox-token.js"><\/script>');
     </script>
     <!-- END TESTING -->
@@ -294,6 +295,12 @@
     <script src="engine/mapinit.js"></script>
     <script src="engine/sliderpopups.js"></script>
     <script src="../platform/init.js" onerror="void(0)"></script>
+    <!-- Chunk A adapter: draw.js enriches loaded leaves with the engine config
+         shape (source/paint/zoom/…) via ConfigLoader.leafFromRow, keyed by slug
+         to renderRegistry, so tileset layers render in the unified editor tree
+         and on the map exactly as the viewer renders them. -->
+    <script src="../platform/configLoader.js"></script>
+    <script src="../platform/renderRegistry.js"></script>
     <script src="../platform/draw.js"></script>
   </body>
 </html>

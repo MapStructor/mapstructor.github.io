@@ -418,6 +418,7 @@
       id: 'layer-' + Date.now() + '-' + Math.random().toString(36).slice(2),
       name: name || (type ? (names[type] || type) : 'New Layer'),
       type: type || null,
+      source_type: 'geojson-supabase',
       color: color,
       visible: true,
       featureIds: [],
@@ -476,6 +477,24 @@
         if (isOpen && item.children && item.children.length) {
           html += buildLayerHTML(item.children, depth + 1);
         }
+      } else if (item.source_type && item.source_type !== 'geojson-supabase') {
+        // Tileset layer — render the viewer's native row (engine icon + label +
+        // zoom-to + info), reusing the .layer-item/.layer-visibility/.layer-name
+        // hooks so the editor's existing listeners (toggle, select, rename) apply.
+        var faIcon   = item.iconType || 'square';
+        var faStyle  = item.isSolid ? 'fas' : 'far';
+        var slashCls = ['square', 'circle', 'comment-dots'].indexOf(faIcon) === -1 ? 'slash-icon' : '';
+        var tileName = item.label || item.name || '';
+        html += '<div class="layer-item' + (item.id === activeLayerId ? ' active' : '') + '"'
+              + ' data-id="' + esc(item.id) + '" style="padding-left:' + indent + 'px" draggable="true">'
+              + '<input type="checkbox" class="layer-visibility"' + (item.visible ? ' checked' : '') + ' title="Toggle visibility"/>'
+              + '<i class="' + faStyle + ' fa-' + esc(faIcon) + ' ' + slashCls + '" style="color:' + esc(item.iconColor || item.color || '#888') + ';width:16px;text-align:center"></i>'
+              + '<span class="layer-name" title="Double-click to rename">' + esc(tileName) + '</span>'
+              + '<div class="layer-buttons-block"><div class="layer-buttons-list">'
+              +   '<i class="fa fa-crosshairs zoom-to-layer" title="Zoom to Layer" onclick="zoomToLayer(\'' + esc(tileName) + '\')"></i>'
+              + (item.infoId ? '<i class="fa fa-info-circle layer-info trigger-popup" id="' + esc(item.infoId) + '" title="Layer Info"></i>' : '')
+              + '</div></div>'
+              + '</div>';
       } else {
         var svgIcons = {
           Point:      '<circle cx="8" cy="8" r="5" fill="CLR"/>',
@@ -659,7 +678,8 @@
     var layer = findLayer(layerId);
     if (!layer) return;
     layer.visible = visible;
-    syncDrawDisplay();
+    if (layer.source_type && layer.source_type !== 'geojson-supabase') setTilesetVisibility(layer, visible);
+    else syncDrawDisplay();
     scheduleSave();
   }
 
@@ -861,11 +881,15 @@
     var leaves = flatLayers();
     for (var i = 0; i < leaves.length; i++) {
       var l = leaves[i];
+      var srcType = l.source_type || 'geojson-supabase';
+      var isDrawn = srcType === 'geojson-supabase';
       var row = {
         name:        l.name,
         color:       l.color || null,
-        type:        TYPE_TO_DB[l.type] || null,
-        source_type: 'geojson-supabase',
+        // Drawn layers store the Mapbox-GL geometry type (Polygon→fill, …);
+        // tileset layers keep the source type they were loaded with, untouched.
+        type:        isDrawn ? (TYPE_TO_DB[l.type] || null) : (l.type || null),
+        source_type: srcType,
         paint:       l.paint || null,
         user_id:     userId,
         updated_at:  new Date().toISOString()
@@ -1021,17 +1045,29 @@
       plres.data.forEach(function (pl) {
         var lrow = pl.layers;
         if (!lrow) return;
-        var node = {
-          id: 'layer-' + lrow.id,
-          name: lrow.name,
-          type: lrow.source_type === 'geojson-supabase' ? (DB_TO_TYPE[lrow.type] || null) : (lrow.type || null),
-          color: lrow.color || '#888888',
-          visible: true,
-          featureIds: [],
-          dbId: lrow.id,
-          paint: lrow.paint || { 'fill-color': lrow.color || '#888888', 'fill-outline-color': '#000000', 'fill-opacity': 0.5 },
-          _sort: pl.sort_order || 0
-        };
+        var isDrawn = lrow.source_type === 'geojson-supabase';
+        // Engine-shaped display/render fields (source, source-layer, paint,
+        // highlight, zoomCenter, infoId, panel, …raw_config) — the same shape the
+        // viewer uses — so the unified tree and the engine's addMapLayer render
+        // tileset layers with full fidelity. Mirror of the seeder/viewer adapter.
+        var node = ConfigLoader.leafFromRow(
+          lrow, typeof renderRegistry !== 'undefined' ? renderRegistry : {}
+        );
+        // Editor identity + edit state, kept distinct from the engine's id=slug
+        // scheme: the tree keys on 'layer-'+dbId and carries dbId for persistence,
+        // name for inline rename, and type in the draw model's vocabulary.
+        node.id          = 'layer-' + lrow.id;
+        node.dbId        = lrow.id;
+        node.name        = lrow.name;
+        node.source_type = lrow.source_type;
+        node.type        = isDrawn ? (DB_TO_TYPE[lrow.type] || null) : (lrow.type || null);
+        node.color       = lrow.color || '#888888';
+        node.visible     = true;
+        node.featureIds  = [];
+        node._sort       = pl.sort_order || 0;
+        if (isDrawn && !node.paint) {
+          node.paint = { 'fill-color': node.color, 'fill-outline-color': '#000000', 'fill-opacity': 0.5 };
+        }
         layerNodesByDbId[lrow.id] = node;
         if (pl.group_id && groupNodes[pl.group_id])          groupNodes[pl.group_id].children.push(node);
         else if (pl.section_id && sectionNodes[pl.section_id]) sectionNodes[pl.section_id].children.push(node);
@@ -1073,6 +1109,7 @@
       var fl = flatLayers();
       if (fl.length) setActiveLayer(fl[fl.length - 1].id); else renderLayerList();
       if (map.getSource(_DRAW_SRC)) syncDrawDisplay(); else map.once('style.load', syncDrawDisplay);
+      paintTilesets();
     } catch (err) {
       showToast('Load failed: ' + err.message, true);
       renderLayerList();
@@ -1207,6 +1244,45 @@
     document.querySelectorAll('#layers-panel-content .drop-into').forEach(function (el) { el.classList.remove('drop-into'); });
     var list = document.getElementById('layers-panel-content');
     if (list) list.classList.remove('drop-after-last');
+  }
+
+  // ── Engine map-layer shim + tileset painting ─────────────────────────────────
+  // The engine's addLayersToMap (run on every style.load) iterates *all* leaves,
+  // including drawn ones — which have no map source and a geometry-name type, so
+  // mapboxgl.addLayer would throw. Wrap the engine's global addMapLayer to skip
+  // drawn/sourceless layers, never double-add, and swallow per-layer errors, so
+  // both the engine's style.load pass and paintTilesets() are safe + idempotent.
+  if (typeof window.addMapLayer === 'function' && !window._addMapLayerWrapped) {
+    var _engineAddMapLayer = window.addMapLayer;
+    window.addMapLayer = function (m, layerConfig, date) {
+      if (!layerConfig || !layerConfig.source) return;            // drawn / sourceless
+      if (layerConfig.source_type === 'geojson-supabase') return; // drawn
+      if (m && m.getLayer && m.getLayer(layerConfig.id)) return;  // already present
+      try { return _engineAddMapLayer(m, layerConfig, date); }
+      catch (e) { console.warn('addMapLayer skipped', layerConfig && layerConfig.id, e && e.message); }
+    };
+    window._addMapLayerWrapped = true;
+  }
+
+  // Paint tileset (non-drawn) layers onto both swipe maps. Unfiltered by date —
+  // the editor previews all features; timeline filtering is a later concern.
+  function paintTilesets() {
+    if (typeof addLayersToMap !== 'function') return;
+    [[beforeMap, 'left'], [afterMap, 'right']].forEach(function (pair) {
+      var m = pair[0];
+      if (!m) return;
+      if (m.isStyleLoaded()) addLayersToMap(m, pair[1]);
+      else m.once('style.load', function () { addLayersToMap(m, pair[1]); });
+    });
+  }
+
+  // Toggle a tileset layer's visibility on both maps (drawn layers instead go
+  // through syncDrawDisplay).
+  function setTilesetVisibility(layer, visible) {
+    [[beforeMap, 'left'], [afterMap, 'right']].forEach(function (pair) {
+      var m = pair[0], id = layer.id + '-' + pair[1];
+      if (m && m.getLayer(id)) m.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
+    });
   }
 
   initLayerListDrag();
