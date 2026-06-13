@@ -994,10 +994,11 @@
     projectId = pres.data.id;
     document.getElementById('project-name').textContent = pres.data.name || 'Untitled Map';
 
-    // The maps were created at parse time with the template's default view; jump
-    // to the project's saved view (mirrors the viewer's projectLoader). Skip when
-    // the URL already carries a #lng/lat/zoom hash so shared deep links win.
-    if (!location.hash && pres.data.center_lng != null && pres.data.zoom != null) {
+    // The maps were created at parse time with the template's default view, and
+    // `hash: true` writes a URL hash before this async load runs — so a hash is
+    // effectively always present and can't gate this. Always jump to the
+    // project's saved view (mirrors the viewer's projectLoader).
+    if (pres.data.center_lng != null && pres.data.zoom != null) {
       var _view = { center: [pres.data.center_lng, pres.data.center_lat], zoom: pres.data.zoom };
       [beforeMap, afterMap].forEach(function (m) { if (m) m.jumpTo(_view); });
     }
@@ -1274,13 +1275,28 @@
 
   // Paint tileset (non-drawn) layers onto both swipe maps. Unfiltered by date —
   // the editor previews all features; timeline filtering is a later concern.
+  // NB: we add from the editor's LOCAL `layers` tree, not via the engine's
+  // addLayersToMap — that reads the GLOBAL `layers` (the empty template array)
+  // which draw.js shadows, so it would paint nothing. Re-add on every style.load
+  // so basemap switches (which rebuild the style from scratch) repaint.
   function paintTilesets() {
-    if (typeof addLayersToMap !== 'function') return;
+    if (typeof addMapLayer !== 'function') return;
     [[beforeMap, 'left'], [afterMap, 'right']].forEach(function (pair) {
-      var m = pair[0];
+      var m = pair[0], side = pair[1];
       if (!m) return;
-      if (m.isStyleLoaded()) addLayersToMap(m, pair[1]);
-      else m.once('style.load', function () { addLayersToMap(m, pair[1]); });
+      var add = function () {
+        flatLayers().forEach(function (l) {
+          if (!l.source || l.source_type === 'geojson-supabase') return;
+          addMapLayer(m, Object.assign({}, l, { id: l.id + '-' + side }));
+        });
+      };
+      if (m.isStyleLoaded()) add();
+      m.on('style.load', add);
+      // The left map's basemap setStyle can resolve before this runs and never
+      // re-fire style.load — `idle` (fires whenever rendering settles, incl. after
+      // a basemap rebuild) is the reliable catch-all; the shim's dup-guard makes
+      // repeated calls cheap and safe.
+      m.on('idle', add);
     });
   }
 
