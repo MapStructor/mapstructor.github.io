@@ -3,6 +3,13 @@
   <head>
     <!-- SOURCES-->
 
+    <!-- Platform project id (?id=<uuid>) — when set, the engine defers its boot
+         steps and ../platform/projectLoader.js runs them once the project's
+         config has been fetched from the database. Null = static boot. -->
+    <script>
+      var platformProjectId = new URLSearchParams(window.location.search).get("id");
+    </script>
+
     <!-- TESTING: delete this block and uncomment line below to clean up -->
     <script src="project/lists/test-project.js"></script>
     <script>
@@ -100,6 +107,7 @@
 
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
       rel="stylesheet"
@@ -344,6 +352,18 @@
     <script src="engine/infoPanel.js"></script>
     <script src="engine/mapinit.js"></script>
     <script src="engine/sliderpopups.js"></script>
+    <script src="../platform/configLoader.js" onerror="void(0)"></script>
+    <script src="../platform/renderRegistry.js" onerror="void(0)"></script>
+    <script src="../platform/projectLoader.js" onerror="void(0)"></script>
+    <script>
+      // Standalone deploys ship map/ without platform/ — if ?id= is set but the
+      // loader didn't arrive, boot the static config so the page still works.
+      if (platformProjectId && typeof PlatformProjectLoader === "undefined") {
+        generateLayersPanel();
+        generateBaseMapsPanel();
+        initMaps();
+      }
+    </script>
     <script src="../platform/init.js" onerror="void(0)"></script>
   </body>
 </html>
