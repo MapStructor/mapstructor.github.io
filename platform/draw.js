@@ -461,61 +461,74 @@
   }
 
   // ── Sidebar rendering ────────────────────────────────────────────────────────
-  function buildLayerHTML(arr, depth) {
+  // Renders the editor's layer tree using the ENGINE's row markup (div.layer-list-row
+  // + engine.css), so it is visually indistinguishable from the viewer. The only
+  // editor additions are: data-id + draggable (reorder), a hover delete-btn on empty
+  // containers, the .active highlight, and drawn-layer feature sub-items. Each row
+  // also keeps its editor hook class (.layer-item / .container-item) so the existing
+  // listeners attach unchanged.
+  function leafIcon(item, isTile) {
+    if (isTile) {
+      var faIcon = item.iconType || 'square';
+      var faStyle = item.isSolid ? 'fas' : 'far';
+      var slash = ['square', 'circle', 'comment-dots'].indexOf(faIcon) === -1 ? 'slash-icon' : '';
+      return '<i class="' + faStyle + ' fa-' + esc(faIcon) + ' ' + slash + '" style="color:' + esc(item.iconColor || item.color || '#ff0000') + '"></i>';
+    }
+    var geom = { Point: 'circle', LineString: 'slash', Polygon: 'draw-polygon' }[item.type] || 'vector-square';
+    return '<i class="fas fa-' + geom + '" style="color:' + esc(item.color || '#888') + '"></i>';
+  }
+
+  function buildLayerHTML(arr, depth, parentType) {
     var html = '';
-    var indent = 8 + depth * 16;
+    var pad = 8 + depth * 16;
     (arr || []).forEach(function (item) {
-      var isContainer = item.type === 'group' || item.type === 'section';
-      if (isContainer) {
-        var isOpen = item.open !== false;
-        html += '<div class="container-item ' + item.type + '" data-id="' + esc(item.id) + '"'
-              + ' style="padding-left:' + indent + 'px" draggable="true">'
-              + '<span class="toggle">' + (isOpen ? '&#9662;' : '&#9656;') + '</span>'
-              + ' <span class="container-name">' + esc(item.name) + '</span>'
-              + ((!item.children || item.children.length === 0) ? '<span class="delete-btn">&#x2715;</span>' : '')
+      var rowStyle = 'padding-left:' + pad + 'px;position:relative';
+      var caret = item.open === false ? 'fa-plus-square' : 'fa-minus-square';
+      var delBtn = (!item.children || item.children.length === 0)
+        ? '<span class="delete-btn" title="Delete">&#x2715;</span>' : '';
+
+      if (item.type === 'section') {
+        html += '<div class="layer-list-row container-item section" data-id="' + esc(item.id) + '" draggable="true"'
+              +   ' style="' + rowStyle + ';display:flex;justify-content:center;align-items:center">'
+              +   '<i class="fas ' + caret + ' compress-expand-icon toggle" style="margin-right:5px"></i>'
+              +   '<label class="container-name" style="font-weight:bold;margin-bottom:0">' + esc(item.name) + '</label>'
+              +   delBtn
               + '</div>';
-        if (isOpen && item.children && item.children.length) {
-          html += buildLayerHTML(item.children, depth + 1);
-        }
-      } else if (item.source_type && item.source_type !== 'geojson-supabase') {
-        // Tileset layer — render the viewer's native row (engine icon + label +
-        // zoom-to + info), reusing the .layer-item/.layer-visibility/.layer-name
-        // hooks so the editor's existing listeners (toggle, select, rename) apply.
-        var faIcon   = item.iconType || 'square';
-        var faStyle  = item.isSolid ? 'fas' : 'far';
-        var slashCls = ['square', 'circle', 'comment-dots'].indexOf(faIcon) === -1 ? 'slash-icon' : '';
-        var tileName = item.label || item.name || '';
-        html += '<div class="layer-item' + (item.id === activeLayerId ? ' active' : '') + '"'
-              + ' data-id="' + esc(item.id) + '" style="padding-left:' + indent + 'px" draggable="true">'
-              + '<input type="checkbox" class="layer-visibility"' + (item.visible ? ' checked' : '') + ' title="Toggle visibility"/>'
-              + '<i class="' + faStyle + ' fa-' + esc(faIcon) + ' ' + slashCls + '" style="color:' + esc(item.iconColor || item.color || '#888') + ';width:16px;text-align:center"></i>'
-              + '<span class="layer-name" title="Double-click to rename">' + esc(tileName) + '</span>'
-              + '<div class="layer-buttons-block"><div class="layer-buttons-list">'
-              +   '<i class="fa fa-crosshairs zoom-to-layer" title="Zoom to Layer" onclick="zoomToLayer(\'' + esc(tileName) + '\')"></i>'
-              + (item.infoId ? '<i class="fa fa-info-circle layer-info trigger-popup" id="' + esc(item.infoId) + '" title="Layer Info"></i>' : '')
-              + '</div></div>'
+        if (item.open !== false && item.children) html += buildLayerHTML(item.children, depth + 1, 'section');
+
+      } else if (item.type === 'group') {
+        html += '<div class="layer-list-row container-item group" data-id="' + esc(item.id) + '" draggable="true" style="' + rowStyle + '">'
+              +   '<input type="checkbox" class="group_items" ' + (item.visible === false ? '' : 'checked') + '/>'
+              +   '<i class="fas ' + caret + ' compress-expand-icon toggle"></i>'
+              +   '<label class="container-name">' + esc(item.name) + '<div class="dummy-label-layer-space"></div></label>'
+              +   '<div class="layer-buttons-block"><div class="layer-buttons-list">'
+              +     '<i class="fa fa-crosshairs zoom-to-layer" title="Zoom to Layer" onclick="zoomToLayer(\'' + esc(item.name) + '\')"></i>'
+              +     (item.infoId ? '<i class="fa fa-info-circle layer-info trigger-popup" id="' + esc(item.infoId) + '" title="Layer Info"></i>' : '')
+              +   '</div></div>'
+              +   delBtn
               + '</div>';
+        if (item.open !== false && item.children) html += buildLayerHTML(item.children, depth + 1, 'group');
+
       } else {
-        var svgIcons = {
-          Point:      '<circle cx="8" cy="8" r="5" fill="CLR"/>',
-          LineString: '<line x1="2" y1="14" x2="14" y2="2" stroke="CLR" stroke-width="2.5" stroke-linecap="round"/>',
-          Polygon:    '<polygon points="8,2 14,6 12,13 4,13 2,6" fill="none" stroke="CLR" stroke-width="2" stroke-linejoin="round"/>'
-        };
-        var iconSvg = svgIcons[item.type] || '<rect x="3" y="3" width="10" height="10" rx="2" fill="CLR"/>';
-        var svgStr  = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
-                    + iconSvg.replace(/CLR/g, item.color || '#888') + '</svg>';
-        html += '<div class="layer-item' + (item.id === activeLayerId ? ' active' : '') + '"'
-              + ' data-id="' + esc(item.id) + '" style="padding-left:' + indent + 'px" draggable="true">'
-              + '<input type="checkbox" class="layer-visibility"' + (item.visible ? ' checked' : '') + ' title="Toggle visibility"/>'
-              + '<div class="layer-swatch">' + svgStr + '</div>'
-              + '<span class="layer-name" title="Double-click to rename">' + esc(item.name) + '</span>'
-              + '</div>';
+        var isTile = item.source_type && item.source_type !== 'geojson-supabase';
+        var label = item.label || item.name || '';
+        html += '<div class="layer-list-row layer-item' + (item.id === activeLayerId ? ' active' : '') + '"'
+              +   ' data-id="' + esc(item.id) + '" draggable="true" style="' + rowStyle + '">'
+              +   '<input type="checkbox" class="layer-visibility" ' + (item.visible ? 'checked' : '') + ' title="Toggle visibility"/>'
+              +   '<label>' + leafIcon(item, isTile) + ' <span class="layer-name" title="Double-click to rename">' + esc(label) + '</span></label>';
+        if (isTile && parentType !== 'group') {
+          html += '<div class="layer-buttons-block"><div class="layer-buttons-list">'
+              +     '<i class="fa fa-crosshairs zoom-to-layer" title="Zoom to Layer" onclick="zoomToLayer(\'' + esc(label) + '\')"></i>'
+              +     (item.infoId ? '<i class="fa fa-info-circle layer-info trigger-popup" id="' + esc(item.infoId) + '" title="Layer Info"></i>' : '')
+              +   '</div></div>';
+        }
+        html += '</div>';
+
         (item.featureIds || []).forEach(function (fid) {
           var meta = features[fid];
           if (!meta) return;
           var cls = 'feature-item' + (fid === selectedDrawId ? ' active' : '') + (fid === hoveredDrawId ? ' hover' : '');
-          html += '<div class="' + cls + '" data-id="' + fid + '"'
-                + ' style="padding-left:' + (indent + 20) + 'px">'
+          html += '<div class="' + cls + '" data-id="' + fid + '" style="padding-left:' + (pad + 20) + 'px">'
                 + '<span class="feature-item-label">' + esc(meta.label || ('Untitled ' + (item.type || 'Feature'))) + '</span>'
                 + '</div>';
         });

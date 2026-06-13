@@ -42,65 +42,24 @@
   padding: 4px 0;
 }
 
-.layer-item {
-  display: flex;
-  align-items: center;
-  padding: 6px 8px;
-  cursor: pointer;
-  border-left: 3px solid transparent;
-  gap: 8px;
-}
+/* The rows themselves are styled by engine.css (div.layer-list-row), so the tree
+   is visually identical to the viewer. Everything below is editor-only chrome
+   layered on top — nothing here changes a row's resting appearance. */
 
-.layer-item:hover { background: #f0f4f8; }
-
-.layer-item.active {
-  background: #eef1f5;
-  border-left-color: #4a9eff;
-}
-
-.layer-visibility {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-  cursor: pointer;
-  accent-color: #4a9eff;
-}
-
-.layer-swatch {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.layer-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #23374d;
-}
-
+/* Active (selected) layer — a subtle tint. */
+.layer-item.active { background: #eef1f5; }
 .layer-item.active .layer-name { font-weight: 600; }
 
+/* Drawn-layer feature sub-items (the viewer has no drawn layers). */
 .feature-item {
   display: flex;
   align-items: center;
   padding: 4px 8px 4px 28px;
   cursor: pointer;
-  border-left: 3px solid transparent;
 }
-
 .feature-item:hover,
 .feature-item.hover { background: #f0f4f8; }
-
-.feature-item.active {
-  background: #eef1f5;
-  border-left-color: #4a9eff;
-}
-
+.feature-item.active { background: #eef1f5; }
 .feature-item-label {
   font-size: 12px;
   color: #5a6c7e;
@@ -108,45 +67,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 .feature-item.active .feature-item-label { color: #23374d; }
 
-/* ── Groups / Sections ── */
-.container-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 8px;
-  cursor: grab;
-  user-select: none;
-  position: relative;
-}
-
-.container-item.section {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: #5a6c7e;
-  background: #eef1f5;
-  border-top: 1px solid #d8dee5;
-  border-bottom: 1px solid #d8dee5;
-  justify-content: center;
-  margin-top: 2px;
-}
-
-.container-item.group {
-  font-size: 11px;
-  font-weight: 600;
-  color: #5a6c7e;
-}
-
-.container-item:hover { background: #f0f4f8; }
-.container-item.section:hover { background: #e4e9ef; }
-.container-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.container-item.section .container-name { flex: 0 1 auto; }
-.toggle { font-size: 9px; color: #8a99a8; cursor: pointer; flex-shrink: 0; }
-.toggle:hover { color: #23374d; }
+/* Hover delete on empty containers. */
+.container-item { user-select: none; }
 .container-item .delete-btn {
   position: absolute;
   right: 10px;
@@ -160,11 +84,9 @@
 .container-item:hover .delete-btn { opacity: 1; }
 .container-item .delete-btn:hover { color: #c0392b; }
 
-/* ── Drag-to-reorder ── */
-.layer-item.dragging,
-.container-item.dragging    { opacity: 0.35; }
-.layer-item.drop-before,
-.container-item.drop-before { box-shadow: inset 0 2px 0 #4a9eff; }
+/* Drag-to-reorder indicators. */
+.layer-list-row.dragging    { opacity: 0.35; }
+.layer-list-row.drop-before { box-shadow: inset 0 2px 0 #4a9eff; }
 .drop-into                  { background: rgba(74,158,255,0.12) !important; box-shadow: inset 0 0 0 1px #4a9eff; }
 #layers-panel-content.drop-after-last { box-shadow: inset 0 -2px 0 #4a9eff; }
 
