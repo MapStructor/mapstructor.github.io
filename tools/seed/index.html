@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>AHM Seeder — Chunk A</title>
+    <style>
+      body {
+        font-family: "Source Sans Pro", "Segoe UI", sans-serif;
+        max-width: 760px;
+        margin: 30px auto;
+        padding: 0 16px;
+        color: #222;
+      }
+      h1 { font-size: 22px; }
+      code { background: #f0f0f0; padding: 1px 4px; }
+      button {
+        font-size: 15px;
+        padding: 6px 14px;
+        cursor: pointer;
+      }
+      input {
+        font-size: 14px;
+        padding: 4px 6px;
+        font-family: Consolas, monospace;
+      }
+      #log {
+        background: #f4f4f4;
+        border: 1px solid #ddd;
+        padding: 12px;
+        white-space: pre-wrap;
+        min-height: 200px;
+        font-family: Consolas, monospace;
+        font-size: 13px;
+      }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="../../map/test_project/lists/layersList.js"></script>
+    <script src="../../map/test_project/lists/mapData.js"></script>
+    <script src="../../map/test_project/lists/bounds.js"></script>
+    <script src="../../map/test_project/lists/header.js"></script>
+    <script src="../../platform/renderRegistry.js"></script>
+    <script src="../../platform/configLoader.js"></script>
+  </head>
+  <body>
+    <h1>AHM Seeder (Chunk A)</h1>
+    <p>
+      <b>config → db:</b> walks <code>map/test_project/lists/layersList.js</code> and writes
+      the AHM project to Supabase. <b>Verify</b> fetches it back through
+      <code>platform/configLoader.js</code> and deep-diffs the synthesized config against the
+      source — round-trip equality is the Chunk A acceptance test.
+    </p>
+    <p>
+      Each click of Seed creates a <b>new</b> project (delete old test runs in the Supabase
+      dashboard). Requires migration <code>001_chunk_a_ahm_config_fields.sql</code> to have
+      been run first.
+    </p>
+    <p><button id="seed-btn">Seed AHM project</button></p>
+    <p>
+      <label>Project UUID: <input id="project-id" size="40" placeholder="filled after seeding" /></label>
+      <button id="verify-btn">Verify round-trip</button>
+    </p>
+    <pre id="log"></pre>
+    <script src="seed.js"></script>
+  </body>
+</html>
