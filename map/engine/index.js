@@ -16,11 +16,6 @@ var ruler_step = (sliderEnd - sliderStart) / 10,
   date_ruler4 = sliderStart + ruler_step * 7,
   date_ruler5 = sliderStart + ruler_step * 9;
 
-// Throttle for slider-driven filter updates (changeDate is expensive —
-// it re-filters every layer on both maps)
-var sliderFilterTimer = null;
-var sliderPendingDate = null;
-
 function simple_tooltip(target_items, name) {
   $(target_items).each(function (i) {
     $("body").append(
@@ -119,14 +114,8 @@ if (jQuery.browser.msie)
       }
 
      
+       changeDate(ui.value);
        $("#date").text(moment.unix(ui.value).format("DD MMM YYYY"));
-       sliderPendingDate = ui.value;
-       if (!sliderFilterTimer) {
-         sliderFilterTimer = setTimeout(function () {
-           sliderFilterTimer = null;
-           changeDate(sliderPendingDate);
-         }, 100);
-       }
       
     },
     create: function (event, ui) {
