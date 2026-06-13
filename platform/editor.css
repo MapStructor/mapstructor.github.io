@@ -46,6 +46,10 @@
    is visually identical to the viewer. Everything below is editor-only chrome
    layered on top — nothing here changes a row's resting appearance. */
 
+/* Keep the indent padding inside the fixed-width sidebar (no horizontal scroll). */
+#layers-panel-content { overflow-x: hidden; }
+#layers-panel-content .layer-list-row { box-sizing: border-box; }
+
 /* Active (selected) layer — a subtle tint. */
 .layer-item.active { background: #eef1f5; }
 .layer-item.active .layer-name { font-weight: 600; }

@@ -480,7 +480,9 @@
 
   function buildLayerHTML(arr, depth, parentType) {
     var html = '';
-    var pad = 8 + depth * 16;
+    // Match the viewer: only group children are indented (renderGroupLayerItem's
+    // leading &nbsp;); section children and top-level rows sit flush.
+    var pad = 8 + (parentType === 'group' ? 18 : 0);
     (arr || []).forEach(function (item) {
       var rowStyle = 'padding-left:' + pad + 'px;position:relative';
       var caret = item.open === false ? 'fa-plus-square' : 'fa-minus-square';
@@ -503,7 +505,7 @@
               +   '<label class="container-name">' + esc(item.name) + '<div class="dummy-label-layer-space"></div></label>'
               +   '<div class="layer-buttons-block"><div class="layer-buttons-list">'
               +     '<i class="fa fa-crosshairs zoom-to-layer" title="Zoom to Layer" onclick="zoomToLayer(\'' + esc(item.name) + '\')"></i>'
-              +     (item.infoId ? '<i class="fa fa-info-circle layer-info trigger-popup" id="' + esc(item.infoId) + '" title="Layer Info"></i>' : '')
+              +     '<i class="fa fa-info-circle layer-info trigger-popup" id="' + esc(item.infoId || '') + '" title="Layer Info"></i>'
               +   '</div></div>'
               +   delBtn
               + '</div>';
@@ -519,7 +521,7 @@
         if (isTile && parentType !== 'group') {
           html += '<div class="layer-buttons-block"><div class="layer-buttons-list">'
               +     '<i class="fa fa-crosshairs zoom-to-layer" title="Zoom to Layer" onclick="zoomToLayer(\'' + esc(label) + '\')"></i>'
-              +     (item.infoId ? '<i class="fa fa-info-circle layer-info trigger-popup" id="' + esc(item.infoId) + '" title="Layer Info"></i>' : '')
+              +     '<i class="fa fa-info-circle layer-info trigger-popup" id="' + esc(item.infoId || '') + '" title="Layer Info"></i>'
               +   '</div></div>';
         }
         html += '</div>';
@@ -1057,7 +1059,7 @@
         layers.push(node);
       });
       gdata.forEach(function (g) {
-        var node = { id: 'group-' + g.id, name: g.name, type: 'group', open: true, children: [], _sort: g.sort_order || 0 };
+        var node = { id: 'group-' + g.id, name: g.name, type: 'group', open: !g.collapsed, visible: g.checked !== false, children: [], _sort: g.sort_order || 0 };
         groupNodes[g.id] = node;
         if (g.section_id && sectionNodes[g.section_id]) sectionNodes[g.section_id].children.push(node);
         else layers.push(node);
@@ -1084,7 +1086,7 @@
         node.source_type = lrow.source_type;
         node.type        = isDrawn ? (DB_TO_TYPE[lrow.type] || null) : (lrow.type || null);
         node.color       = lrow.color || '#888888';
-        node.visible     = true;
+        node.visible     = lrow.enabled_by_default !== false;  // honor the saved on/off state, like the viewer
         node.featureIds  = [];
         node._sort       = pl.sort_order || 0;
         if (isDrawn && !node.paint) {
