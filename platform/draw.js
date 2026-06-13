@@ -989,10 +989,18 @@
 
   // ── Load ─────────────────────────────────────────────────────────────────────
   async function loadProject(id) {
-    var pres = await db.from('projects').select('id, name').eq('id', id).single();
+    var pres = await db.from('projects').select('id, name, center_lng, center_lat, zoom').eq('id', id).single();
     if (pres.error || !pres.data) { showToast('Project not found', true); return; }
     projectId = pres.data.id;
     document.getElementById('project-name').textContent = pres.data.name || 'Untitled Map';
+
+    // The maps were created at parse time with the template's default view; jump
+    // to the project's saved view (mirrors the viewer's projectLoader). Skip when
+    // the URL already carries a #lng/lat/zoom hash so shared deep links win.
+    if (!location.hash && pres.data.center_lng != null && pres.data.zoom != null) {
+      var _view = { center: [pres.data.center_lng, pres.data.center_lat], zoom: pres.data.zoom };
+      [beforeMap, afterMap].forEach(function (m) { if (m) m.jumpTo(_view); });
+    }
 
     try {
       // Structure
