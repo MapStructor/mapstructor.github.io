@@ -81,7 +81,12 @@ var ConfigLoader = (function () {
     // GeoJSON map layer — so they get the engine's paint/popup/panel like any tileset.
     if (row.source_type === "geojson-supabase") {
       leaf.source = { type: "geojson", data: { type: "FeatureCollection", features: (features || []).map(function (f) {
-        return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: { label: f.label != null ? f.label : null, description: f.description != null ? f.description : null } };
+        // DayStart/DayEnd gate visibility on the timeline (engine date filter is
+        // YYYYMMDD). Default to an always-visible range until per-feature dates exist.
+        return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: {
+          label: f.label != null ? f.label : null, description: f.description != null ? f.description : null,
+          DayStart: f.DayStart != null ? f.DayStart : 0, DayEnd: f.DayEnd != null ? f.DayEnd : 99999999
+        } };
       }) } };
       if (leaf.type == null) leaf.type = "circle";
       if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
