@@ -125,6 +125,77 @@
     });
     return out;
   }
+  function removeFromTree(arr, target) {
+    for (var i = 0; i < (arr || []).length; i++) {
+      if (arr[i] === target) { arr.splice(i, 1); return true; }
+      if (arr[i].children && removeFromTree(arr[i].children, target)) return true;
+    }
+    return false;
+  }
+
+  // ── Slice 3: rename + delete on the engine-rendered rows ─────────────────────
+  // Identify a rendered row's node: leaves/groups carry the slug on their checkbox
+  // id; a section header is the first child of <div id="<slug>">.
+  function rowNodeId(row) {
+    var cb = row.querySelector('input[type="checkbox"]');
+    if (cb && cb.id) return cb.id;
+    var p = row.parentElement;
+    if (p && p.id && p.firstElementChild === row) return p.id;
+    return null;
+  }
+  function collectDbIds(node, acc) {
+    if (node.type === 'section') { if (node._dbId) acc.sections.push(node._dbId); (node.children || []).forEach(function (c) { collectDbIds(c, acc); }); }
+    else if (node.type === 'group') { if (node._dbId) acc.groups.push(node._dbId); (node.children || []).forEach(function (c) { collectDbIds(c, acc); }); }
+    else { var lid = slugToLayerDbId[node.id]; if (lid) acc.layerIds.push(lid); }
+  }
+  async function onDelete(id) {
+    var node = findNodeById(layers, id); if (!node) return;
+    var hasKids = node.children && node.children.length;
+    if (!window.confirm('Delete "' + (node.label || node.id) + '"' + (hasKids ? ' and everything inside it' : '') + '?')) return;
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    setStatus('Saving…');
+    try {
+      // Surgical: delete only this subtree's rows; existing siblings are untouched.
+      var acc = { sections: [], groups: [], layerIds: [] };
+      collectDbIds(node, acc);
+      if (acc.layerIds.length) { var d = await db.from('project_layers').delete().eq('project_id', projectId).in('layer_id', acc.layerIds); if (d.error) throw new Error(d.error.message); }
+      if (acc.groups.length)   { var dg = await db.from('layer_groups').delete().in('id', acc.groups); if (dg.error) throw new Error(dg.error.message); }
+      if (acc.sections.length) { var ds = await db.from('layer_sections').delete().in('id', acc.sections); if (ds.error) throw new Error(ds.error.message); }
+      removeFromTree(layers, node);
+      rerender();
+      setStatus('Saved');
+    } catch (e) { console.warn('editing: delete failed', e); setStatus('Delete failed: ' + e.message); }
+  }
+  async function onRename(id) {
+    var node = findNodeById(layers, id); if (!node) return;
+    var name = window.prompt('Rename:', node.label || '');
+    if (name == null) return; name = name.trim(); if (!name) return;
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    setStatus('Saving…');
+    try {
+      if (node.type === 'section')      { var rs = await db.from('layer_sections').update({ name: name }).eq('id', node._dbId); if (rs.error) throw new Error(rs.error.message); }
+      else if (node.type === 'group')   { var rg = await db.from('layer_groups').update({ name: name }).eq('id', node._dbId); if (rg.error) throw new Error(rg.error.message); }
+      else { var lid = slugToLayerDbId[node.id]; if (lid) { var rl = await db.from('layers').update({ name: name }).eq('id', lid); if (rl.error) throw new Error(rl.error.message); } }
+      node.label = name;
+      rerender();
+      setStatus('Saved');
+    } catch (e) { console.warn('editing: rename failed', e); setStatus('Rename failed: ' + e.message); }
+  }
+  function enhanceRows() {
+    var panel = document.getElementById('layers-panel-content');
+    if (!panel) return;
+    panel.querySelectorAll('.layer-list-row').forEach(function (row) {
+      if (row.getAttribute('data-enh')) return;
+      var id = rowNodeId(row); if (!id) return;
+      row.setAttribute('data-enh', '1');
+      var del = document.createElement('span');
+      del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete';
+      del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); onDelete(id); });
+      row.appendChild(del);
+      var label = row.querySelector('label') || row.querySelector('.container-name');
+      if (label) label.addEventListener('dblclick', function (e) { e.stopPropagation(); e.preventDefault(); onRename(id); });
+    });
+  }
 
   // ── add (insert-on-add) ─────────────────────────────────────────────────────
   async function addItem(type, name, parent) {
@@ -213,7 +284,11 @@
       '#editor-add-bar button{flex:1;padding:6px 0;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;background:#eef1f5;color:#23374d;}' +
       '#editor-add-bar button:hover{background:#dfe6ed;}' +
       '#editor-add-bar input,#editor-add-bar select{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:12px;}' +
-      '#editor-save-status{font-size:11px;color:#8a99a8;padding:2px 6px;min-height:13px;}';
+      '#editor-save-status{font-size:11px;color:#8a99a8;padding:2px 6px;min-height:13px;}' +
+      '.layer-list-row{position:relative;}' +
+      '.editor-del{position:absolute;right:44px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#8a99a8;font-size:15px;font-weight:bold;line-height:1;padding:0 3px;z-index:2;}' +
+      '.layer-list-row:hover .editor-del{opacity:1;}' +
+      '.editor-del:hover{color:#c0392b;}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
     var bar = document.createElement('div'); bar.id = 'editor-add-bar';
@@ -222,9 +297,17 @@
     showButtons();
   }
 
+  // After the engine renders the tree (on boot and after every edit), add the
+  // row affordances. enhanceRows is idempotent — generateLayersPanel replaces the
+  // panel's innerHTML, so each render starts from fresh, un-enhanced rows.
+  if (typeof window.generateLayersPanel === 'function') {
+    var _origGenPanel = window.generateLayersPanel;
+    window.generateLayersPanel = function () { var r = _origGenPanel.apply(this, arguments); try { enhanceRows(); } catch (e) {} return r; };
+  }
+
   start();
   (function whenReady() {
-    if (document.getElementById('layers-panel-content')) injectChrome();
+    if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); }
     else setTimeout(whenReady, 150);
   })();
 })();
