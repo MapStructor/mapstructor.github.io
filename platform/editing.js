@@ -423,6 +423,8 @@
   var featureToDb = {};   // mapbox-draw feature id → features.feature_id
   var featureMeta = {};   // mapbox-draw feature id → { label, notes }
   var featureLayer = {};  // mapbox-draw feature id → layer db id (for show/hide)
+  var featureCache = {};  // mapbox-draw feature id → cached GeoJSON while hidden
+  var _suppressFeatureDelete = false;  // set during a hide-toggle so onDrawDelete skips the DB
   var selectedDrawId = null;
   var _featTimer = null;
   var GEOM_TO_TYPE = { Point: 'circle', LineString: 'line', Polygon: 'fill' };
@@ -434,16 +436,16 @@
   // features highlight orange. Mirrors mapbox-gl-draw's default style shape.
   var COLOR = ['coalesce', ['get', 'user_color'], '#3bb2d0'];
   var DRAW_STYLES = [
-    { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static'], ['!=', 'user_hidden', true]], paint: { 'fill-color': COLOR, 'fill-outline-color': COLOR, 'fill-opacity': 0.35 } },
+    { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': COLOR, 'fill-opacity': 0.35 } },
     { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.25 } },
-    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static'], ['!=', 'user_hidden', true]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2 } },
+    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2 } },
     { id: 'gl-draw-polygon-stroke-active', type: 'line', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
-    { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static'], ['!=', 'user_hidden', true]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2 } },
+    { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2 } },
     { id: 'gl-draw-line-active', type: 'line', filter: ['all', ['==', '$type', 'LineString'], ['==', 'active', 'true']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
-    { id: 'gl-draw-polygon-and-line-vertex-halo-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static'], ['!=', 'user_hidden', true]], paint: { 'circle-radius': 5, 'circle-color': '#fff' } },
-    { id: 'gl-draw-polygon-and-line-vertex-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static'], ['!=', 'user_hidden', true]], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
+    { id: 'gl-draw-polygon-and-line-vertex-halo-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': '#fff' } },
+    { id: 'gl-draw-polygon-and-line-vertex-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
     { id: 'gl-draw-polygon-midpoint', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
-    { id: 'gl-draw-point-inactive', type: 'circle', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static'], ['!=', 'user_hidden', true]], paint: { 'circle-radius': 5, 'circle-color': COLOR, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#000' } },
+    { id: 'gl-draw-point-inactive', type: 'circle', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': COLOR, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#000' } },
     { id: 'gl-draw-point-active', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'active', 'true'], ['==', 'meta', 'feature']], paint: { 'circle-radius': 6, 'circle-color': '#fbb03b' } },
   ];
 
@@ -461,6 +463,13 @@
   }
   function setupDraw() {
     if (draw || typeof MapboxDraw === 'undefined' || typeof beforeMap === 'undefined' || !beforeMap) return;
+    // The engine's refreshLayers (re)shows drawn layers' engine copy on every checkbox
+    // change; in the editor MapboxDraw owns them, so re-hide after each refresh.
+    if (typeof window.refreshLayers === 'function' && !window._editorWrappedRefresh) {
+      var _origRefresh = window.refreshLayers;
+      window.refreshLayers = function () { var r = _origRefresh.apply(this, arguments); try { hideDrawnEngineLayers(); } catch (e) {} return r; };
+      window._editorWrappedRefresh = true;
+    }
     draw = new MapboxDraw({ displayControlsDefault: false, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
     beforeMap.addControl(draw, 'top-right');
     beforeMap.on('draw.create', onDrawCreate);
@@ -495,7 +504,7 @@
       var ins = await db.from('features').insert({ layer_id: lid, geom: f.geometry }).select('feature_id').single();
       if (ins.error) throw new Error(ins.error.message);
       featureToDb[f.id] = ins.data.feature_id;
-      featureMeta[f.id] = { label: '', notes: '' };
+      featureMeta[f.id] = { label: '', notes: '', start: '', end: '' };
       featureLayer[f.id] = lid;
       if (draw && node.iconColor) draw.setFeatureProperty(f.id, 'color', node.iconColor);  // paint in the layer's color
       setStatus('Saved');
@@ -509,9 +518,10 @@
     setStatus('Saved');
   }
   async function onDrawDelete(e) {
+    if (_suppressFeatureDelete) return;  // a hide-toggle removed it from the canvas, not the project
     for (var i = 0; i < (e.features || []).length; i++) {
       var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
-      try { await db.from('features').delete().eq('feature_id', fid); delete featureToDb[f.id]; delete featureMeta[f.id]; } catch (err) { console.warn('feature delete failed', err); }
+      try { await db.from('features').delete().eq('feature_id', fid); delete featureToDb[f.id]; delete featureMeta[f.id]; delete featureLayer[f.id]; } catch (err) { console.warn('feature delete failed', err); }
     }
     setStatus('Saved');
   }
@@ -526,14 +536,14 @@
     var dbColor = {};
     (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) dbColor[did] = n.iconColor || '#3bb2d0'; } if (n.children) walk(n.children); }); })(layers);
     try {
-      var res = await db.from('features').select('feature_id, layer_id, geom, label, description').in('layer_id', ids);
+      var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date').in('layer_id', ids);
       if (res.error) return;
       var feats = [];
       (res.data || []).forEach(function (row) {
         if (!row.geom) return;
         var did = 'db-' + row.feature_id;
         featureToDb[did] = row.feature_id;
-        featureMeta[did] = { label: row.label || '', notes: row.description || '' };
+        featureMeta[did] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '' };
         featureLayer[did] = row.layer_id;
         feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: { color: dbColor[row.layer_id] || '#3bb2d0' } });
       });
@@ -573,19 +583,30 @@
       '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Label</label>' +
       '<input id="efp-label" type="text" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:13px;" />' +
       '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Notes</label>' +
-      '<textarea id="efp-notes" rows="3" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:13px;resize:vertical;"></textarea>';
+      '<textarea id="efp-notes" rows="3" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:13px;resize:vertical;"></textarea>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<div style="flex:1;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Start date</label>' +
+        '<input id="efp-start" type="date" style="width:100%;box-sizing:border-box;padding:4px 5px;border:1px solid #cdd6df;border-radius:4px;font-size:12px;" /></div>' +
+        '<div style="flex:1;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">End date</label>' +
+        '<input id="efp-end" type="date" style="width:100%;box-sizing:border-box;padding:4px 5px;border:1px solid #cdd6df;border-radius:4px;font-size:12px;" /></div>' +
+      '</div>' +
+      '<div style="font-size:10px;color:#8a99a8;margin-top:4px;">Blank = always visible on the timeline.</div>';
     document.body.appendChild(p);
     document.getElementById('efp-close').addEventListener('click', function () { if (draw) draw.changeMode('simple_select'); hideFeaturePanel(); });
     document.getElementById('efp-label').addEventListener('input', function () { onFeatureField('label', this.value); });
     document.getElementById('efp-notes').addEventListener('input', function () { onFeatureField('notes', this.value); });
+    document.getElementById('efp-start').addEventListener('change', function () { onFeatureField('start', this.value); });
+    document.getElementById('efp-end').addEventListener('change', function () { onFeatureField('end', this.value); });
   }
   function showFeaturePanel(drawId) {
     selectedDrawId = drawId;
     injectFeaturePanel();
-    var meta = featureMeta[drawId] || { label: '', notes: '' };
+    var meta = featureMeta[drawId] || { label: '', notes: '', start: '', end: '' };
     var p = document.getElementById('editor-feature-panel'); if (!p) return;
     document.getElementById('efp-label').value = meta.label || '';
     document.getElementById('efp-notes').value = meta.notes || '';
+    document.getElementById('efp-start').value = meta.start || '';
+    document.getElementById('efp-end').value = meta.end || '';
     p.style.display = 'block';
   }
   function hideFeaturePanel() {
@@ -603,17 +624,22 @@
     var fid = featureToDb[drawId]; if (!fid) return;
     var meta = featureMeta[drawId] || {};
     setStatus('Saving…');
-    try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null, start_date: meta.start || null, end_date: meta.end || null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { console.warn('editing: feature meta save failed', e); setStatus('Save failed'); }
   }
-  // Toggling a drawn layer's checkbox shows/hides its features (the DRAW_STYLES
-  // filter out features whose user_hidden is true).
+  // Toggling a drawn layer's checkbox shows/hides its features by removing them from
+  // (and re-adding them to) the draw control. _suppressFeatureDelete keeps the DB intact.
   function toggleDrawnLayer(slug, visible) {
     if (!draw) return;
     var dbId = slugToLayerDbId[slug];
-    Object.keys(featureLayer).forEach(function (drawId) {
-      if (featureLayer[drawId] === dbId) { try { draw.setFeatureProperty(drawId, 'hidden', visible ? false : true); } catch (e) {} }
-    });
+    var ids = Object.keys(featureLayer).filter(function (d) { return featureLayer[d] === dbId; });
+    if (!visible) {
+      _suppressFeatureDelete = true;
+      ids.forEach(function (drawId) { try { var f = draw.get(drawId); if (f) { featureCache[drawId] = JSON.parse(JSON.stringify(f)); draw.delete(drawId); } } catch (e) {} });
+      setTimeout(function () { _suppressFeatureDelete = false; }, 0);
+    } else {
+      ids.forEach(function (drawId) { try { if (!draw.get(drawId) && featureCache[drawId]) draw.add(featureCache[drawId]); } catch (e) {} });
+    }
   }
 
   // After the engine renders the tree (on boot and after every edit), add the

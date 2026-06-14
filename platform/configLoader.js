@@ -37,6 +37,13 @@
 
 var ConfigLoader = (function () {
 
+  // "1962-07-02" (or a timestamp) → 19620702; null/blank → fallback.
+  function ymd(dateStr, fallback) {
+    if (dateStr == null || dateStr === "") return fallback;
+    var n = parseInt(String(dateStr).slice(0, 10).replace(/-/g, ""), 10);
+    return isNaN(n) ? fallback : n;
+  }
+
   function geojsonDefaultPaint(type, color) {
     if (type === "fill") return { "fill-color": color, "fill-opacity": 0.35, "fill-outline-color": color };
     if (type === "line") return { "line-color": color, "line-width": 2 };
@@ -51,6 +58,10 @@ var ConfigLoader = (function () {
     Object.keys(raw).forEach(function (k) {
       if (k !== "panel") leaf[k] = raw[k];
     });
+    // refreshLayers toggles map visibility via layer.toggleElement → the checkbox id
+    // (which is the slug). Tileset configs carry it; synthesized layers need it too,
+    // or the layer never becomes visible.
+    if (leaf.toggleElement == null) leaf.toggleElement = row.slug;
     if (row.name != null) leaf.label = row.name;
     if (row.color != null) leaf.iconColor = row.color;
     if (row.enabled_by_default != null) leaf.checked = row.enabled_by_default;
@@ -81,11 +92,12 @@ var ConfigLoader = (function () {
     // GeoJSON map layer — so they get the engine's paint/popup/panel like any tileset.
     if (row.source_type === "geojson-supabase") {
       leaf.source = { type: "geojson", data: { type: "FeatureCollection", features: (features || []).map(function (f) {
-        // DayStart/DayEnd gate visibility on the timeline (engine date filter is
-        // YYYYMMDD). Default to an always-visible range until per-feature dates exist.
+        // DayStart/DayEnd gate visibility on the timeline (engine date filter is a
+        // YYYYMMDD int). Derive from the feature's start_date/end_date columns; a null
+        // date means "no bound", so default to an always-visible range.
         return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: {
           label: f.label != null ? f.label : null, description: f.description != null ? f.description : null,
-          DayStart: f.DayStart != null ? f.DayStart : 0, DayEnd: f.DayEnd != null ? f.DayEnd : 99999999
+          DayStart: ymd(f.start_date, 0), DayEnd: ymd(f.end_date, 99999999)
         } };
       }) } };
       if (leaf.type == null) leaf.type = "circle";
@@ -170,7 +182,7 @@ var ConfigLoader = (function () {
     // Pull features for drawn (geojson-supabase) layers so synthesize can build their source.
     var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase"; }).map(function (pl) { return pl.layers.id; });
     if (drawnIds.length) {
-      var f = await db.from("features").select("feature_id, layer_id, geom, label, description").in("layer_id", drawnIds);
+      var f = await db.from("features").select("feature_id, layer_id, geom, label, description, start_date, end_date").in("layer_id", drawnIds);
       if (!f.error) (f.data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); });
     }
     return bundle;
