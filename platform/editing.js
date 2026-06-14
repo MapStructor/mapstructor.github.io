@@ -72,7 +72,7 @@
     var src = node.source || {}; var isTilesUrl = !!src.tiles;
     return {
       slug: node.id, name: val(node.label), color: val(node.iconColor), type: val(node.type),
-      source_type: isTilesUrl ? "vector-tiles-url" : (src.url ? "mapbox-tileset" : null),
+      source_type: node.source_type || (isTilesUrl ? "vector-tiles-url" : (src.url ? "mapbox-tileset" : null)),
       source_url: isTilesUrl ? src.tiles[0] : val(src.url), source_layer: val(node["source-layer"]),
       source_minzoom: val(src.minzoom), source_maxzoom: val(src.maxzoom),
       paint: val(node.paint), layout: val(node.layout),
@@ -107,7 +107,7 @@
     var id = uid();
     if (type === 'section') return { type: 'section', id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, children: [] };
     if (type === 'group')   return { type: 'group', id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, itemSelector: '.' + id + '_item', children: [], checked: true, collapsed: false };
-    return { id: id, label: name, containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: 'square', iconColor: '#4a9eff', isSolid: true, checked: true };
+    return { id: id, label: name, containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: 'square', iconColor: '#4a9eff', isSolid: true, checked: true, source_type: 'geojson-supabase' };
   }
   function findNodeById(arr, id) {
     for (var i = 0; i < (arr || []).length; i++) { var n = arr[i]; if (n.id === id) return n; if (n.children) { var f = findNodeById(n.children, id); if (f) return f; } }
@@ -189,6 +189,13 @@
       if (row.getAttribute('data-enh')) return;
       var id = rowNodeId(row); if (!id) return;
       row.setAttribute('data-enh', '1');
+      row.setAttribute('data-node-id', id);
+      if (id === activeLayerId) row.classList.add('editor-active');
+      // click the row body (not a control) to make it the active draw target
+      row.addEventListener('click', function (e) {
+        if (e.target.closest('input,.layer-buttons-block,.editor-del,.compress-expand-icon,.toggle')) return;
+        setActiveLayer(id);
+      });
       var del = document.createElement('span');
       del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete';
       del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); onDelete(id); });
@@ -304,6 +311,7 @@
       if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; }
       else layers.push(node);
       rerender();
+      if (type === 'layer') setActiveLayer(node.id);  // draw into the layer you just made
       setStatus('Saved');
     } catch (e) {
       console.warn('editing: add failed', e);
@@ -373,13 +381,104 @@
       '.layer-list-row.editor-dragging{opacity:0.4;}' +
       '.layer-list-row.editor-drop-before{box-shadow:inset 0 2px 0 #4a9eff;}' +
       '.layer-list-row.editor-drop-after{box-shadow:inset 0 -2px 0 #4a9eff;}' +
-      '.layer-list-row.editor-drop-into{background:rgba(74,158,255,0.18);box-shadow:inset 0 0 0 1px #4a9eff;}';
+      '.layer-list-row.editor-drop-into{background:rgba(74,158,255,0.18);box-shadow:inset 0 0 0 1px #4a9eff;}' +
+      '.layer-list-row.editor-active{background:rgba(74,158,255,0.12);}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
     var bar = document.createElement('div'); bar.id = 'editor-add-bar';
     panel.parentNode.insertBefore(status, panel.nextSibling);
     panel.parentNode.insertBefore(bar, status.nextSibling);
     showButtons();
+  }
+
+  // ── Slice 4: drawing (mapbox-gl-draw → the `features` table) ─────────────────
+  var draw = null;
+  var activeLayerId = null;
+  var featureToDb = {};   // mapbox-draw feature id → features.feature_id
+  var GEOM_TO_TYPE = { Point: 'circle', LineString: 'line', Polygon: 'fill' };
+  var TYPE_TO_GEOM = { circle: 'point', line: 'line', fill: 'polygon' };
+  var GEOM_TO_ICON = { Point: 'circle', LineString: 'slash', Polygon: 'draw-polygon' };
+
+  function setActiveLayer(id) {
+    activeLayerId = id;
+    var panel = document.getElementById('layers-panel-content'); if (!panel) return;
+    panel.querySelectorAll('.layer-list-row.editor-active').forEach(function (el) { el.classList.remove('editor-active'); });
+    panel.querySelectorAll('.layer-list-row[data-node-id="' + id + '"]').forEach(function (row) { row.classList.add('editor-active'); });
+  }
+  function activeLayerDbId() {
+    if (!activeLayerId) return null;
+    var node = findNodeById(layers, activeLayerId);
+    if (!node || node.source_type !== 'geojson-supabase') return null;     // only drawable layers
+    return slugToLayerDbId[activeLayerId] || null;
+  }
+  function setupDraw() {
+    if (draw || typeof MapboxDraw === 'undefined' || typeof beforeMap === 'undefined' || !beforeMap) return;
+    draw = new MapboxDraw({ displayControlsDefault: false, controls: { point: true, line_string: true, polygon: true, trash: true } });
+    beforeMap.addControl(draw, 'top-right');
+    beforeMap.on('draw.create', onDrawCreate);
+    beforeMap.on('draw.update', onDrawUpdate);
+    beforeMap.on('draw.delete', onDrawDelete);
+    loadFeatures();
+  }
+  async function onDrawCreate(e) {
+    var f = e.features && e.features[0]; if (!f) return;
+    var lid = activeLayerDbId();
+    var node = activeLayerId ? findNodeById(layers, activeLayerId) : null;
+    if (!lid || !node) { window.alert('Select a drawn layer first — click a layer you added (or make one with + Layer).'); if (draw) draw.delete(f.id); return; }
+
+    // One geometry type per layer: the first feature fixes the type; a mismatch
+    // is rejected (draw it into / create a layer of the right type instead).
+    var mapType = GEOM_TO_TYPE[f.geometry.type];
+    if (!node.type) {
+      node.type = mapType;
+      node.iconType = GEOM_TO_ICON[f.geometry.type] || node.iconType;
+      try { await db.from('layers').update({ type: mapType }).eq('id', lid); } catch (err) { console.warn('editing: set layer type failed', err); }
+      rerender();
+    } else if (node.type !== mapType) {
+      if (draw) draw.delete(f.id);
+      window.alert('"' + (node.label || 'This layer') + '" holds ' + (TYPE_TO_GEOM[node.type] || node.type) + ' features only. Draw a ' + (TYPE_TO_GEOM[node.type] || node.type) + ', or add/select a separate layer for ' + f.geometry.type.toLowerCase() + 's.');
+      return;
+    }
+
+    setStatus('Saving…');
+    try {
+      var ins = await db.from('features').insert({ layer_id: lid, geom: f.geometry }).select('feature_id').single();
+      if (ins.error) throw new Error(ins.error.message);
+      featureToDb[f.id] = ins.data.feature_id;
+      setStatus('Saved');
+    } catch (err) { console.warn('editing: feature save failed', err); setStatus('Draw save failed: ' + err.message); }
+  }
+  async function onDrawUpdate(e) {
+    for (var i = 0; i < (e.features || []).length; i++) {
+      var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
+      try { await db.from('features').update({ geom: f.geometry }).eq('feature_id', fid); } catch (err) { console.warn('feature update failed', err); }
+    }
+    setStatus('Saved');
+  }
+  async function onDrawDelete(e) {
+    for (var i = 0; i < (e.features || []).length; i++) {
+      var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
+      try { await db.from('features').delete().eq('feature_id', fid); delete featureToDb[f.id]; } catch (err) { console.warn('feature delete failed', err); }
+    }
+    setStatus('Saved');
+  }
+  async function loadFeatures() {
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    if (!draw) return;
+    var ids = Object.keys(slugToLayerDbId).map(function (k) { return slugToLayerDbId[k]; });
+    if (!ids.length) return;
+    try {
+      var res = await db.from('features').select('feature_id, geom').in('layer_id', ids);
+      if (res.error) return;
+      var feats = [];
+      (res.data || []).forEach(function (row) {
+        if (!row.geom) return;
+        var did = 'db-' + row.feature_id;
+        featureToDb[did] = row.feature_id;
+        feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: {} });
+      });
+      draw.set({ type: 'FeatureCollection', features: feats });
+    } catch (e) { console.warn('editing: load features failed', e); }
   }
 
   // After the engine renders the tree (on boot and after every edit), add the
@@ -394,5 +493,9 @@
   (function whenReady() {
     if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); }
     else setTimeout(whenReady, 150);
+  })();
+  (function waitForMap() {
+    if (typeof beforeMap !== 'undefined' && beforeMap && typeof MapboxDraw !== 'undefined') setupDraw();
+    else setTimeout(waitForMap, 250);
   })();
 })();
