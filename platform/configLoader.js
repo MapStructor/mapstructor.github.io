@@ -37,7 +37,13 @@
 
 var ConfigLoader = (function () {
 
-  function leafFromRow(row, registry) {
+  function geojsonDefaultPaint(type, color) {
+    if (type === "fill") return { "fill-color": color, "fill-opacity": 0.35, "fill-outline-color": color };
+    if (type === "line") return { "line-color": color, "line-width": 2 };
+    return { "circle-radius": 5, "circle-color": color, "circle-stroke-width": 1.5, "circle-stroke-color": "#000" };
+  }
+
+  function leafFromRow(row, registry, features) {
     var raw = row.raw_config || {};
     var leaf = {};
 
@@ -70,6 +76,16 @@ var ConfigLoader = (function () {
     if (row.zoom_level != null) leaf.zoomLevel = row.zoom_level;
     if (row.zoom_level_left != null) leaf.zoomLevelLeft = row.zoom_level_left;
     if (row.zoom_level_right != null) leaf.zoomLevelRight = row.zoom_level_right;
+
+    // Drawn (geojson-supabase) layers render from their Supabase features as a real
+    // GeoJSON map layer — so they get the engine's paint/popup/panel like any tileset.
+    if (row.source_type === "geojson-supabase") {
+      leaf.source = { type: "geojson", data: { type: "FeatureCollection", features: (features || []).map(function (f) {
+        return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: { label: f.label != null ? f.label : null, description: f.description != null ? f.description : null } };
+      }) } };
+      if (leaf.type == null) leaf.type = "circle";
+      if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
+    }
 
     if (row.content_base_url != null) {
       var panel = { encyclopediaBase: row.content_base_url };
@@ -120,7 +136,7 @@ var ConfigLoader = (function () {
 
     (bundle.projectLayers || []).forEach(function (pl) {
       if (!pl.layers) return;
-      var entry = { sort: pl.sort_order, node: leafFromRow(pl.layers, registry) };
+      var entry = { sort: pl.sort_order, node: leafFromRow(pl.layers, registry, (bundle.featuresByLayer || {})[pl.layers.id]) };
       if (pl.group_id && groupNodes[pl.group_id]) groupNodes[pl.group_id].kids.push(entry);
       else if (pl.section_id && sectionNodes[pl.section_id]) sectionNodes[pl.section_id].kids.push(entry);
       else top.push(entry);
@@ -145,7 +161,14 @@ var ConfigLoader = (function () {
     if (g.error) throw g.error;
     var l = await db.from("project_layers").select("*, layers(*)").eq("project_id", projectId);
     if (l.error) throw l.error;
-    return { project: p.data, sections: s.data, groups: g.data, projectLayers: l.data };
+    var bundle = { project: p.data, sections: s.data, groups: g.data, projectLayers: l.data, featuresByLayer: {} };
+    // Pull features for drawn (geojson-supabase) layers so synthesize can build their source.
+    var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase"; }).map(function (pl) { return pl.layers.id; });
+    if (drawnIds.length) {
+      var f = await db.from("features").select("feature_id, layer_id, geom, label, description").in("layer_id", drawnIds);
+      if (!f.error) (f.data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); });
+    }
+    return bundle;
   }
 
   async function loadProjectConfig(db, projectId, registry) {
