@@ -22,6 +22,7 @@
   var nextSort = 1;
   var slugToLayerDbId = {};
   var idsReady = null;
+  var _dragId = null;
 
   // ── Sign in (for saving), then load the project's db ids ────────────────────
   function start() {
@@ -194,6 +195,86 @@
       row.appendChild(del);
       var label = row.querySelector('label') || row.querySelector('.container-name');
       if (label) label.addEventListener('dblclick', function (e) { e.stopPropagation(); e.preventDefault(); onRename(id); });
+
+      // drag-reorder
+      row.draggable = true;
+      row.addEventListener('dragstart', function (e) { _dragId = id; if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; row.classList.add('editor-dragging'); });
+      row.addEventListener('dragend', function () { row.classList.remove('editor-dragging'); clearDropMarks(); _dragId = null; });
+      row.addEventListener('dragover', function (e) {
+        if (!_dragId || _dragId === id) return;
+        e.preventDefault();
+        var t = findNodeById(layers, id); if (!t) return;
+        clearDropMarks();
+        var pos = dropPos(row, t, e.clientY);
+        row.classList.add(pos === 'into' ? 'editor-drop-into' : (pos === 'before' ? 'editor-drop-before' : 'editor-drop-after'));
+      });
+      row.addEventListener('dragleave', function () { row.classList.remove('editor-drop-before', 'editor-drop-after', 'editor-drop-into'); });
+      row.addEventListener('drop', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        clearDropMarks();
+        var dragId = _dragId; _dragId = null;
+        if (!dragId || dragId === id) return;
+        var dragNode = findNodeById(layers, dragId), targetNode = findNodeById(layers, id);
+        if (!dragNode || !targetNode) return;
+        if (moveNode(dragNode, targetNode, dropPos(row, targetNode, e.clientY))) { rerender(); persistOrder(); }
+      });
+    });
+  }
+
+  // ── drag-reorder: move a node in the tree, then renumber the whole tree's
+  // sort_order + parent links with UPDATEs only (never delete — so it's safe). ──
+  function locate(arr, target) {
+    for (var i = 0; i < (arr || []).length; i++) { if (arr[i] === target) return { arr: arr, idx: i }; if (arr[i].children) { var r = locate(arr[i].children, target); if (r) return r; } }
+    return null;
+  }
+  function isAncestor(a, b) {
+    if (!a.children) return false;
+    for (var i = 0; i < a.children.length; i++) { if (a.children[i] === b) return true; if (isAncestor(a.children[i], b)) return true; }
+    return false;
+  }
+  function moveNode(dragNode, targetNode, pos) {
+    if (dragNode === targetNode || isAncestor(dragNode, targetNode)) return false;
+    if (dragNode.type === 'section' && pos === 'into') return false;               // sections stay top-level
+    if (pos === 'into' && targetNode.type !== 'section' && targetNode.type !== 'group') pos = 'after';
+    removeFromTree(layers, dragNode);
+    if (pos === 'into') { targetNode.children = targetNode.children || []; targetNode.children.push(dragNode); targetNode.collapsed = false; }
+    else { var loc = locate(layers, targetNode); if (!loc) layers.push(dragNode); else loc.arr.splice(loc.idx + (pos === 'after' ? 1 : 0), 0, dragNode); }
+    return true;
+  }
+  async function up(table, patch, id) { if (!id) return; var r = await db.from(table).update(patch).eq('id', id); if (r.error) throw new Error(r.error.message); }
+  async function persistOrder() {
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    if (!loaded) return;
+    setStatus('Saving…');
+    var sort = 0;
+    async function walk(node, sectionId, groupId) {
+      var s = sort++;
+      if (node.type === 'section') {
+        await up('layer_sections', { sort_order: s }, node._dbId);
+        for (var i = 0; i < (node.children || []).length; i++) await walk(node.children[i], node._dbId, null);
+      } else if (node.type === 'group') {
+        await up('layer_groups', { sort_order: s, section_id: sectionId }, node._dbId);
+        for (var j = 0; j < (node.children || []).length; j++) await walk(node.children[j], sectionId, node._dbId);
+      } else {
+        var lid = slugToLayerDbId[node.id];
+        if (lid) { var r = await db.from('project_layers').update({ sort_order: s, section_id: sectionId, group_id: groupId }).eq('project_id', projectId).eq('layer_id', lid); if (r.error) throw new Error(r.error.message); }
+      }
+    }
+    try { for (var k = 0; k < layers.length; k++) await walk(layers[k], null, null); setStatus('Saved'); }
+    catch (e) { console.warn('editing: reorder save failed', e); setStatus('Reorder save failed: ' + e.message); }
+  }
+  // Where would a drop land on this row? top 30% = before, bottom 30% = after,
+  // middle of a container = into it.
+  function dropPos(row, targetNode, clientY) {
+    var rect = row.getBoundingClientRect();
+    var frac = rect.height ? (clientY - rect.top) / rect.height : 0.5;
+    var isC = targetNode.type === 'section' || targetNode.type === 'group';
+    return frac < 0.3 ? 'before' : (frac > 0.7 ? 'after' : (isC ? 'into' : 'after'));
+  }
+  function clearDropMarks() {
+    var panel = document.getElementById('layers-panel-content'); if (!panel) return;
+    panel.querySelectorAll('.editor-drop-before,.editor-drop-after,.editor-drop-into').forEach(function (el) {
+      el.classList.remove('editor-drop-before', 'editor-drop-after', 'editor-drop-into');
     });
   }
 
@@ -288,7 +369,11 @@
       '.layer-list-row{position:relative;}' +
       '.editor-del{position:absolute;right:44px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#8a99a8;font-size:15px;font-weight:bold;line-height:1;padding:0 3px;z-index:2;}' +
       '.layer-list-row:hover .editor-del{opacity:1;}' +
-      '.editor-del:hover{color:#c0392b;}';
+      '.editor-del:hover{color:#c0392b;}' +
+      '.layer-list-row.editor-dragging{opacity:0.4;}' +
+      '.layer-list-row.editor-drop-before{box-shadow:inset 0 2px 0 #4a9eff;}' +
+      '.layer-list-row.editor-drop-after{box-shadow:inset 0 -2px 0 #4a9eff;}' +
+      '.layer-list-row.editor-drop-into{background:rgba(74,158,255,0.18);box-shadow:inset 0 0 0 1px #4a9eff;}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
     var bar = document.createElement('div'); bar.id = 'editor-add-bar';
