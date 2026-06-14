@@ -103,11 +103,17 @@
   // ── tree helpers ────────────────────────────────────────────────────────────
   function rerender() { if (typeof generateLayersPanel === 'function') generateLayersPanel(); }
   function uid() { return 'new-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
+  var LAYER_COLORS = ['#4a9eff', '#e8553e', '#3bb273', '#b56cd6', '#e8a33e', '#3ec0d0', '#d64576'];
+  function nextColor() {
+    var n = 0;
+    (function count(arr) { (arr || []).forEach(function (x) { if (x.source_type === 'geojson-supabase') n++; if (x.children) count(x.children); }); })(typeof layers !== 'undefined' ? layers : []);
+    return LAYER_COLORS[n % LAYER_COLORS.length];
+  }
   function makeNode(type, name) {
     var id = uid();
     if (type === 'section') return { type: 'section', id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, children: [] };
     if (type === 'group')   return { type: 'group', id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, itemSelector: '.' + id + '_item', children: [], checked: true, collapsed: false };
-    return { id: id, label: name, containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: 'square', iconColor: '#4a9eff', isSolid: true, checked: true, source_type: 'geojson-supabase' };
+    return { id: id, label: name, containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: 'square', iconColor: nextColor(), isSolid: true, checked: true, source_type: 'geojson-supabase' };
   }
   function findNodeById(arr, id) {
     for (var i = 0; i < (arr || []).length; i++) { var n = arr[i]; if (n.id === id) return n; if (n.children) { var f = findNodeById(n.children, id); if (f) return f; } }
@@ -399,6 +405,24 @@
   var TYPE_TO_GEOM = { circle: 'point', line: 'line', fill: 'polygon' };
   var GEOM_TO_ICON = { Point: 'circle', LineString: 'slash', Polygon: 'draw-polygon' };
 
+  // Each drawn feature carries its layer's color in properties.color (exposed by
+  // MapboxDraw as user_color); inactive features paint by it, active (editing)
+  // features highlight orange. Mirrors mapbox-gl-draw's default style shape.
+  var COLOR = ['coalesce', ['get', 'user_color'], '#3bb2d0'];
+  var DRAW_STYLES = [
+    { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': COLOR, 'fill-opacity': 0.35 } },
+    { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.25 } },
+    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2 } },
+    { id: 'gl-draw-polygon-stroke-active', type: 'line', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
+    { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2 } },
+    { id: 'gl-draw-line-active', type: 'line', filter: ['all', ['==', '$type', 'LineString'], ['==', 'active', 'true']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
+    { id: 'gl-draw-polygon-and-line-vertex-halo-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': '#fff' } },
+    { id: 'gl-draw-polygon-and-line-vertex-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
+    { id: 'gl-draw-polygon-midpoint', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
+    { id: 'gl-draw-point-inactive', type: 'circle', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': COLOR, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#000' } },
+    { id: 'gl-draw-point-active', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'active', 'true'], ['==', 'meta', 'feature']], paint: { 'circle-radius': 6, 'circle-color': '#fbb03b' } },
+  ];
+
   function setActiveLayer(id) {
     activeLayerId = id;
     var panel = document.getElementById('layers-panel-content'); if (!panel) return;
@@ -413,7 +437,7 @@
   }
   function setupDraw() {
     if (draw || typeof MapboxDraw === 'undefined' || typeof beforeMap === 'undefined' || !beforeMap) return;
-    draw = new MapboxDraw({ displayControlsDefault: false, controls: { point: true, line_string: true, polygon: true, trash: true } });
+    draw = new MapboxDraw({ displayControlsDefault: false, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
     beforeMap.addControl(draw, 'top-right');
     beforeMap.on('draw.create', onDrawCreate);
     beforeMap.on('draw.update', onDrawUpdate);
@@ -445,6 +469,7 @@
       var ins = await db.from('features').insert({ layer_id: lid, geom: f.geometry }).select('feature_id').single();
       if (ins.error) throw new Error(ins.error.message);
       featureToDb[f.id] = ins.data.feature_id;
+      if (draw && node.iconColor) draw.setFeatureProperty(f.id, 'color', node.iconColor);  // paint in the layer's color
       setStatus('Saved');
     } catch (err) { console.warn('editing: feature save failed', err); setStatus('Draw save failed: ' + err.message); }
   }
@@ -467,15 +492,18 @@
     if (!draw) return;
     var ids = Object.keys(slugToLayerDbId).map(function (k) { return slugToLayerDbId[k]; });
     if (!ids.length) return;
+    // map each drawn layer's db id → its color, so loaded features keep their color
+    var dbColor = {};
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) dbColor[did] = n.iconColor || '#3bb2d0'; } if (n.children) walk(n.children); }); })(layers);
     try {
-      var res = await db.from('features').select('feature_id, geom').in('layer_id', ids);
+      var res = await db.from('features').select('feature_id, layer_id, geom').in('layer_id', ids);
       if (res.error) return;
       var feats = [];
       (res.data || []).forEach(function (row) {
         if (!row.geom) return;
         var did = 'db-' + row.feature_id;
         featureToDb[did] = row.feature_id;
-        feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: {} });
+        feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: { color: dbColor[row.layer_id] || '#3bb2d0' } });
       });
       draw.set({ type: 'FeatureCollection', features: feats });
     } catch (e) { console.warn('editing: load features failed', e); }
