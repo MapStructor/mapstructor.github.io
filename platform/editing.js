@@ -435,17 +435,19 @@
   // MapboxDraw as user_color); inactive features paint by it, active (editing)
   // features highlight orange. Mirrors mapbox-gl-draw's default style shape.
   var COLOR = ['coalesce', ['get', 'user_color'], '#3bb2d0'];
+  var FILL_OPACITY = ['coalesce', ['get', 'user_opacity'], 0.35];   // per-feature, so layer-style edits preview live
+  var STROKE_OPACITY = ['coalesce', ['get', 'user_opacity'], 1];
   var DRAW_STYLES = [
-    { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': COLOR, 'fill-opacity': 0.35 } },
+    { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': COLOR, 'fill-opacity': FILL_OPACITY } },
     { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.25 } },
-    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2 } },
+    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2, 'line-opacity': STROKE_OPACITY } },
     { id: 'gl-draw-polygon-stroke-active', type: 'line', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
-    { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2 } },
+    { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2, 'line-opacity': STROKE_OPACITY } },
     { id: 'gl-draw-line-active', type: 'line', filter: ['all', ['==', '$type', 'LineString'], ['==', 'active', 'true']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
     { id: 'gl-draw-polygon-and-line-vertex-halo-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': '#fff' } },
     { id: 'gl-draw-polygon-and-line-vertex-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
     { id: 'gl-draw-polygon-midpoint', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
-    { id: 'gl-draw-point-inactive', type: 'circle', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': COLOR, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#000' } },
+    { id: 'gl-draw-point-inactive', type: 'circle', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': COLOR, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#000', 'circle-opacity': STROKE_OPACITY } },
     { id: 'gl-draw-point-active', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'active', 'true'], ['==', 'meta', 'feature']], paint: { 'circle-radius': 6, 'circle-color': '#fbb03b' } },
   ];
 
@@ -454,6 +456,8 @@
     var panel = document.getElementById('layers-panel-content'); if (!panel) return;
     panel.querySelectorAll('.layer-list-row.editor-active').forEach(function (el) { el.classList.remove('editor-active'); });
     panel.querySelectorAll('.layer-list-row[data-node-id="' + id + '"]').forEach(function (row) { row.classList.add('editor-active'); });
+    var node = findNodeById(layers, id);
+    if (node && node.source_type === 'geojson-supabase') showLayerPanel(id); else hideLayerPanel();
   }
   function activeLayerDbId() {
     if (!activeLayerId) return null;
@@ -470,7 +474,7 @@
       window.refreshLayers = function () { var r = _origRefresh.apply(this, arguments); try { hideDrawnEngineLayers(); } catch (e) {} return r; };
       window._editorWrappedRefresh = true;
     }
-    draw = new MapboxDraw({ displayControlsDefault: false, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
+    draw = new MapboxDraw({ displayControlsDefault: false, userProperties: true, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
     beforeMap.addControl(draw, 'top-right');
     beforeMap.on('draw.create', onDrawCreate);
     beforeMap.on('draw.update', onDrawUpdate);
@@ -533,8 +537,8 @@
     var ids = Object.keys(slugToLayerDbId).map(function (k) { return slugToLayerDbId[k]; });
     if (!ids.length) return;
     // map each drawn layer's db id → its color, so loaded features keep their color
-    var dbColor = {};
-    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) dbColor[did] = n.iconColor || '#3bb2d0'; } if (n.children) walk(n.children); }); })(layers);
+    var dbColor = {}, dbOpacity = {};
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { dbColor[did] = n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; } } if (n.children) walk(n.children); }); })(layers);
     try {
       var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date').in('layer_id', ids);
       if (res.error) return;
@@ -545,7 +549,9 @@
         featureToDb[did] = row.feature_id;
         featureMeta[did] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '' };
         featureLayer[did] = row.layer_id;
-        feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: { color: dbColor[row.layer_id] || '#3bb2d0' } });
+        var props = { color: dbColor[row.layer_id] || '#3bb2d0' };
+        if (dbOpacity[row.layer_id] != null) props.opacity = dbOpacity[row.layer_id];
+        feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: props });
       });
       draw.set({ type: 'FeatureCollection', features: feats });
     } catch (e) { console.warn('editing: load features failed', e); }
@@ -640,6 +646,91 @@
     } else {
       ids.forEach(function (drawId) { try { if (!draw.get(drawId) && featureCache[drawId]) draw.add(featureCache[drawId]); } catch (e) {} });
     }
+  }
+
+  // ── layer style panel: per-layer color + opacity, persisted to layers.color/paint ──
+  var _layerStyleTimer = null;
+  function paintOpacity(paint) {
+    if (!paint) return null;
+    var v = paint['fill-opacity']; if (v == null) v = paint['line-opacity']; if (v == null) v = paint['circle-opacity'];
+    return typeof v === 'number' ? v : null;
+  }
+  function buildLayerPaint(type, color, op) {
+    if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': color, 'fill-opacity': op != null ? op : 0.35 };
+    if (type === 'line') return { 'line-color': color, 'line-width': 2, 'line-opacity': op != null ? op : 1 };
+    return { 'circle-color': color, 'circle-radius': 5, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#000', 'circle-opacity': op != null ? op : 1 };
+  }
+  function injectLayerPanel() {
+    if (document.getElementById('editor-layer-panel')) return;
+    var p = document.createElement('div');
+    p.id = 'editor-layer-panel';
+    p.style.cssText = 'position:fixed;top:120px;left:362px;width:210px;background:#fff;border:1px solid #cdd6df;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b id="elp-title">Layer style</b><span id="elp-close" style="cursor:pointer;color:#8a99a8;font-size:16px;">&times;</span></div>' +
+      '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Color</label>' +
+      '<input id="elp-color" type="color" style="width:100%;height:30px;box-sizing:border-box;margin-bottom:8px;padding:1px;border:1px solid #cdd6df;border-radius:4px;cursor:pointer;" />' +
+      '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Opacity <span id="elp-opacity-val"></span></label>' +
+      '<input id="elp-opacity" type="range" min="0" max="1" step="0.05" style="width:100%;box-sizing:border-box;" />';
+    document.body.appendChild(p);
+    document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
+    document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
+    document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
+  }
+  function showLayerPanel(slug) {
+    var node = findNodeById(layers, slug); if (!node) return;
+    injectLayerPanel();
+    var p = document.getElementById('editor-layer-panel'); if (!p) return;
+    var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
+    var op = paintOpacity(node.paint); if (op == null) op = (node.type === 'fill') ? 0.35 : 1;
+    document.getElementById('elp-title').textContent = node.label || 'Layer style';
+    document.getElementById('elp-color').value = color;
+    document.getElementById('elp-opacity').value = op;
+    document.getElementById('elp-opacity-val').textContent = op;
+    p.style.display = 'block';
+  }
+  function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
+  function onLayerStyle(field, value) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    if (field === 'color') node.iconColor = value;
+    var color = node.iconColor || '#3bb2d0';
+    var op = field === 'opacity' ? value : paintOpacity(node.paint);
+    node.paint = buildLayerPaint(node.type, color, op);
+    applyLayerStylePreview(node, op);
+    clearTimeout(_layerStyleTimer);
+    _layerStyleTimer = setTimeout(function () { saveLayerStyle(node.id); }, 500);
+  }
+  function applyLayerStylePreview(node, op) {
+    if (draw) {
+      // Repaint the layer's features with the new color/opacity. Only a delete+add
+      // actually refreshes MapboxDraw's cold render source (draw.set / setFeatureProperty
+      // update the store but don't repaint). _suppressFeatureDelete keeps the DB intact.
+      var dbId = slugToLayerDbId[node.id];
+      var ids = Object.keys(featureLayer).filter(function (d) { return featureLayer[d] === dbId; });
+      if (ids.length) {
+        _suppressFeatureDelete = true;
+        ids.forEach(function (drawId) {
+          try {
+            var f = draw.get(drawId); if (!f) return;
+            if (node.iconColor) f.properties.color = node.iconColor;
+            if (op != null) f.properties.opacity = op;
+            draw.delete(drawId); draw.add(f);
+          } catch (e) {}
+        });
+        setTimeout(function () { _suppressFeatureDelete = false; }, 0);
+      }
+    }
+    var panel = document.getElementById('layers-panel-content');
+    var row = panel && panel.querySelector('.layer-list-row[data-node-id="' + node.id + '"]');
+    var icon = row && row.querySelector('label i');
+    if (icon && node.iconColor) icon.style.color = node.iconColor;
+  }
+  async function saveLayerStyle(slug) {
+    var node = findNodeById(layers, slug); if (!node) return;
+    var lid = slugToLayerDbId[slug]; if (!lid) return;
+    setStatus('Saving…');
+    try { var r = await db.from('layers').update({ color: node.iconColor || '#3bb2d0', paint: node.paint }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    catch (e) { console.warn('editing: layer style save failed', e); setStatus('Save failed'); }
   }
 
   // After the engine renders the tree (on boot and after every edit), add the
