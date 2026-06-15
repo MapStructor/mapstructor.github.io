@@ -437,17 +437,20 @@
   var COLOR = ['coalesce', ['get', 'user_color'], '#3bb2d0'];
   var FILL_OPACITY = ['coalesce', ['get', 'user_opacity'], 0.35];   // per-feature, so layer-style edits preview live
   var STROKE_OPACITY = ['coalesce', ['get', 'user_opacity'], 1];
+  var OUTLINE_FILL = ['coalesce', ['get', 'user_outline'], COLOR];   // polygon outline → defaults to fill color
+  var OUTLINE_PT = ['coalesce', ['get', 'user_outline'], '#000'];    // point stroke → defaults to black
+  var OUTLINE_OPACITY = ['coalesce', ['get', 'user_strokeopacity'], 1];   // polygon outline opacity, INDEPENDENT of fill — so fill→0 leaves the lines
   var DRAW_STYLES = [
-    { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': COLOR, 'fill-opacity': FILL_OPACITY } },
+    { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': OUTLINE_FILL, 'fill-opacity': FILL_OPACITY } },
     { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.25 } },
-    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2, 'line-opacity': STROKE_OPACITY } },
+    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': OUTLINE_FILL, 'line-width': 2, 'line-opacity': OUTLINE_OPACITY } },
     { id: 'gl-draw-polygon-stroke-active', type: 'line', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
     { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2, 'line-opacity': STROKE_OPACITY } },
     { id: 'gl-draw-line-active', type: 'line', filter: ['all', ['==', '$type', 'LineString'], ['==', 'active', 'true']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
     { id: 'gl-draw-polygon-and-line-vertex-halo-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': '#fff' } },
     { id: 'gl-draw-polygon-and-line-vertex-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
     { id: 'gl-draw-polygon-midpoint', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
-    { id: 'gl-draw-point-inactive', type: 'circle', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': COLOR, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#000', 'circle-opacity': STROKE_OPACITY } },
+    { id: 'gl-draw-point-inactive', type: 'circle', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': COLOR, 'circle-stroke-width': 1.5, 'circle-stroke-color': OUTLINE_PT, 'circle-opacity': STROKE_OPACITY } },
     { id: 'gl-draw-point-active', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'active', 'true'], ['==', 'meta', 'feature']], paint: { 'circle-radius': 6, 'circle-color': '#fbb03b' } },
   ];
 
@@ -537,8 +540,8 @@
     var ids = Object.keys(slugToLayerDbId).map(function (k) { return slugToLayerDbId[k]; });
     if (!ids.length) return;
     // map each drawn layer's db id → its color, so loaded features keep their color
-    var dbColor = {}, dbOpacity = {};
-    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { dbColor[did] = n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; } } if (n.children) walk(n.children); }); })(layers);
+    var dbColor = {}, dbOpacity = {}, dbOutline = {}, dbStrokeOp = {};
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { dbColor[did] = n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; var ol = paintOutline(n.paint); if (ol != null) dbOutline[did] = ol; if (n.paint && n.paint['line-opacity'] != null) dbStrokeOp[did] = n.paint['line-opacity']; if (n.outlineSplit) dbStrokeOp[did] = 0; } } if (n.children) walk(n.children); }); })(layers);
     try {
       var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date').in('layer_id', ids);
       if (res.error) return;
@@ -551,6 +554,8 @@
         featureLayer[did] = row.layer_id;
         var props = { color: dbColor[row.layer_id] || '#3bb2d0' };
         if (dbOpacity[row.layer_id] != null) props.opacity = dbOpacity[row.layer_id];
+        if (dbOutline[row.layer_id] != null) props.outline = dbOutline[row.layer_id];
+        if (dbStrokeOp[row.layer_id] != null) props.strokeopacity = dbStrokeOp[row.layer_id];
         feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: props });
       });
       draw.set({ type: 'FeatureCollection', features: feats });
@@ -562,8 +567,8 @@
     if (typeof layers === 'undefined') return;
     (function walk(arr) {
       (arr || []).forEach(function (n) {
-        if (n.id && n.source_type === 'geojson-supabase') {
-          ['-left', '-right'].forEach(function (sfx) {
+        if (n.id && n.source_type === 'geojson-supabase' && !n.outlineOf) {  // outline layers render via the adapter, not MapboxDraw
+          ['-left', '-right', '-stroke-left', '-stroke-right'].forEach(function (sfx) {
             var id = n.id + sfx;
             try { if (beforeMap && beforeMap.getLayer(id)) beforeMap.setLayoutProperty(id, 'visibility', 'none'); } catch (e) {}
             try { if (typeof afterMap !== 'undefined' && afterMap && afterMap.getLayer(id)) afterMap.setLayoutProperty(id, 'visibility', 'none'); } catch (e) {}
@@ -655,10 +660,15 @@
     var v = paint['fill-opacity']; if (v == null) v = paint['line-opacity']; if (v == null) v = paint['circle-opacity'];
     return typeof v === 'number' ? v : null;
   }
-  function buildLayerPaint(type, color, op) {
-    if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': color, 'fill-opacity': op != null ? op : 0.35 };
+  function paintOutline(paint) {
+    if (!paint) return null;
+    var v = paint['fill-outline-color']; if (v == null) v = paint['circle-stroke-color'];
+    return typeof v === 'string' ? v : null;
+  }
+  function buildLayerPaint(type, color, op, outline, outlineVis) {
+    if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': outline || color, 'fill-opacity': op != null ? op : 0.35, 'line-opacity': outlineVis != null ? outlineVis : 1 };
     if (type === 'line') return { 'line-color': color, 'line-width': 2, 'line-opacity': op != null ? op : 1 };
-    return { 'circle-color': color, 'circle-radius': 5, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#000', 'circle-opacity': op != null ? op : 1 };
+    return { 'circle-color': color, 'circle-radius': 5, 'circle-stroke-width': 1.5, 'circle-stroke-color': outline || '#000', 'circle-opacity': op != null ? op : 1 };
   }
   function injectLayerPanel() {
     if (document.getElementById('editor-layer-panel')) return;
@@ -670,11 +680,22 @@
       '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Color</label>' +
       '<input id="elp-color" type="color" style="width:100%;height:30px;box-sizing:border-box;margin-bottom:8px;padding:1px;border:1px solid #cdd6df;border-radius:4px;cursor:pointer;" />' +
       '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Opacity <span id="elp-opacity-val"></span></label>' +
-      '<input id="elp-opacity" type="range" min="0" max="1" step="0.05" style="width:100%;box-sizing:border-box;" />';
+      '<input id="elp-opacity" type="range" min="0" max="1" step="0.05" style="width:100%;box-sizing:border-box;" />' +
+      '<div id="elp-outline-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Outline color</label>' +
+      '<input id="elp-outline" type="color" style="width:100%;height:28px;box-sizing:border-box;padding:1px;border:1px solid #cdd6df;border-radius:4px;cursor:pointer;" /></div>' +
+      '<div id="elp-vis-row" style="margin-top:8px;display:flex;gap:12px;font-size:12px;color:#5a6c7e;">' +
+        '<label style="cursor:pointer;"><input id="elp-fill-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show fill</label>' +
+        '<label style="cursor:pointer;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
+      '</div>' +
+      '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;font-size:12px;">Split outline into its own layer</button>';
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
     document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
+    document.getElementById('elp-outline').addEventListener('input', function () { onLayerStyle('outline', this.value); });
+    document.getElementById('elp-fill-vis').addEventListener('change', function () { onLayerStyle('fillVisible', this.checked); });
+    document.getElementById('elp-outline-vis').addEventListener('change', function () { onLayerStyle('outlineVisible', this.checked); });
+    document.getElementById('elp-split').addEventListener('click', onSplitOutline);
   }
   function showLayerPanel(slug) {
     var node = findNodeById(layers, slug); if (!node) return;
@@ -682,10 +703,18 @@
     var p = document.getElementById('editor-layer-panel'); if (!p) return;
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
     var op = paintOpacity(node.paint); if (op == null) op = (node.type === 'fill') ? 0.35 : 1;
+    var outline = paintOutline(node.paint) || (node.type === 'fill' ? color : '#000000');
     document.getElementById('elp-title').textContent = node.label || 'Layer style';
     document.getElementById('elp-color').value = color;
     document.getElementById('elp-opacity').value = op;
     document.getElementById('elp-opacity-val').textContent = op;
+    document.getElementById('elp-outline').value = /^#[0-9a-fA-F]{6}$/.test(outline) ? outline : '#000000';
+    document.getElementById('elp-outline-row').style.display = (node.type === 'line') ? 'none' : 'block';  // lines have no separate outline
+    var strokeVis = (node.paint && node.paint['line-opacity'] != null) ? node.paint['line-opacity'] : 1;
+    document.getElementById('elp-fill-vis').checked = op > 0;
+    document.getElementById('elp-outline-vis').checked = strokeVis !== 0;
+    document.getElementById('elp-vis-row').style.display = (node.type === 'fill') ? 'flex' : 'none';  // fill + outline toggles only for polygons
+    document.getElementById('elp-split').style.display = (node.type === 'fill' && !node.outlineSplit) ? 'block' : 'none';  // can split a polygon's outline once
     p.style.display = 'block';
   }
   function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
@@ -694,14 +723,29 @@
     var node = findNodeById(layers, activeLayerId); if (!node) return;
     if (field === 'color') node.iconColor = value;
     var color = node.iconColor || '#3bb2d0';
-    var op = field === 'opacity' ? value : paintOpacity(node.paint);
-    node.paint = buildLayerPaint(node.type, color, op);
-    applyLayerStylePreview(node, op);
+    var curStrokeVis = (node.paint && node.paint['line-opacity'] != null) ? node.paint['line-opacity'] : 1;
+    var op = field === 'opacity' ? value : (field === 'fillVisible' ? (value ? 0.35 : 0) : paintOpacity(node.paint));
+    var outline = field === 'outline' ? value : paintOutline(node.paint);
+    var outlineVis = field === 'outlineVisible' ? (value ? 1 : 0) : curStrokeVis;
+    node.paint = buildLayerPaint(node.type, color, op, outline, outlineVis);
+    applyLayerStylePreview(node, op, outline, outlineVis);
     clearTimeout(_layerStyleTimer);
     _layerStyleTimer = setTimeout(function () { saveLayerStyle(node.id); }, 500);
   }
-  function applyLayerStylePreview(node, op) {
-    if (draw) {
+  function applyLayerStylePreview(node, op, outline, outlineVis) {
+    if (node.outlineOf) {
+      // a split-off outline is an engine LINE layer (no MapboxDraw features) — repaint it
+      // directly via setPaintProperty (which updates live, unlike MapboxDraw).
+      var pp = node.paint || {};
+      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+        var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0]; if (!m.getLayer(id)) return;
+        try {
+          if (node.iconColor) m.setPaintProperty(id, 'line-color', node.iconColor);
+          if (pp['line-width'] != null) m.setPaintProperty(id, 'line-width', pp['line-width']);
+          if (op != null) m.setPaintProperty(id, 'line-opacity', op);
+        } catch (e) {}
+      });
+    } else if (draw) {
       // Repaint the layer's features with the new color/opacity. Only a delete+add
       // actually refreshes MapboxDraw's cold render source (draw.set / setFeatureProperty
       // update the store but don't repaint). _suppressFeatureDelete keeps the DB intact.
@@ -714,6 +758,8 @@
             var f = draw.get(drawId); if (!f) return;
             if (node.iconColor) f.properties.color = node.iconColor;
             if (op != null) f.properties.opacity = op;
+            if (outline != null) f.properties.outline = outline;
+            if (outlineVis != null) f.properties.strokeopacity = outlineVis;
             draw.delete(drawId); draw.add(f);
           } catch (e) {}
         });
@@ -731,6 +777,75 @@
     setStatus('Saving…');
     try { var r = await db.from('layers').update({ color: node.iconColor || '#3bb2d0', paint: node.paint }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { console.warn('editing: layer style save failed', e); setStatus('Save failed'); }
+  }
+
+  // Split a polygon's outline into its own standalone, independently-toggleable layer.
+  async function onSplitOutline() {
+    var P = activeLayerId && findNodeById(layers, activeLayerId);
+    if (!P || P.type !== 'fill' || P.outlineSplit) return;
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    setStatus('Splitting…');
+    try {
+      var color = (P.paint && P.paint['fill-outline-color']) || P.iconColor || '#3bb2d0';
+      var oNode = makeNode('layer', (P.label || 'Polygon') + ' outline');
+      oNode.type = 'line';
+      oNode.iconType = 'slash';
+      oNode.outlineOf = P.id;                 // borrows the polygon's features → adapter draws its edges
+      oNode.toggleElement = oNode.id;         // so refreshLayers toggles the outline's engine layer
+      oNode.iconColor = color;
+      oNode.paint = { 'line-color': color, 'line-width': (P.paint && P.paint['line-width']) || 2, 'line-opacity': 1 };
+      // place the outline layer next to the polygon, under the same parent
+      var pParent = findParent(layers, P);
+      var sId = null, gId = null;
+      if (pParent && pParent.type === 'group') { gId = pParent._dbId; var ps = findParent(layers, pParent); if (ps && ps.type === 'section') sId = ps._dbId; }
+      else if (pParent && pParent.type === 'section') { sId = pParent._dbId; }
+      var oLayerId = await insertOne('layers', leafRow(oNode));
+      slugToLayerDbId[oNode.id] = oLayerId;
+      await insertOne('project_layers', { project_id: projectId, layer_id: oLayerId, sort_order: nextSort++, section_id: sId, group_id: gId });
+      // mark the polygon split (its auto-stroke is now handed off) + persist (merge, don't clobber raw_config)
+      P.outlineSplit = true;
+      var pLid = slugToLayerDbId[P.id];
+      if (pLid) {
+        var cur = await db.from('layers').select('raw_config').eq('id', pLid).single();
+        var rc = (cur.data && cur.data.raw_config) || {}; rc.outlineSplit = true;
+        var r = await db.from('layers').update({ raw_config: rc }).eq('id', pLid); if (r.error) throw new Error(r.error.message);
+      }
+      var loc = locate(layers, P);
+      if (loc) loc.arr.splice(loc.idx + 1, 0, oNode); else layers.push(oNode);
+      rerender();
+      addOutlineMapLayer(oNode, P);  // engine added map layers at load — add the outline's now
+      hideDrawnEngineLayers();       // skips the outline layer (outlineOf) so it stays visible
+      hideSplitPolygonStroke(P);     // hide the polygon's own MapboxDraw stroke so it doesn't double
+      setActiveLayer(oNode.id);
+      setStatus('Saved');
+    } catch (e) { console.warn('editing: split outline failed', e); setStatus('Split failed: ' + e.message); }
+  }
+  // Add the outline layer's map layer to the editor, built from the polygon's live features
+  // (a `line` layer over the polygon geometry draws its edges). Reloading rebuilds it via the adapter.
+  function addOutlineMapLayer(oNode, P) {
+    if (!draw) return;
+    var dbId = slugToLayerDbId[P.id];
+    var pFeats = Object.keys(featureLayer).filter(function (d) { return featureLayer[d] === dbId; }).map(function (d) { return draw.get(d); }).filter(Boolean);
+    var fc = { type: 'FeatureCollection', features: pFeats.map(function (f) { return { type: 'Feature', geometry: f.geometry, properties: { DayStart: 0, DayEnd: 99999999 } }; }) };
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var side = pair[0], m = pair[1]; if (!m) return;
+      var id = oNode.id + '-' + side;
+      try {
+        if (m.getLayer(id)) m.removeLayer(id);
+        if (m.getSource(id)) m.removeSource(id);
+        m.addLayer({ id: id, type: 'line', source: { type: 'geojson', data: fc }, paint: oNode.paint, layout: { 'line-cap': 'round', 'line-join': 'round' } });
+      } catch (e) {}
+    });
+  }
+  // After a split, hide the polygon's in-editor MapboxDraw stroke (the outline layer owns it now).
+  function hideSplitPolygonStroke(P) {
+    if (!draw) return;
+    var dbId = slugToLayerDbId[P.id];
+    var ids = Object.keys(featureLayer).filter(function (d) { return featureLayer[d] === dbId; });
+    if (!ids.length) return;
+    _suppressFeatureDelete = true;
+    ids.forEach(function (drawId) { try { var f = draw.get(drawId); if (f) { f.properties.strokeopacity = 0; draw.delete(drawId); draw.add(f); } } catch (e) {} });
+    setTimeout(function () { _suppressFeatureDelete = false; }, 0);
   }
 
   // After the engine renders the tree (on boot and after every edit), add the

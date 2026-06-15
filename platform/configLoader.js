@@ -102,6 +102,17 @@ var ConfigLoader = (function () {
       }) } };
       if (leaf.type == null) leaf.type = "circle";
       if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
+      // Mapbox fill-outline-color is always 1px; to match the editor's stroke and allow
+      // a real (thicker) outline, render a polygon's boundary as a separate line layer —
+      // UNLESS the outline has been split into its own standalone layer (raw.outlineSplit).
+      if (leaf.type === "fill" && !raw.outlineSplit) {
+        leaf.stroke = {
+          "line-color": leaf.paint["fill-outline-color"] || leaf.iconColor || "#3bb2d0",
+          "line-width": (leaf.paint && leaf.paint["line-width"]) || 2,
+          // a stored line-opacity of 0 = "outline hidden" (the show-outline toggle)
+          "line-opacity": leaf.paint["line-opacity"] != null ? leaf.paint["line-opacity"] : 1
+        };
+      }
     }
 
     if (row.content_base_url != null) {
@@ -151,9 +162,15 @@ var ConfigLoader = (function () {
       else top.push(entry);
     });
 
+    // slug → layer id, so a split-out outline layer can borrow its parent polygon's features
+    var slugToId = {};
+    (bundle.projectLayers || []).forEach(function (pl) { if (pl.layers && pl.layers.slug != null) slugToId[pl.layers.slug] = pl.layers.id; });
+
     (bundle.projectLayers || []).forEach(function (pl) {
       if (!pl.layers) return;
-      var entry = { sort: pl.sort_order, node: leafFromRow(pl.layers, registry, (bundle.featuresByLayer || {})[pl.layers.id]) };
+      var praw = pl.layers.raw_config || {};
+      var featLayerId = praw.outlineOf ? slugToId[praw.outlineOf] : pl.layers.id;   // outline layers draw their parent's features
+      var entry = { sort: pl.sort_order, node: leafFromRow(pl.layers, registry, (bundle.featuresByLayer || {})[featLayerId]) };
       if (pl.group_id && groupNodes[pl.group_id]) groupNodes[pl.group_id].kids.push(entry);
       else if (pl.section_id && sectionNodes[pl.section_id]) sectionNodes[pl.section_id].kids.push(entry);
       else top.push(entry);
