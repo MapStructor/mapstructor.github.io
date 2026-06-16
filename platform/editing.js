@@ -440,12 +440,13 @@
   var OUTLINE_FILL = ['coalesce', ['get', 'user_outline'], COLOR];   // polygon outline → defaults to fill color
   var OUTLINE_PT = ['coalesce', ['get', 'user_outline'], '#000'];    // point stroke → defaults to black
   var OUTLINE_OPACITY = ['coalesce', ['get', 'user_strokeopacity'], 1];   // polygon outline opacity, INDEPENDENT of fill — so fill→0 leaves the lines
+  var STROKE_WIDTH = ['coalesce', ['get', 'user_strokewidth'], 2];        // polygon outline / line width, per-feature so width edits preview live
   var DRAW_STYLES = [
     { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': OUTLINE_FILL, 'fill-opacity': FILL_OPACITY } },
     { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.25 } },
-    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': OUTLINE_FILL, 'line-width': 2, 'line-opacity': OUTLINE_OPACITY } },
+    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': OUTLINE_FILL, 'line-width': STROKE_WIDTH, 'line-opacity': OUTLINE_OPACITY } },
     { id: 'gl-draw-polygon-stroke-active', type: 'line', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
-    { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': 2, 'line-opacity': STROKE_OPACITY } },
+    { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': STROKE_WIDTH, 'line-opacity': STROKE_OPACITY } },
     { id: 'gl-draw-line-active', type: 'line', filter: ['all', ['==', '$type', 'LineString'], ['==', 'active', 'true']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
     { id: 'gl-draw-polygon-and-line-vertex-halo-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 5, 'circle-color': '#fff' } },
     { id: 'gl-draw-polygon-and-line-vertex-active', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']], paint: { 'circle-radius': 3, 'circle-color': '#fbb03b' } },
@@ -540,8 +541,8 @@
     var ids = Object.keys(slugToLayerDbId).map(function (k) { return slugToLayerDbId[k]; });
     if (!ids.length) return;
     // map each drawn layer's db id → its color, so loaded features keep their color
-    var dbColor = {}, dbOpacity = {}, dbOutline = {}, dbStrokeOp = {};
-    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { dbColor[did] = n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; var ol = paintOutline(n.paint); if (ol != null) dbOutline[did] = ol; if (n.paint && n.paint['line-opacity'] != null) dbStrokeOp[did] = n.paint['line-opacity']; if (n.outlineSplit) dbStrokeOp[did] = 0; } } if (n.children) walk(n.children); }); })(layers);
+    var dbColor = {}, dbOpacity = {}, dbOutline = {}, dbStrokeOp = {}, dbStrokeWidth = {};
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { dbColor[did] = n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; var ol = paintOutline(n.paint); if (ol != null) dbOutline[did] = ol; if (n.paint && n.paint['line-opacity'] != null) dbStrokeOp[did] = n.paint['line-opacity']; if (n.paint && n.paint['line-width'] != null) dbStrokeWidth[did] = n.paint['line-width']; if (n.outlineSplit) dbStrokeOp[did] = 0; } } if (n.children) walk(n.children); }); })(layers);
     try {
       var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date').in('layer_id', ids);
       if (res.error) return;
@@ -556,6 +557,7 @@
         if (dbOpacity[row.layer_id] != null) props.opacity = dbOpacity[row.layer_id];
         if (dbOutline[row.layer_id] != null) props.outline = dbOutline[row.layer_id];
         if (dbStrokeOp[row.layer_id] != null) props.strokeopacity = dbStrokeOp[row.layer_id];
+        if (dbStrokeWidth[row.layer_id] != null) props.strokewidth = dbStrokeWidth[row.layer_id];
         feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: props });
       });
       draw.set({ type: 'FeatureCollection', features: feats });
@@ -665,9 +667,10 @@
     var v = paint['fill-outline-color']; if (v == null) v = paint['circle-stroke-color'];
     return typeof v === 'string' ? v : null;
   }
-  function buildLayerPaint(type, color, op, outline, outlineVis) {
-    if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': outline || color, 'fill-opacity': op != null ? op : 0.35, 'line-opacity': outlineVis != null ? outlineVis : 1 };
-    if (type === 'line') return { 'line-color': color, 'line-width': 2, 'line-opacity': op != null ? op : 1 };
+  function buildLayerPaint(type, color, op, outline, outlineVis, width) {
+    var w = width != null ? width : 2;
+    if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': outline || color, 'fill-opacity': op != null ? op : 0.35, 'line-opacity': outlineVis != null ? outlineVis : 1, 'line-width': w };
+    if (type === 'line') return { 'line-color': color, 'line-width': w, 'line-opacity': op != null ? op : 1 };
     return { 'circle-color': color, 'circle-radius': 5, 'circle-stroke-width': 1.5, 'circle-stroke-color': outline || '#000', 'circle-opacity': op != null ? op : 1 };
   }
   function injectLayerPanel() {
@@ -683,6 +686,8 @@
       '<input id="elp-opacity" type="range" min="0" max="1" step="0.05" style="width:100%;box-sizing:border-box;" />' +
       '<div id="elp-outline-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Outline color</label>' +
       '<input id="elp-outline" type="color" style="width:100%;height:28px;box-sizing:border-box;padding:1px;border:1px solid #cdd6df;border-radius:4px;cursor:pointer;" /></div>' +
+      '<div id="elp-width-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
+      '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" style="width:100%;box-sizing:border-box;" /></div>' +
       '<div id="elp-vis-row" style="margin-top:8px;display:flex;gap:12px;font-size:12px;color:#5a6c7e;">' +
         '<label style="cursor:pointer;"><input id="elp-fill-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show fill</label>' +
         '<label style="cursor:pointer;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
@@ -693,6 +698,7 @@
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
     document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
     document.getElementById('elp-outline').addEventListener('input', function () { onLayerStyle('outline', this.value); });
+    document.getElementById('elp-width').addEventListener('input', function () { document.getElementById('elp-width-val').textContent = this.value; onLayerStyle('width', parseFloat(this.value)); });
     document.getElementById('elp-fill-vis').addEventListener('change', function () { onLayerStyle('fillVisible', this.checked); });
     document.getElementById('elp-outline-vis').addEventListener('change', function () { onLayerStyle('outlineVisible', this.checked); });
     document.getElementById('elp-split').addEventListener('click', onSplitOutline);
@@ -715,6 +721,12 @@
     document.getElementById('elp-outline-vis').checked = strokeVis !== 0;
     document.getElementById('elp-vis-row').style.display = (node.type === 'fill') ? 'flex' : 'none';  // fill + outline toggles only for polygons
     document.getElementById('elp-split').style.display = (node.type === 'fill' && !node.outlineSplit) ? 'block' : 'none';  // can split a polygon's outline once
+    var width = (node.paint && node.paint['line-width'] != null) ? node.paint['line-width'] : 2;
+    document.getElementById('elp-width').value = width;
+    document.getElementById('elp-width-val').textContent = width;
+    document.getElementById('elp-width-label').textContent = (node.type === 'fill') ? 'Outline width' : 'Width';
+    // width = the line/outline thickness; shown for lines and for un-split polygons (their auto-outline)
+    document.getElementById('elp-width-row').style.display = ((node.type === 'line') || (node.type === 'fill' && !node.outlineSplit)) ? 'block' : 'none';
     p.style.display = 'block';
   }
   function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
@@ -724,15 +736,17 @@
     if (field === 'color') node.iconColor = value;
     var color = node.iconColor || '#3bb2d0';
     var curStrokeVis = (node.paint && node.paint['line-opacity'] != null) ? node.paint['line-opacity'] : 1;
+    var curWidth = (node.paint && node.paint['line-width'] != null) ? node.paint['line-width'] : 2;
     var op = field === 'opacity' ? value : (field === 'fillVisible' ? (value ? 0.35 : 0) : paintOpacity(node.paint));
     var outline = field === 'outline' ? value : paintOutline(node.paint);
     var outlineVis = field === 'outlineVisible' ? (value ? 1 : 0) : curStrokeVis;
-    node.paint = buildLayerPaint(node.type, color, op, outline, outlineVis);
-    applyLayerStylePreview(node, op, outline, outlineVis);
+    var width = field === 'width' ? value : curWidth;
+    node.paint = buildLayerPaint(node.type, color, op, outline, outlineVis, width);
+    applyLayerStylePreview(node, op, outline, outlineVis, width);
     clearTimeout(_layerStyleTimer);
     _layerStyleTimer = setTimeout(function () { saveLayerStyle(node.id); }, 500);
   }
-  function applyLayerStylePreview(node, op, outline, outlineVis) {
+  function applyLayerStylePreview(node, op, outline, outlineVis, width) {
     if (node.outlineOf) {
       // a split-off outline is an engine LINE layer (no MapboxDraw features) — repaint it
       // directly via setPaintProperty (which updates live, unlike MapboxDraw).
@@ -760,6 +774,7 @@
             if (op != null) f.properties.opacity = op;
             if (outline != null) f.properties.outline = outline;
             if (outlineVis != null) f.properties.strokeopacity = outlineVis;
+            if (width != null) f.properties.strokewidth = width;
             draw.delete(drawId); draw.add(f);
           } catch (e) {}
         });
