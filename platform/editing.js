@@ -133,6 +133,15 @@
     if (sourceLayer) node['source-layer'] = sourceLayer;
     return node;
   }
+  // A tileset/vector layer renders via the engine's map layers (not MapboxDraw), so it's styled by
+  // setPaintProperty on <id>-left/right. True for freshly-added (node.source.type) and loaded
+  // (source_type stamped from the column) tilesets; false for drawn layers + containers.
+  function isTilesetNode(node) {
+    if (!node || node.type === 'section' || node.type === 'group') return false;
+    if (node.source && node.source.type && node.source.type !== 'geojson') return true;
+    if (node.source_type && node.source_type !== 'geojson-supabase') return true;
+    return false;
+  }
   function findNodeById(arr, id) {
     for (var i = 0; i < (arr || []).length; i++) { var n = arr[i]; if (n.id === id) return n; if (n.children) { var f = findNodeById(n.children, id); if (f) return f; } }
     return null;
@@ -395,6 +404,16 @@
       var id = node.id + '-' + side;
       try { if (!map.getLayer(id)) addMapLayer(map, Object.assign({}, node, { id: id }), date); }
       catch (e) { console.warn('editing: tileset render failed', e); }
+      // a fill tileset's outline renders as a real line layer (sharing the fill's source) so it can
+      // exceed Mapbox's 1px fill-outline cap — mirrors the engine's stroke block, with source-layer.
+      if (node.type === 'fill' && node.paint && node.paint['fill-outline-color']) {
+        var sid = node.id + '-stroke-' + side;
+        if (!map.getLayer(sid)) {
+          var sc = { id: sid, type: 'line', source: id, paint: { 'line-color': node.paint['fill-outline-color'], 'line-width': node.paint['line-width'] || 1, 'line-opacity': node.paint['line-opacity'] != null ? node.paint['line-opacity'] : 1 }, layout: { 'line-cap': 'round', 'line-join': 'round' } };
+          if (node['source-layer']) sc['source-layer'] = node['source-layer'];
+          try { addMapLayer(map, sc, date); } catch (e) { console.warn('editing: tileset stroke failed', e); }
+        }
+      }
     });
   }
 
@@ -547,7 +566,9 @@
     panel.querySelectorAll('.layer-list-row.editor-active').forEach(function (el) { el.classList.remove('editor-active'); });
     panel.querySelectorAll('.layer-list-row[data-node-id="' + id + '"]').forEach(function (row) { row.classList.add('editor-active'); });
     var node = findNodeById(layers, id);
-    if (node && node.source_type === 'geojson-supabase') showLayerPanel(id); else hideLayerPanel();
+    // drawn layers always get the style panel; tilesets get it too once they have a styleable type
+    var styleable = node && (node.source_type === 'geojson-supabase' || (isTilesetNode(node) && ['fill', 'line', 'circle'].indexOf(node.type) > -1));
+    if (styleable) showLayerPanel(id); else hideLayerPanel();
   }
   function activeLayerDbId() {
     if (!activeLayerId) return null;
@@ -800,6 +821,8 @@
   }
   function showLayerPanel(slug) {
     var node = findNodeById(layers, slug); if (!node) return;
+    var isGeojson = node.source_type === 'geojson-supabase';   // split is drawn-layer only
+    var fillStroke = (isGeojson || isTilesetNode(node)) && node.type === 'fill';  // drawn AND tileset fills get the real line outline + its width/show toggles
     injectLayerPanel();
     var p = document.getElementById('editor-layer-panel'); if (!p) return;
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
@@ -814,14 +837,14 @@
     var strokeVis = (node.paint && node.paint['line-opacity'] != null) ? node.paint['line-opacity'] : 1;
     document.getElementById('elp-fill-vis').checked = op > 0;
     document.getElementById('elp-outline-vis').checked = strokeVis !== 0;
-    document.getElementById('elp-vis-row').style.display = (node.type === 'fill') ? 'flex' : 'none';  // fill + outline toggles only for polygons
-    document.getElementById('elp-split').style.display = (node.type === 'fill' && !node.outlineSplit) ? 'block' : 'none';  // can split a polygon's outline once
+    document.getElementById('elp-vis-row').style.display = fillStroke ? 'flex' : 'none';  // fill + outline toggles ride the real stroke line layer
+    document.getElementById('elp-split').style.display = (fillStroke && !node.outlineSplit) ? 'block' : 'none';  // split a polygon's outline into its own layer (drawn or tileset)
     var width = paintWidth(node.paint); if (width == null) width = (node.type === 'circle') ? 1.5 : 2;
     document.getElementById('elp-width').value = width;
     document.getElementById('elp-width-val').textContent = width;
     document.getElementById('elp-width-label').textContent = (node.type === 'line') ? 'Width' : 'Outline width';
     // width = line/outline thickness: lines, un-split polygons (auto-outline), and circles (circle-stroke-width — uncapped, no split needed)
-    document.getElementById('elp-width-row').style.display = ((node.type === 'line') || (node.type === 'fill' && !node.outlineSplit) || node.type === 'circle') ? 'block' : 'none';
+    document.getElementById('elp-width-row').style.display = ((node.type === 'line') || (fillStroke && !node.outlineSplit) || node.type === 'circle') ? 'block' : 'none';
     var radius = (node.paint && node.paint['circle-radius'] != null) ? node.paint['circle-radius'] : 5;
     document.getElementById('elp-radius').value = radius;
     document.getElementById('elp-radius-val').textContent = radius;
@@ -857,6 +880,21 @@
           if (pp['line-width'] != null) m.setPaintProperty(id, 'line-width', pp['line-width']);
           if (op != null) m.setPaintProperty(id, 'line-opacity', op);
         } catch (e) {}
+      });
+    } else if (isTilesetNode(node)) {
+      // a tileset is an engine map layer (fill/line/circle) — repaint <id>-left/right via
+      // setPaintProperty; apply only paint keys that match the layer type (e.g. 'fill-*' to a fill).
+      var tp = node.paint || {};
+      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+        var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0]; var ml = m.getLayer(id); if (!ml) return;
+        Object.keys(tp).forEach(function (k) { if (k.indexOf(ml.type + '-') === 0) { try { m.setPaintProperty(id, k, tp[k]); } catch (e) {} } });
+        // a fill tileset's outline is a separate line layer — repaint its color/width/opacity too
+        var sid = node.id + '-stroke-' + pair[0];
+        if (m.getLayer(sid)) {
+          if (tp['fill-outline-color'] != null) { try { m.setPaintProperty(sid, 'line-color', tp['fill-outline-color']); } catch (e) {} }
+          if (tp['line-width'] != null) { try { m.setPaintProperty(sid, 'line-width', tp['line-width']); } catch (e) {} }
+          if (tp['line-opacity'] != null) { try { m.setPaintProperty(sid, 'line-opacity', tp['line-opacity']); } catch (e) {} }
+        }
       });
     } else if (draw) {
       // Repaint the layer's features with the new color/opacity. Only a delete+add
@@ -895,20 +933,32 @@
   }
 
   // Split a polygon's outline into its own standalone, independently-toggleable layer.
+  // Drawn (geojson) P → O borrows P's features; tileset P → O is a line over P's vector source.
   async function onSplitOutline() {
     var P = activeLayerId && findNodeById(layers, activeLayerId);
     if (!P || P.type !== 'fill' || P.outlineSplit) return;
     if (idsReady) { try { await idsReady; } catch (e) {} }
+    var isTs = isTilesetNode(P);
     setStatus('Splitting…');
     try {
       var color = (P.paint && P.paint['fill-outline-color']) || P.iconColor || '#3bb2d0';
-      var oNode = makeNode('layer', (P.label || 'Polygon') + ' outline');
-      oNode.type = 'line';
-      oNode.iconType = 'slash';
-      oNode.outlineOf = P.id;                 // borrows the polygon's features → adapter draws its edges
-      oNode.toggleElement = oNode.id;         // so refreshLayers toggles the outline's engine layer
-      oNode.iconColor = color;
-      oNode.paint = { 'line-color': color, 'line-width': (P.paint && P.paint['line-width']) || 2, 'line-opacity': 1 };
+      var owidth = (P.paint && P.paint['line-width']) || (isTs ? 1 : 2);
+      var oNode;
+      if (isTs) {
+        // a tileset outline is a standalone LINE layer over the SAME vector source + source-layer
+        var oid = uid();
+        oNode = { id: oid, label: (P.label || 'Polygon') + ' outline', type: 'line', source: P.source, 'source-layer': P['source-layer'],
+          paint: { 'line-color': color, 'line-width': owidth, 'line-opacity': 1 }, outlineOf: P.id, toggleElement: oid,
+          containerId: 'cont-' + oid, className: oid, topLayerClass: oid, iconType: 'slash', iconColor: color, isSolid: true, checked: true };
+      } else {
+        oNode = makeNode('layer', (P.label || 'Polygon') + ' outline');
+        oNode.type = 'line';
+        oNode.iconType = 'slash';
+        oNode.outlineOf = P.id;                 // borrows the polygon's features → adapter draws its edges
+        oNode.toggleElement = oNode.id;         // so refreshLayers toggles the outline's engine layer
+        oNode.iconColor = color;
+        oNode.paint = { 'line-color': color, 'line-width': owidth, 'line-opacity': 1 };
+      }
       // place the outline layer next to the polygon, under the same parent
       var pParent = findParent(layers, P);
       var sId = null, gId = null;
@@ -928,12 +978,25 @@
       var loc = locate(layers, P);
       if (loc) loc.arr.splice(loc.idx + 1, 0, oNode); else layers.push(oNode);
       rerender();
-      addOutlineMapLayer(oNode, P);  // engine added map layers at load — add the outline's now
-      hideDrawnEngineLayers();       // skips the outline layer (outlineOf) so it stays visible
-      hideSplitPolygonStroke(P);     // hide the polygon's own MapboxDraw stroke so it doesn't double
+      if (isTs) {
+        renderTilesetOnMap(oNode);     // O is a standalone tileset line layer over P's source-layer
+        removeTilesetStroke(P);        // drop P's auto-outline stroke — O owns the outline now
+        if (typeof refreshLayers === 'function') refreshLayers();
+      } else {
+        addOutlineMapLayer(oNode, P);  // engine added map layers at load — add the outline's now
+        hideDrawnEngineLayers();       // skips the outline layer (outlineOf) so it stays visible
+        hideSplitPolygonStroke(P);     // hide the polygon's own MapboxDraw stroke so it doesn't double
+      }
       setActiveLayer(oNode.id);
       setStatus('Saved');
     } catch (e) { console.warn('editing: split outline failed', e); setStatus('Split failed: ' + e.message); }
+  }
+  // Remove a split tileset polygon's auto-outline stroke layers (the new O line layer replaces them).
+  function removeTilesetStroke(P) {
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var m = pair[1]; if (!m) return; var sid = P.id + '-stroke-' + pair[0];
+      try { if (m.getLayer(sid)) m.removeLayer(sid); } catch (e) {}
+    });
   }
   // Add the outline layer's map layer to the editor, built from the polygon's live features
   // (a `line` layer over the polygon geometry draws its edges). Reloading rebuilds it via the adapter.

@@ -6,9 +6,12 @@ function addLayersToMap(map, side, date) {
       addMapLayer(map, { ...hl, id: layer.id + "-highlighted-" + side }, date);
     }
     // A fill layer with a `stroke` paint renders its boundary as a real line layer,
-    // sharing the fill's source (Mapbox fill-outline-color can't exceed 1px).
+    // sharing the fill's source (Mapbox fill-outline-color can't exceed 1px). For a vector
+    // tileset the line needs the same source-layer to find the geometry; geojson has none.
     if (layer.stroke) {
-      addMapLayer(map, { id: layer.id + "-stroke-" + side, type: "line", source: layer.id + "-" + side, paint: layer.stroke, layout: { "line-cap": "round", "line-join": "round" } }, date);
+      const strokeCfg = { id: layer.id + "-stroke-" + side, type: "line", source: layer.id + "-" + side, paint: layer.stroke, layout: { "line-cap": "round", "line-join": "round" } };
+      if (layer["source-layer"]) strokeCfg["source-layer"] = layer["source-layer"];
+      addMapLayer(map, strokeCfg, date);
     }
   });
 }

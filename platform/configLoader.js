@@ -102,17 +102,22 @@ var ConfigLoader = (function () {
       }) } };
       if (leaf.type == null) leaf.type = "circle";
       if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
-      // Mapbox fill-outline-color is always 1px; to match the editor's stroke and allow
-      // a real (thicker) outline, render a polygon's boundary as a separate line layer —
-      // UNLESS the outline has been split into its own standalone layer (raw.outlineSplit).
-      if (leaf.type === "fill" && !raw.outlineSplit) {
-        leaf.stroke = {
-          "line-color": leaf.paint["fill-outline-color"] || leaf.iconColor || "#3bb2d0",
-          "line-width": (leaf.paint && leaf.paint["line-width"]) || 2,
-          // a stored line-opacity of 0 = "outline hidden" (the show-outline toggle)
-          "line-opacity": leaf.paint["line-opacity"] != null ? leaf.paint["line-opacity"] : 1
-        };
-      }
+    }
+
+    // Mapbox fill-outline-color is always 1px; to allow a real (thicker) outline, render a
+    // polygon's boundary as a separate line layer — for DRAWN and TILESET fills alike (the engine
+    // shares the fill's source, adding source-layer for vector tilesets). Drawn fills always get it
+    // (default width 2); a tileset fill gets it when it has an outline color, defaulting to width 1
+    // so it's visually identical to today's 1px fill-outline (no surprise change) but now widenable.
+    // Skipped when the outline was split into its own standalone layer (raw.outlineSplit).
+    if (leaf.type === "fill" && leaf.paint && !raw.outlineSplit &&
+        (row.source_type === "geojson-supabase" || leaf.paint["fill-outline-color"])) {
+      leaf.stroke = {
+        "line-color": leaf.paint["fill-outline-color"] || leaf.iconColor || "#3bb2d0",
+        "line-width": (leaf.paint && leaf.paint["line-width"]) || (row.source_type === "geojson-supabase" ? 2 : 1),
+        // a stored line-opacity of 0 = "outline hidden" (the show-outline toggle)
+        "line-opacity": leaf.paint["line-opacity"] != null ? leaf.paint["line-opacity"] : 1
+      };
     }
 
     if (row.content_base_url != null) {
