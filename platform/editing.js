@@ -118,6 +118,21 @@
     if (type === 'group')   return { type: 'group', id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, itemSelector: '.' + id + '_item', children: [], checked: true, collapsed: false };
     return { id: id, label: name, containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: 'square', iconColor: nextColor(), isSolid: true, checked: true, source_type: 'geojson-supabase' };
   }
+  // A tileset layer is an engine-shaped leaf backed by a hosted vector source (NOT geojson-supabase,
+  // so MapboxDraw never touches it and leafRow derives source_type 'mapbox-tileset' from source.url).
+  var TILESET_ICON = { fill: 'square', line: 'slash', circle: 'circle' };
+  function tilesetDefaultPaint(type, color) {
+    if (type === 'fill') return { 'fill-color': color, 'fill-opacity': 0.4, 'fill-outline-color': color };
+    if (type === 'line') return { 'line-color': color, 'line-width': 1.5 };
+    return { 'circle-radius': 5, 'circle-color': color, 'circle-stroke-width': 1, 'circle-stroke-color': '#000' };
+  }
+  function makeTilesetNode(name, url, sourceLayer, type, color) {
+    var id = uid();
+    var node = { id: id, label: name, type: type, source: { type: 'vector', url: url }, paint: tilesetDefaultPaint(type, color),
+      containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: TILESET_ICON[type] || 'square', iconColor: color, isSolid: true, checked: true, toggleElement: id };
+    if (sourceLayer) node['source-layer'] = sourceLayer;
+    return node;
+  }
   function findNodeById(arr, id) {
     for (var i = 0; i < (arr || []).length; i++) { var n = arr[i]; if (n.id === id) return n; if (n.children) { var f = findNodeById(n.children, id); if (f) return f; } }
     return null;
@@ -345,6 +360,44 @@
     }
   }
 
+  // Add a hosted vector tileset as a first-class layer (persist like addItem's leaf branch,
+  // then render it on both maps the way the engine does at load).
+  async function addTileset(name, url, sourceLayer, type, parent) {
+    if (typeof layers === 'undefined') return;
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    if (!loaded) { setStatus('Still loading — try again'); return; }
+    var node = makeTilesetNode(name, url, sourceLayer, type, nextColor());
+    var sort = nextSort++;
+    setStatus('Saving…');
+    try {
+      var sId = null, gId = null;
+      if (parent && parent.type === 'group') { gId = parent._dbId; var ps = findParent(layers, parent); if (ps && ps.type === 'section') sId = ps._dbId; }
+      else if (parent && parent.type === 'section') { sId = parent._dbId; }
+      var layerId = await insertOne('layers', leafRow(node));
+      slugToLayerDbId[node.id] = layerId;
+      await insertOne('project_layers', { project_id: projectId, layer_id: layerId, sort_order: sort, section_id: sId, group_id: gId });
+      if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; }
+      else layers.push(node);
+      rerender();
+      renderTilesetOnMap(node);
+      if (typeof refreshLayers === 'function') refreshLayers();  // sync visibility to the new checkbox
+      setStatus('Saved');
+    } catch (e) { console.warn('editing: add tileset failed', e); setStatus('Save failed: ' + e.message); }
+  }
+  // Mirror addLayersToMap for a single node: add <id>-left / <id>-right on both maps via the
+  // engine's addMapLayer (same call the viewer uses), filtered by the current timeline date.
+  function renderTilesetOnMap(node) {
+    if (typeof addMapLayer !== 'function') return;
+    var date;
+    try { var d = (window.moment && window.$) ? moment($('#date').text()).format('YYYYMMDD') : ''; date = /^\d{8}$/.test(d) ? parseInt(d, 10) : undefined; } catch (e) { date = undefined; }
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var side = pair[0], map = pair[1]; if (!map) return;
+      var id = node.id + '-' + side;
+      try { if (!map.getLayer(id)) addMapLayer(map, Object.assign({}, node, { id: id }), date); }
+      catch (e) { console.warn('editing: tileset render failed', e); }
+    });
+  }
+
   // ── additive chrome (sibling of #layers-panel-content, survives re-render) ──
   function commit(type) {
     var name = (document.getElementById('editor-name').value || '').trim();
@@ -356,11 +409,42 @@
   }
   function showButtons() {
     var bar = document.getElementById('editor-add-bar');
-    bar.innerHTML = '<div class="erow">' +
+    bar.innerHTML = '<div class="erow" style="margin-bottom:6px;">' +
       '<button data-type="layer">+ Layer</button>' +
+      '<button data-type="tileset">+ Tileset</button></div>' +
+      '<div class="erow">' +
       '<button data-type="group">+ Group</button>' +
       '<button data-type="section">+ Section</button></div>';
-    bar.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { showForm(b.getAttribute('data-type')); }); });
+    bar.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'tileset') showTilesetForm(); else showForm(t); }); });
+  }
+  function parentOptions() {
+    var opts = '<option value="">Top level</option>';
+    containers(layers, 0, []).forEach(function (c) { opts += '<option value="' + c.node.id + '">' + (c.depth ? '— ' : '') + (c.node.label || c.node.id) + '</option>'; });
+    return opts;
+  }
+  function showTilesetForm() {
+    var bar = document.getElementById('editor-add-bar');
+    bar.innerHTML =
+      '<input id="editor-name" type="text" placeholder="tileset name…" />' +
+      '<input id="editor-ts-url" type="text" placeholder="mapbox://username.tilesetid" />' +
+      '<input id="editor-ts-sl" type="text" placeholder="source layer (e.g. buildings)" />' +
+      '<select id="editor-ts-type"><option value="fill">Polygon (fill)</option><option value="line">Line</option><option value="circle">Point (circle)</option></select>' +
+      '<select id="editor-parent">' + parentOptions() + '</select>' +
+      '<div class="erow"><button id="editor-ok">Add tileset</button><button id="editor-cancel">Cancel</button></div>';
+    document.getElementById('editor-name').focus();
+    document.getElementById('editor-ok').addEventListener('click', commitTileset);
+    document.getElementById('editor-cancel').addEventListener('click', showButtons);
+  }
+  function commitTileset() {
+    var name = (document.getElementById('editor-name').value || '').trim();
+    var url = (document.getElementById('editor-ts-url').value || '').trim();
+    var sl = (document.getElementById('editor-ts-sl').value || '').trim();
+    var type = document.getElementById('editor-ts-type').value || 'fill';
+    if (!name || !url || !sl) { setStatus('Name, tileset URL + source layer required'); return; }
+    var sel = document.getElementById('editor-parent');
+    var parent = (sel && sel.value) ? findNodeById(layers, sel.value) : null;
+    showButtons();
+    addTileset(name, url, sl, type, parent);
   }
   function showForm(type) {
     var bar = document.getElementById('editor-add-bar');
