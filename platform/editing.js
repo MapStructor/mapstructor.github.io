@@ -390,6 +390,7 @@
       rerender();
       renderTilesetOnMap(node);
       if (typeof refreshLayers === 'function') refreshLayers();  // sync visibility to the new checkbox
+      setActiveLayer(node.id);   // open its style panel (color/opacity/outline/width + Split for fills)
       setStatus('Saved');
     } catch (e) { console.warn('editing: add tileset failed', e); setStatus('Save failed: ' + e.message); }
   }
@@ -446,13 +447,37 @@
     bar.innerHTML =
       '<input id="editor-name" type="text" placeholder="tileset name…" />' +
       '<input id="editor-ts-url" type="text" placeholder="mapbox://username.tilesetid" />' +
-      '<input id="editor-ts-sl" type="text" placeholder="source layer (e.g. buildings)" />' +
+      '<input id="editor-ts-sl" type="text" list="editor-ts-sl-list" placeholder="source layer (e.g. buildings)" /><datalist id="editor-ts-sl-list"></datalist>' +
+      '<div id="editor-ts-sl-status" style="font-size:11px;color:#8a99a8;margin:-3px 0 6px;min-height:13px;"></div>' +
       '<select id="editor-ts-type"><option value="fill">Polygon (fill)</option><option value="line">Line</option><option value="circle">Point (circle)</option></select>' +
       '<select id="editor-parent">' + parentOptions() + '</select>' +
       '<div class="erow"><button id="editor-ok">Add tileset</button><button id="editor-cancel">Cancel</button></div>';
     document.getElementById('editor-name').focus();
+    var urlInput = document.getElementById('editor-ts-url');
+    urlInput.addEventListener('change', function () { detectSourceLayers(urlInput.value.trim()); });   // paste URL + tab/click away → list its layers
     document.getElementById('editor-ok').addEventListener('click', commitTileset);
     document.getElementById('editor-cancel').addEventListener('click', showButtons);
+  }
+  function mapboxTilesetId(url) { return (url && url.indexOf('mapbox://') === 0) ? url.slice(9) : null; }
+  // Read a mapbox:// tileset's vector layers from its TileJSON and offer them as autocomplete,
+  // so the mapmaker doesn't have to know the exact source-layer name. Manual entry still works.
+  async function detectSourceLayers(url) {
+    var status = document.getElementById('editor-ts-sl-status'), list = document.getElementById('editor-ts-sl-list');
+    if (!status || !list) return;
+    var id = mapboxTilesetId(url);
+    if (!id) { status.textContent = url ? 'Auto-detect needs a mapbox:// URL — type the source layer' : ''; list.innerHTML = ''; return; }
+    var token = (window.mapboxgl && mapboxgl.accessToken) || '';
+    status.textContent = 'Reading tileset…'; list.innerHTML = '';
+    try {
+      var res = await fetch('https://api.mapbox.com/v4/' + encodeURIComponent(id) + '.json?access_token=' + token);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var tj = await res.json();
+      var layers = (tj.vector_layers || []).map(function (v) { return v.id; }).filter(Boolean);
+      if (!layers.length) { status.textContent = 'No vector layers found — type the source layer'; return; }
+      list.innerHTML = layers.map(function (l) { return '<option value="' + String(l).replace(/"/g, '&quot;') + '"></option>'; }).join('');
+      var sl = document.getElementById('editor-ts-sl'); if (sl && !sl.value) sl.value = layers[0];
+      status.textContent = layers.length === 1 ? '✓ source layer: ' + layers[0] : '✓ ' + layers.length + ' layers — pick one ▾';
+    } catch (e) { status.textContent = "Couldn't read tileset — type the source layer"; list.innerHTML = ''; }
   }
   function commitTileset() {
     var name = (document.getElementById('editor-name').value || '').trim();
@@ -511,7 +536,9 @@
       '.layer-list-row.editor-drop-before{box-shadow:inset 0 2px 0 #4a9eff;}' +
       '.layer-list-row.editor-drop-after{box-shadow:inset 0 -2px 0 #4a9eff;}' +
       '.layer-list-row.editor-drop-into{background:rgba(74,158,255,0.18);box-shadow:inset 0 0 0 1px #4a9eff;}' +
-      '.layer-list-row.editor-active{background:rgba(74,158,255,0.12);}';
+      '.layer-list-row.editor-active{background:rgba(74,158,255,0.12);}' +
+      // draw toolbar: float on the LEFT just past the 325px layers sidebar (was top-right, hidden under the right swipe map)
+      '#before .mapboxgl-ctrl-top-left{left:400px;z-index:50;}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
     var bar = document.createElement('div'); bar.id = 'editor-add-bar';
@@ -586,7 +613,7 @@
       window._editorWrappedRefresh = true;
     }
     draw = new MapboxDraw({ displayControlsDefault: false, userProperties: true, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
-    beforeMap.addControl(draw, 'top-right');
+    beforeMap.addControl(draw, 'top-left');   // left side, clear of the right swipe map (offset past the sidebar in CSS)
     beforeMap.on('draw.create', onDrawCreate);
     beforeMap.on('draw.update', onDrawUpdate);
     beforeMap.on('draw.delete', onDrawDelete);
@@ -817,7 +844,10 @@
     document.getElementById('elp-radius').addEventListener('input', function () { document.getElementById('elp-radius-val').textContent = this.value; onLayerStyle('radius', parseFloat(this.value)); });
     document.getElementById('elp-fill-vis').addEventListener('change', function () { onLayerStyle('fillVisible', this.checked); });
     document.getElementById('elp-outline-vis').addEventListener('change', function () { onLayerStyle('outlineVisible', this.checked); });
-    document.getElementById('elp-split').addEventListener('click', onSplitOutline);
+    document.getElementById('elp-split').addEventListener('click', function () {
+      var n = activeLayerId && findNodeById(layers, activeLayerId);
+      if (n && (n.outlineOf || n.outlineSplit)) onUnsplitOutline(); else onSplitOutline();
+    });
   }
   function showLayerPanel(slug) {
     var node = findNodeById(layers, slug); if (!node) return;
@@ -833,12 +863,15 @@
     document.getElementById('elp-opacity').value = op;
     document.getElementById('elp-opacity-val').textContent = op;
     document.getElementById('elp-outline').value = /^#[0-9a-fA-F]{6}$/.test(outline) ? outline : '#000000';
-    document.getElementById('elp-outline-row').style.display = (node.type === 'line') ? 'none' : 'block';  // lines have no separate outline
+    document.getElementById('elp-outline-row').style.display = (node.type === 'line' || node.outlineSplit) ? 'none' : 'block';  // lines + split polygons have no separate outline here
     var strokeVis = (node.paint && node.paint['line-opacity'] != null) ? node.paint['line-opacity'] : 1;
     document.getElementById('elp-fill-vis').checked = op > 0;
     document.getElementById('elp-outline-vis').checked = strokeVis !== 0;
-    document.getElementById('elp-vis-row').style.display = fillStroke ? 'flex' : 'none';  // fill + outline toggles ride the real stroke line layer
-    document.getElementById('elp-split').style.display = (fillStroke && !node.outlineSplit) ? 'block' : 'none';  // split a polygon's outline into its own layer (drawn or tileset)
+    document.getElementById('elp-vis-row').style.display = (fillStroke && !node.outlineSplit) ? 'flex' : 'none';  // fill + outline toggles ride the real stroke line layer
+    var splitBtn = document.getElementById('elp-split');   // doubles as split / merge (un-split)
+    if (node.outlineOf) { splitBtn.textContent = 'Merge into polygon'; splitBtn.style.display = 'block'; }
+    else if (fillStroke) { splitBtn.textContent = node.outlineSplit ? 'Merge outline back in' : 'Split outline into its own layer'; splitBtn.style.display = 'block'; }
+    else { splitBtn.style.display = 'none'; }
     var width = paintWidth(node.paint); if (width == null) width = (node.type === 'circle') ? 1.5 : 2;
     document.getElementById('elp-width').value = width;
     document.getElementById('elp-width-val').textContent = width;
@@ -997,6 +1030,82 @@
       var m = pair[1]; if (!m) return; var sid = P.id + '-stroke-' + pair[0];
       try { if (m.getLayer(sid)) m.removeLayer(sid); } catch (e) {}
     });
+  }
+  // Reverse a split: delete the outline layer O and fold its styling back into the polygon P's
+  // auto-outline. Works whether the active layer is the polygon (P) or its outline (O).
+  async function onUnsplitOutline() {
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node) return;
+    var P = node.outlineOf ? findNodeById(layers, node.outlineOf) : node;
+    if (!P || !P.outlineSplit) return;
+    var O = node.outlineOf ? node : (function () { var o = null; (function walk(a) { (a || []).forEach(function (n) { if (n.outlineOf === P.id) o = n; if (n.children) walk(n.children); }); })(layers); return o; })();
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    var isTs = isTilesetNode(P);
+    setStatus('Merging…');
+    try {
+      // carry O's outline styling back into P's paint so the merged auto-outline keeps its look
+      if (O && O.paint) {
+        P.paint = P.paint || {};
+        if (O.paint['line-color']) P.paint['fill-outline-color'] = O.paint['line-color'];
+        if (O.paint['line-width'] != null) P.paint['line-width'] = O.paint['line-width'];
+        if (O.paint['line-opacity'] != null) P.paint['line-opacity'] = O.paint['line-opacity'];
+      }
+      // delete the outline layer O from the project
+      if (O) {
+        var oLid = slugToLayerDbId[O.id];
+        if (oLid) {
+          await db.from('features').delete().eq('layer_id', oLid);
+          var dp = await db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', oLid); if (dp.error) throw new Error(dp.error.message);
+          var dl = await db.from('layers').delete().eq('id', oLid); if (dl.error) throw new Error(dl.error.message);
+        }
+      }
+      // clear P.outlineSplit + persist P's restored paint (so the adapter re-emits its auto-stroke)
+      var pLid = slugToLayerDbId[P.id];
+      if (pLid) {
+        var cur = await db.from('layers').select('raw_config').eq('id', pLid).single();
+        var rc = (cur.data && cur.data.raw_config) || {}; delete rc.outlineSplit;
+        var r = await db.from('layers').update({ raw_config: Object.keys(rc).length ? rc : null, paint: P.paint }).eq('id', pLid); if (r.error) throw new Error(r.error.message);
+      }
+      if (O) { removeMapLayers(O.id); removeFromTree(layers, O); delete slugToLayerDbId[O.id]; }
+      delete P.outlineSplit;
+      rerender();
+      if (isTs) addTilesetStrokeOn(P);     // re-add P's auto-outline stroke line layer
+      else showDrawnPolygonStroke(P);      // un-hide the drawn polygon's MapboxDraw stroke
+      setActiveLayer(P.id);
+      setStatus('Saved');
+    } catch (e) { console.warn('editing: unsplit failed', e); setStatus('Merge failed: ' + e.message); }
+  }
+  function removeMapLayers(id) {
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var m = pair[1]; if (!m) return; var main = id + '-' + pair[0], strk = id + '-stroke-' + pair[0];
+      try { if (m.getLayer(strk)) m.removeLayer(strk); } catch (e) {}
+      try { if (m.getLayer(main)) m.removeLayer(main); } catch (e) {}
+      try { if (m.getSource(main)) m.removeSource(main); } catch (e) {}
+    });
+  }
+  function currentMapDate() {
+    try { var d = (window.moment && window.$) ? moment($('#date').text()).format('YYYYMMDD') : ''; return /^\d{8}$/.test(d) ? parseInt(d, 10) : undefined; } catch (e) { return undefined; }
+  }
+  function addTilesetStrokeOn(P) {   // re-create a fill tileset's auto-outline stroke line layer (mirrors renderTilesetOnMap)
+    if (typeof addMapLayer !== 'function' || P.type !== 'fill' || !P.paint || !P.paint['fill-outline-color']) return;
+    var date = currentMapDate();
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var side = pair[0], m = pair[1]; if (!m) return; var sid = P.id + '-stroke-' + side; if (m.getLayer(sid)) return;
+      var sc = { id: sid, type: 'line', source: P.id + '-' + side, paint: { 'line-color': P.paint['fill-outline-color'], 'line-width': P.paint['line-width'] || 1, 'line-opacity': P.paint['line-opacity'] != null ? P.paint['line-opacity'] : 1 }, layout: { 'line-cap': 'round', 'line-join': 'round' } };
+      if (P['source-layer']) sc['source-layer'] = P['source-layer'];
+      try { addMapLayer(m, sc, date); } catch (e) { console.warn('editing: restore tileset stroke failed', e); }
+    });
+  }
+  function showDrawnPolygonStroke(P) {   // un-hide a drawn polygon's MapboxDraw stroke (reverse hideSplitPolygonStroke)
+    if (!draw) return;
+    var dbId = slugToLayerDbId[P.id];
+    var ids = Object.keys(featureLayer).filter(function (d) { return featureLayer[d] === dbId; });
+    if (!ids.length) return;
+    var so = (P.paint && P.paint['line-opacity'] != null) ? P.paint['line-opacity'] : 1;
+    var sw = (P.paint && P.paint['line-width'] != null) ? P.paint['line-width'] : 2;
+    var oc = P.paint && P.paint['fill-outline-color'];
+    _suppressFeatureDelete = true;
+    ids.forEach(function (drawId) { try { var f = draw.get(drawId); if (f) { f.properties.strokeopacity = so; f.properties.strokewidth = sw; if (oc) f.properties.outline = oc; draw.delete(drawId); draw.add(f); } } catch (e) {} });
+    setTimeout(function () { _suppressFeatureDelete = false; }, 0);
   }
   // Add the outline layer's map layer to the editor, built from the polygon's live features
   // (a `line` layer over the polygon geometry draws its edges). Reloading rebuilds it via the adapter.
