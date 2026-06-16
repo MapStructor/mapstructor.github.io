@@ -204,8 +204,18 @@ var ConfigLoader = (function () {
     // Pull features for drawn (geojson-supabase) layers so synthesize can build their source.
     var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase"; }).map(function (pl) { return pl.layers.id; });
     if (drawnIds.length) {
-      var f = await db.from("features").select("feature_id, layer_id, geom, label, description, start_date, end_date").in("layer_id", drawnIds);
-      if (!f.error) (f.data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); });
+      var push = function (data) { (data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); }); };
+      var sel = "feature_id, layer_id, geom, label, description, start_date, end_date";
+      // Supabase caps a select at 1000 rows; get the total, then page through (the rest in parallel)
+      // so layers with many features (e.g. imported datasets) render fully, not just the first 1000.
+      var first = await db.from("features").select(sel, { count: "exact" }).in("layer_id", drawnIds).order("feature_id").range(0, 999);
+      if (!first.error) {
+        push(first.data);
+        var total = first.count || (first.data ? first.data.length : 0);
+        var pages = [];
+        for (var off = 1000; off < total; off += 1000) pages.push(db.from("features").select(sel).in("layer_id", drawnIds).order("feature_id").range(off, off + 999));
+        if (pages.length) { var results = await Promise.all(pages); results.forEach(function (r) { if (!r.error) push(r.data); }); }
+      }
     }
     return bundle;
   }

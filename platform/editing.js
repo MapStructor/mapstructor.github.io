@@ -431,11 +431,12 @@
     var bar = document.getElementById('editor-add-bar');
     bar.innerHTML = '<div class="erow" style="margin-bottom:6px;">' +
       '<button data-type="layer">+ Layer</button>' +
-      '<button data-type="tileset">+ Tileset</button></div>' +
+      '<button data-type="tileset">+ Tileset</button>' +
+      '<button data-type="import">+ Import</button></div>' +
       '<div class="erow">' +
       '<button data-type="group">+ Group</button>' +
       '<button data-type="section">+ Section</button></div>';
-    bar.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'tileset') showTilesetForm(); else showForm(t); }); });
+    bar.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else showForm(t); }); });
   }
   function parentOptions() {
     var opts = '<option value="">Top level</option>';
@@ -490,6 +491,134 @@
     showButtons();
     addTileset(name, url, sl, type, parent);
   }
+
+  // ── import: GeoJSON / KML / Shapefile(.zip) → editable geojson-supabase layer(s) ──
+  var LIB = { togeojson: 'https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js', shp: 'https://unpkg.com/shpjs@4.0.4/dist/shp.js' };
+  var _scripts = {};
+  function loadScript(url) {   // lazy-load a parser lib only when that format is imported
+    if (_scripts[url]) return _scripts[url];
+    _scripts[url] = new Promise(function (resolve, reject) {
+      var s = document.createElement('script'); s.src = url; s.async = true;
+      s.onload = function () { resolve(); }; s.onerror = function () { reject(new Error('could not load ' + url)); };
+      document.head.appendChild(s);
+    });
+    return _scripts[url];
+  }
+  function showImportForm() {
+    var bar = document.getElementById('editor-add-bar');
+    bar.innerHTML =
+      '<div style="font-size:11px;color:#5a6c7e;margin-bottom:5px;">Import a file → a new editable layer.<br>GeoJSON · KML · Shapefile (.zip)</div>' +
+      '<input id="editor-import-file" type="file" accept=".geojson,.json,.kml,.zip" style="width:100%;box-sizing:border-box;margin-bottom:6px;font-size:12px;" />' +
+      '<select id="editor-parent">' + parentOptions() + '</select>' +
+      '<div id="editor-import-status" style="font-size:11px;color:#8a99a8;margin:2px 0 6px;min-height:13px;"></div>' +
+      '<div class="erow"><button id="editor-cancel">Cancel</button></div>';
+    var fileInput = document.getElementById('editor-import-file');
+    fileInput.addEventListener('change', function () {
+      if (!fileInput.files || !fileInput.files.length) return;
+      var sel = document.getElementById('editor-parent');
+      var parent = (sel && sel.value) ? findNodeById(layers, sel.value) : null;
+      handleImportFile(fileInput.files[0], parent);
+    });
+    document.getElementById('editor-cancel').addEventListener('click', showButtons);
+  }
+  function importStatus(m) { var s = document.getElementById('editor-import-status'); if (s) s.textContent = m; else setStatus(m); }
+  // Route a file by extension → a GeoJSON FeatureCollection → import it.
+  async function handleImportFile(file, parent) {
+    var ext = (file.name.split('.').pop() || '').toLowerCase();
+    importStatus('Reading ' + file.name + '…');
+    try {
+      var fc = null, fmt = '';
+      if (ext === 'geojson' || ext === 'json') { fc = JSON.parse(await file.text()); fmt = 'GeoJSON'; }
+      else if (ext === 'kml') { await loadScript(LIB.togeojson); var dom = new DOMParser().parseFromString(await file.text(), 'text/xml'); if (dom.querySelector('parsererror')) throw new Error('not valid KML/XML'); fc = window.toGeoJSON.kml(dom); fmt = 'KML'; }
+      else if (ext === 'zip') { await loadScript(LIB.shp); var r = await window.shp(await file.arrayBuffer()); fc = Array.isArray(r) ? { type: 'FeatureCollection', features: r.reduce(function (a, c) { return a.concat(c.features || []); }, []) } : r; fmt = 'Shapefile'; }
+      else if (ext === 'kmz') throw new Error('KMZ not supported yet — unzip to KML first');
+      else if (ext === 'tif' || ext === 'tiff') throw new Error('GeoTIFF (raster) import is coming soon');
+      else throw new Error('Unsupported format .' + ext);
+      if (!fc || !fc.features || !fc.features.length) throw new Error('no features found');
+      await importFeatureCollection(fc, stripExt(file.name), parent);
+    } catch (e) { console.warn('editing: import failed', e); importStatus('Import failed: ' + e.message); }
+  }
+  // Split a FeatureCollection by geometry type (one type per layer) → persist layers + features.
+  async function importFeatureCollection(fc, baseName, parent) {
+    if (typeof layers === 'undefined') return;
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    if (!loaded) { importStatus('Still loading — try again'); return; }
+    // MapboxDraw can't render Multi* geometries — explode them into single pieces so they show + edit.
+    var groups = { circle: [], line: [], fill: [] };
+    (fc.features || []).forEach(function (f) {
+      explodeMulti(f).forEach(function (sf) {
+        var t = sf.geometry && sf.geometry.type;
+        var bt = t === 'Point' ? 'circle' : t === 'LineString' ? 'line' : t === 'Polygon' ? 'fill' : null;
+        if (bt) groups[bt].push(sf);
+      });
+    });
+    var kinds = Object.keys(groups).filter(function (k) { return groups[k].length; });
+    if (!kinds.length) throw new Error('no point/line/polygon geometries');
+    // shapefiles are often in a projected CRS; if it didn't come through as lng/lat, say so clearly
+    var bnds = computeImportBounds(fc);
+    if (bnds && (Math.abs(bnds[0][0]) > 180 || Math.abs(bnds[1][0]) > 180 || Math.abs(bnds[0][1]) > 90 || Math.abs(bnds[1][1]) > 90)) throw new Error('coordinates look projected, not lng/lat — re-export as WGS84 / EPSG:4326');
+    var total = kinds.reduce(function (n, k) { return n + groups[k].length; }, 0);
+    if (total > 3000 && !window.confirm('Import ' + total + ' features? Large imports may be slow to edit.')) { importStatus('Cancelled'); return; }
+    var TYPE_LABEL = { circle: 'points', line: 'lines', fill: 'polygons' };
+    var sId = null, gId = null;
+    if (parent && parent.type === 'group') { gId = parent._dbId; var ps = findParent(layers, parent); if (ps && ps.type === 'section') sId = ps._dbId; }
+    else if (parent && parent.type === 'section') { sId = parent._dbId; }
+    var made = [];
+    try {
+      for (var i = 0; i < kinds.length; i++) {
+        var type = kinds[i];
+        importStatus('Saving ' + groups[type].length + ' ' + TYPE_LABEL[type] + '…');
+        var node = makeNode('layer', kinds.length > 1 ? baseName + ' (' + TYPE_LABEL[type] + ')' : baseName);
+        node.type = type; node.iconType = TILESET_ICON[type] || 'square';
+        var layerId = await insertOne('layers', leafRow(node));
+        slugToLayerDbId[node.id] = layerId;
+        await insertOne('project_layers', { project_id: projectId, layer_id: layerId, sort_order: nextSort++, section_id: sId, group_id: gId });
+        await batchInsertFeatures(layerId, groups[type]);
+        if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; }
+        else layers.push(node);
+        made.push(node);
+      }
+      rerender();
+      await loadFeatures();   // pull the imported features into MapboxDraw so they render + are editable
+      var b = computeImportBounds(fc); if (b && typeof beforeMap !== 'undefined' && beforeMap) { try { beforeMap.fitBounds(b, { padding: 60, maxZoom: 16 }); } catch (e) {} }
+      if (made.length) setActiveLayer(made[0].id);
+      showButtons();
+      setStatus('Imported ' + total + ' feature' + (total !== 1 ? 's' : ''));
+    } catch (e) { console.warn('editing: import persist failed', e); importStatus('Import failed: ' + e.message); }
+  }
+  async function batchInsertFeatures(layerId, feats) {
+    var BATCH = 500;
+    for (var i = 0; i < feats.length; i += BATCH) {
+      var rows = feats.slice(i, i + BATCH).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null }; });
+      var r = await db.from('features').insert(rows);
+      if (r.error) throw new Error('feature insert: ' + r.error.message);
+    }
+  }
+  function importLabel(props) {
+    if (!props) return null;
+    var keys = ['name', 'Name', 'NAME', 'label', 'Label', 'title', 'Title'];
+    for (var i = 0; i < keys.length; i++) { if (props[keys[i]] != null && props[keys[i]] !== '') return String(props[keys[i]]).slice(0, 250); }
+    return null;
+  }
+  function stripExt(name) { return String(name).replace(/\.[^.]+$/, ''); }
+  function computeImportBounds(fc) {
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    (fc.features || []).forEach(function (f) { collectImportCoords(f.geometry, function (lng, lat) { if (lng < x0) x0 = lng; if (lat < y0) y0 = lat; if (lng > x1) x1 = lng; if (lat > y1) y1 = lat; }); });
+    return isFinite(x0) ? [[x0, y0], [x1, y1]] : null;
+  }
+  function collectImportCoords(g, fn) { if (!g) return; if (g.type === 'GeometryCollection') (g.geometries || []).forEach(function (s) { collectImportCoords(s, fn); }); else if (g.coordinates) walkImportCoords(g.coordinates, fn); }
+  function walkImportCoords(c, fn) { if (!c || !c.length) return; if (typeof c[0] === 'number') fn(c[0], c[1]); else c.forEach(function (x) { walkImportCoords(x, fn); }); }
+  // Split a Multi* (or GeometryCollection) feature into single-geometry features (MapboxDraw needs singles).
+  function explodeMulti(f) {
+    var g = f && f.geometry; if (!g) return [];
+    function feat(geom) { return { type: 'Feature', properties: f.properties, geometry: geom }; }
+    if (g.type === 'MultiPolygon') return (g.coordinates || []).map(function (c) { return feat({ type: 'Polygon', coordinates: c }); });
+    if (g.type === 'MultiLineString') return (g.coordinates || []).map(function (c) { return feat({ type: 'LineString', coordinates: c }); });
+    if (g.type === 'MultiPoint') return (g.coordinates || []).map(function (c) { return feat({ type: 'Point', coordinates: c }); });
+    if (g.type === 'GeometryCollection') return (g.geometries || []).reduce(function (a, sub) { return a.concat(explodeMulti(feat(sub))); }, []);
+    return [f];
+  }
+
   function showForm(type) {
     var bar = document.getElementById('editor-add-bar');
     var picker = '';
@@ -550,6 +679,8 @@
   // ── Slice 4: drawing (mapbox-gl-draw → the `features` table) ─────────────────
   var draw = null;
   var activeLayerId = null;
+  var MAX_DRAW = 1500;        // a geojson layer with more features than this renders via the ENGINE (like a tileset), not MapboxDraw
+  var _drawLayerSlugs = {};   // slugs currently loaded into MapboxDraw (the small/editable layers) — drives hideDrawnEngineLayers
   var featureToDb = {};   // mapbox-draw feature id → features.feature_id
   var featureMeta = {};   // mapbox-draw feature id → { label, notes }
   var featureLayer = {};  // mapbox-draw feature id → layer db id (for show/hide)
@@ -670,18 +801,31 @@
   async function loadFeatures() {
     if (idsReady) { try { await idsReady; } catch (e) {} }
     if (!draw) return;
-    hideDrawnEngineLayers();  // MapboxDraw renders drawn features in the editor — hide the engine's copy
 
-    var ids = Object.keys(slugToLayerDbId).map(function (k) { return slugToLayerDbId[k]; });
-    if (!ids.length) return;
-    // map each drawn layer's db id → its color, so loaded features keep their color
-    var dbColor = {}, dbOpacity = {}, dbOutline = {}, dbStrokeOp = {}, dbStrokeWidth = {}, dbRadius = {};
-    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { dbColor[did] = n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; var ol = paintOutline(n.paint); if (ol != null) dbOutline[did] = ol; if (n.paint && n.paint['line-opacity'] != null) dbStrokeOp[did] = n.paint['line-opacity']; var wd = paintWidth(n.paint); if (wd != null) dbStrokeWidth[did] = wd; if (n.paint && n.paint['circle-radius'] != null) dbRadius[did] = n.paint['circle-radius']; if (n.outlineSplit) dbStrokeOp[did] = 0; } } if (n.children) walk(n.children); }); })(layers);
+    // map each drawn layer's db id → its style, + collect the geojson layers
+    var dbColor = {}, dbOpacity = {}, dbOutline = {}, dbStrokeOp = {}, dbStrokeWidth = {}, dbRadius = {}, gjList = [];
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { dbColor[did] = n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; var ol = paintOutline(n.paint); if (ol != null) dbOutline[did] = ol; if (n.paint && n.paint['line-opacity'] != null) dbStrokeOp[did] = n.paint['line-opacity']; var wd = paintWidth(n.paint); if (wd != null) dbStrokeWidth[did] = wd; if (n.paint && n.paint['circle-radius'] != null) dbRadius[did] = n.paint['circle-radius']; if (n.outlineSplit) dbStrokeOp[did] = 0; gjList.push({ slug: n.id, did: did }); } } if (n.children) walk(n.children); }); })(layers);
+
+    // Classify by size: small layers edit in MapboxDraw; large ones (imported 10k+ datasets) render
+    // via the engine like a tileset — MapboxDraw can't hold tens of thousands of features (it freezes).
+    _drawLayerSlugs = {};
+    var smallIds = [];
+    for (var gi = 0; gi < gjList.length; gi++) {
+      try { var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gjList[gi].did); var cn = cq.count || 0; if (cn > 0 && cn <= MAX_DRAW) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } } catch (e) {}
+    }
+    hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
+    if (!smallIds.length) { try { draw.set({ type: 'FeatureCollection', features: [] }); } catch (e) {} return; }
     try {
-      var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date').in('layer_id', ids);
-      if (res.error) return;
+      var rows = [];
+      for (var from = 0; from < 200000; from += 1000) {
+        var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date').in('layer_id', smallIds).order('feature_id').range(from, from + 999);
+        if (res.error) { console.warn('editing: load features failed', res.error); break; }
+        var batch = res.data || [];
+        rows = rows.concat(batch);
+        if (batch.length < 1000) break;
+      }
       var feats = [];
-      (res.data || []).forEach(function (row) {
+      rows.forEach(function (row) {
         if (!row.geom) return;
         var did = 'db-' + row.feature_id;
         featureToDb[did] = row.feature_id;
@@ -704,7 +848,7 @@
     if (typeof layers === 'undefined') return;
     (function walk(arr) {
       (arr || []).forEach(function (n) {
-        if (n.id && n.source_type === 'geojson-supabase' && !n.outlineOf) {  // outline layers render via the adapter, not MapboxDraw
+        if (n.id && n.source_type === 'geojson-supabase' && !n.outlineOf && _drawLayerSlugs[n.id]) {  // only small layers live in MapboxDraw; large + outline layers render via the engine
           ['-left', '-right', '-stroke-left', '-stroke-right'].forEach(function (sfx) {
             var id = n.id + sfx;
             try { if (beforeMap && beforeMap.getLayer(id)) beforeMap.setLayoutProperty(id, 'visibility', 'none'); } catch (e) {}
