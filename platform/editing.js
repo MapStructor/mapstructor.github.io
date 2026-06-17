@@ -610,16 +610,35 @@
   async function batchInsertFeatures(layerId, feats) {
     var BATCH = 500;
     for (var i = 0; i < feats.length; i += BATCH) {
-      var rows = feats.slice(i, i + BATCH).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null }; });
+      var rows = feats.slice(i, i + BATCH).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null, custom_fields: importCustomFields(f.properties) }; });
       var r = await db.from('features').insert(rows);
       if (r.error) throw new Error('feature insert: ' + r.error.message);
     }
   }
-  function importLabel(props) {
+  var LABEL_KEYS = ['name', 'Name', 'NAME', 'label', 'Label', 'title', 'Title'];
+  function importLabelKey(props) {
     if (!props) return null;
-    var keys = ['name', 'Name', 'NAME', 'label', 'Label', 'title', 'Title'];
-    for (var i = 0; i < keys.length; i++) { if (props[keys[i]] != null && props[keys[i]] !== '') return String(props[keys[i]]).slice(0, 250); }
+    for (var i = 0; i < LABEL_KEYS.length; i++) { if (props[LABEL_KEYS[i]] != null && props[LABEL_KEYS[i]] !== '') return LABEL_KEYS[i]; }
     return null;
+  }
+  function importLabel(props) {
+    var k = importLabelKey(props);
+    return k ? String(props[k]).slice(0, 250) : null;
+  }
+  // Keep every OTHER property so imported datasets don't lose their attributes — they ride in
+  // features.custom_fields (jsonb) and surface as editable columns in the attribute table. The
+  // label-source key is dropped so it isn't duplicated (it's already the Label column).
+  function importCustomFields(props) {
+    if (!props || typeof props !== 'object') return null;
+    var labelKey = importLabelKey(props), out = {}, n = 0;
+    Object.keys(props).forEach(function (k) {
+      if (k === labelKey) return;
+      var v = props[k];
+      if (v == null || v === '') return;
+      if (typeof v === 'object') { try { v = JSON.stringify(v); } catch (e) { return; } }   // flatten nested values to a string
+      out[k] = v; n++;
+    });
+    return n ? out : null;
   }
   function stripExt(name) { return String(name).replace(/\.[^.]+$/, ''); }
   function computeImportBounds(fc) {
@@ -1312,7 +1331,8 @@
         '<label style="cursor:pointer;"><input id="elp-fill-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show fill</label>' +
         '<label style="cursor:pointer;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
       '</div>' +
-      '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;font-size:12px;">Split outline into its own layer</button>';
+      '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
+      '<button id="elp-attrs" style="margin-top:8px;width:100%;padding:6px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;font-size:12px;">&#9638; Attribute table</button>';
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
@@ -1326,6 +1346,7 @@
       var n = activeLayerId && findNodeById(layers, activeLayerId);
       if (n && (n.outlineOf || n.outlineSplit)) onUnsplitOutline(); else onSplitOutline();
     });
+    document.getElementById('elp-attrs').addEventListener('click', function () { if (activeLayerId) openAttributeTable(activeLayerId); });
   }
   function showLayerPanel(slug) {
     var node = findNodeById(layers, slug); if (!node) return;
@@ -1360,9 +1381,287 @@
     document.getElementById('elp-radius').value = radius;
     document.getElementById('elp-radius-val').textContent = radius;
     document.getElementById('elp-radius-row').style.display = (node.type === 'circle') ? 'block' : 'none';
+    document.getElementById('elp-attrs').style.display = isGeojson ? 'block' : 'none';   // attribute table = stored (drawn/imported) features only
     p.style.display = 'block';
   }
   function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
+  // ---- Attribute table: a spreadsheet view of one drawn layer's features (label / dates / notes, editable) ----
+  function attrEsc(s) { return s == null ? '' : String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function injectAttrModal() {
+    if (document.getElementById('editor-attr-modal')) return;
+    var st = document.createElement('style');
+    st.textContent =
+      // wrapper is a non-blocking layer (pointer-events:none) so the MAP behind stays pannable; only the panel itself catches events
+      '#editor-attr-modal{position:fixed;inset:0;z-index:4000;display:none;pointer-events:none;font-family:"Source Sans Pro",Arial,sans-serif;}' +
+      '#editor-attr-panel{pointer-events:auto;position:absolute;left:540px;top:96px;width:min(820px,70vw);height:62vh;min-width:340px;min-height:180px;max-width:96vw;max-height:88vh;background:#fff;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,0.3);display:flex;flex-direction:column;resize:both;overflow:hidden;}' +
+      '#editor-attr-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #e3e9ef;font-size:15px;color:#2b3a4a;cursor:move;}' +   // header doubles as the drag handle (move the panel off the map)
+      '#editor-attr-head .attr-head-l{display:flex;align-items:center;gap:10px;min-width:0;}' +
+      '#editor-attr-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '#editor-attr-zoom{font-size:12px;padding:3px 9px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;white-space:nowrap;}' +
+      '#editor-attr-zoom:disabled{opacity:0.45;cursor:default;}' +
+      '#editor-attr-close{cursor:pointer;color:#8a99a8;font-size:22px;line-height:1;padding-left:8px;}' +
+      '#editor-attr-wrap{overflow:auto;flex:1;}' +
+      '#editor-attr-table{border-collapse:collapse;font-size:13px;table-layout:fixed;}' +   // fixed = column widths are honored exactly (so resize works); JS sets the table width = sum of columns
+      '#editor-attr-table th{box-sizing:border-box;position:sticky;top:0;background:#f3f6f9;text-align:left;padding:8px 18px 8px 10px;border-bottom:1px solid #e3e9ef;color:#5a6c7e;font-weight:600;white-space:nowrap;cursor:pointer;user-select:none;overflow:hidden;}' +
+      '#editor-attr-table th:hover{background:#eaf0f6;}' +
+      '#editor-attr-table th .attr-arrow{margin-left:5px;font-size:10px;color:#4a9eff;}' +
+      '#editor-attr-table th .attr-rsz{position:absolute;top:0;right:0;width:8px;height:100%;cursor:col-resize;}' +
+      '#editor-attr-table th .attr-rsz:hover{background:#b9c6d4;}' +
+      '#editor-attr-table td{padding:2px 6px;border-bottom:1px solid #f0f3f6;box-sizing:border-box;overflow:hidden;}' +
+      '#editor-attr-table input{width:100%;box-sizing:border-box;border:1px solid transparent;border-radius:3px;padding:4px 6px;font-size:13px;background:transparent;color:#2b3a4a;}' +
+      '#editor-attr-table input:hover{border-color:#dfe6ed;}' +
+      '#editor-attr-table input:focus{border-color:#4a9eff;background:#fff;outline:none;}' +
+      '#editor-attr-table tbody tr:hover td{background:#f8fafc;}' +
+      '#editor-attr-table tbody tr.attr-row-sel td{background:#fff5cc;}' +
+      '#editor-attr-table tbody tr.attr-row-sel:hover td{background:#ffefb0;}' +
+      '#editor-attr-table tbody tr.attr-row-hover td{background:#d6f3ff;}' +   // brushed from the map (or direct hover) — matches the cyan map highlight
+      '#editor-attr-foot{padding:8px 16px;border-top:1px solid #e3e9ef;font-size:12px;color:#8a99a8;}';
+    document.head.appendChild(st);
+    var m = document.createElement('div'); m.id = 'editor-attr-modal';
+    m.innerHTML =
+      '<div id="editor-attr-panel">' +
+        '<div id="editor-attr-head"><span class="attr-head-l"><b id="editor-attr-title">Attributes</b>' +
+          '<button id="editor-attr-zoom" title="Zoom the map to the selected feature(s)" disabled>&#9673; Zoom to selected</button></span>' +
+          '<span id="editor-attr-close" title="Close">&times;</span></div>' +
+        '<div id="editor-attr-wrap"><table id="editor-attr-table"><thead id="editor-attr-thead"></thead><tbody id="editor-attr-tbody"></tbody></table></div>' +
+        '<div id="editor-attr-foot"></div>' +
+      '</div>';
+    document.body.appendChild(m);
+    document.getElementById('editor-attr-close').addEventListener('click', hideAttrModal);
+    document.getElementById('editor-attr-zoom').addEventListener('click', zoomToAttrSelected);
+    document.getElementById('editor-attr-head').addEventListener('mousedown', startAttrPanelDrag);
+  }
+  var _attrCustom = {};   // fid → its custom_fields object, so a single-cell edit rewrites the whole jsonb
+  var _attrRows = [], _attrCols = [], _attrSort = null, _attrSel = [];   // loaded rows + column model + {idx,dir} + selected feature_ids (highlighted on the map)
+  var _attrById = {}, _attrSlug = null, _attrHover = null, _attrHoverRAF = false, _attrLastPt = null, _attrHoverWired = false;   // hover brushing (map ↔ row): id→row lookup, open layer, hovered fid
+  function attrCellVal(r, c) { return c.kind === 'custom' ? ((r.custom_fields || {})[c.key]) : r[c.field]; }
+  function attrDisp(r, c) { var v = attrCellVal(r, c); if (c.kind === 'date') return v ? String(v).slice(0, 10) : ''; return v == null ? '' : v; }
+  function findAttrRow(fid) { return _attrById[String(fid)] || null; }
+  async function openAttributeTable(slug) {
+    var node = slug && findNodeById(layers, slug); if (!node) return;
+    var lid = slugToLayerDbId[slug];
+    if (!lid) { setStatus('No stored data for this layer'); return; }
+    injectAttrModal();
+    var modal = document.getElementById('editor-attr-modal');
+    document.getElementById('editor-attr-title').textContent = (node.label || 'Layer') + ' — attributes';
+    var thead = document.getElementById('editor-attr-thead'), tbody = document.getElementById('editor-attr-tbody'), foot = document.getElementById('editor-attr-foot');
+    thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#8a99a8;">Loading…</td></tr>'; foot.textContent = '';
+    modal.style.display = 'block';
+    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; clearAttrHighlight();
+    var res;
+    try { res = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, geom', { count: 'exact' }).eq('layer_id', lid).order('feature_id').range(0, 999); }
+    catch (e) { res = { error: e }; }
+    if (res.error) { tbody.innerHTML = '<tr><td style="padding:14px;color:#b4453a;">Failed to load features.</td></tr>'; return; }
+    var rows = res.data || [], total = (res.count != null) ? res.count : rows.length;
+    if (!rows.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#8a99a8;">No features in this layer yet.</td></tr>'; foot.textContent = '0 features'; return; }
+    // dynamic columns = the union of custom_fields keys across the loaded rows (imported attributes), capped
+    var keys = [];
+    rows.forEach(function (r) { var cf = r.custom_fields; if (cf && typeof cf === 'object') { _attrCustom[r.feature_id] = cf; Object.keys(cf).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); }); } });
+    keys = keys.slice(0, 30);
+    _attrRows = rows;
+    _attrSlug = slug; _attrById = {}; rows.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
+    _attrCols = [
+      { title: 'Label', kind: 'std', field: 'label', type: 'text', w: keys.length ? 180 : 240 },
+      { title: 'Start', kind: 'date', field: 'start_date', type: 'date', w: 130 },
+      { title: 'End', kind: 'date', field: 'end_date', type: 'date', w: 130 },
+      { title: 'Notes', kind: 'std', field: 'description', type: 'text', w: 220 }
+    ].concat(keys.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 130 }; }));
+    buildAttrHead(); renderAttrBody(); updateAttrZoomBtn();
+    foot.textContent = total + ' feature' + (total === 1 ? '' : 's') + (keys.length ? '  ·  ' + keys.length + ' attribute' + (keys.length === 1 ? '' : 's') : '') + (total > rows.length ? '  ·  showing first ' + rows.length : '') + '  ·  click a row to highlight it on the map · Ctrl-click to add';
+  }
+  function buildAttrHead() {
+    var thead = document.getElementById('editor-attr-thead');
+    thead.innerHTML = '<tr>' + _attrCols.map(function (c, i) {
+      var arrow = (_attrSort && _attrSort.idx === i) ? '<span class="attr-arrow">' + (_attrSort.dir === 'desc' ? '▼' : '▲') + '</span>' : '';
+      return '<th data-ci="' + i + '" style="width:' + c.w + 'px;" title="' + attrEsc(c.title) + '">' + attrEsc(c.title) + arrow + '<span class="attr-rsz"></span></th>';
+    }).join('') + '</tr>';
+    Array.prototype.forEach.call(thead.querySelectorAll('th'), function (th) {
+      var ci = parseInt(th.getAttribute('data-ci'), 10);
+      th.addEventListener('click', function (e) { if (e.target.classList.contains('attr-rsz')) return; sortAttrBy(ci); });
+      th.querySelector('.attr-rsz').addEventListener('mousedown', function (e) { startAttrResize(e, th, ci); });
+    });
+    applyAttrTableWidth();
+  }
+  function applyAttrTableWidth() {   // table width = sum of column widths, so fixed layout honors each + the wrap scrolls horizontally
+    var t = document.getElementById('editor-attr-table');
+    if (t) t.style.width = _attrCols.reduce(function (s, c) { return s + (c.w || 130); }, 0) + 'px';
+  }
+  function startAttrResize(e, th, ci) {
+    e.preventDefault(); e.stopPropagation();   // don't let the drag trigger a sort
+    var startX = e.pageX, startW = th.offsetWidth;
+    function move(ev) { var w = Math.max(60, startW + (ev.pageX - startX)); th.style.width = w + 'px'; _attrCols[ci].w = w; applyAttrTableWidth(); }
+    function up() { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.userSelect = ''; }
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+  }
+  function sortAttrBy(ci) {
+    if (_attrSort && _attrSort.idx === ci) _attrSort.dir = (_attrSort.dir === 'asc') ? 'desc' : 'asc';
+    else _attrSort = { idx: ci, dir: 'asc' };
+    var c = _attrCols[ci], dir = _attrSort.dir;
+    _attrRows.sort(function (a, b) {
+      var va = attrCellVal(a, c), vb = attrCellVal(b, c);
+      var na = (va == null || va === ''), nb = (vb == null || vb === '');
+      if (na && nb) return 0; if (na) return 1; if (nb) return -1;   // blanks always sort last
+      var r;
+      if (typeof va === 'number' && typeof vb === 'number') r = va - vb;
+      else { var sa = String(va).toLowerCase(), sb = String(vb).toLowerCase(); r = sa < sb ? -1 : sa > sb ? 1 : 0; }
+      return dir === 'desc' ? -r : r;
+    });
+    buildAttrHead(); renderAttrBody();
+  }
+  function renderAttrBody() {
+    var tbody = document.getElementById('editor-attr-tbody');
+    tbody.innerHTML = _attrRows.map(function (r) {
+      var sel = _attrSel.indexOf(String(r.feature_id)) > -1 ? ' class="attr-row-sel"' : '';
+      return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + sel + '>' + _attrCols.map(function (c) {
+        var bind = c.kind === 'custom' ? 'data-fc="' + attrEsc(c.key) + '"' : 'data-f="' + attrEsc(c.field) + '"';
+        return '<td><input ' + bind + ' type="' + c.type + '" value="' + attrEsc(attrDisp(r, c)) + '" /></td>';
+      }).join('') + '</tr>';
+    }).join('');
+    Array.prototype.forEach.call(tbody.querySelectorAll('input'), function (inp) {
+      inp.addEventListener('change', function () {
+        var fid = inp.closest('tr').getAttribute('data-fid'), std = inp.getAttribute('data-f');
+        if (std) saveAttrCell(fid, std, inp.value); else saveAttrCustomCell(fid, inp.getAttribute('data-fc'), inp.value);
+      });
+    });
+    Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) {
+      tr.addEventListener('click', function (e) { selectAttrRow(tr.getAttribute('data-fid'), e.ctrlKey || e.metaKey); });   // click a row → highlight its feature on the map (Ctrl/Cmd = add to selection); editing a cell still works
+      tr.addEventListener('mouseenter', function () { setAttrHover(tr.getAttribute('data-fid'), false); });   // hover a row → light up its feature
+      tr.addEventListener('mouseleave', function () { setAttrHover(null, false); });
+    });
+  }
+  // ---- row selection ↔ map highlight + zoom ----
+  function selectAttrRow(fid, additive) {
+    fid = String(fid);
+    if (additive) { var i = _attrSel.indexOf(fid); if (i > -1) _attrSel.splice(i, 1); else _attrSel.push(fid); }
+    else { _attrSel = [fid]; }
+    applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn();
+  }
+  function applyAttrSelClasses() {
+    var tbody = document.getElementById('editor-attr-tbody'); if (!tbody) return;
+    Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) { tr.classList.toggle('attr-row-sel', _attrSel.indexOf(tr.getAttribute('data-fid')) > -1); });
+  }
+  function updateAttrZoomBtn() { var b = document.getElementById('editor-attr-zoom'); if (b) b.disabled = !_attrSel.length; }
+  function ensureAttrHlLayers() {
+    if (typeof beforeMap === 'undefined' || !beforeMap || beforeMap.getSource('editor-attr-hl-src')) return;
+    try {
+      beforeMap.addSource('editor-attr-hl-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      beforeMap.addLayer({ id: 'editor-attr-hl-fill', type: 'fill', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#ffd400', 'fill-opacity': 0.3 } });
+      beforeMap.addLayer({ id: 'editor-attr-hl-line', type: 'line', source: 'editor-attr-hl-src', paint: { 'line-color': '#ff8c00', 'line-width': 3 } });
+      beforeMap.addLayer({ id: 'editor-attr-hl-pt', type: 'circle', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#ffd400', 'circle-stroke-color': '#ff8c00', 'circle-stroke-width': 3 } });
+      // hover overlay (cyan) — rides ABOVE the yellow selection so the brushed feature reads clearly
+      beforeMap.addSource('editor-attr-hover-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      beforeMap.addLayer({ id: 'editor-attr-hover-fill', type: 'fill', source: 'editor-attr-hover-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#00e5ff', 'fill-opacity': 0.25 } });
+      beforeMap.addLayer({ id: 'editor-attr-hover-line', type: 'line', source: 'editor-attr-hover-src', paint: { 'line-color': '#00b8d4', 'line-width': 3.5 } });
+      beforeMap.addLayer({ id: 'editor-attr-hover-pt', type: 'circle', source: 'editor-attr-hover-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 10, 'circle-color': '#00e5ff', 'circle-opacity': 0.5, 'circle-stroke-color': '#00b8d4', 'circle-stroke-width': 3 } });
+    } catch (e) {}
+  }
+  function updateAttrHighlight() {
+    ensureAttrHlLayers();
+    if (typeof beforeMap === 'undefined' || !beforeMap) return;
+    try {
+      var src = beforeMap.getSource('editor-attr-hl-src'); if (!src) return;
+      var feats = _attrSel.map(function (fid) { var r = findAttrRow(fid); return (r && r.geom) ? { type: 'Feature', geometry: r.geom, properties: {} } : null; }).filter(Boolean);
+      src.setData({ type: 'FeatureCollection', features: feats });
+    } catch (e) {}
+  }
+  function clearAttrHighlight() {
+    _attrSel = [];
+    try { var src = beforeMap && beforeMap.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: [] }); } catch (e) {}
+  }
+  // ---- hover brushing: row ↔ map feature light up together ----
+  function setAttrHover(fid, scroll) {
+    fid = fid ? String(fid) : null;
+    if (_attrHover === fid) return;
+    _attrHover = fid;
+    var tbody = document.getElementById('editor-attr-tbody');
+    if (tbody) {
+      Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) { tr.classList.toggle('attr-row-hover', tr.getAttribute('data-fid') === _attrHover); });
+      if (scroll && _attrHover) { var row = tbody.querySelector('tr[data-fid="' + _attrHover + '"]'); if (row) row.scrollIntoView({ block: 'nearest' }); }
+    }
+    ensureAttrHlLayers();
+    try { var src = beforeMap && beforeMap.getSource('editor-attr-hover-src'); if (src) { var r = _attrHover && findAttrRow(_attrHover); src.setData(r && r.geom ? { type: 'Feature', geometry: r.geom, properties: {} } : { type: 'FeatureCollection', features: [] }); } } catch (e) {}
+  }
+  function ensureAttrMapHover() {   // wire the map → row direction once
+    if (_attrHoverWired || typeof beforeMap === 'undefined' || !beforeMap) return;
+    _attrHoverWired = true;
+    beforeMap.on('mousemove', attrMapHover);
+    beforeMap.on('mouseout', function () { setAttrHover(null, false); });
+  }
+  function attrMapHover(e) {   // throttle to one hit-test per frame
+    if (!_attrSlug) return;
+    _attrLastPt = e.point;
+    if (_attrHoverRAF) return;
+    _attrHoverRAF = true;
+    requestAnimationFrame(function () { _attrHoverRAF = false; attrMapHoverHit(_attrLastPt); });
+  }
+  function attrMapHoverHit(pt) {
+    if (!_attrSlug || !pt) return;
+    var fid = null;
+    try {
+      var b = 4, rf = beforeMap.queryRenderedFeatures([[pt.x - b, pt.y - b], [pt.x + b, pt.y + b]]) || [];   // small buffer box so tiny points / thin lines are easy to catch
+      for (var i = 0; i < rf.length; i++) {
+        var f = rf[i], pid = f.properties && f.properties.id;
+        // MapboxDraw feature (small layer): its id rides as properties.id = 'db-<feature_id>'
+        if (typeof pid === 'string' && pid.indexOf('db-') === 0 && _attrById[pid.slice(3)]) { fid = pid.slice(3); break; }
+        // engine layer for THIS layer (large): the rendered layer id starts with the slug + the feature carries id = feature_id
+        if (f.layer && f.layer.id && f.layer.id.indexOf(_attrSlug) === 0 && f.id != null && _attrById[String(f.id)]) { fid = String(f.id); break; }
+      }
+    } catch (e) {}
+    setAttrHover(fid, true);
+  }
+  function geomsBounds(geoms) {
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    (geoms || []).forEach(function (g) { collectImportCoords(g, function (lng, lat) { if (lng < x0) x0 = lng; if (lat < y0) y0 = lat; if (lng > x1) x1 = lng; if (lat > y1) y1 = lat; }); });
+    return isFinite(x0) ? [[x0, y0], [x1, y1]] : null;
+  }
+  function zoomToAttrSelected() {
+    if (!_attrSel.length || typeof beforeMap === 'undefined' || !beforeMap) return;
+    var geoms = _attrSel.map(function (fid) { var r = findAttrRow(fid); return r && r.geom; }).filter(Boolean);
+    var b = geomsBounds(geoms); if (!b) return;
+    try {
+      if (b[0][0] === b[1][0] && b[0][1] === b[1][1]) beforeMap.easeTo({ center: b[0], zoom: Math.max(beforeMap.getZoom(), 16) });   // single point
+      else beforeMap.fitBounds(b, { padding: 80, maxZoom: 17 });
+    } catch (e) {}
+  }
+  function startAttrPanelDrag(e) {
+    if (e.target.id === 'editor-attr-close' || e.target.id === 'editor-attr-zoom') return;   // let those buttons do their thing
+    var panel = document.getElementById('editor-attr-panel'); if (!panel) return;
+    e.preventDefault();
+    var sx = e.clientX, sy = e.clientY, rect = panel.getBoundingClientRect(), ox = rect.left, oy = rect.top;
+    function move(ev) {
+      panel.style.left = Math.max(0, Math.min(window.innerWidth - 80, ox + (ev.clientX - sx))) + 'px';
+      panel.style.top = Math.max(0, Math.min(window.innerHeight - 40, oy + (ev.clientY - sy))) + 'px';
+    }
+    function up() { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.userSelect = ''; }
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+  }
+  function hideAttrModal() { var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); clearAttrHighlight(); updateAttrZoomBtn(); }
+  async function saveAttrCustomCell(fid, key, value) {
+    var cf = _attrCustom[fid];
+    if (!cf) { cf = _attrCustom[fid] = {}; var row0 = findAttrRow(fid); if (row0) row0.custom_fields = cf; }   // link a fresh object back to the row so re-sort shows the edit
+    var v = value.trim();
+    if (v === '') delete cf[key];
+    else if (/^-?\d+(\.\d+)?$/.test(v)) cf[key] = Number(v);   // keep numbers numeric
+    else cf[key] = value;
+    setStatus('Saving…');
+    try { var r = await db.from('features').update({ custom_fields: Object.keys(cf).length ? cf : null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    catch (e) { setStatus('Save failed'); }
+  }
+  async function saveAttrCell(fid, field, value) {
+    var v = (value === '') ? null : value, upd = {}; upd[field] = v;
+    setStatus('Saving…');
+    try { var r = await db.from('features').update(upd).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    catch (e) { setStatus('Save failed'); return; }
+    var row = findAttrRow(fid); if (row) row[field] = v;   // keep the in-memory model in sync so a re-sort reflects the edit
+    var did = 'db-' + fid, m = featureMeta[did];   // mirror into MapboxDraw meta + the open feature panel
+    if (m) {
+      if (field === 'label') m.label = v || ''; else if (field === 'description') m.notes = v || '';
+      else if (field === 'start_date') m.start = v || ''; else if (field === 'end_date') m.end = v || '';
+      if (selectedDrawId === did) showFeaturePanel(did);
+    }
+  }
   var _styleSession = null, _styleBefore = null;   // capture the pre-edit style once per edit session (debounced edits → one undo)
   function onLayerStyle(field, value) {
     if (!activeLayerId) return;

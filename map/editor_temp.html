@@ -373,6 +373,7 @@
          single additive script below — it bolts edit chrome onto the engine's
          already-rendered UI and never alters how the viewer renders.
          ─────────────────────────────────────────────────────────────────── -->
-    <script src="../platform/editing.js" onerror="void(0)"></script>
+    <!-- cache-bust: editing.js changes often during dev; ?v=now forces a fresh load every reload (no stale code) -->
+    <script>document.write('<script src="../platform/editing.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
   </body>
 </html>
