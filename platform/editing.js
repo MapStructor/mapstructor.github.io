@@ -200,30 +200,51 @@
         rerender();
         await persistOrder();
       } else {
-        // Leaf: remove just this layer from the project, plus its drawn features.
+        // Leaf: remove from the project but KEEP the features + layers row, so it's fully undoable
+        // (re-adding its project_layers row restores it with its data — works for any layer size).
         var lid = slugToLayerDbId[node.id];
+        var loc = locate(layers, node), plf = null;
         if (lid) {
-          await db.from('features').delete().eq('layer_id', lid);
+          try { var cur = await db.from('project_layers').select('section_id, group_id, sort_order').eq('project_id', projectId).eq('layer_id', lid).single(); plf = cur.data || null; } catch (e) {}
           var dp = await db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', lid); if (dp.error) throw new Error(dp.error.message);
         }
+        removeMapLayers(node.id);           // drop tileset / engine-rendered map layers
         removeFromTree(layers, node);
-        rerender();
+        (function (n, llid, fields, arr, idx) {
+          async function readd() {
+            if (llid) { try { await db.from('project_layers').insert({ project_id: projectId, layer_id: llid, section_id: fields ? fields.section_id : null, group_id: fields ? fields.group_id : null, sort_order: fields ? fields.sort_order : nextSort++ }); } catch (e) {} }
+            if (arr) arr.splice(Math.min(idx, arr.length), 0, n); else layers.push(n);
+            rerender(); await loadFeatures();
+            if (isTilesetNode(n)) renderTilesetOnMap(n);   // (large geojson layers re-render on reload)
+          }
+          async function reremove() {
+            if (llid) { try { await db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', llid); } catch (e) {} }
+            removeMapLayers(n.id); removeFromTree(layers, n); rerender(); await loadFeatures();
+          }
+          pushUndo(readd, reremove, 'delete ' + (n.label || 'layer'));
+        })(node, lid, plf, loc ? loc.arr : null, loc ? loc.idx : 0);
+        rerender(); await loadFeatures();   // drops its MapboxDraw features too (after the undo entry exists)
       }
       setStatus('Saved');
     } catch (e) { console.warn('editing: delete failed', e); setStatus('Delete failed: ' + e.message); }
   }
+  async function setNodeName(id, name) {
+    var node = findNodeById(layers, id); if (!node) return;
+    if (node.type === 'section')      { try { await db.from('layer_sections').update({ name: name }).eq('id', node._dbId); } catch (e) {} }
+    else if (node.type === 'group')   { try { await db.from('layer_groups').update({ name: name }).eq('id', node._dbId); } catch (e) {} }
+    else { var lid = slugToLayerDbId[node.id]; if (lid) { try { await db.from('layers').update({ name: name }).eq('id', lid); } catch (e) {} } }
+    node.label = name; rerender();
+  }
   async function onRename(id) {
     var node = findNodeById(layers, id); if (!node) return;
-    var name = window.prompt('Rename:', node.label || '');
-    if (name == null) return; name = name.trim(); if (!name) return;
+    var oldName = node.label || '';
+    var name = window.prompt('Rename:', oldName);
+    if (name == null) return; name = name.trim(); if (!name || name === oldName) return;
     if (idsReady) { try { await idsReady; } catch (e) {} }
     setStatus('Saving…');
     try {
-      if (node.type === 'section')      { var rs = await db.from('layer_sections').update({ name: name }).eq('id', node._dbId); if (rs.error) throw new Error(rs.error.message); }
-      else if (node.type === 'group')   { var rg = await db.from('layer_groups').update({ name: name }).eq('id', node._dbId); if (rg.error) throw new Error(rg.error.message); }
-      else { var lid = slugToLayerDbId[node.id]; if (lid) { var rl = await db.from('layers').update({ name: name }).eq('id', lid); if (rl.error) throw new Error(rl.error.message); } }
-      node.label = name;
-      rerender();
+      await setNodeName(id, name);
+      pushUndo(function () { return setNodeName(id, oldName); }, function () { return setNodeName(id, name); }, 'rename');
       setStatus('Saved');
     } catch (e) { console.warn('editing: rename failed', e); setStatus('Rename failed: ' + e.message); }
   }
@@ -667,12 +688,28 @@
       '.layer-list-row.editor-drop-into{background:rgba(74,158,255,0.18);box-shadow:inset 0 0 0 1px #4a9eff;}' +
       '.layer-list-row.editor-active{background:rgba(74,158,255,0.12);}' +
       // draw toolbar: float on the LEFT just past the 325px layers sidebar (was top-right, hidden under the right swipe map)
-      '#before .mapboxgl-ctrl-top-left{left:400px;z-index:50;}';
+      '#before .mapboxgl-ctrl-top-left{left:400px;z-index:50;}' +
+      '#editor-undo-bar{display:flex;gap:6px;padding:6px 6px 0;}' +
+      '#editor-undo-bar button{flex:1;padding:5px 0;border:1px solid #cdd6df;border-radius:4px;background:#fff;color:#23374d;cursor:pointer;font-size:12px;}' +
+      '#editor-undo-bar button:disabled{opacity:0.4;cursor:default;}' +
+      '#editor-undo-bar button:not(:disabled):hover{background:#eef1f5;}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
     var bar = document.createElement('div'); bar.id = 'editor-add-bar';
+    var undobar = document.createElement('div'); undobar.id = 'editor-undo-bar';
+    undobar.innerHTML = '<button id="editor-undo" title="Undo (Ctrl+Z)" disabled>↶ Undo</button><button id="editor-redo" title="Redo (Ctrl+Shift+Z)" disabled>↷ Redo</button>';
     panel.parentNode.insertBefore(status, panel.nextSibling);
     panel.parentNode.insertBefore(bar, status.nextSibling);
+    panel.parentNode.insertBefore(undobar, status);   // undo/redo above the save status + add bar
+    document.getElementById('editor-undo').addEventListener('click', doUndo);
+    document.getElementById('editor-redo').addEventListener('click', doRedo);
+    document.addEventListener('keydown', function (e) {   // Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y)
+      if (!(e.ctrlKey || e.metaKey)) return;
+      var tag = (document.activeElement || {}).tagName || ''; if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      var isZ = e.key === 'z' || e.key === 'Z', isY = e.key === 'y' || e.key === 'Y';
+      if (isZ && !e.shiftKey) { e.preventDefault(); doUndo(); }
+      else if (isY || (isZ && e.shiftKey)) { e.preventDefault(); doRedo(); }
+    }, true);
     showButtons();
   }
 
@@ -752,6 +789,57 @@
     injectFeaturePanel();
     loadFeatures();
   }
+  // ── undo / redo (in-session stack; mirrors v3 undoEngine) ────────────────────
+  var _undoStack = [], _redoStack = [], _undoing = false, _geomSnap = {};
+  function pushUndo(undo, redo, label) {
+    if (_undoing) return;                 // changes made BY undo/redo aren't themselves recorded
+    _undoStack.push({ undo: undo, redo: redo, label: label || '' });
+    if (_undoStack.length > 100) _undoStack.shift();
+    _redoStack = [];
+    updateUndoButtons();
+  }
+  async function doUndo() {
+    if (_undoing || !_undoStack.length) return;
+    var op = _undoStack.pop(); _undoing = true; setStatus('Undoing…');
+    try { await op.undo(); _redoStack.push(op); setStatus('Undone' + (op.label ? ' — ' + op.label : '')); }
+    catch (e) { console.warn('editing: undo failed', e); _undoStack.push(op); setStatus('Undo failed'); }
+    _undoing = false; updateUndoButtons();
+  }
+  async function doRedo() {
+    if (_undoing || !_redoStack.length) return;
+    var op = _redoStack.pop(); _undoing = true; setStatus('Redoing…');
+    try { await op.redo(); _undoStack.push(op); setStatus('Redone' + (op.label ? ' — ' + op.label : '')); }
+    catch (e) { console.warn('editing: redo failed', e); _redoStack.push(op); setStatus('Redo failed'); }
+    _undoing = false; updateUndoButtons();
+  }
+  function updateUndoButtons() {
+    var u = document.getElementById('editor-undo'), r = document.getElementById('editor-redo');
+    if (u) u.disabled = !_undoStack.length;
+    if (r) r.disabled = !_redoStack.length;
+  }
+  // shared by the draw-undo closures (DB + MapboxDraw together; draw.delete is suppressed so the
+  // draw.delete handler doesn't double-act). draw.add does not fire draw.create, so no re-entrancy.
+  async function removeDrawnFeature(drawId) {
+    var fid = featureToDb[drawId];
+    _suppressFeatureDelete = true;
+    try { if (draw && draw.get(drawId)) draw.delete(drawId); } catch (e) {}
+    setTimeout(function () { _suppressFeatureDelete = false; }, 0);
+    if (fid) { try { await db.from('features').delete().eq('feature_id', fid); } catch (e) {} }
+    delete featureToDb[drawId]; delete featureMeta[drawId]; delete featureLayer[drawId]; delete _geomSnap[drawId];
+  }
+  async function addDrawnFeature(drawId, geom, lyr, props) {
+    var ins = await db.from('features').insert({ layer_id: lyr, geom: geom }).select('feature_id').single();
+    if (!ins.error) { featureToDb[drawId] = ins.data.feature_id; featureMeta[drawId] = { label: '', notes: '', start: '', end: '' }; featureLayer[drawId] = lyr; }
+    try { if (draw && !draw.get(drawId)) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props || {} }); } catch (e) {}
+    _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
+  }
+  async function setDrawnGeom(drawId, geom) {
+    var fid = featureToDb[drawId];
+    if (fid) { try { await db.from('features').update({ geom: geom }).eq('feature_id', fid); } catch (e) {} }
+    try { var f = draw && draw.get(drawId); var props = f ? f.properties : {}; _suppressFeatureDelete = true; if (f) draw.delete(drawId); if (draw) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props }); setTimeout(function () { _suppressFeatureDelete = false; }, 0); } catch (e) {}
+    _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
+  }
+
   async function onDrawCreate(e) {
     var f = e.features && e.features[0]; if (!f) return;
     var lid = activeLayerDbId();
@@ -779,14 +867,25 @@
       featureToDb[f.id] = ins.data.feature_id;
       featureMeta[f.id] = { label: '', notes: '', start: '', end: '' };
       featureLayer[f.id] = lid;
-      if (draw && node.iconColor) draw.setFeatureProperty(f.id, 'color', node.iconColor);  // paint in the layer's color
+      _geomSnap[f.id] = JSON.parse(JSON.stringify(f.geometry));
+      try { if (draw && node.iconColor) draw.setFeatureProperty(f.id, 'color', node.iconColor); } catch (e) {}  // paint in the layer's color
+      (function (drawId, geom, lyr, col) {
+        pushUndo(function () { return removeDrawnFeature(drawId); },
+          function () { return addDrawnFeature(drawId, geom, lyr, col ? { color: col } : {}); },
+          'draw ' + (TYPE_TO_GEOM[node.type] || 'feature'));
+      })(f.id, JSON.parse(JSON.stringify(f.geometry)), lid, node.iconColor);
       setStatus('Saved');
     } catch (err) { console.warn('editing: feature save failed', err); setStatus('Draw save failed: ' + err.message); }
   }
   async function onDrawUpdate(e) {
     for (var i = 0; i < (e.features || []).length; i++) {
       var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
+      var oldGeom = _geomSnap[f.id], newGeom = JSON.parse(JSON.stringify(f.geometry));
       try { await db.from('features').update({ geom: f.geometry }).eq('feature_id', fid); } catch (err) { console.warn('feature update failed', err); }
+      _geomSnap[f.id] = newGeom;
+      if (oldGeom) (function (drawId, oldG, newG) {
+        pushUndo(function () { return setDrawnGeom(drawId, oldG); }, function () { return setDrawnGeom(drawId, newG); }, 'move feature');
+      })(f.id, oldGeom, newGeom);
     }
     setStatus('Saved');
   }
@@ -794,7 +893,11 @@
     if (_suppressFeatureDelete) return;  // a hide-toggle removed it from the canvas, not the project
     for (var i = 0; i < (e.features || []).length; i++) {
       var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
-      try { await db.from('features').delete().eq('feature_id', fid); delete featureToDb[f.id]; delete featureMeta[f.id]; delete featureLayer[f.id]; } catch (err) { console.warn('feature delete failed', err); }
+      var drawId = f.id, geom = JSON.parse(JSON.stringify(f.geometry)), lyr = featureLayer[f.id], props = JSON.parse(JSON.stringify(f.properties || {}));
+      try { await db.from('features').delete().eq('feature_id', fid); delete featureToDb[f.id]; delete featureMeta[f.id]; delete featureLayer[f.id]; delete _geomSnap[f.id]; } catch (err) { console.warn('feature delete failed', err); continue; }
+      (function (drawId, geom, lyr, props) {
+        pushUndo(function () { return addDrawnFeature(drawId, geom, lyr, props); }, function () { return removeDrawnFeature(drawId); }, 'delete feature');
+      })(drawId, geom, lyr, props);
     }
     setStatus('Saved');
   }
@@ -838,6 +941,7 @@
         if (dbStrokeWidth[row.layer_id] != null) props.strokewidth = dbStrokeWidth[row.layer_id];
         if (dbRadius[row.layer_id] != null) props.radius = dbRadius[row.layer_id];
         feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: props });
+        _geomSnap[did] = { type: row.geom.type, coordinates: row.geom.coordinates };
       });
       draw.set({ type: 'FeatureCollection', features: feats });
     } catch (e) { console.warn('editing: load features failed', e); }
@@ -1029,9 +1133,11 @@
     p.style.display = 'block';
   }
   function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
+  var _styleSession = null, _styleBefore = null;   // capture the pre-edit style once per edit session (debounced edits → one undo)
   function onLayerStyle(field, value) {
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
+    if (_styleSession !== node.id) { _styleSession = node.id; _styleBefore = { color: node.iconColor, paint: node.paint ? JSON.parse(JSON.stringify(node.paint)) : null }; }
     if (field === 'color') node.iconColor = value;
     var color = node.iconColor || '#3bb2d0';
     var curStrokeVis = (node.paint && node.paint['line-opacity'] != null) ? node.paint['line-opacity'] : 1;
@@ -1107,6 +1213,21 @@
     setStatus('Saving…');
     try { var r = await db.from('layers').update({ color: node.iconColor || '#3bb2d0', paint: node.paint }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { console.warn('editing: layer style save failed', e); setStatus('Save failed'); }
+    if (_styleSession === slug && _styleBefore) {   // one undo entry per debounced edit session
+      var before = _styleBefore, after = { color: node.iconColor, paint: node.paint ? JSON.parse(JSON.stringify(node.paint)) : null };
+      pushUndo(function () { return applyLayerStyleState(slug, before.color, before.paint); }, function () { return applyLayerStyleState(slug, after.color, after.paint); }, 'style');
+      _styleSession = null; _styleBefore = null;
+    }
+  }
+  // restore a layer's color+paint (used by style undo/redo): re-paint live + persist + refresh the panel
+  async function applyLayerStyleState(slug, color, paint) {
+    var node = findNodeById(layers, slug); if (!node) return;
+    node.iconColor = color || '#3bb2d0'; node.paint = paint ? JSON.parse(JSON.stringify(paint)) : null;
+    var op = paintOpacity(paint), outline = paintOutline(paint), ov = (paint && paint['line-opacity'] != null) ? paint['line-opacity'] : null, w = paintWidth(paint), rad = (paint && paint['circle-radius'] != null) ? paint['circle-radius'] : null;
+    applyLayerStylePreview(node, op, outline, ov, w, rad);
+    var lid = slugToLayerDbId[slug]; if (lid) { try { await db.from('layers').update({ color: node.iconColor, paint: node.paint }).eq('id', lid); } catch (e) {} }
+    var icon = (document.querySelector('.layer-list-row[data-node-id="' + slug + '"] label i')); if (icon && node.iconColor) icon.style.color = node.iconColor;
+    if (activeLayerId === slug) showLayerPanel(slug);
   }
 
   // Split a polygon's outline into its own standalone, independently-toggleable layer.
