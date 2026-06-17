@@ -514,7 +514,7 @@
   }
 
   // ── import: GeoJSON / KML / Shapefile(.zip) → editable geojson-supabase layer(s) ──
-  var LIB = { togeojson: 'https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js', shp: 'https://unpkg.com/shpjs@4.0.4/dist/shp.js' };
+  var LIB = { togeojson: 'https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js', shp: 'https://unpkg.com/shpjs@4.0.4/dist/shp.js', turf: 'https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js' };
   var _scripts = {};
   function loadScript(url) {   // lazy-load a parser lib only when that format is imported
     if (_scripts[url]) return _scripts[url];
@@ -689,26 +689,46 @@
       '.layer-list-row.editor-active{background:rgba(74,158,255,0.12);}' +
       // draw toolbar: float on the LEFT just past the 325px layers sidebar (was top-right, hidden under the right swipe map)
       '#before .mapboxgl-ctrl-top-left{left:400px;z-index:50;}' +
-      '#editor-undo-bar{display:flex;gap:6px;padding:6px 6px 0;}' +
-      '#editor-undo-bar button{flex:1;padding:5px 0;border:1px solid #cdd6df;border-radius:4px;background:#fff;color:#23374d;cursor:pointer;font-size:12px;}' +
-      '#editor-undo-bar button:disabled{opacity:0.4;cursor:default;}' +
-      '#editor-undo-bar button:not(:disabled):hover{background:#eef1f5;}';
+      '#editor-map-tools{position:fixed;top:92px;left:534px;z-index:50;display:flex;gap:3px;padding:3px;background:rgba(255,255,255,0.96);border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,0.3);pointer-events:auto;width:max-content;}' +
+      '#editor-map-tools button{width:29px;height:29px;border:1px solid #cdd6df;border-radius:4px;background:#fff;color:#23374d;cursor:pointer;font-size:14px;line-height:1;padding:0;}' +
+      '#editor-map-tools button:disabled{opacity:0.4;cursor:default;}' +
+      '#editor-map-tools button:not(:disabled):hover{background:#eef1f5;}' +
+      '#editor-map-tools button.active{background:#4a9eff;color:#fff;border-color:#4a9eff;}' +
+      '#editor-measure-readout{position:fixed;top:90px;left:calc(50% + 160px);transform:translateX(-50%);z-index:60;display:none;background:rgba(35,55,77,0.96);color:#fff;font-size:14px;font-weight:600;padding:7px 14px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
     var bar = document.createElement('div'); bar.id = 'editor-add-bar';
-    var undobar = document.createElement('div'); undobar.id = 'editor-undo-bar';
-    undobar.innerHTML = '<button id="editor-undo" title="Undo (Ctrl+Z)" disabled>↶ Undo</button><button id="editor-redo" title="Redo (Ctrl+Shift+Z)" disabled>↷ Redo</button>';
     panel.parentNode.insertBefore(status, panel.nextSibling);
     panel.parentNode.insertBefore(bar, status.nextSibling);
-    panel.parentNode.insertBefore(undobar, status);   // undo/redo above the save status + add bar
+    // editing tools float on the MAP, next to the draw toolbar (icon buttons; hover for labels)
+    var maptools = document.createElement('div'); maptools.id = 'editor-map-tools';
+    maptools.innerHTML =
+      '<button id="editor-undo" title="Undo (Ctrl+Z)" disabled>↶</button>' +
+      '<button id="editor-redo" title="Redo (Ctrl+Shift+Z)" disabled>↷</button>' +
+      '<button id="editor-copy" title="Copy feature (Ctrl+C)">⧉</button>' +
+      '<button id="editor-paste" title="Paste (Ctrl+V)" disabled>⎘</button>' +
+      '<button id="editor-measure-dist" title="Measure distance">📏</button>' +
+      '<button id="editor-measure-area" title="Measure area">⬟</button>';
+    document.body.appendChild(maptools);
+    var measureReadout = document.createElement('div'); measureReadout.id = 'editor-measure-readout'; measureReadout.title = 'Click to dismiss';
+    measureReadout.addEventListener('click', function () { this.style.display = 'none'; clearMeasureShape(); });
+    document.body.appendChild(measureReadout);
     document.getElementById('editor-undo').addEventListener('click', doUndo);
     document.getElementById('editor-redo').addEventListener('click', doRedo);
-    document.addEventListener('keydown', function (e) {   // Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y)
+    document.getElementById('editor-copy').addEventListener('click', doCopy);
+    document.getElementById('editor-paste').addEventListener('click', doPaste);
+    document.getElementById('editor-measure-dist').addEventListener('click', function () { doMeasure('distance'); });
+    document.getElementById('editor-measure-area').addEventListener('click', function () { doMeasure('area'); });
+    try { window.infoPanelDefaultHandle = function () {}; } catch (e) {}   // suspend "click map → toggle sidebar" (use the sidebar button instead)
+    document.addEventListener('keydown', function (e) {   // Esc cancels measure; Ctrl+Z/Y, Ctrl+C/V
+      if (e.key === 'Escape' && _measuring) { e.preventDefault(); cancelMeasure(); return; }
       if (!(e.ctrlKey || e.metaKey)) return;
       var tag = (document.activeElement || {}).tagName || ''; if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      var isZ = e.key === 'z' || e.key === 'Z', isY = e.key === 'y' || e.key === 'Y';
+      var isZ = e.key === 'z' || e.key === 'Z', isY = e.key === 'y' || e.key === 'Y', isC = e.key === 'c' || e.key === 'C', isV = e.key === 'v' || e.key === 'V';
       if (isZ && !e.shiftKey) { e.preventDefault(); doUndo(); }
       else if (isY || (isZ && e.shiftKey)) { e.preventDefault(); doRedo(); }
+      else if (isC && draw && draw.getSelected && draw.getSelected().features.length) { e.preventDefault(); doCopy(); }   // only hijack Ctrl+C with a feature selected
+      else if (isV && _clipboard) { e.preventDefault(); doPaste(); }
     }, true);
     showButtons();
   }
@@ -782,6 +802,7 @@
     }
     draw = new MapboxDraw({ displayControlsDefault: false, userProperties: true, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
     beforeMap.addControl(draw, 'top-left');   // left side, clear of the right swipe map (offset past the sidebar in CSS)
+    beforeMap.on('draw.render', measureRender);   // live distance while measuring
     beforeMap.on('draw.create', onDrawCreate);
     beforeMap.on('draw.update', onDrawUpdate);
     beforeMap.on('draw.delete', onDrawDelete);
@@ -840,8 +861,112 @@
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
   }
 
+  // ── tools: copy / paste / measure ───────────────────────────────────────────
+  var _clipboard = null, _clipboardLayer = null, _measuring = false, _measureType = 'distance';
+  function updateToolButtons() {
+    var p = document.getElementById('editor-paste'); if (p) p.disabled = !_clipboard;
+    var md = document.getElementById('editor-measure-dist'); if (md) md.classList.toggle('active', _measuring && _measureType === 'distance');
+    var ma = document.getElementById('editor-measure-area'); if (ma) ma.classList.toggle('active', _measuring && _measureType === 'area');
+  }
+  function nodeByLayerDbId(lid) {
+    var slug = Object.keys(slugToLayerDbId).filter(function (s) { return slugToLayerDbId[s] === lid; })[0];
+    return slug ? findNodeById(layers, slug) : null;
+  }
+  // the full per-feature style (user_* props) for a layer, so a NEW feature matches the layer immediately
+  function featureProps(node) {
+    var p = { color: (node && node.iconColor) || '#3bb2d0' };
+    var paint = node && node.paint; if (!paint) return p;
+    var op = paintOpacity(paint); if (op != null) p.opacity = op;
+    var ol = paintOutline(paint); if (ol != null) p.outline = ol;
+    if (paint['line-opacity'] != null) p.strokeopacity = paint['line-opacity'];
+    var w = paintWidth(paint); if (w != null) p.strokewidth = w;
+    if (paint['circle-radius'] != null) p.radius = paint['circle-radius'];
+    return p;
+  }
+  function fmtDist(km) {
+    var m = km * 1000, mi = km * 0.621371;
+    var metric = km >= 1 ? km.toFixed(2) + ' km' : Math.round(m) + ' m';
+    var imperial = mi >= 0.19 ? mi.toFixed(2) + ' mi' : Math.round(m * 3.28084).toLocaleString() + ' ft';
+    return metric + '  ·  ' + imperial;
+  }
+  function fmtArea(sqm) {
+    var ha = sqm / 10000, km2 = sqm / 1e6, acre = sqm / 4046.856;
+    var primary = ha >= 100 ? km2.toFixed(2) + ' km²' : (ha >= 1 ? ha.toFixed(2) + ' ha' : Math.round(sqm).toLocaleString() + ' m²');
+    var secondary = acre >= 0.1 ? acre.toFixed(2) + ' acres' : Math.round(sqm * 10.7639).toLocaleString() + ' ft²';
+    return primary + ' &nbsp;·&nbsp; ' + secondary;
+  }
+  function setMeasureReadout(html) { var el = document.getElementById('editor-measure-readout'); if (el) { el.innerHTML = html; el.style.display = 'block'; } }
+  function measureText(f) {   // distance for a line; area + perimeter for a polygon
+    if (!window.turf || !f || !f.geometry) return '';
+    if (f.geometry.type === 'Polygon') {
+      var ring = (f.geometry.coordinates || [])[0] || [];
+      if (ring.length < 4) return '⬟ Keep clicking to define the area';
+      return '⬟ ' + fmtArea(turf.area(f)) + ' &nbsp;·&nbsp; perimeter ' + fmtDist(turf.length(turf.lineString(ring), { units: 'kilometers' }));
+    }
+    return '📏 ' + fmtDist(turf.length(f, { units: 'kilometers' }));
+  }
+  function measureRender() {   // live readout as the measuring feature grows
+    if (!_measuring || !draw || !window.turf) return;
+    try { var t = _measureType === 'area' ? 'Polygon' : 'LineString'; var fs = draw.getAll().features.filter(function (f) { return f.geometry && f.geometry.type === t; }); var f = fs[fs.length - 1]; if (f) { var txt = measureText(f); if (txt) setMeasureReadout(txt); } } catch (e) {}
+  }
+  // the finished measurement renders on its OWN layer (not MapboxDraw), so it stays visible + isn't an editable feature
+  function ensureMeasureLayers() {
+    if (typeof beforeMap === 'undefined' || !beforeMap || beforeMap.getSource('editor-measure-src')) return;
+    try {
+      beforeMap.addSource('editor-measure-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      beforeMap.addLayer({ id: 'editor-measure-fill', type: 'fill', source: 'editor-measure-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#4a9eff', 'fill-opacity': 0.18 } });
+      beforeMap.addLayer({ id: 'editor-measure-line', type: 'line', source: 'editor-measure-src', paint: { 'line-color': '#2d7dd2', 'line-width': 2.5, 'line-dasharray': [2, 1.5] } });
+    } catch (e) {}
+  }
+  function showMeasureShape(geom) { ensureMeasureLayers(); try { var s = beforeMap.getSource('editor-measure-src'); if (s) s.setData({ type: 'Feature', geometry: geom, properties: {} }); } catch (e) {} }
+  function clearMeasureShape() { try { var s = beforeMap && beforeMap.getSource('editor-measure-src'); if (s) s.setData({ type: 'FeatureCollection', features: [] }); } catch (e) {} }
+  function doCopy() {
+    var sel = (draw && draw.getSelected) ? draw.getSelected().features : [];
+    if (!sel.length) { setStatus('Select a feature to copy'); return; }
+    _clipboard = JSON.parse(JSON.stringify(sel[0].geometry));
+    _clipboardLayer = featureLayer[sel[0].id] || null;   // so paste can fall back to its own layer
+    updateToolButtons(); setStatus('Copied');
+  }
+  async function doPaste() {
+    if (!_clipboard) { setStatus('Nothing to paste'); return; }
+    var lid = null, node = null;
+    if (_clipboardLayer) { lid = _clipboardLayer; node = nodeByLayerDbId(lid); }   // paste into the COPIED feature's OWN layer (coincident duplicate)
+    if (!node) { lid = activeLayerDbId(); node = activeLayerId ? findNodeById(layers, activeLayerId) : null; }
+    if (!lid || !node) { setStatus('Select a drawn layer to paste into'); return; }
+    var gtype = GEOM_TO_TYPE[_clipboard.type];
+    if (node.type && node.type !== gtype) { setStatus('Paste needs a ' + (TYPE_TO_GEOM[node.type] || node.type) + ' layer'); return; }
+    var geom = JSON.parse(JSON.stringify(_clipboard));   // coincident with the original (like v3/AHM)
+    var drawId = 'pst-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    var props = featureProps(node);   // full styling (radius, opacity, outline, width…) so the copy matches the layer immediately
+    await addDrawnFeature(drawId, geom, lid, props);
+    if (!node.type) { node.type = gtype; node.iconType = GEOM_TO_ICON[_clipboard.type] || node.iconType; try { await db.from('layers').update({ type: gtype }).eq('id', lid); } catch (e) {} rerender(); }
+    pushUndo(function () { return removeDrawnFeature(drawId); }, function () { return addDrawnFeature(drawId, geom, lid, props); }, 'paste');
+    setStatus('Pasted');
+  }
+  async function doMeasure(type) {
+    if (!draw) return;
+    try { await loadScript(LIB.turf); } catch (e) { setStatus('Measure unavailable (offline?)'); return; }
+    clearMeasureShape();   // clear the previous measurement
+    _measuring = true; _measureType = type; updateToolButtons();
+    setMeasureReadout(type === 'area' ? '⬟ Click around an area, double-click to finish' : '📏 Click points, double-click to finish');
+    try { draw.changeMode(type === 'area' ? 'draw_polygon' : 'draw_line_string'); } catch (e) {}
+  }
+  function cancelMeasure() {
+    _measuring = false; updateToolButtons();
+    try { if (draw) draw.changeMode('simple_select'); } catch (e) {}
+    clearMeasureShape();
+    var ro = document.getElementById('editor-measure-readout'); if (ro) ro.style.display = 'none';
+  }
+
   async function onDrawCreate(e) {
     var f = e.features && e.features[0]; if (!f) return;
+    if (_measuring) {   // a measuring line/polygon — report distance/area + keep the shape, don't persist it
+      _measuring = false; updateToolButtons();
+      try { setMeasureReadout(measureText(f)); } catch (err) {}
+      try { showMeasureShape(f.geometry); } catch (e) {}   // keep the measured shape visible on the display layer
+      try { draw.delete(f.id); } catch (e) {}              // remove the MapboxDraw copy (it lives on the display layer now)
+      return;
+    }
     var lid = activeLayerDbId();
     var node = activeLayerId ? findNodeById(layers, activeLayerId) : null;
     if (!lid || !node) { window.alert('Select a drawn layer first — click a layer you added (or make one with + Layer).'); if (draw) draw.delete(f.id); return; }
@@ -868,7 +993,7 @@
       featureMeta[f.id] = { label: '', notes: '', start: '', end: '' };
       featureLayer[f.id] = lid;
       _geomSnap[f.id] = JSON.parse(JSON.stringify(f.geometry));
-      try { if (draw && node.iconColor) draw.setFeatureProperty(f.id, 'color', node.iconColor); } catch (e) {}  // paint in the layer's color
+      try { if (draw) { var fp = featureProps(node); Object.keys(fp).forEach(function (k) { draw.setFeatureProperty(f.id, k, fp[k]); }); } } catch (e) {}  // stamp the layer's full style so the new feature matches
       (function (drawId, geom, lyr, col) {
         pushUndo(function () { return removeDrawnFeature(drawId); },
           function () { return addDrawnFeature(drawId, geom, lyr, col ? { color: col } : {}); },
