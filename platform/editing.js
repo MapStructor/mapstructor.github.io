@@ -708,7 +708,9 @@
       '<button id="editor-copy" title="Copy feature (Ctrl+C)">⧉</button>' +
       '<button id="editor-paste" title="Paste (Ctrl+V)" disabled>⎘</button>' +
       '<button id="editor-measure-dist" title="Measure distance">📏</button>' +
-      '<button id="editor-measure-area" title="Measure area">⬟</button>';
+      '<button id="editor-measure-area" title="Measure area">⬟</button>' +
+      '<button id="editor-merge" title="Merge selected polygons (union) or lines (join)">∪</button>' +
+      '<button id="editor-split" title="Split a polygon or line — select one, then draw a line across it">✂</button>';
     document.body.appendChild(maptools);
     var measureReadout = document.createElement('div'); measureReadout.id = 'editor-measure-readout'; measureReadout.title = 'Click to dismiss';
     measureReadout.addEventListener('click', function () { this.style.display = 'none'; clearMeasureShape(); });
@@ -719,9 +721,12 @@
     document.getElementById('editor-paste').addEventListener('click', doPaste);
     document.getElementById('editor-measure-dist').addEventListener('click', function () { doMeasure('distance'); });
     document.getElementById('editor-measure-area').addEventListener('click', function () { doMeasure('area'); });
+    document.getElementById('editor-merge').addEventListener('click', doMerge);
+    document.getElementById('editor-split').addEventListener('click', enterSplitMode);
     try { window.infoPanelDefaultHandle = function () {}; } catch (e) {}   // suspend "click map → toggle sidebar" (use the sidebar button instead)
-    document.addEventListener('keydown', function (e) {   // Esc cancels measure; Ctrl+Z/Y, Ctrl+C/V
+    document.addEventListener('keydown', function (e) {   // Esc cancels measure/split; Ctrl+Z/Y, Ctrl+C/V
       if (e.key === 'Escape' && _measuring) { e.preventDefault(); cancelMeasure(); return; }
+      if (e.key === 'Escape' && _splitMode) { e.preventDefault(); cancelSplit(); return; }
       if (!(e.ctrlKey || e.metaKey)) return;
       var tag = (document.activeElement || {}).tagName || ''; if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       var isZ = e.key === 'z' || e.key === 'Z', isY = e.key === 'y' || e.key === 'Y', isC = e.key === 'c' || e.key === 'C', isV = e.key === 'v' || e.key === 'V';
@@ -862,11 +867,12 @@
   }
 
   // ── tools: copy / paste / measure ───────────────────────────────────────────
-  var _clipboard = null, _clipboardLayer = null, _measuring = false, _measureType = 'distance';
+  var _clipboard = null, _clipboardLayer = null, _measuring = false, _measureType = 'distance', _splitMode = false, _splitTarget = null;
   function updateToolButtons() {
     var p = document.getElementById('editor-paste'); if (p) p.disabled = !_clipboard;
     var md = document.getElementById('editor-measure-dist'); if (md) md.classList.toggle('active', _measuring && _measureType === 'distance');
     var ma = document.getElementById('editor-measure-area'); if (ma) ma.classList.toggle('active', _measuring && _measureType === 'area');
+    var sp = document.getElementById('editor-split'); if (sp) sp.classList.toggle('active', !!_splitMode);
   }
   function nodeByLayerDbId(lid) {
     var slug = Object.keys(slugToLayerDbId).filter(function (s) { return slugToLayerDbId[s] === lid; })[0];
@@ -958,8 +964,107 @@
     var ro = document.getElementById('editor-measure-readout'); if (ro) ro.style.display = 'none';
   }
 
+  // ── merge (union selected polygons) + split (cut a polygon with a line) — adapts v3 ──
+  async function doMerge() {
+    if (!draw) return;
+    try { await loadScript(LIB.turf); } catch (e) { setStatus('Merge unavailable (offline?)'); return; }
+    var sel = (draw.getSelected ? draw.getSelected().features : []).filter(Boolean);
+    if (sel.length < 2) { setStatus('Select 2+ features to merge (shift-click)'); return; }
+    var allPoly = sel.every(function (f) { return f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'); });
+    var allLine = sel.every(function (f) { return f.geometry && (f.geometry.type === 'LineString' || f.geometry.type === 'MultiLineString'); });
+    var merged;
+    if (allPoly) {
+      try { merged = turf.feature(sel[0].geometry); for (var i = 1; i < sel.length; i++) { merged = turf.union(merged, turf.feature(sel[i].geometry)); if (!merged) throw 0; } } catch (e) { setStatus('Merge failed — invalid geometry'); return; }
+      if (merged.geometry.type === 'MultiPolygon') { setStatus('Merge failed — the polygons must touch or overlap'); return; }
+      merged = merged.geometry;
+    } else if (allLine) {
+      merged = { type: 'LineString', coordinates: joinLines(sel.map(function (f) { return f.geometry.coordinates; })) };
+    } else { setStatus('Merge: select all polygons, or all lines'); return; }
+    var lid = featureLayer[sel[0].id], node = lid ? nodeByLayerDbId(lid) : null;
+    var origs = sel.map(function (f) { return { drawId: f.id, geom: JSON.parse(JSON.stringify(f.geometry)), lyr: featureLayer[f.id], props: JSON.parse(JSON.stringify(f.properties || {})) }; });
+    var mergedGeom = JSON.parse(JSON.stringify(merged)), mergedId = 'mrg-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 4), mprops = node ? featureProps(node) : (origs[0].props || {});
+    setStatus('Merging…');
+    try {
+      for (var j = 0; j < origs.length; j++) await removeDrawnFeature(origs[j].drawId);
+      await addDrawnFeature(mergedId, mergedGeom, lid, mprops);
+      try { draw.changeMode('simple_select', { featureIds: [mergedId] }); } catch (e) {}
+      pushUndo(
+        async function () { await removeDrawnFeature(mergedId); for (var k = 0; k < origs.length; k++) await addDrawnFeature(origs[k].drawId, origs[k].geom, origs[k].lyr, origs[k].props); },
+        async function () { for (var k = 0; k < origs.length; k++) await removeDrawnFeature(origs[k].drawId); await addDrawnFeature(mergedId, mergedGeom, lid, mprops); },
+        'merge');
+      setStatus('Merged ' + sel.length + (allLine ? ' lines' : ' polygons'));
+    } catch (e) { console.warn('editing: merge failed', e); setStatus('Merge failed: ' + e.message); }
+  }
+  async function enterSplitMode() {
+    if (!draw) return;
+    if (_splitMode) { cancelSplit(); return; }
+    var sel = (draw.getSelected ? draw.getSelected().features : []);
+    if (sel.length !== 1 || !sel[0].geometry || (sel[0].geometry.type !== 'Polygon' && sel[0].geometry.type !== 'LineString')) { setStatus('Select ONE polygon or line, then Split'); return; }
+    try { await loadScript(LIB.turf); } catch (e) { setStatus('Split unavailable (offline?)'); return; }
+    _splitTarget = sel[0].id; _splitMode = true; updateToolButtons();
+    setStatus('Split: draw a line across the ' + (sel[0].geometry.type === 'Polygon' ? 'polygon' : 'line') + ', double-click to finish');
+    try { draw.changeMode('draw_line_string'); } catch (e) {}
+  }
+  function cancelSplit() { _splitMode = false; _splitTarget = null; updateToolButtons(); try { if (draw) draw.changeMode('simple_select'); } catch (e) {} }
+  function splitPolygonWithLine(polygon, lineFeature) {   // v3 half-plane intersect
+    var coords = lineFeature.geometry.coordinates, p1 = coords[0], p2 = coords[coords.length - 1];
+    var dx = p2[0] - p1[0], dy = p2[1] - p1[1], len = Math.sqrt(dx * dx + dy * dy); if (len === 0) return [];
+    var nx = dx / len, ny = dy / len, px = -ny, py = nx;
+    var bbox = turf.bbox(turf.feature(polygon.geometry));
+    var far = Math.sqrt(Math.pow(bbox[2] - bbox[0], 2) + Math.pow(bbox[3] - bbox[1], 2)) * 2 + 1;
+    var eA = [p1[0] - nx * far, p1[1] - ny * far], eB = [p2[0] + nx * far, p2[1] + ny * far];
+    var leftHalf = turf.polygon([[eA, eB, [eB[0] + px * far, eB[1] + py * far], [eA[0] + px * far, eA[1] + py * far], eA]]);
+    var rightHalf = turf.polygon([[eA, eB, [eB[0] - px * far, eB[1] - py * far], [eA[0] - px * far, eA[1] - py * far], eA]]);
+    var poly = turf.feature(polygon.geometry);
+    return [turf.intersect(poly, leftHalf), turf.intersect(poly, rightHalf)].filter(Boolean);
+  }
+  function _samePt(a, b) { return a && b && Math.abs(a[0] - b[0]) < 1e-7 && Math.abs(a[1] - b[1]) < 1e-7; }
+  function joinLines(lineCoords) {   // chain lines at shared endpoints (reversing as needed); append any disconnected
+    if (!lineCoords.length) return [];
+    var chain = lineCoords[0].slice(), rest = lineCoords.slice(1), changed = true;
+    while (rest.length && changed) {
+      changed = false;
+      for (var i = 0; i < rest.length; i++) {
+        var ln = rest[i], s = ln[0], e = ln[ln.length - 1], cs = chain[0], ce = chain[chain.length - 1];
+        if (_samePt(ce, s)) { chain = chain.concat(ln.slice(1)); rest.splice(i, 1); changed = true; break; }
+        if (_samePt(ce, e)) { chain = chain.concat(ln.slice(0, -1).reverse()); rest.splice(i, 1); changed = true; break; }
+        if (_samePt(cs, e)) { chain = ln.slice(0, -1).concat(chain); rest.splice(i, 1); changed = true; break; }
+        if (_samePt(cs, s)) { chain = ln.slice(1).reverse().concat(chain); rest.splice(i, 1); changed = true; break; }
+      }
+    }
+    rest.forEach(function (ln) { chain = chain.concat(ln); });   // disconnected pieces appended in order
+    return chain;
+  }
+  async function doSplit(lineFeature) {
+    var target = _splitTarget && draw.get(_splitTarget);
+    _suppressFeatureDelete = true; try { draw.delete(lineFeature.id); } catch (e) {} setTimeout(function () { _suppressFeatureDelete = false; }, 0);  // the cut line isn't a feature
+    if (!target) { cancelSplit(); return; }
+    var isPoly = target.geometry.type === 'Polygon', pieces = [];
+    try {
+      if (isPoly) pieces = splitPolygonWithLine(target, lineFeature).filter(function (h) { return h && h.geometry; }).map(function (h) { return h.geometry; });
+      else if (target.geometry.type === 'LineString') pieces = turf.lineSplit(turf.feature(target.geometry), lineFeature).features.filter(function (s) { return s && s.geometry; }).map(function (s) { return s.geometry; });
+    } catch (e) { pieces = []; }
+    if (pieces.length < 2) { setStatus('Split failed — the line must cross the ' + (isPoly ? 'polygon completely' : 'line')); cancelSplit(); return; }
+    var origDrawId = _splitTarget, origGeom = JSON.parse(JSON.stringify(target.geometry)), lyr = featureLayer[origDrawId], props = JSON.parse(JSON.stringify(target.properties || {}));
+    _splitMode = false; _splitTarget = null; updateToolButtons();
+    var node = lyr ? nodeByLayerDbId(lyr) : null, fp = node ? featureProps(node) : props;
+    var base = Date.now().toString(36), newIds = pieces.map(function (_, i) { return 'spl-' + base + String.fromCharCode(97 + i); });
+    var pieceGeoms = pieces.map(function (g) { return JSON.parse(JSON.stringify(g)); });
+    setStatus('Splitting…');
+    try {
+      await removeDrawnFeature(origDrawId);
+      for (var pi = 0; pi < pieceGeoms.length; pi++) await addDrawnFeature(newIds[pi], pieceGeoms[pi], lyr, fp);
+      pushUndo(
+        async function () { for (var k = 0; k < newIds.length; k++) await removeDrawnFeature(newIds[k]); await addDrawnFeature(origDrawId, origGeom, lyr, props); },
+        async function () { await removeDrawnFeature(origDrawId); for (var k = 0; k < newIds.length; k++) await addDrawnFeature(newIds[k], pieceGeoms[k], lyr, fp); },
+        'split');
+      setStatus('Split into ' + newIds.length);
+    } catch (e) { console.warn('editing: split failed', e); setStatus('Split failed: ' + e.message); }
+  }
+
   async function onDrawCreate(e) {
     var f = e.features && e.features[0]; if (!f) return;
+    if (_splitMode) { doSplit(f); return; }   // the line just drawn is a split cut, not a feature
     if (_measuring) {   // a measuring line/polygon — report distance/area + keep the shape, don't persist it
       _measuring = false; updateToolButtons();
       try { setMeasureReadout(measureText(f)); } catch (err) {}
