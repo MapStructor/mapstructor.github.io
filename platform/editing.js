@@ -470,7 +470,7 @@
       '<input id="editor-name" type="text" placeholder="tileset name…" />' +
       '<input id="editor-ts-url" type="text" placeholder="mapbox://username.tilesetid" />' +
       '<input id="editor-ts-sl" type="text" list="editor-ts-sl-list" placeholder="source layer (e.g. buildings)" /><datalist id="editor-ts-sl-list"></datalist>' +
-      '<div id="editor-ts-sl-status" style="font-size:11px;color:#8a99a8;margin:-3px 0 6px;min-height:13px;"></div>' +
+      '<div id="editor-ts-sl-status" style="font-size:11px;color:#888888;margin:-3px 0 6px;min-height:13px;"></div>' +
       '<select id="editor-ts-type"><option value="fill">Polygon (fill)</option><option value="line">Line</option><option value="circle">Point (circle)</option></select>' +
       '<select id="editor-parent">' + parentOptions() + '</select>' +
       '<div class="erow"><button id="editor-ok">Add tileset</button><button id="editor-cancel">Cancel</button></div>';
@@ -528,10 +528,10 @@
   function showImportForm() {
     var bar = document.getElementById('editor-add-bar');
     bar.innerHTML =
-      '<div style="font-size:11px;color:#5a6c7e;margin-bottom:5px;">Import a file → a new editable layer.<br>GeoJSON · KML · Shapefile (.zip)</div>' +
+      '<div style="font-size:11px;color:#555555;margin-bottom:5px;">Import a file → a new editable layer.<br>GeoJSON · KML · Shapefile (.zip)</div>' +
       '<input id="editor-import-file" type="file" accept=".geojson,.json,.kml,.zip" style="width:100%;box-sizing:border-box;margin-bottom:6px;font-size:12px;" />' +
       '<select id="editor-parent">' + parentOptions() + '</select>' +
-      '<div id="editor-import-status" style="font-size:11px;color:#8a99a8;margin:2px 0 6px;min-height:13px;"></div>' +
+      '<div id="editor-import-status" style="font-size:11px;color:#888888;margin:2px 0 6px;min-height:13px;"></div>' +
       '<div class="erow"><button id="editor-cancel">Cancel</button></div>';
     var fileInput = document.getElementById('editor-import-file');
     fileInput.addEventListener('change', function () {
@@ -693,26 +693,26 @@
     style.textContent =
       '#editor-add-bar{padding:6px;}' +
       '#editor-add-bar .erow{display:flex;gap:6px;}' +
-      '#editor-add-bar button{flex:1;padding:6px 0;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;background:#eef1f5;color:#23374d;}' +
-      '#editor-add-bar button:hover{background:#dfe6ed;}' +
-      '#editor-add-bar input,#editor-add-bar select{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:12px;}' +
-      '#editor-save-status{font-size:11px;color:#8a99a8;padding:2px 6px;min-height:13px;}' +
+      '#editor-add-bar button{flex:1;padding:6px 0;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;background:#e8e8e8;color:#222222;}' +
+      '#editor-add-bar button:hover{background:#d8d8d8;}' +
+      '#editor-add-bar input,#editor-add-bar select{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +
+      '#editor-save-status{font-size:11px;color:#888888;padding:2px 6px;min-height:13px;}' +
       '.layer-list-row{position:relative;}' +
-      '.editor-del{position:absolute;right:44px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#8a99a8;font-size:15px;font-weight:bold;line-height:1;padding:0 3px;z-index:2;}' +
+      '.editor-del{position:absolute;right:44px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#888888;font-size:15px;font-weight:bold;line-height:1;padding:0 3px;z-index:2;}' +
       '.layer-list-row:hover .editor-del{opacity:1;}' +
       '.editor-del:hover{color:#c0392b;}' +
       '.layer-list-row.editor-dragging{opacity:0.4;}' +
-      '.layer-list-row.editor-drop-before{box-shadow:inset 0 2px 0 #4a9eff;}' +
-      '.layer-list-row.editor-drop-after{box-shadow:inset 0 -2px 0 #4a9eff;}' +
-      '.layer-list-row.editor-drop-into{background:rgba(74,158,255,0.18);box-shadow:inset 0 0 0 1px #4a9eff;}' +
-      '.layer-list-row.editor-active{background:rgba(74,158,255,0.12);}' +
+      '.layer-list-row.editor-drop-before{box-shadow:inset 0 2px 0 #ce5c00;}' +
+      '.layer-list-row.editor-drop-after{box-shadow:inset 0 -2px 0 #ce5c00;}' +
+      '.layer-list-row.editor-drop-into{background:rgba(206,92,0,0.15);box-shadow:inset 0 0 0 1px #ce5c00;}' +
+      '.layer-list-row.editor-active{background:rgba(206,92,0,0.12);}' +
       // draw toolbar: float on the LEFT just past the 325px layers sidebar (was top-right, hidden under the right swipe map)
       '#before .mapboxgl-ctrl-top-left{left:400px;z-index:50;}' +
       '#editor-map-tools{position:fixed;top:92px;left:534px;z-index:50;display:flex;gap:3px;padding:3px;background:rgba(255,255,255,0.96);border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,0.3);pointer-events:auto;width:max-content;}' +
-      '#editor-map-tools button{width:29px;height:29px;border:1px solid #cdd6df;border-radius:4px;background:#fff;color:#23374d;cursor:pointer;font-size:14px;line-height:1;padding:0;}' +
+      '#editor-map-tools button{width:29px;height:29px;border:1px solid #bbbbbb;border-radius:4px;background:#fff;color:#222222;cursor:pointer;font-size:14px;line-height:1;padding:0;}' +
       '#editor-map-tools button:disabled{opacity:0.4;cursor:default;}' +
-      '#editor-map-tools button:not(:disabled):hover{background:#eef1f5;}' +
-      '#editor-map-tools button.active{background:#4a9eff;color:#fff;border-color:#4a9eff;}' +
+      '#editor-map-tools button:not(:disabled):hover{background:#e8e8e8;}' +
+      '#editor-map-tools button.active{background:#ce5c00;color:#fff;border-color:#ce5c00;}' +
       '#editor-measure-readout{position:fixed;top:90px;left:calc(50% + 160px);transform:translateX(-50%);z-index:60;display:none;background:rgba(35,55,77,0.96);color:#fff;font-size:14px;font-weight:600;padding:7px 14px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
@@ -1258,22 +1258,22 @@
     if (document.getElementById('editor-feature-panel')) return;
     var p = document.createElement('div');
     p.id = 'editor-feature-panel';
-    p.style.cssText = 'position:fixed;top:120px;right:12px;width:240px;background:#fff;border:1px solid #cdd6df;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.style.cssText = 'position:fixed;top:120px;right:12px;width:240px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
     p.innerHTML =
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b>Feature</b><span id="efp-close" style="cursor:pointer;color:#8a99a8;font-size:16px;">&times;</span></div>' +
-      '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Label</label>' +
-      '<input id="efp-label" type="text" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:13px;" />' +
-      '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Notes</label>' +
-      '<textarea id="efp-notes" rows="3" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:13px;resize:vertical;"></textarea>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b>Feature</b><span id="efp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label</label>' +
+      '<input id="efp-label" type="text" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Notes</label>' +
+      '<textarea id="efp-notes" rows="3" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;resize:vertical;"></textarea>' +
       '<div style="display:flex;gap:8px;">' +
-        '<div style="flex:1;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Start date</label>' +
-        '<input id="efp-start" type="date" style="width:100%;box-sizing:border-box;padding:4px 5px;border:1px solid #cdd6df;border-radius:4px;font-size:12px;" /></div>' +
-        '<div style="flex:1;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">End date</label>' +
-        '<input id="efp-end" type="date" style="width:100%;box-sizing:border-box;padding:4px 5px;border:1px solid #cdd6df;border-radius:4px;font-size:12px;" /></div>' +
+        '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Start date</label>' +
+        '<input id="efp-start" type="date" style="width:100%;box-sizing:border-box;padding:4px 5px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
+        '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">End date</label>' +
+        '<input id="efp-end" type="date" style="width:100%;box-sizing:border-box;padding:4px 5px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
       '</div>' +
-      '<div style="font-size:10px;color:#8a99a8;margin-top:4px;">Blank = always visible on the timeline.</div>' +
-      '<div id="efp-page-row" style="display:none;margin-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Encyclopedia page ID</label>' +
-      '<input id="efp-pageid" type="text" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:13px;" /></div>' +
+      '<div style="font-size:10px;color:#888888;margin-top:4px;">Blank = always visible on the timeline.</div>' +
+      '<div id="efp-page-row" style="display:none;margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia page ID</label>' +
+      '<input id="efp-pageid" type="text" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" /></div>' +
       '<button id="efp-delete" style="margin-top:10px;width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete feature</button>';
     document.body.appendChild(p);
     document.getElementById('efp-close').addEventListener('click', function () { if (draw) draw.changeMode('simple_select'); hideFeaturePanel(); });
@@ -1429,28 +1429,28 @@
     if (document.getElementById('editor-layer-panel')) return;
     var p = document.createElement('div');
     p.id = 'editor-layer-panel';
-    p.style.cssText = 'position:fixed;top:120px;left:362px;width:210px;background:#fff;border:1px solid #cdd6df;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.style.cssText = 'position:fixed;top:120px;left:362px;width:210px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
     p.innerHTML =
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b id="elp-title">Layer style</b><span id="elp-close" style="cursor:pointer;color:#8a99a8;font-size:16px;">&times;</span></div>' +
-      '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Color</label>' +
-      '<input id="elp-color" type="color" style="width:100%;height:30px;box-sizing:border-box;margin-bottom:8px;padding:1px;border:1px solid #cdd6df;border-radius:4px;cursor:pointer;" />' +
-      '<label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Opacity <span id="elp-opacity-val"></span></label>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b id="elp-title">Layer style</b><span id="elp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color</label>' +
+      '<input id="elp-color" type="color" style="width:100%;height:30px;box-sizing:border-box;margin-bottom:8px;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" />' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Opacity <span id="elp-opacity-val"></span></label>' +
       '<input id="elp-opacity" type="range" min="0" max="1" step="0.05" style="width:100%;box-sizing:border-box;" />' +
-      '<div id="elp-radius-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Radius <span id="elp-radius-val"></span></label>' +
+      '<div id="elp-radius-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Radius <span id="elp-radius-val"></span></label>' +
       '<input id="elp-radius" type="range" min="1" max="30" step="1" style="width:100%;box-sizing:border-box;" /></div>' +
-      '<div id="elp-outline-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Outline color</label>' +
-      '<input id="elp-outline" type="color" style="width:100%;height:28px;box-sizing:border-box;padding:1px;border:1px solid #cdd6df;border-radius:4px;cursor:pointer;" /></div>' +
-      '<div id="elp-width-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
+      '<div id="elp-outline-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Outline color</label>' +
+      '<input id="elp-outline" type="color" style="width:100%;height:28px;box-sizing:border-box;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
+      '<div id="elp-width-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
       '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" style="width:100%;box-sizing:border-box;" /></div>' +
-      '<div id="elp-vis-row" style="margin-top:8px;display:flex;gap:12px;font-size:12px;color:#5a6c7e;">' +
+      '<div id="elp-vis-row" style="margin-top:8px;display:flex;gap:12px;font-size:12px;color:#555555;">' +
         '<label style="cursor:pointer;"><input id="elp-fill-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show fill</label>' +
         '<label style="cursor:pointer;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
       '</div>' +
-      '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
-      '<button id="elp-attrs" style="margin-top:8px;width:100%;padding:6px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;font-size:12px;">&#9638; Attribute table</button>' +
-      '<div id="elp-enc-row" style="margin-top:10px;border-top:1px solid #eef1f5;padding-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Encyclopedia base URL</label>' +
-      '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:12px;" />' +
-      '<div style="font-size:10px;color:#8a99a8;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>';
+      '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
+      '<button id="elp-attrs" style="margin-top:8px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">&#9638; Attribute table</button>' +
+      '<div id="elp-enc-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia base URL</label>' +
+      '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>';
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
@@ -1526,30 +1526,30 @@
       // wrapper is a non-blocking layer (pointer-events:none) so the MAP behind stays pannable; only the panel itself catches events
       '#editor-attr-modal{position:fixed;inset:0;z-index:4000;display:none;pointer-events:none;font-family:"Source Sans Pro",Arial,sans-serif;}' +
       '#editor-attr-panel{pointer-events:auto;position:absolute;left:540px;top:134px;width:min(820px,70vw);height:60vh;min-width:340px;min-height:180px;max-width:96vw;max-height:84vh;background:#fff;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,0.3);display:flex;flex-direction:column;resize:both;overflow:hidden;}' +   // top:134 clears the map-tools bar (top 92–127) so undo/redo stay reachable
-      '#editor-attr-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #e3e9ef;font-size:15px;color:#2b3a4a;cursor:move;}' +   // header doubles as the drag handle (move the panel off the map)
+      '#editor-attr-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #cccccc;font-size:15px;color:#2b3a4a;cursor:move;}' +   // header doubles as the drag handle (move the panel off the map)
       '#editor-attr-head .attr-head-l{display:flex;align-items:center;gap:10px;min-width:0;}' +
       '#editor-attr-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '#editor-attr-zoom{font-size:12px;padding:3px 9px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;white-space:nowrap;}' +
+      '#editor-attr-zoom{font-size:12px;padding:3px 9px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;white-space:nowrap;}' +
       '#editor-attr-zoom:disabled{opacity:0.45;cursor:default;}' +
       '#editor-attr-del{font-size:12px;padding:3px 9px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;white-space:nowrap;}' +
       '#editor-attr-del:disabled{opacity:0.45;cursor:default;}' +
-      '#editor-attr-close{cursor:pointer;color:#8a99a8;font-size:22px;line-height:1;padding-left:8px;}' +
+      '#editor-attr-close{cursor:pointer;color:#888888;font-size:22px;line-height:1;padding-left:8px;}' +
       '#editor-attr-wrap{overflow:auto;flex:1;}' +
       '#editor-attr-table{border-collapse:collapse;font-size:13px;table-layout:fixed;}' +   // fixed = column widths are honored exactly (so resize works); JS sets the table width = sum of columns
-      '#editor-attr-table th{box-sizing:border-box;position:sticky;top:0;background:#f3f6f9;text-align:left;padding:8px 18px 8px 10px;border-bottom:1px solid #e3e9ef;color:#5a6c7e;font-weight:600;white-space:nowrap;cursor:pointer;user-select:none;overflow:hidden;}' +
+      '#editor-attr-table th{box-sizing:border-box;position:sticky;top:0;background:#f2f2f2;text-align:left;padding:8px 18px 8px 10px;border-bottom:1px solid #cccccc;color:#555555;font-weight:600;white-space:nowrap;cursor:pointer;user-select:none;overflow:hidden;}' +
       '#editor-attr-table th:hover{background:#eaf0f6;}' +
-      '#editor-attr-table th .attr-arrow{margin-left:5px;font-size:10px;color:#4a9eff;}' +
+      '#editor-attr-table th .attr-arrow{margin-left:5px;font-size:10px;color:#ce5c00;}' +
       '#editor-attr-table th .attr-rsz{position:absolute;top:0;right:0;width:8px;height:100%;cursor:col-resize;}' +
       '#editor-attr-table th .attr-rsz:hover{background:#b9c6d4;}' +
       '#editor-attr-table td{padding:2px 6px;border-bottom:1px solid #f0f3f6;box-sizing:border-box;overflow:hidden;}' +
       '#editor-attr-table input{width:100%;box-sizing:border-box;border:1px solid transparent;border-radius:3px;padding:4px 6px;font-size:13px;background:transparent;color:#2b3a4a;}' +
-      '#editor-attr-table input:hover{border-color:#dfe6ed;}' +
-      '#editor-attr-table input:focus{border-color:#4a9eff;background:#fff;outline:none;}' +
+      '#editor-attr-table input:hover{border-color:#d8d8d8;}' +
+      '#editor-attr-table input:focus{border-color:#ce5c00;background:#fff;outline:none;}' +
       '#editor-attr-table tbody tr:hover td{background:#f8fafc;}' +
       '#editor-attr-table tbody tr.attr-row-sel td{background:#fff5cc;}' +
       '#editor-attr-table tbody tr.attr-row-sel:hover td{background:#ffefb0;}' +
       '#editor-attr-table tbody tr.attr-row-hover td{background:#d6f3ff;}' +   // brushed from the map (or direct hover) — matches the cyan map highlight
-      '#editor-attr-foot{padding:8px 16px;border-top:1px solid #e3e9ef;font-size:12px;color:#8a99a8;}';
+      '#editor-attr-foot{padding:8px 16px;border-top:1px solid #cccccc;font-size:12px;color:#888888;}';
     document.head.appendChild(st);
     var m = document.createElement('div'); m.id = 'editor-attr-modal';
     m.innerHTML =
@@ -1581,7 +1581,7 @@
     var modal = document.getElementById('editor-attr-modal');
     document.getElementById('editor-attr-title').textContent = (node.label || 'Layer') + ' — attributes';
     var thead = document.getElementById('editor-attr-thead'), tbody = document.getElementById('editor-attr-tbody'), foot = document.getElementById('editor-attr-foot');
-    thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#8a99a8;">Loading…</td></tr>'; foot.textContent = '';
+    thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">Loading…</td></tr>'; foot.textContent = '';
     modal.style.display = 'block';
     _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; clearAttrHighlight();
     var res;
@@ -1589,7 +1589,7 @@
     catch (e) { res = { error: e }; }
     if (res.error) { tbody.innerHTML = '<tr><td style="padding:14px;color:#b4453a;">Failed to load features.</td></tr>'; return; }
     var rows = res.data || [], total = (res.count != null) ? res.count : rows.length;
-    if (!rows.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#8a99a8;">No features in this layer yet.</td></tr>'; foot.textContent = '0 features'; return; }
+    if (!rows.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">No features in this layer yet.</td></tr>'; foot.textContent = '0 features'; return; }
     // dynamic columns = the union of custom_fields keys across the loaded rows (imported attributes), capped
     var keys = [];
     rows.forEach(function (r) { var cf = r.custom_fields; if (cf && typeof cf === 'object') { _attrCustom[r.feature_id] = cf; Object.keys(cf).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); }); } });
