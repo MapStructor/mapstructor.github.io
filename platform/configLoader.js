@@ -97,6 +97,7 @@ var ConfigLoader = (function () {
         // date means "no bound", so default to an always-visible range.
         return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: {
           label: f.label != null ? f.label : null, description: f.description != null ? f.description : null,
+          content_id: f.content_id != null ? f.content_id : null,   // the per-feature encyclopedia page id (panel.nidProp = "content_id" for drawn layers)
           DayStart: ymd(f.start_date, 0), DayEnd: ymd(f.end_date, 99999999)
         } };
       }) } };
@@ -125,7 +126,8 @@ var ConfigLoader = (function () {
       if (row.content_id_prop != null) panel.nidProp = row.content_id_prop;
       if (raw.panel) Object.keys(raw.panel).forEach(function (k) { panel[k] = raw.panel[k]; });
       if (row.panel_color != null) panel.color = row.panel_color;
-      if (registry && registry[row.slug]) panel.render = registry[row.slug];
+      if (panel.color == null) panel.color = leaf.iconColor || "#3bb2d0";   // setupInfoPanels colours the panel via hexToRgba(panel.color); a missing panel_color would throw + break EVERY panel
+      var rend = registry && (registry[row.slug] || registry["_default"]); if (rend) panel.render = rend;   // drawn layers fall back to the generic render
       leaf.panel = panel;
     }
 
@@ -205,7 +207,7 @@ var ConfigLoader = (function () {
     var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase"; }).map(function (pl) { return pl.layers.id; });
     if (drawnIds.length) {
       var push = function (data) { (data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); }); };
-      var sel = "feature_id, layer_id, geom, label, description, start_date, end_date";
+      var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id";
       // Supabase caps a select at 1000 rows; get the total, then page through (the rest in parallel)
       // so layers with many features (e.g. imported datasets) render fully, not just the first 1000.
       var first = await db.from("features").select(sel, { count: "exact" }).in("layer_id", drawnIds).order("feature_id").range(0, 999);

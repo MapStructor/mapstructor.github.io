@@ -885,6 +885,42 @@
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
   }
 
+  // Faithful per-feature delete (feature panel + attribute table). Captures each full DB row up front so
+  // undo restores label/dates/custom_fields too — unlike the trash button, whose undo restores only geometry.
+  async function deleteDrawnByFids(fids, label) {
+    fids = (fids || []).map(String);
+    if (!fids.length) return 0;
+    var rows = [];
+    try { var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, custom_fields').in('feature_id', fids); rows = res.data || []; } catch (e) {}
+    if (!rows.length) return 0;
+    var cap = rows.map(function (r) {
+      var drawId = 'db-' + r.feature_id, f = draw && draw.get(drawId);
+      return { drawId: drawId, lyr: r.layer_id, geom: r.geom, props: f ? JSON.parse(JSON.stringify(f.properties || {})) : {}, label: r.label, description: r.description, start_date: r.start_date, end_date: r.end_date, custom_fields: r.custom_fields };
+    });
+    _suppressFeatureDelete = true;   // remove the MapboxDraw copies without re-triggering onDrawDelete
+    cap.forEach(function (c) { try { if (draw && draw.get(c.drawId)) draw.delete(c.drawId); } catch (e) {} });
+    setTimeout(function () { _suppressFeatureDelete = false; }, 0);
+    try { await db.from('features').delete().in('feature_id', fids); } catch (e) { setStatus('Delete failed'); return 0; }
+    cap.forEach(function (c) { delete featureToDb[c.drawId]; delete featureMeta[c.drawId]; delete featureLayer[c.drawId]; delete _geomSnap[c.drawId]; });
+    pushUndo(function () { return reinsertDrawn(cap); }, function () { return removeDrawnBatch(cap); }, label || ('delete ' + cap.length + ' feature' + (cap.length > 1 ? 's' : '')));
+    return cap.length;
+  }
+  async function reinsertDrawn(cap) {   // undo: re-insert each captured row (new feature_id) + restore in MapboxDraw
+    for (var i = 0; i < cap.length; i++) {
+      var c = cap[i];
+      try {
+        var ins = await db.from('features').insert({ layer_id: c.lyr, geom: c.geom, label: c.label, description: c.description, start_date: c.start_date, end_date: c.end_date, custom_fields: c.custom_fields }).select('feature_id').single();
+        if (!ins.error) {
+          featureToDb[c.drawId] = ins.data.feature_id; featureLayer[c.drawId] = c.lyr;
+          featureMeta[c.drawId] = { label: c.label || '', notes: c.description || '', start: c.start_date ? String(c.start_date).slice(0, 10) : '', end: c.end_date ? String(c.end_date).slice(0, 10) : '' };
+          try { if (draw && !draw.get(c.drawId)) draw.add({ type: 'Feature', id: c.drawId, geometry: c.geom, properties: c.props || {} }); } catch (e) {}
+          _geomSnap[c.drawId] = JSON.parse(JSON.stringify(c.geom));
+        }
+      } catch (e) {}
+    }
+  }
+  async function removeDrawnBatch(cap) { for (var i = 0; i < cap.length; i++) { await removeDrawnFeature(cap[i].drawId); } }
+
   // ── tools: copy / paste / measure ───────────────────────────────────────────
   var _clipboard = null, _clipboardLayer = null, _measuring = false, _measureType = 'distance', _splitMode = false, _splitTarget = null;
   function updateToolButtons() {
@@ -1170,7 +1206,7 @@
     try {
       var rows = [];
       for (var from = 0; from < 200000; from += 1000) {
-        var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date').in('layer_id', smallIds).order('feature_id').range(from, from + 999);
+        var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id').in('layer_id', smallIds).order('feature_id').range(from, from + 999);
         if (res.error) { console.warn('editing: load features failed', res.error); break; }
         var batch = res.data || [];
         rows = rows.concat(batch);
@@ -1181,7 +1217,7 @@
         if (!row.geom) return;
         var did = 'db-' + row.feature_id;
         featureToDb[did] = row.feature_id;
-        featureMeta[did] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '' };
+        featureMeta[did] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '' };
         featureLayer[did] = row.layer_id;
         var props = { color: dbColor[row.layer_id] || '#3bb2d0' };
         if (dbOpacity[row.layer_id] != null) props.opacity = dbOpacity[row.layer_id];
@@ -1235,9 +1271,14 @@
         '<div style="flex:1;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">End date</label>' +
         '<input id="efp-end" type="date" style="width:100%;box-sizing:border-box;padding:4px 5px;border:1px solid #cdd6df;border-radius:4px;font-size:12px;" /></div>' +
       '</div>' +
-      '<div style="font-size:10px;color:#8a99a8;margin-top:4px;">Blank = always visible on the timeline.</div>';
+      '<div style="font-size:10px;color:#8a99a8;margin-top:4px;">Blank = always visible on the timeline.</div>' +
+      '<div id="efp-page-row" style="display:none;margin-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Encyclopedia page ID</label>' +
+      '<input id="efp-pageid" type="text" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:13px;" /></div>' +
+      '<button id="efp-delete" style="margin-top:10px;width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete feature</button>';
     document.body.appendChild(p);
     document.getElementById('efp-close').addEventListener('click', function () { if (draw) draw.changeMode('simple_select'); hideFeaturePanel(); });
+    document.getElementById('efp-pageid').addEventListener('input', function () { onFeatureField('pageid', this.value); });
+    document.getElementById('efp-delete').addEventListener('click', onDeleteFeature);
     document.getElementById('efp-label').addEventListener('input', function () { onFeatureField('label', this.value); });
     document.getElementById('efp-notes').addEventListener('input', function () { onFeatureField('notes', this.value); });
     document.getElementById('efp-start').addEventListener('change', function () { onFeatureField('start', this.value); });
@@ -1252,11 +1293,85 @@
     document.getElementById('efp-notes').value = meta.notes || '';
     document.getElementById('efp-start').value = meta.start || '';
     document.getElementById('efp-end').value = meta.end || '';
+    document.getElementById('efp-pageid').value = meta.pageid || '';
+    var lnode = featureLayer[drawId] ? nodeByLayerDbId(featureLayer[drawId]) : null;   // Page ID + encyclopedia preview only when the layer links to an encyclopedia
+    var hasEnc = !!(lnode && lnode.panel && lnode.panel.encyclopediaBase);
+    document.getElementById('efp-page-row').style.display = hasEnc ? 'block' : 'none';
+    if (hasEnc && meta.pageid) showEncyclopediaPreview(lnode, { content_id: meta.pageid, name: meta.label || '' }); else hideEncPanel();
     p.style.display = 'block';
   }
   function hideFeaturePanel() {
     selectedDrawId = null;
     var p = document.getElementById('editor-feature-panel'); if (p) p.style.display = 'none';
+    hideEncPanel();
+  }
+  async function onDeleteFeature() {
+    var did = selectedDrawId; if (!did) return;
+    var fid = featureToDb[did];
+    try { if (draw) draw.changeMode('simple_select'); } catch (e) {}
+    hideFeaturePanel();
+    if (!fid) { try { if (draw && draw.get(did)) draw.delete(did); } catch (e) {} return; }   // never-saved feature: just drop it
+    var n = await deleteDrawnByFids([fid], 'delete feature');
+    if (_attrSlug) { delete _attrById[String(fid)]; _attrRows = _attrRows.filter(function (r) { return String(r.feature_id) !== String(fid); }); _attrSel = _attrSel.filter(function (s) { return s !== String(fid); }); if (document.getElementById('editor-attr-modal') && document.getElementById('editor-attr-modal').style.display !== 'none') { buildAttrHead(); renderAttrBody(); } }   // keep an open table in sync
+    setStatus(n ? 'Feature deleted' : 'Delete failed');
+  }
+  // ── encyclopedia info panel (editor): renders into the engine's REAL #rightInfoBar / .infoLayerElem so the
+  //    styling is pixel-identical to the AHM/MHT panel. We drive the fetch + render ourselves (not the engine's
+  //    fetchAndRender) only to skip setPanelHighlight — drawn layers have no `-highlighted` source. The editor's
+  //    feature panel shifts left so it never covers the info panel (move the chrome, not the panel). ──
+  function ensureEncPanelDiv(node) {
+    var $ = window.$, divId = 'infoPanel-' + node.id;
+    if (document.getElementById(divId)) return divId;   // engine setupInfoPanels may already have made it
+    if (!$ || !document.getElementById('rightInfoBar')) return null;
+    $('<div>').addClass('infoLayerElem').attr('id', divId).appendTo('#rightInfoBar');
+    var color = (node.panel && node.panel.color) || node.iconColor || '#3bb2d0';   // AHM panels colour their border/bg from panel.color
+    $('<style>').text('#' + divId + '{background-color:' + (typeof hexToRgba === 'function' ? hexToRgba(color, 0.5) : '#fff') + ';border-color:' + color + ';}').appendTo('head');
+    return divId;
+  }
+  function shiftFeaturePanelForEnc(on) {   // keep the editing chrome clear of the right-edge info panel (~274px)
+    var p = document.getElementById('editor-feature-panel'); if (p) p.style.right = on ? '290px' : '12px';
+  }
+  function makeEncFieldExtractor(docEl) {   // mirrors the engine's field extractor (infoPanel.js) so panel.render works the same
+    var $ = window.$; if (!$) return function () { return docEl.innerHTML; };
+    var $doc = $(docEl), $titleLink = $doc.find('h2.node__title a'), titleHref = $titleLink.attr('href') || '', titleText = $titleLink.text().trim() || '';
+    $titleLink.closest('h2').hide();
+    return function (name, mode) {
+      if (!name) return $doc.html();
+      if (name === 'node-url') return titleHref;
+      if (name === 'node-title') return titleText;
+      if (name === 'all-images') return $doc.find('img').map(function () { return this.outerHTML; }).get().join('');
+      if (mode === 'hero') { var $field = $doc.find('.field--name-' + name); var img = $field.find('img').first().prop('outerHTML') || ''; $field.remove(); return img; }
+      var $items = $doc.find('.field--name-' + name + ' .field__item');
+      if (!$items.length) $items = $doc.find('.field--name-' + name + '.field__item');
+      if (mode === 'html') return $items.first().html() || '';
+      if (mode === 'imgs') return $items.find('img').map(function () { return this.outerHTML; }).get().join('');
+      return $items.first().text().trim();
+    };
+  }
+  var _encReq = 0;
+  async function showEncyclopediaPreview(node, props) {
+    var base = node && node.panel && node.panel.encyclopediaBase, nidProp = (node.panel && node.panel.nidProp) || 'content_id', nid = props[nidProp];
+    if (!base || nid == null || nid === '') return;
+    var $ = window.$, divId = ensureEncPanelDiv(node); if (!divId || !$) return;
+    var $el = $('#' + divId), req = ++_encReq;
+    Array.prototype.forEach.call(document.querySelectorAll('#rightInfoBar .infoLayerElem'), function (el) { if (el.id !== divId) el.style.display = 'none'; });   // one panel at a time
+    $el.html('<p>Loading page…</p>').show();
+    shiftFeaturePanelForEnc(true);
+    var data;
+    try { data = await fetch(base.replace(/\/$/, '') + '/rendered-export-single?nid=' + encodeURIComponent(nid)).then(function (r) { return r.json(); }); }
+    catch (e) { if (req === _encReq) $el.html('<p>Could not load the page (network/CORS).</p>'); return; }
+    if (req !== _encReq) return;   // superseded by a newer selection
+    if (!data || !data[0] || !data[0].rendered_entity) { $el.html('<p>No encyclopedia entry for id &ldquo;' + attrEsc(String(nid)) + '&rdquo;.</p>'); return; }
+    var html = (typeof processEncyclopediaHtml === 'function') ? processEncyclopediaHtml(data[0].rendered_entity, base) : data[0].rendered_entity;
+    var docEl = document.createElement('div'); docEl.innerHTML = html;
+    var f = makeEncFieldExtractor(docEl), renderFn = (node.panel && node.panel.render) || function (_p, ff) { return ff(); };
+    try { $el.html(renderFn(props, f)); } catch (e) { $el.html(docEl.innerHTML); }
+    if (typeof floatPanelToTop === 'function') { try { floatPanelToTop(divId); } catch (e) {} }
+    $el.show();
+  }
+  function hideEncPanel() {
+    Array.prototype.forEach.call(document.querySelectorAll('#rightInfoBar .infoLayerElem[id^="infoPanel-"]'), function (el) { el.style.display = 'none'; });
+    shiftFeaturePanelForEnc(false);
   }
   function onFeatureField(field, value) {
     if (!selectedDrawId) return;
@@ -1269,7 +1384,7 @@
     var fid = featureToDb[drawId]; if (!fid) return;
     var meta = featureMeta[drawId] || {};
     setStatus('Saving…');
-    try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null, start_date: meta.start || null, end_date: meta.end || null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null, start_date: meta.start || null, end_date: meta.end || null, content_id: meta.pageid || null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { console.warn('editing: feature meta save failed', e); setStatus('Save failed'); }
   }
   // Toggling a drawn layer's checkbox shows/hides its features by removing them from
@@ -1332,7 +1447,10 @@
         '<label style="cursor:pointer;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
       '</div>' +
       '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
-      '<button id="elp-attrs" style="margin-top:8px;width:100%;padding:6px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;font-size:12px;">&#9638; Attribute table</button>';
+      '<button id="elp-attrs" style="margin-top:8px;width:100%;padding:6px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;font-size:12px;">&#9638; Attribute table</button>' +
+      '<div id="elp-enc-row" style="margin-top:10px;border-top:1px solid #eef1f5;padding-top:8px;"><label style="display:block;font-size:11px;color:#5a6c7e;margin-bottom:2px;">Encyclopedia base URL</label>' +
+      '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #cdd6df;border-radius:4px;font-size:12px;" />' +
+      '<div style="font-size:10px;color:#8a99a8;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>';
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
@@ -1347,6 +1465,18 @@
       if (n && (n.outlineOf || n.outlineSplit)) onUnsplitOutline(); else onSplitOutline();
     });
     document.getElementById('elp-attrs').addEventListener('click', function () { if (activeLayerId) openAttributeTable(activeLayerId); });
+    document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
+  }
+  async function onEncUrl(value) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var url = (value || '').trim();
+    if (url) { node.panel = node.panel || {}; node.panel.encyclopediaBase = url; node.panel.nidProp = 'content_id'; if (!node.panel.render && window.renderRegistry) node.panel.render = window.renderRegistry._default; }
+    else if (node.panel) { delete node.panel.encyclopediaBase; }
+    setStatus('Saving…');
+    try { var r = await db.from('layers').update({ content_base_url: url || null, content_id_prop: url ? 'content_id' : null }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    catch (e) { setStatus('Save failed'); }
   }
   function showLayerPanel(slug) {
     var node = findNodeById(layers, slug); if (!node) return;
@@ -1382,6 +1512,8 @@
     document.getElementById('elp-radius-val').textContent = radius;
     document.getElementById('elp-radius-row').style.display = (node.type === 'circle') ? 'block' : 'none';
     document.getElementById('elp-attrs').style.display = isGeojson ? 'block' : 'none';   // attribute table = stored (drawn/imported) features only
+    document.getElementById('elp-enc-row').style.display = isGeojson ? 'block' : 'none';
+    document.getElementById('elp-encurl').value = (node.panel && node.panel.encyclopediaBase) || '';
     p.style.display = 'block';
   }
   function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
@@ -1393,12 +1525,14 @@
     st.textContent =
       // wrapper is a non-blocking layer (pointer-events:none) so the MAP behind stays pannable; only the panel itself catches events
       '#editor-attr-modal{position:fixed;inset:0;z-index:4000;display:none;pointer-events:none;font-family:"Source Sans Pro",Arial,sans-serif;}' +
-      '#editor-attr-panel{pointer-events:auto;position:absolute;left:540px;top:96px;width:min(820px,70vw);height:62vh;min-width:340px;min-height:180px;max-width:96vw;max-height:88vh;background:#fff;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,0.3);display:flex;flex-direction:column;resize:both;overflow:hidden;}' +
+      '#editor-attr-panel{pointer-events:auto;position:absolute;left:540px;top:134px;width:min(820px,70vw);height:60vh;min-width:340px;min-height:180px;max-width:96vw;max-height:84vh;background:#fff;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,0.3);display:flex;flex-direction:column;resize:both;overflow:hidden;}' +   // top:134 clears the map-tools bar (top 92–127) so undo/redo stay reachable
       '#editor-attr-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #e3e9ef;font-size:15px;color:#2b3a4a;cursor:move;}' +   // header doubles as the drag handle (move the panel off the map)
       '#editor-attr-head .attr-head-l{display:flex;align-items:center;gap:10px;min-width:0;}' +
       '#editor-attr-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
       '#editor-attr-zoom{font-size:12px;padding:3px 9px;border:1px solid #cdd6df;border-radius:4px;background:#f3f6f9;cursor:pointer;white-space:nowrap;}' +
       '#editor-attr-zoom:disabled{opacity:0.45;cursor:default;}' +
+      '#editor-attr-del{font-size:12px;padding:3px 9px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;white-space:nowrap;}' +
+      '#editor-attr-del:disabled{opacity:0.45;cursor:default;}' +
       '#editor-attr-close{cursor:pointer;color:#8a99a8;font-size:22px;line-height:1;padding-left:8px;}' +
       '#editor-attr-wrap{overflow:auto;flex:1;}' +
       '#editor-attr-table{border-collapse:collapse;font-size:13px;table-layout:fixed;}' +   // fixed = column widths are honored exactly (so resize works); JS sets the table width = sum of columns
@@ -1421,7 +1555,8 @@
     m.innerHTML =
       '<div id="editor-attr-panel">' +
         '<div id="editor-attr-head"><span class="attr-head-l"><b id="editor-attr-title">Attributes</b>' +
-          '<button id="editor-attr-zoom" title="Zoom the map to the selected feature(s)" disabled>&#9673; Zoom to selected</button></span>' +
+          '<button id="editor-attr-zoom" title="Zoom the map to the selected feature(s)" disabled>&#9673; Zoom to selected</button>' +
+          '<button id="editor-attr-del" title="Delete the selected feature(s)" disabled>&#128465; Delete selected</button></span>' +
           '<span id="editor-attr-close" title="Close">&times;</span></div>' +
         '<div id="editor-attr-wrap"><table id="editor-attr-table"><thead id="editor-attr-thead"></thead><tbody id="editor-attr-tbody"></tbody></table></div>' +
         '<div id="editor-attr-foot"></div>' +
@@ -1429,6 +1564,7 @@
     document.body.appendChild(m);
     document.getElementById('editor-attr-close').addEventListener('click', hideAttrModal);
     document.getElementById('editor-attr-zoom').addEventListener('click', zoomToAttrSelected);
+    document.getElementById('editor-attr-del').addEventListener('click', deleteAttrSelected);
     document.getElementById('editor-attr-head').addEventListener('mousedown', startAttrPanelDrag);
   }
   var _attrCustom = {};   // fid → its custom_fields object, so a single-cell edit rewrites the whole jsonb
@@ -1449,7 +1585,7 @@
     modal.style.display = 'block';
     _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; clearAttrHighlight();
     var res;
-    try { res = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, geom', { count: 'exact' }).eq('layer_id', lid).order('feature_id').range(0, 999); }
+    try { res = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, geom, content_id', { count: 'exact' }).eq('layer_id', lid).order('feature_id').range(0, 999); }
     catch (e) { res = { error: e }; }
     if (res.error) { tbody.innerHTML = '<tr><td style="padding:14px;color:#b4453a;">Failed to load features.</td></tr>'; return; }
     var rows = res.data || [], total = (res.count != null) ? res.count : rows.length;
@@ -1464,9 +1600,10 @@
       { title: 'Label', kind: 'std', field: 'label', type: 'text', w: keys.length ? 180 : 240 },
       { title: 'Start', kind: 'date', field: 'start_date', type: 'date', w: 130 },
       { title: 'End', kind: 'date', field: 'end_date', type: 'date', w: 130 },
-      { title: 'Notes', kind: 'std', field: 'description', type: 'text', w: 220 }
+      { title: 'Notes', kind: 'std', field: 'description', type: 'text', w: 220 },
+      { title: 'Page', kind: 'std', field: 'content_id', type: 'text', w: 90 }
     ].concat(keys.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 130 }; }));
-    buildAttrHead(); renderAttrBody(); updateAttrZoomBtn();
+    buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
     foot.textContent = total + ' feature' + (total === 1 ? '' : 's') + (keys.length ? '  ·  ' + keys.length + ' attribute' + (keys.length === 1 ? '' : 's') : '') + (total > rows.length ? '  ·  showing first ' + rows.length : '') + '  ·  click a row to highlight it on the map · Ctrl-click to add';
   }
   function buildAttrHead() {
@@ -1535,13 +1672,29 @@
     fid = String(fid);
     if (additive) { var i = _attrSel.indexOf(fid); if (i > -1) _attrSel.splice(i, 1); else _attrSel.push(fid); }
     else { _attrSel = [fid]; }
-    applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn();
+    applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn();
   }
   function applyAttrSelClasses() {
     var tbody = document.getElementById('editor-attr-tbody'); if (!tbody) return;
     Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) { tr.classList.toggle('attr-row-sel', _attrSel.indexOf(tr.getAttribute('data-fid')) > -1); });
   }
   function updateAttrZoomBtn() { var b = document.getElementById('editor-attr-zoom'); if (b) b.disabled = !_attrSel.length; }
+  function updateAttrDelBtn() {
+    var b = document.getElementById('editor-attr-del'); if (!b) return;
+    b.style.display = (_attrSlug && _drawLayerSlugs[_attrSlug]) ? '' : 'none';   // per-feature delete = editable (MapboxDraw) layers only
+    b.disabled = !_attrSel.length;
+  }
+  async function deleteAttrSelected() {
+    if (!_attrSel.length) return;
+    var fids = _attrSel.slice(), n = fids.length;
+    if (!window.confirm('Delete ' + n + ' feature' + (n > 1 ? 's' : '') + ' from this layer? You can undo this.')) return;
+    await deleteDrawnByFids(fids, 'delete ' + n + ' feature' + (n > 1 ? 's' : ''));
+    fids.forEach(function (fid) { delete _attrById[String(fid)]; });
+    _attrRows = _attrRows.filter(function (r) { return fids.indexOf(String(r.feature_id)) < 0; });
+    _attrSel = [];
+    buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn(); updateAttrHighlight();
+    setStatus('Deleted ' + n + ' feature' + (n > 1 ? 's' : ''));
+  }
   function ensureAttrHlLayers() {
     if (typeof beforeMap === 'undefined' || !beforeMap || beforeMap.getSource('editor-attr-hl-src')) return;
     try {
@@ -1637,7 +1790,7 @@
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }
-  function hideAttrModal() { var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); clearAttrHighlight(); updateAttrZoomBtn(); }
+  function hideAttrModal() { var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); clearAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn(); }
   async function saveAttrCustomCell(fid, key, value) {
     var cf = _attrCustom[fid];
     if (!cf) { cf = _attrCustom[fid] = {}; var row0 = findAttrRow(fid); if (row0) row0.custom_fields = cf; }   // link a fresh object back to the row so re-sort shows the edit

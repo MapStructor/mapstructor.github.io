@@ -22,4 +22,17 @@ var renderRegistry = {
       ${f()}
     `;
   },
+  // Generic fallback for layers that link to an encyclopedia but have no custom render
+  // (e.g. user-drawn layers configured with a base URL in the editor): show the linked
+  // title + a hero image if present + the full rendered entity. configLoader uses this
+  // when there's no slug-specific render.
+  "_default": function(_props, f) {
+    var hero = f("field-main-image", "hero");
+    return `
+      ${hero ? '<div class="panel-hero">' + hero + '</div>' : ''}
+      <h3><a href="${f("node-url")}" target="_blank">${f("node-title") || "Details"}</a></h3>
+      <hr/>
+      ${f()}
+    `;
+  },
 };
