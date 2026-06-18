@@ -448,6 +448,8 @@
   var _engineEditWired = {};    // slug → true once click handlers are attached
   function isEngineEditable(node) {
     if (!node || !node.id) return false;
+    if (node.editable === false) return false;   // display-only layers (e.g. a Mapbox tileset whose features aren't in `features`) opt out of click-to-edit
+
     if (node.source_type === 'geojson-supabase' && !_drawLayerSlugs[node.id]) return true;   // large drawn layer (engine-rendered, not in MapboxDraw)
     return isTilesetNode(node);                                                               // any tileset (once its data lives in features, id-aligned)
   }
@@ -488,6 +490,10 @@
     (_engineEditIds[node.id] = _engineEditIds[node.id] || []); if (_engineEditIds[node.id].indexOf(fid) < 0) _engineEditIds[node.id].push(fid);
     if (_engineEdited[node.id] && _engineEdited[node.id][fid] != null) { delete _engineEdited[node.id][fid]; refreshEditedOverlay(node); }   // pull it back off the overlay while editing
     applyEngineEditFilter(node);   // hide the read-only render of just this feature, so only the editable copy shows
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {   // clear any stuck hover-highlight: the tile copy is now filtered out, so the engine's mouseleave won't fire to un-green it (otherwise every clicked feature stays glowing)
+      var m = pair[1]; if (!m) return; var tgt = { source: node.id + '-' + pair[0], id: Number(fid) }; if (node['source-layer']) tgt.sourceLayer = node['source-layer'];
+      try { m.setFeatureState(tgt, { hover: false }); } catch (e) {}
+    });
     try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {}
     showFeaturePanel(drawId);
     setStatus('Editing feature ' + fid);
