@@ -1448,6 +1448,14 @@
       '</div>' +
       '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
       '<button id="elp-attrs" style="margin-top:8px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">&#9638; Attribute table</button>' +
+      '<div id="elp-src-row" style="display:none;margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;">' +
+        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Tileset source</label>' +
+        '<input id="elp-src-url" type="text" placeholder="mapbox://user.id  or  https://…/{z}/{x}/{y}.pbf" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+        '<input id="elp-src-sl" type="text" placeholder="source layer (e.g. buildings)" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+        '<div id="elp-src-zooms" style="display:none;margin-bottom:5px;"><input id="elp-src-minz" type="number" placeholder="min zoom" style="width:48%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /> <input id="elp-src-maxz" type="number" placeholder="max zoom" style="width:48%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
+        '<div id="elp-src-info" style="font-size:10px;color:#888888;margin-bottom:5px;"></div>' +
+        '<button id="elp-src-apply" style="width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:12px;">Apply source</button>' +
+      '</div>' +
       '<div id="elp-enc-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia base URL</label>' +
       '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
       '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>';
@@ -1466,6 +1474,8 @@
     });
     document.getElementById('elp-attrs').addEventListener('click', function () { if (activeLayerId) openAttributeTable(activeLayerId); });
     document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
+    document.getElementById('elp-src-apply').addEventListener('click', onApplySource);
+    document.getElementById('elp-src-url').addEventListener('input', function () { document.getElementById('elp-src-zooms').style.display = (this.value.trim().indexOf('mapbox://') === 0) ? 'none' : 'block'; });
   }
   async function onEncUrl(value) {
     if (!activeLayerId) return;
@@ -1477,6 +1487,31 @@
     setStatus('Saving…');
     try { var r = await db.from('layers').update({ content_base_url: url || null, content_id_prop: url ? 'content_id' : null }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { setStatus('Save failed'); }
+  }
+  // View/edit a tileset's source — repoint the URL (mapbox:// or a {z}/{x}/{y} worker/PMTiles template),
+  // source-layer, and zoom range; persist to the layers table + re-render the layer on both maps.
+  async function onApplySource() {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node || !isTilesetNode(node)) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var url = (document.getElementById('elp-src-url').value || '').trim();
+    var sl = (document.getElementById('elp-src-sl').value || '').trim();
+    if (!url) { setStatus('Source URL required'); return; }
+    var isMapbox = url.indexOf('mapbox://') === 0;
+    var minz = parseInt(document.getElementById('elp-src-minz').value, 10), maxz = parseInt(document.getElementById('elp-src-maxz').value, 10);
+    if (isMapbox) { node.source = { type: 'vector', url: url }; }
+    else { node.source = { type: 'vector', tiles: [url] }; if (!isNaN(minz)) node.source.minzoom = minz; if (!isNaN(maxz)) node.source.maxzoom = maxz; }
+    if (sl) node['source-layer'] = sl; else delete node['source-layer'];
+    node.source_type = isMapbox ? 'mapbox-tileset' : 'vector-tiles-url';
+    setStatus('Saving…');
+    try {
+      var rw = leafRow(node);
+      var r = await db.from('layers').update({ source_type: rw.source_type, source_url: rw.source_url, source_layer: rw.source_layer, source_minzoom: rw.source_minzoom, source_maxzoom: rw.source_maxzoom }).eq('id', lid);
+      if (r.error) throw new Error(r.error.message); setStatus('Source updated');
+    } catch (e) { setStatus('Save failed'); return; }
+    removeMapLayers(node.id); renderTilesetOnMap(node);   // re-render with the new source
+    if (typeof refreshLayers === 'function') refreshLayers();
+    showLayerPanel(activeLayerId);
   }
   function showLayerPanel(slug) {
     var node = findNodeById(layers, slug); if (!node) return;
@@ -1514,6 +1549,17 @@
     document.getElementById('elp-attrs').style.display = isGeojson ? 'block' : 'none';   // attribute table = stored (drawn/imported) features only
     document.getElementById('elp-enc-row').style.display = isGeojson ? 'block' : 'none';
     document.getElementById('elp-encurl').value = (node.panel && node.panel.encyclopediaBase) || '';
+    var isTs = isTilesetNode(node);   // tilesets show their Source (url / source-layer / zooms) so it can be viewed + repointed (e.g. to a PMTiles worker)
+    document.getElementById('elp-src-row').style.display = isTs ? 'block' : 'none';
+    if (isTs) {
+      var src = node.source || {}, isTilesUrl = !!(src.tiles && src.tiles.length);
+      document.getElementById('elp-src-url').value = src.url || (src.tiles && src.tiles[0]) || '';
+      document.getElementById('elp-src-sl').value = node['source-layer'] || '';
+      document.getElementById('elp-src-zooms').style.display = isTilesUrl ? 'block' : 'none';
+      document.getElementById('elp-src-minz').value = (src.minzoom != null) ? src.minzoom : '';
+      document.getElementById('elp-src-maxz').value = (src.maxzoom != null) ? src.maxzoom : '';
+      document.getElementById('elp-src-info').textContent = (node.source_type || (isTilesUrl ? 'vector-tiles-url' : 'mapbox-tileset')) + (node.type ? ' · ' + node.type : '');
+    }
     p.style.display = 'block';
   }
   function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
