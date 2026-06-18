@@ -410,6 +410,7 @@
       else layers.push(node);
       rerender();
       renderTilesetOnMap(node);
+      wireEngineEditClicks();
       if (typeof refreshLayers === 'function') refreshLayers();  // sync visibility to the new checkbox
       setActiveLayer(node.id);   // open its style panel (color/opacity/outline/width + Split for fills)
       setStatus('Saved');
@@ -437,6 +438,116 @@
         }
       }
     });
+  }
+
+  // ── tileset / large-layer editing: pull ONE engine-rendered feature into MapboxDraw, hide the read-only
+  //    render of just that feature (filter-exclude its id on both maps), then edit + save in place via the
+  //    normal draw flow. The lean version of AHM's "promoted overlay" — no status lifecycle. ──
+  var _engineEditIds = {};      // slug → [feature_id,…] currently pulled into draw (excluded from the engine render)
+  var _engineBaseFilter = {};   // layerId → its filter before exclusion (so it can be restored)
+  var _engineEditWired = {};    // slug → true once click handlers are attached
+  function isEngineEditable(node) {
+    if (!node || !node.id) return false;
+    if (node.source_type === 'geojson-supabase' && !_drawLayerSlugs[node.id]) return true;   // large drawn layer (engine-rendered, not in MapboxDraw)
+    return isTilesetNode(node);                                                               // any tileset (once its data lives in features, id-aligned)
+  }
+  function wireEngineEditClicks() {
+    if (typeof layers === 'undefined' || !draw) return;
+    if (!_panelClickPatched && typeof window.handlePanelClick === 'function') {   // editor: editable layers own their clicks (edit), so the engine's encyclopedia panel-click must not ALSO fire — the page shows via the feature panel instead
+      _panelClickPatched = true; var _origHPC = window.handlePanelClick;
+      window.handlePanelClick = function (layer, event) {
+        try { var n = findNodeById(layers, layer && layer.id); if (n && isEngineEditable(n)) return; } catch (e) {}
+        return _origHPC.apply(this, arguments);
+      };
+    }
+    (function walk(arr) { (arr || []).forEach(function (n) {
+      if (isEngineEditable(n) && !_engineEditWired[n.id]) {
+        [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+          var map = pair[1]; if (!map) return; var lid = n.id + '-' + pair[0];
+          try { if (map.getLayer(lid)) { map.on('click', lid, (function (node) { return function (e) { onEngineFeatureClick(node, e); }; })(n)); _engineEditWired[n.id] = true; } } catch (err) {}
+        });
+      }
+      if (n.children) walk(n.children);
+    }); })(layers);
+  }
+  function onEngineFeatureClick(node, e) {
+    if (!e.features || !e.features.length) return;
+    var fid = e.features[0].id; if (fid == null) return;   // tile features carry the db id (Tippecanoe --use-attribute-for-id=id)
+    enterEngineEdit(node, fid);
+  }
+  async function enterEngineEdit(node, fid) {
+    var drawId = 'db-' + fid;
+    if (draw && draw.get(drawId)) { try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {} showFeaturePanel(drawId); return; }
+    var res; try { res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id').eq('feature_id', fid).single(); } catch (e) { res = { error: e }; }
+    if (res.error || !res.data || !res.data.geom) { setStatus('Could not load that feature for editing'); return; }
+    var row = res.data, geom = { type: row.geom.type, coordinates: row.geom.coordinates };
+    featureToDb[drawId] = fid; featureLayer[drawId] = row.layer_id; _engineEditNode[drawId] = node;
+    featureMeta[drawId] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '' };
+    _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
+    try { draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: featureProps(node) || {} }); } catch (e) { setStatus('Edit failed'); return; }
+    (_engineEditIds[node.id] = _engineEditIds[node.id] || []); if (_engineEditIds[node.id].indexOf(fid) < 0) _engineEditIds[node.id].push(fid);
+    if (_engineEdited[node.id] && _engineEdited[node.id][fid] != null) { delete _engineEdited[node.id][fid]; refreshEditedOverlay(node); }   // pull it back off the overlay while editing
+    applyEngineEditFilter(node);   // hide the read-only render of just this feature, so only the editable copy shows
+    try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {}
+    showFeaturePanel(drawId);
+    setStatus('Editing feature ' + fid);
+  }
+  function applyEngineEditFilter(node) {
+    var ids = (_engineEditIds[node.id] || []).map(Number);
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var map = pair[1]; if (!map) return;
+      [node.id + '-' + pair[0], node.id + '-stroke-' + pair[0]].forEach(function (lid) {
+        if (!map.getLayer(lid)) return;
+        if (!(lid in _engineBaseFilter)) { try { _engineBaseFilter[lid] = map.getFilter(lid) || null; } catch (e) { _engineBaseFilter[lid] = null; } }
+        var base = _engineBaseFilter[lid], filt;
+        if (!ids.length) { filt = base; }
+        else {   // legacy ["!in","$id",…] to match the engine's legacy date filter — mixing legacy + expression makes setFilter throw (the AHM filter bug)
+          var excl = ['!in', '$id'].concat(ids);
+          filt = (base && base[0] === 'all') ? base.concat([excl]) : (base ? ['all', base, excl] : excl);
+        }
+        try { map.setFilter(lid, filt); } catch (e) { console.warn('editing: engine edit filter', e); }
+      });
+    });
+  }
+
+  // ── "Done editing": fold the feature out of MapboxDraw and show its SAVED geometry on a normal-styled
+  //    GeoJSON overlay. The tile copy stays filtered out (no stale double-render until tiles regenerate),
+  //    so the edit stays visible. Re-clicking the overlay re-enters edit. ──
+  var _engineEdited = {};     // node.id → { feature_id: geometry } currently shown on the overlay
+  var _engineEditNode = {};   // drawId → node (so the feature panel knows it's an engine edit → show "Done editing")
+  var _panelClickPatched = false;
+  function ensureEditedOverlay(node) {
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var map = pair[1]; if (!map) return; var sid = node.id + '-edited-' + pair[0];
+      if (map.getSource(sid)) return;
+      try {
+        map.addSource(sid, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        var orig = (map.getStyle().layers || []).filter(function (l) { return l.id === node.id + '-' + pair[0]; })[0];
+        var paint = (orig && orig.paint) || node.paint || { 'fill-color': '#ffb255', 'fill-outline-color': '#ff0000' };
+        map.addLayer({ id: sid, type: 'fill', source: sid, paint: paint });   // styled like the layer, above the tile copy
+        map.on('click', sid, (function (n) { return function (e) { onEngineFeatureClick(n, e); }; })(node));   // re-click → re-edit
+      } catch (e) { console.warn('editing: edited overlay', e); }
+    });
+  }
+  function refreshEditedOverlay(node) {
+    var store = _engineEdited[node.id] || {};
+    var feats = Object.keys(store).map(function (fid) { return { type: 'Feature', id: Number(fid), geometry: store[fid], properties: {} }; });
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var map = pair[1]; if (!map) return; var src = map.getSource(node.id + '-edited-' + pair[0]);
+      if (src) try { src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {}
+    });
+  }
+  function finishEngineEdit(node, fid) {
+    if (!node || fid == null) return;
+    var drawId = 'db-' + fid, geom = null;
+    try { var f = draw && draw.get(drawId); if (f) geom = f.geometry; } catch (e) {}
+    if (!geom) geom = _geomSnap[drawId];
+    if (geom) { (_engineEdited[node.id] = _engineEdited[node.id] || {})[fid] = geom; ensureEditedOverlay(node); refreshEditedOverlay(node); }
+    try { if (draw && draw.get(drawId)) draw.delete(drawId); } catch (e) {}
+    // fid stays in _engineEditIds → the tile copy remains hidden; the overlay shows the saved geometry instead
+    delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId]; delete featureMeta[drawId]; delete _geomSnap[drawId];
+    hideFeaturePanel();
+    setStatus('Done editing — saved');
   }
 
   // ── additive chrome (sibling of #layers-panel-content, survives re-render) ──
@@ -1202,6 +1313,7 @@
       try { var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gjList[gi].did); var cn = cq.count || 0; if (cn > 0 && cn <= MAX_DRAW) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } } catch (e) {}
     }
     hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
+    wireEngineEditClicks(); try { if (beforeMap) beforeMap.once('idle', wireEngineEditClicks); } catch (e) {}   // BEFORE the early-return below, so tileset-only / large-layer-only projects still get click→edit
     if (!smallIds.length) { try { draw.set({ type: 'FeatureCollection', features: [] }); } catch (e) {} return; }
     try {
       var rows = [];
@@ -1274,11 +1386,13 @@
       '<div style="font-size:10px;color:#888888;margin-top:4px;">Blank = always visible on the timeline.</div>' +
       '<div id="efp-page-row" style="display:none;margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia page ID</label>' +
       '<input id="efp-pageid" type="text" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" /></div>' +
-      '<button id="efp-delete" style="margin-top:10px;width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete feature</button>';
+      '<button id="efp-done" style="margin-top:10px;width:100%;padding:7px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;font-weight:600;cursor:pointer;font-size:12px;display:none;">✓ Done editing</button>' +
+      '<button id="efp-delete" style="margin-top:8px;width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete feature</button>';
     document.body.appendChild(p);
     document.getElementById('efp-close').addEventListener('click', function () { if (draw) draw.changeMode('simple_select'); hideFeaturePanel(); });
     document.getElementById('efp-pageid').addEventListener('input', function () { onFeatureField('pageid', this.value); });
     document.getElementById('efp-delete').addEventListener('click', onDeleteFeature);
+    document.getElementById('efp-done').addEventListener('click', function () { var n = _engineEditNode[selectedDrawId]; if (n) finishEngineEdit(n, featureToDb[selectedDrawId]); });
     document.getElementById('efp-label').addEventListener('input', function () { onFeatureField('label', this.value); });
     document.getElementById('efp-notes').addEventListener('input', function () { onFeatureField('notes', this.value); });
     document.getElementById('efp-start').addEventListener('change', function () { onFeatureField('start', this.value); });
@@ -1297,7 +1411,8 @@
     var lnode = featureLayer[drawId] ? nodeByLayerDbId(featureLayer[drawId]) : null;   // Page ID + encyclopedia preview only when the layer links to an encyclopedia
     var hasEnc = !!(lnode && lnode.panel && lnode.panel.encyclopediaBase);
     document.getElementById('efp-page-row').style.display = hasEnc ? 'block' : 'none';
-    if (hasEnc && meta.pageid) showEncyclopediaPreview(lnode, { content_id: meta.pageid, name: meta.label || '' }); else hideEncPanel();
+    if (hasEnc && meta.pageid) { var ep = { name: meta.label || '' }; ep[(lnode.panel && lnode.panel.nidProp) || 'content_id'] = meta.pageid; showEncyclopediaPreview(lnode, ep); } else hideEncPanel();   // pass the page id under the layer's nidProp key (e.g. 'nid' for buildings) so the lookup in showEncyclopediaPreview finds it
+    document.getElementById('efp-done').style.display = _engineEditNode[drawId] ? 'block' : 'none';   // engine-edited (tileset/large) features get a clean "Done editing" → overlay fold-back
     p.style.display = 'block';
   }
   function hideFeaturePanel() {
@@ -1510,6 +1625,7 @@
       if (r.error) throw new Error(r.error.message); setStatus('Source updated');
     } catch (e) { setStatus('Save failed'); return; }
     removeMapLayers(node.id); renderTilesetOnMap(node);   // re-render with the new source
+    _engineEditWired[node.id] = false; wireEngineEditClicks();   // re-attach click→edit (removeLayer dropped the old handler)
     if (typeof refreshLayers === 'function') refreshLayers();
     showLayerPanel(activeLayerId);
   }
