@@ -1,6 +1,6 @@
-function generateMapHTML(map) {
+function generateMapHTML(map, idx) {
   return `
-    <div class="layer-list-row">
+    <div class="layer-list-row" data-map-idx="${idx == null ? '' : idx}">
       <input class="${map.id}" type="radio" name="ltoggle" value="${map.id}" ${map.lChecked ? 'checked="checked"' : ''}/>
       <input class="${map.id}" type="radio" name="rtoggle" value="${map.id}" ${map.rChecked ? 'checked="checked"' : ''}/>
       &nbsp;
@@ -16,7 +16,15 @@ function generateMapHTML(map) {
 }
 
 function generateBaseMapsPanel() {
-  document.getElementById('base-maps-section').innerHTML = baseMaps.map(generateMapHTML).join('');
+  var secs = (typeof mapSections !== 'undefined' && mapSections) ? mapSections : [];
+  var escMs = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); };
+  var rowsFor = function (test) { return baseMaps.map(function (m, i) { return test(m) ? generateMapHTML(m, i) : ''; }).join(''); };
+  var mapsHtml = rowsFor(function (m) { return !m.section || !secs.some(function (s) { return s.id === m.section; }); });
+  secs.forEach(function (s) {
+    mapsHtml += '<p class="title map-section-title" data-mapsection="' + escMs(s.id) + '">' + escMs(s.name) + '</p>';
+    mapsHtml += rowsFor(function (m) { return m.section === s.id; });
+  });
+  document.getElementById('base-maps-section').innerHTML = mapsHtml;
 
   document.getElementById('zoom-buttons-section').innerHTML =
     '<center>' +

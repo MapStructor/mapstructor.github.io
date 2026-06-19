@@ -10,7 +10,7 @@
    failure can never corrupt the project, unlike a delete-and-rewrite). Field
    mapping mirrors tools/seed/seed.js. */
 (function () {
-  console.log('%c[editing.js] BUILD 2026-06-18f — green-glow fix + Map Settings panel', 'background:#ce5c00;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;');
+  console.log('%c[editing.js] BUILD 2026-06-18w — reverted zoom-button work (original zoom buttons restored)', 'background:#ce5c00;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;');
   if (typeof platformProjectId === 'undefined' || !platformProjectId) return;
 
   var SUPABASE_URL = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co';
@@ -249,6 +249,19 @@
       setStatus('Saved');
     } catch (e) { console.warn('editing: rename failed', e); setStatus('Rename failed: ' + e.message); }
   }
+  // Set a layer/group's zoom-to target to the CURRENT view, so its (always-rendered) crosshairs ◎ flies here.
+  async function onSetZoom(id) {
+    var node = findNodeById(layers, id); if (!node || !beforeMap) return;
+    var c = beforeMap.getCenter(), z = beforeMap.getZoom();
+    node.zoomCenter = [c.lng, c.lat]; node.zoomLevel = z;
+    setStatus('Saving…');
+    try {
+      if (node.type === 'section') { setStatus('Sections have no zoom button'); return; }
+      if (node.type === 'group') { var gid = node._dbId; if (!gid) throw new Error('no group id'); var rg = await db.from('layer_groups').update({ zoom_center_lng: c.lng, zoom_center_lat: c.lat, zoom_level: z }).eq('id', gid); if (rg.error) throw new Error(rg.error.message); }
+      else { var lid = slugToLayerDbId[id]; if (!lid) throw new Error('no layer id'); var rl = await db.from('layers').update({ zoom_center_lng: c.lng, zoom_center_lat: c.lat, zoom_level: z }).eq('id', lid); if (rl.error) throw new Error(rl.error.message); }
+      setStatus('Zoom target set — its ◎ now flies here');
+    } catch (e) { setStatus('Save failed'); }
+  }
   function enhanceRows() {
     var panel = document.getElementById('layers-panel-content');
     if (!panel) return;
@@ -260,7 +273,7 @@
       if (id === activeLayerId) row.classList.add('editor-active');
       // click the row body (not a control) to make it the active draw target
       row.addEventListener('click', function (e) {
-        if (e.target.closest('input,.layer-buttons-block,.editor-del,.compress-expand-icon,.toggle')) return;
+        if (e.target.closest('input,.layer-buttons-block,.editor-del,.editor-setzoom,.compress-expand-icon,.toggle')) return;
         setActiveLayer(id);
       });
       var enNode = findNodeById(layers, id);
@@ -272,6 +285,10 @@
       del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete';
       del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); onDelete(id); });
       row.appendChild(del);
+      var setz = document.createElement('span');
+      setz.className = 'editor-setzoom'; setz.innerHTML = '◎'; setz.title = 'Set this layer’s zoom-to target to the current view';
+      setz.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); onSetZoom(id); });
+      row.appendChild(setz);
       var label = row.querySelector('label') || row.querySelector('.container-name');
       if (label) label.addEventListener('dblclick', function (e) { e.stopPropagation(); e.preventDefault(); onRename(id); });
 
@@ -851,6 +868,104 @@
     if (msg === 'Saved') setTimeout(function () { if (el.textContent === 'Saved') el.textContent = ''; }, 1500);
   }
   // ── Map settings: rename the map + save the current view as its default (per-project `projects` row) ──
+  // ── In-place popup editing: clicking the ℹ "About" button (or a layer/group info button) opens the
+  //    real engine popup, and its .modal-content becomes editable right there — a small formatting
+  //    toolbar + Save are injected into the popup. No separate window. ──
+  function setModalAbout(about) {   // feed the engine's existing ℹ "About" popup (engine reads modal_content_html["about"] on click)
+    try { window.modal_header_text = window.modal_header_text || {}; window.modal_content_html = window.modal_content_html || {}; window.modal_header_text['about'] = 'About'; window.modal_content_html['about'] = about || ''; } catch (e) {}
+  }
+  var _editPopupId = null;
+  function setupInPlaceEditing() {
+    var content = document.querySelector('div.modal-content'); if (!content) return false;
+    if (!document.getElementById('editor-modal-tools')) {
+      var st = document.createElement('style');
+      st.textContent =
+        '#editor-modal-tools{display:none;gap:3px;padding:6px 0;margin:0 0 8px;flex-wrap:wrap;align-items:center;border-bottom:1px solid #eee;}' +
+        '#editor-modal-tools.on{display:flex;}' +
+        '#editor-modal-tools button{min-width:28px;height:26px;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer;font-size:12px;line-height:1;}' +
+        '#editor-modal-tools button:hover{background:#e8e8e8;}' +
+        '#editor-modal-save{margin-left:auto;background:#ce5c00;color:#fff;border-color:#ce5c00;font-weight:600;padding:0 12px;}' +
+        'div.modal-content[contenteditable="true"]{outline:2px dashed rgba(206,92,0,0.55);outline-offset:5px;min-height:48px;}';
+      document.head.appendChild(st);
+      var tools = document.createElement('div'); tools.id = 'editor-modal-tools';
+      tools.innerHTML =
+        '<button data-cmd="bold" title="Bold" style="font-weight:bold;">B</button>' +
+        '<button data-cmd="italic" title="Italic" style="font-style:italic;">I</button>' +
+        '<button data-cmd="underline" title="Underline" style="text-decoration:underline;">U</button>' +
+        '<button data-cmd="formatBlock" data-val="h2" title="Heading">H</button>' +
+        '<button data-cmd="formatBlock" data-val="p" title="Normal text">&para;</button>' +
+        '<button data-cmd="insertUnorderedList" title="Bullet list">&bull;</button>' +
+        '<button data-cmd="insertOrderedList" title="Numbered list">1.</button>' +
+        '<button data-cmd="createLink" title="Insert link">&#128279;</button>' +
+        '<button data-cmd="removeFormat" title="Clear formatting">&times;A</button>' +
+        '<button id="editor-modal-save" title="Save">Save</button>';
+      content.parentNode.insertBefore(tools, content);
+      Array.prototype.forEach.call(tools.querySelectorAll('button[data-cmd]'), function (b) {
+        b.addEventListener('mousedown', function (e) { e.preventDefault(); });   // keep caret/selection inside .modal-content
+        b.addEventListener('click', function (e) {
+          e.preventDefault(); content.focus();
+          var cmd = b.getAttribute('data-cmd'), val = b.getAttribute('data-val');
+          if (cmd === 'createLink') { val = prompt('Link URL:'); if (!val) return; }
+          try { document.execCommand(cmd, false, val || undefined); } catch (err) {}
+        });
+      });
+      document.getElementById('editor-modal-save').addEventListener('click', function (e) { e.preventDefault(); savePopupEdit(); });
+    }
+    if (!window.__editorPopupEditWired) {
+      window.__editorPopupEditWired = true;
+      document.addEventListener('click', function (e) {   // any ℹ / info trigger → open the popup + make it editable in place
+        var t = e.target && e.target.closest && e.target.closest('.trigger-popup'); if (!t) return;
+        var pid, title;
+        if (t.id === 'info' || t.id === 'about-info') { pid = 'about'; title = 'About'; }
+        else {   // a layer/group info button — derive a stable id from the row's node (the rendered id may be empty)
+          var row = t.closest('.layer-list-row'); if (!row) return;
+          var cb = row.querySelector('input[type="checkbox"]'); var nodeId = cb ? cb.id : '';
+          if (!nodeId) return;
+          pid = nodeId + '-info';
+          var lbl = row.querySelector('label'); title = lbl ? lbl.textContent.replace(/\s+/g, ' ').trim() : 'Info';
+        }
+        setTimeout(function () {
+          var html = (window.modal_content_html && window.modal_content_html[pid]) || '';
+          var hdr = (window.modal_header_text && window.modal_header_text[pid]) || title;
+          openPopupForEdit(pid, hdr, html);
+          enableModalEdit(pid);
+        }, 70);
+      }, true);
+    }
+    return true;
+  }
+  function openPopupForEdit(pid, title, html) {   // open the engine modal for editing — idempotent (skips if the engine already opened it, e.g. About)
+    var cb = document.getElementById('o');
+    if (cb && cb.checked) return;   // already open — keep what the engine put there
+    try { window.$('div.modal-header h1').text(title || ''); window.$('div.modal-content').html(html || ''); } catch (e) {}
+    var lbl = document.getElementById('open-popup'); if (lbl) lbl.click();
+  }
+  function enableModalEdit(popupId) {
+    var content = document.querySelector('div.modal-content'); var tools = document.getElementById('editor-modal-tools');
+    if (!content || !tools) return;
+    _editPopupId = popupId; content.setAttribute('contenteditable', 'true'); tools.classList.add('on');
+  }
+  async function savePopupEdit() {
+    var content = document.querySelector('div.modal-content'); if (!content || !_editPopupId) return;
+    var html = content.innerHTML; setStatus('Saving…');
+    try {
+      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {};
+      if (_editPopupId === 'about') { rc.about = html; setModalAbout(html); }
+      else {
+        var title = ''; try { title = (document.querySelector('div.modal-header h1').textContent || '').trim(); } catch (x) {}
+        rc.popups = rc.popups || {}; rc.popups[_editPopupId] = { title: title, html: html };
+        try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; window.modal_content_html[_editPopupId] = html; window.modal_header_text[_editPopupId] = title || 'Info'; } catch (x2) {}
+        // persist info_id on the layer/group row so the rendered info button carries this id (viewer + on reload)
+        var nodeId = _editPopupId.replace(/-info$/, ''); var node = findNodeById(layers, nodeId);
+        if (node) {
+          if (node.type === 'group' && node._dbId) { await db.from('layer_groups').update({ info_id: _editPopupId }).eq('id', node._dbId); }
+          else if (node.type !== 'group' && node.type !== 'section' && slugToLayerDbId[nodeId]) { await db.from('layers').update({ info_id: _editPopupId }).eq('id', slugToLayerDbId[nodeId]); }
+        }
+      }
+      var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message);
+      setStatus('Saved');
+    } catch (e) { setStatus('Save failed'); }
+  }
   function injectSettingsPanel() {
     if (document.getElementById('editor-settings-panel')) return;
     var p = document.createElement('div');
@@ -861,30 +976,299 @@
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Map name</label>' +
       '<input id="esp-name" type="text" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
       '<button id="esp-setview" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;">Set current view as default</button>' +
-      '<div id="esp-viewinfo" style="font-size:10px;color:#888888;margin-top:4px;"></div>';
+      '<div id="esp-viewinfo" style="font-size:10px;color:#888888;margin-top:4px;"></div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin:10px 0 2px;">Timeline range</label>' +
+      '<div style="display:flex;gap:6px;align-items:center;">' +
+        '<input id="esp-tl-start" type="date" style="width:50%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+        '<span style="color:#888888;font-size:12px;">to</span>' +
+        '<input id="esp-tl-end" type="date" style="width:50%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '</div>' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">Start/end of the bottom timeline slider — type a date or pick one (down to the day).</div>' +
+      '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-top:5px;"><input id="esp-tl-today" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />End at today (updates each visit)</label>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin:12px 0 2px;border-top:1px solid #eee;padding-top:8px;">Header logo</label>' +
+      '<input id="esp-logo-file" type="file" accept="image/*" style="width:100%;box-sizing:border-box;font-size:11px;margin-bottom:8px;" />' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Logo link (URL)</label>' +
+      '<input id="esp-logo-link" type="text" placeholder="https://…" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
+      '<div style="font-size:10px;color:#888888;margin-top:12px;border-top:1px solid #eee;padding-top:8px;">To edit the <b>About</b> text, click the &#9432; button on the map and edit the popup directly.</div>';
     document.body.appendChild(p);
     document.getElementById('esp-close').addEventListener('click', function () { p.style.display = 'none'; });
     document.getElementById('esp-name').addEventListener('change', onSettingsName);
     document.getElementById('esp-setview').addEventListener('click', onSetDefaultView);
+    document.getElementById('esp-tl-start').addEventListener('change', onTimelineSave);
+    document.getElementById('esp-tl-end').addEventListener('change', onTimelineSave);
+    document.getElementById('esp-tl-today').addEventListener('change', function () { document.getElementById('esp-tl-end').disabled = this.checked; onTimelineSave(); });
+    document.getElementById('esp-logo-file').addEventListener('change', onLogoFile);
+    document.getElementById('esp-logo-link').addEventListener('change', onLogoLink);
+  }
+  // Re-init the bottom timeline slider + rulers to a [startYear, endYear] range (the engine reads a static
+  // const at load, so we update the live jQuery-UI slider + ruler labels + globals instead).
+  function applyTimelineRange(startDate, endDate) {
+    try {
+      var $ = window.$, m = window.moment; if (!$ || !m || !$('#slider').length) return false;
+      var s = m(startDate).unix(), e = (endDate === 'today') ? m().unix() : m(endDate).unix();   // "today" resolves to the current date each load
+      if (!s || !e || e <= s) return false;
+      var mid = Math.round((s + e) / 2), step = (e - s) / 10;
+      try { window.sliderStart = s; window.sliderEnd = e; window.sliderMiddle = mid; } catch (x) {}
+      $('#slider').slider('option', { min: s, max: e, value: mid });
+      $('#ruler-date1').text(m.unix(s + step).format('YYYY'));
+      $('#ruler-date2').text(m.unix(s + step * 3).format('YYYY'));
+      $('#ruler-date3').text(m.unix(mid).format('YYYY'));
+      $('#ruler-date4').text(m.unix(s + step * 7).format('YYYY'));
+      $('#ruler-date5').text(m.unix(s + step * 9).format('YYYY'));
+      $('#date').text(m.unix(mid).format('DD MMM YYYY'));
+      if (typeof changeDate === 'function') changeDate(mid);
+      return true;
+    } catch (err) { return false; }
+  }
+  async function loadProjectChrome() {   // on load, apply per-project chrome (timeline range) once the slider exists
+    if (window.__editorChromeLoaded) return; window.__editorChromeLoaded = true;
+    try { var r = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (r.data && r.data.raw_config) || {}; setModalAbout(rc.about || ''); applyHeaderChrome(rc); setTimeout(function () { applyHeaderChrome(rc); }, 600); setTimeout(function () { applyHeaderChrome(rc); }, 1500); if (rc.popups) { try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; Object.keys(rc.popups).forEach(function (id) { var p = rc.popups[id]; var h = (p && typeof p === 'object') ? p.html : p; var ti = (p && typeof p === 'object') ? p.title : 'Info'; window.modal_content_html[id] = h || ''; window.modal_header_text[id] = ti || 'Info'; }); } catch (x) {} } var tl = rc.timeline; if (tl && tl.start && tl.end) { var tries = 0; var iv = setInterval(function () { if (applyTimelineRange(tl.start, tl.end) || ++tries > 25) clearInterval(iv); }, 400); } } catch (e) {}
+  }
+  async function onTimelineSave() {
+    var sd = document.getElementById('esp-tl-start').value, today = document.getElementById('esp-tl-today').checked, ed = today ? 'today' : document.getElementById('esp-tl-end').value;
+    var eUnix = (ed === 'today') ? window.moment().unix() : window.moment(ed).unix();
+    if (!sd || (!today && !ed) || eUnix <= window.moment(sd).unix()) { setStatus('Enter a valid start date before the end'); return; }
+    setStatus('Saving…');
+    try { var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.timeline = { start: sd, end: ed }; var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message); applyTimelineRange(sd, ed); setStatus('Timeline range saved'); } catch (e) { setStatus('Save failed'); }
   }
   function fmtView(lat, lng, z) { return (lat != null && lng != null) ? ('Default: ' + Number(lat).toFixed(4) + ', ' + Number(lng).toFixed(4) + ' · z' + (z != null ? Number(z).toFixed(1) : '?')) : 'Default view not set'; }
   async function openSettingsPanel() {
     injectSettingsPanel();
     var p = document.getElementById('editor-settings-panel');
     if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
-    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); } } catch (e) {}
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; } } catch (e) {}
     p.style.display = 'block';
   }
   async function onSettingsName() {
     var name = (document.getElementById('esp-name').value || '').trim(); if (!name) return;
     setStatus('Saving…');
-    try { var r = await db.from('projects').update({ name: name }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus('Map renamed'); } catch (e) { setStatus('Save failed'); }
+    try { var r = await db.from('projects').update({ name: name }).eq('id', projectId); if (r.error) throw new Error(r.error.message); applyHeaderText(name); setStatus('Map renamed'); } catch (e) { setStatus('Save failed'); }
+  }
+  // ── Header chrome: text (= map name), logo image, logo link — applied live (no refresh) + on load ──
+  function applyHeaderText(name) { try { var el = document.getElementById('header-text-value'); if (el) el.textContent = name; if (name) document.title = name; } catch (e) {} }
+  function applyHeaderLogo(dataUrl) { try { if (!dataUrl) return; var img = document.getElementById('logo-img-wide'); if (img) img.src = dataUrl; } catch (e) {} }
+  function applyHeaderLink(url) { try { var a = document.getElementById('logo-link'); if (a) a.setAttribute('href', url || ''); } catch (e) {} }
+  function applyHeaderChrome(rc) { if (!rc) return; if (rc.headerLogo) applyHeaderLogo(rc.headerLogo); if (rc.headerLink != null) applyHeaderLink(rc.headerLink); }
+  function downscaleImage(file, maxW) {   // load → draw to a capped-width canvas → PNG data-URL (keeps raw_config small + transparency)
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var img = new Image();
+        img.onload = function () {
+          var scale = Math.min(1, maxW / (img.width || maxW));
+          var w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
+          var canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          try { resolve(canvas.toDataURL('image/png')); } catch (e) { reject(e); }
+        };
+        img.onerror = reject; img.src = reader.result;
+      };
+      reader.onerror = reject; reader.readAsDataURL(file);
+    });
+  }
+  async function onLogoFile() {
+    var inp = document.getElementById('esp-logo-file'); var f = inp.files && inp.files[0]; if (!f) return;
+    setStatus('Processing image…');
+    try {
+      var dataUrl = await downscaleImage(f, 600);
+      applyHeaderLogo(dataUrl);
+      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {};
+      rc.headerLogo = dataUrl;
+      var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message);
+      setStatus('Logo saved');
+    } catch (e) { setStatus('Logo save failed'); }
+  }
+  async function onLogoLink() {
+    var url = (document.getElementById('esp-logo-link').value || '').trim();
+    applyHeaderLink(url); setStatus('Saving…');
+    try { var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.headerLink = url; var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus('Logo link saved'); } catch (e) { setStatus('Save failed'); }
   }
   async function onSetDefaultView() {
     if (!beforeMap) return;
     var c = beforeMap.getCenter(), z = beforeMap.getZoom(), b = beforeMap.getBearing();
     setStatus('Saving…');
     try { var r = await db.from('projects').update({ center_lng: c.lng, center_lat: c.lat, zoom: z, bearing: b }).eq('id', projectId); if (r.error) throw new Error(r.error.message); document.getElementById('esp-viewinfo').textContent = fmtView(c.lat, c.lng, z); setStatus('Default view saved'); } catch (e) { setStatus('Save failed'); }
+  }
+  // ── Maps (basemaps) editing — Slice 1: add / edit (name + mapbox style) / delete + default L/R, persisted
+  //    to raw_config.baseMaps and re-rendered live. Maps are mutually exclusive (radio), so: sections yes,
+  //    groups no. (Slice 2 = map sections.) ──
+  var _mapEditIdx = null;
+  var _mapDragIdx = null;
+  // baseMaps is a top-level `const` in mapData.js → a lexical global, NOT window.baseMaps. Read the bare binding.
+  function bmaps() { try { return (typeof baseMaps !== 'undefined' && baseMaps) ? baseMaps : null; } catch (e) { return null; } }
+  function msecs() { try { return (typeof mapSections !== 'undefined' && mapSections) ? mapSections : []; } catch (e) { return []; } }
+  function patchMapsRender() {   // re-enhance after the engine re-renders the maps panel
+    if (window.__mapsRenderPatched || typeof window.generateBaseMapsPanel !== 'function') return;
+    window.__mapsRenderPatched = true;
+    var orig = window.generateBaseMapsPanel;
+    window.generateBaseMapsPanel = function () { var r = orig.apply(this, arguments); try { injectMapsChrome(); enhanceMapRows(); } catch (e) {} return r; };
+  }
+  function injectMapsChrome() {   // an add-bar below the maps list, styled like the layers section's add buttons
+    var sec = document.getElementById('base-maps-section'); if (!sec) return;
+    if (!document.getElementById('editor-maps-add-style')) {
+      var st = document.createElement('style'); st.id = 'editor-maps-add-style';
+      st.textContent =
+        '#editor-maps-add-bar{padding:6px;margin-top:17px;}' +
+        '#editor-maps-add-bar .erow{display:flex;gap:6px;}' +
+        '#editor-maps-add-bar button{flex:1;padding:6px 0;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;background:#e8e8e8;color:#222222;}' +
+        '#editor-maps-add-bar button:hover{background:#d8d8d8;}' +
+        '#editor-maps-add-bar input{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +
+        '#base-maps-section .map-section-title{position:relative;}' +
+        '#base-maps-section .map-section-title:hover .editor-del{opacity:1;}' +
+        '#base-maps-section .map-section-title.editor-drop-into{background:rgba(206,92,0,0.15);box-shadow:inset 0 0 0 1px #ce5c00;}';
+      document.head.appendChild(st);
+    }
+    if (document.getElementById('editor-maps-add-bar')) return;
+    var bar = document.createElement('div'); bar.id = 'editor-maps-add-bar';
+    sec.parentNode.insertBefore(bar, sec.nextSibling);
+    restoreMapBar();
+  }
+  function restoreMapBar() {
+    var bar = document.getElementById('editor-maps-add-bar'); if (!bar) return;
+    bar.innerHTML = '<div class="erow"><button id="editor-addmap" data-type="map">+ Map</button><button id="editor-addmapsection" data-type="mapsection">+ Section</button></div>';
+    bar.querySelector('#editor-addmap').addEventListener('click', function (e) { e.preventDefault(); addMap(); });
+    bar.querySelector('#editor-addmapsection').addEventListener('click', function (e) { e.preventDefault(); showMapSectionForm(); });
+  }
+  function showMapSectionForm() {   // inline name form, like the layers + Section button
+    var bar = document.getElementById('editor-maps-add-bar'); if (!bar) return;
+    bar.innerHTML = '<input id="editor-mapsec-name" type="text" placeholder="section name…" /><div class="erow"><button id="editor-mapsec-ok">Add section</button><button id="editor-mapsec-cancel">Cancel</button></div>';
+    var input = document.getElementById('editor-mapsec-name'); input.focus();
+    function commitSec() { var name = input.value.trim(); restoreMapBar(); addMapSection(name || 'New section'); }
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); commitSec(); } if (e.key === 'Escape') restoreMapBar(); });
+    document.getElementById('editor-mapsec-ok').addEventListener('click', commitSec);
+    document.getElementById('editor-mapsec-cancel').addEventListener('click', restoreMapBar);
+  }
+  function enhanceMapRows() {
+    var sec = document.getElementById('base-maps-section'); if (!sec) return;
+    sec.querySelectorAll('.layer-list-row').forEach(function (row) {
+      if (row.getAttribute('data-mapenh')) return;
+      row.setAttribute('data-mapenh', '1');
+      row.style.position = 'relative';
+      var idx = parseInt(row.getAttribute('data-map-idx'), 10); if (isNaN(idx)) return;
+      row.addEventListener('click', function (e) {
+        if (e.target.closest('input,.layer-buttons-block,.editor-del,.trigger-popup')) return;
+        openMapEdit(idx);
+      });
+      var del = document.createElement('span');
+      del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete map';
+      del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); deleteMap(idx); });
+      row.appendChild(del);
+      row.querySelectorAll('input[type="radio"]').forEach(function (rad) {
+        rad.addEventListener('change', function () { onMapRadio(idx, rad); });
+      });
+      // drag a map: reorder before/after another map (adopting its section)
+      row.draggable = true;
+      row.addEventListener('dragstart', function (e) { _mapDragIdx = idx; if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; row.classList.add('editor-dragging'); });
+      row.addEventListener('dragend', function () { row.classList.remove('editor-dragging'); clearMapDropMarks(); _mapDragIdx = null; });
+      row.addEventListener('dragover', function (e) { if (_mapDragIdx == null || _mapDragIdx === idx) return; e.preventDefault(); clearMapDropMarks(); var r = row.getBoundingClientRect(); row.classList.add((e.clientY - r.top) / r.height > 0.5 ? 'editor-drop-after' : 'editor-drop-before'); });
+      row.addEventListener('dragleave', function () { row.classList.remove('editor-drop-before', 'editor-drop-after'); });
+      row.addEventListener('drop', function (e) { e.preventDefault(); e.stopPropagation(); clearMapDropMarks(); var d = _mapDragIdx; _mapDragIdx = null; if (d == null || d === idx) return; var r = row.getBoundingClientRect(); var pos = (e.clientY - r.top) / r.height > 0.5 ? 'after' : 'before'; if (moveMapToRow(d, idx, pos)) { saveBaseMaps(); rerenderMaps(); } });
+    });
+    sec.querySelectorAll('.map-section-title').forEach(function (h) {   // section headers: rename (dblclick), delete, drop-into
+      if (h.getAttribute('data-mapenh')) return;
+      h.setAttribute('data-mapenh', '1'); h.style.cursor = 'pointer';
+      var sid = h.getAttribute('data-mapsection');
+      var del = document.createElement('span');
+      del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete section';
+      del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); deleteMapSection(sid); });
+      h.appendChild(del);
+      h.addEventListener('dblclick', function (e) { e.preventDefault(); renameMapSection(sid); });
+      h.addEventListener('dragover', function (e) { if (_mapDragIdx == null) return; e.preventDefault(); clearMapDropMarks(); h.classList.add('editor-drop-into'); });
+      h.addEventListener('dragleave', function () { h.classList.remove('editor-drop-into'); });
+      h.addEventListener('drop', function (e) { e.preventDefault(); e.stopPropagation(); clearMapDropMarks(); var d = _mapDragIdx; _mapDragIdx = null; if (d == null) return; if (moveMapToSection(d, sid)) { saveBaseMaps(); rerenderMaps(); } });
+    });
+  }
+  function clearMapDropMarks() {
+    var sec = document.getElementById('base-maps-section'); if (!sec) return;
+    sec.querySelectorAll('.editor-drop-before,.editor-drop-after,.editor-drop-into').forEach(function (el) { el.classList.remove('editor-drop-before', 'editor-drop-after', 'editor-drop-into'); });
+  }
+  function moveMapToRow(dragIdx, targetIdx, pos) {   // reorder; adopt the target row's section (undefined = top level)
+    var bm = bmaps(); if (!bm) return false; var dragMap = bm[dragIdx], targetMap = bm[targetIdx];
+    if (!dragMap || !targetMap || dragMap === targetMap) return false;
+    if (targetMap.section) dragMap.section = targetMap.section; else delete dragMap.section;
+    bm.splice(dragIdx, 1);
+    var nt = bm.indexOf(targetMap);
+    bm.splice(nt + (pos === 'after' ? 1 : 0), 0, dragMap);
+    return true;
+  }
+  function moveMapToSection(dragIdx, sid) {   // drop a map onto a section header → joins that section (appended last)
+    var bm = bmaps(); if (!bm) return false; var dragMap = bm[dragIdx]; if (!dragMap) return false;
+    dragMap.section = sid; bm.splice(dragIdx, 1); bm.push(dragMap);
+    return true;
+  }
+  function onMapRadio(idx, rad) {   // selecting a map's L/R radio sets it as that side's default
+    var bm = bmaps(); if (!bm) return;
+    var side = rad.name === 'ltoggle' ? 'lChecked' : 'rChecked';
+    bm.forEach(function (m, i) { m[side] = (i === idx); });
+    saveBaseMaps();
+  }
+  function injectMapsPanel() {
+    if (document.getElementById('editor-maps-panel')) return;
+    var p = document.createElement('div'); p.id = 'editor-maps-panel';
+    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1001;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b style="font-size:13px;">Edit map</b><span id="emp-x" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Name</label>' +
+      '<input id="emp-name" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;margin-bottom:8px;" />' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Mapbox style</label>' +
+      '<input id="emp-style" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">The style id under your Mapbox account (e.g. <code>satellite-v9</code>).</div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin:8px 0 2px;">Section</label>' +
+      '<select id="emp-section" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;"></select>';
+    document.body.appendChild(p);
+    document.getElementById('emp-x').addEventListener('click', function () { p.style.display = 'none'; });
+    document.getElementById('emp-name').addEventListener('change', onMapEditSave);
+    document.getElementById('emp-style').addEventListener('change', onMapEditSave);
+    document.getElementById('emp-section').addEventListener('change', onMapEditSave);
+  }
+  function openMapEdit(idx) {
+    injectMapsPanel(); _mapEditIdx = idx;
+    var m = (bmaps() || [])[idx]; if (!m) return;
+    document.getElementById('emp-name').value = m.name || '';
+    document.getElementById('emp-style').value = m.id || '';
+    var sel = document.getElementById('emp-section');
+    sel.innerHTML = '<option value="">Top level</option>' + msecs().map(function (s) { return '<option value="' + s.id + '"' + (m.section === s.id ? ' selected' : '') + '>' + String(s.name == null ? '' : s.name).replace(/</g, '&lt;') + '</option>'; }).join('');
+    document.getElementById('editor-maps-panel').style.display = 'block';
+  }
+  async function onMapEditSave() {
+    var m = (bmaps() || [])[_mapEditIdx]; if (!m) return;
+    m.name = document.getElementById('emp-name').value;
+    m.id = document.getElementById('emp-style').value;
+    var sv = document.getElementById('emp-section').value; if (sv) m.section = sv; else delete m.section;
+    await saveBaseMaps(); rerenderMaps();
+  }
+  async function addMap() {
+    var bm = bmaps(); if (!bm) return;
+    bm.push({ id: 'streets-v12', name: 'New map', lChecked: false, rChecked: false });
+    await saveBaseMaps(); rerenderMaps();
+  }
+  async function deleteMap(idx) {
+    var bm = bmaps(); if (!bm || !bm[idx]) return;
+    bm.splice(idx, 1);
+    if (document.getElementById('editor-maps-panel')) document.getElementById('editor-maps-panel').style.display = 'none';
+    await saveBaseMaps(); rerenderMaps();
+  }
+  async function addMapSection(name) {
+    var secs = msecs(); secs.push({ id: 'msec-' + Math.random().toString(36).slice(2, 8), name: name || 'New section' });
+    await saveBaseMaps(); rerenderMaps();
+  }
+  async function deleteMapSection(sid) {
+    var secs = msecs(); var i = secs.findIndex(function (s) { return s.id === sid; }); if (i < 0) return;
+    secs.splice(i, 1);
+    (bmaps() || []).forEach(function (m) { if (m.section === sid) delete m.section; });   // its maps return to top level
+    await saveBaseMaps(); rerenderMaps();
+  }
+  async function renameMapSection(sid) {
+    var secs = msecs(); var s = secs.find(function (x) { return x.id === sid; }); if (!s) return;
+    var name = prompt('Section name:', s.name); if (name == null) return;
+    s.name = name; await saveBaseMaps(); rerenderMaps();
+  }
+  async function saveBaseMaps() {
+    setStatus('Saving…');
+    try { var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.baseMaps = bmaps(); rc.mapSections = msecs(); var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus('Saved'); } catch (e) { setStatus('Save failed'); }
+  }
+  function rerenderMaps() {
+    try { if (typeof window.generateBaseMapsPanel === 'function') window.generateBaseMapsPanel(); if (typeof window.setupMapSwitching === 'function') window.setupMapSwitching(); } catch (e) {}
   }
   function injectChrome() {
     var panel = document.getElementById('layers-panel-content');
@@ -901,6 +1285,9 @@
       '.editor-del{position:absolute;right:44px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#888888;font-size:15px;font-weight:bold;line-height:1;padding:0 3px;z-index:2;}' +
       '.layer-list-row:hover .editor-del{opacity:1;}' +
       '.editor-del:hover{color:#c0392b;}' +
+      '.editor-setzoom{position:absolute;right:64px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#888888;font-size:14px;line-height:1;padding:0 3px;z-index:2;}' +
+      '.layer-list-row:hover .editor-setzoom{opacity:1;}' +
+      '.editor-setzoom:hover{color:#ce5c00;}' +
       '.layer-list-row.editor-dragging{opacity:0.4;}' +
       '.layer-list-row.editor-drop-before{box-shadow:inset 0 2px 0 #ce5c00;}' +
       '.layer-list-row.editor-drop-after{box-shadow:inset 0 -2px 0 #ce5c00;}' +
@@ -2378,7 +2765,7 @@
 
   start();
   (function whenReady() {
-    if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); }
+    if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); loadProjectChrome(); setupInPlaceEditing(); var _mtries = 0; var _miv = setInterval(function () { patchMapsRender(); var sec = document.getElementById('base-maps-section'); var has = sec && sec.querySelector('.layer-list-row'); if (has) { injectMapsChrome(); enhanceMapRows(); } if ((window.__mapsRenderPatched && has) || ++_mtries > 30) clearInterval(_miv); }, 400); }
     else setTimeout(whenReady, 150);
   })();
   (function waitForMap() {

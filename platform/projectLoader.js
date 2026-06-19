@@ -48,6 +48,7 @@ var PlatformProjectLoader = true;
     if (project.center_lng != null) mapConfig.center = [project.center_lng, project.center_lat];
     if (project.zoom != null) mapConfig.zoom = project.zoom;
     if (raw.baseMaps) replaceArray(baseMaps, raw.baseMaps);
+    if (raw.mapSections) replaceArray(mapSections, raw.mapSections);
     if (raw.boundsList) replaceObject(boundsList, raw.boundsList);
     if (raw.zoomButtons) replaceArray(zoomButtons, raw.zoomButtons);
     if (raw.mapboxUsername) siteConfig.mapboxUsername = raw.mapboxUsername;

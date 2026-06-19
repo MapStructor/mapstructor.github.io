@@ -13,6 +13,10 @@ const baseMaps = [
   },
 ];
 
+// Map sections (basemaps can be grouped under sections — no groups, since maps are mutually exclusive).
+// Each section: { id, name }. A map joins a section via its `section` (= section id); unsectioned maps render first.
+const mapSections = [];
+
 const mapConfig = {
   style: "mapbox://styles/mapbox/streets-v12", // Starting style for the map
   center: [-14.22, 19.28], // [longitude, latitude]
