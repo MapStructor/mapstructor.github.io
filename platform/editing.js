@@ -10,6 +10,7 @@
    failure can never corrupt the project, unlike a delete-and-rewrite). Field
    mapping mirrors tools/seed/seed.js. */
 (function () {
+  console.log('%c[editing.js] BUILD 2026-06-18e — layer-scoped feature lookup (fixes vanish)', 'background:#ce5c00;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;');
   if (typeof platformProjectId === 'undefined' || !platformProjectId) return;
 
   var SUPABASE_URL = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co';
@@ -446,6 +447,14 @@
   var _engineEditIds = {};      // slug → [feature_id,…] currently pulled into draw (excluded from the engine render)
   var _engineBaseFilter = {};   // layerId → its filter before exclusion (so it can be restored)
   var _engineEditWired = {};    // slug → true once click handlers are attached
+  var _engineWasMulti = {};     // drawId → true if the DB geom was a MultiPolygon — mapbox-gl-draw renders/edits Polygons, not MultiPolygons (so an unconverted building vanishes on click), convert in + convert back on save
+  var _engineOrigMulti = {};    // drawId → the original MultiPolygon, so extra parts survive a save
+  function toDrawPolygon(geom) { return (geom && geom.type === 'MultiPolygon') ? { type: 'Polygon', coordinates: (geom.coordinates && geom.coordinates[0]) || [] } : geom; }
+  function toDbGeom(drawId, geom) {
+    if (!_engineWasMulti[drawId] || !geom || geom.type !== 'Polygon') return geom;
+    var rest = ((_engineOrigMulti[drawId] || {}).coordinates || []).slice(1);   // keep any extra polygon parts the user didn't edit
+    return { type: 'MultiPolygon', coordinates: [geom.coordinates].concat(rest) };
+  }
   function isEngineEditable(node) {
     if (!node || !node.id) return false;
     if (node.editable === false) return false;   // display-only layers (e.g. a Mapbox tileset whose features aren't in `features`) opt out of click-to-edit
@@ -462,15 +471,45 @@
         return _origHPC.apply(this, arguments);
       };
     }
-    (function walk(arr) { (arr || []).forEach(function (n) {
-      if (isEngineEditable(n) && !_engineEditWired[n.id]) {
-        [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
-          var map = pair[1]; if (!map) return; var lid = n.id + '-' + pair[0];
-          try { if (map.getLayer(lid)) { map.on('click', lid, (function (node) { return function (e) { onEngineFeatureClick(node, e); }; })(n)); _engineEditWired[n.id] = true; } } catch (err) {}
+    if (!_changeDatePatched && typeof window.changeDate === 'function') {   // the timeline's changeDate re-sets each layer's date filter, clobbering our edit-exclusion → re-apply it after
+      _changeDatePatched = true; var _origCD = window.changeDate;
+      window.changeDate = function () {
+        var r = _origCD.apply(this, arguments);
+        try {
+          Object.keys(_engineEditIds).forEach(function (slug) {
+            if (!(_engineEditIds[slug] || []).length) return;
+            var n = findNodeById(layers, slug); if (!n) return;
+            [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) { var m = pair[1]; if (!m) return; [n.id + '-' + pair[0], n.id + '-stroke-' + pair[0]].forEach(function (lid) { delete _engineBaseFilter[lid]; }); });   // re-capture the new date filter as the base
+            applyEngineEditFilter(n);
+          });
+        } catch (e) {}
+        return r;
+      };
+    }
+    // ONE map-level click handler per side that queries the editable layers at CLICK time — robust, unlike
+    // per-layer handlers that depend on the layer already existing when wiring runs (the flaky "bolting" race).
+    if (!_engineMapClickWired) {
+      _engineMapClickWired = true;
+      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+        var map = pair[1], side = pair[0]; if (!map) return;
+        map.on('click', function (e) {
+          // The swipe routes a click to ONE map, but the editable layer may render only on the OTHER side.
+          // Both maps share the view, so e.point is valid on both — query both and edit whichever has the feature.
+          var found = null;
+          [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
+            if (found) return; var mm = pr[1], sd = pr[0]; if (!mm) return;
+            var lids = [];
+            (function walk(arr) { (arr || []).forEach(function (n) { if (isEngineEditable(n) && mm.getLayer(n.id + '-' + sd)) lids.push(n.id + '-' + sd); if (n.children) walk(n.children); }); })(layers);
+            if (!lids.length) return;
+            var fs; try { fs = mm.queryRenderedFeatures(e.point, { layers: lids }); } catch (err) { return; }
+            if (fs && fs.length) found = fs;
+          });
+          if (!found) return;
+          var node = findNodeById(layers, found[0].layer.id.replace(/-(left|right)$/, ''));
+          if (node) onEngineFeatureClick(node, { features: found });
         });
-      }
-      if (n.children) walk(n.children);
-    }); })(layers);
+      });
+    }
   }
   function onEngineFeatureClick(node, e) {
     if (!e.features || !e.features.length) return;
@@ -480,9 +519,15 @@
   async function enterEngineEdit(node, fid) {
     var drawId = 'db-' + fid;
     if (draw && draw.get(drawId)) { try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {} showFeaturePanel(drawId); return; }
-    var res; try { res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id').eq('feature_id', fid).single(); } catch (e) { res = { error: e }; }
-    if (res.error || !res.data || !res.data.geom) { setStatus('Could not load that feature for editing'); return; }
-    var row = res.data, geom = { type: row.geom.type, coordinates: row.geom.coordinates };
+    var lyrId = (typeof slugToLayerDbId !== 'undefined') ? slugToLayerDbId[node.id] : null;
+    if (!lyrId) return;   // this layer's data isn't in our `features` table → not editable here
+    // Scope to THIS layer's id. feature_id alone is GLOBAL, so a tile id can collide with an unrelated
+    // migrated feature on another layer and "edit" (and hide) the wrong thing — the vanishing-feature bug.
+    var res; try { res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id').eq('feature_id', fid).eq('layer_id', lyrId).single(); } catch (e) { res = { error: e }; }
+    if (res.error || !res.data || !res.data.geom) return;   // not a feature of this layer → ignore the click, don't filter/hide it
+    var row = res.data, origGeom = { type: row.geom.type, coordinates: row.geom.coordinates };
+    if (origGeom.type === 'MultiPolygon') { _engineWasMulti[drawId] = true; _engineOrigMulti[drawId] = origGeom; }
+    var geom = toDrawPolygon(origGeom);   // mapbox-gl-draw needs a Polygon
     featureToDb[drawId] = fid; featureLayer[drawId] = row.layer_id; _engineEditNode[drawId] = node;
     featureMeta[drawId] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '' };
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
@@ -522,6 +567,8 @@
   var _engineEdited = {};     // node.id → { feature_id: geometry } currently shown on the overlay
   var _engineEditNode = {};   // drawId → node (so the feature panel knows it's an engine edit → show "Done editing")
   var _panelClickPatched = false;
+  var _changeDatePatched = false;
+  var _engineMapClickWired = false;
   function ensureEditedOverlay(node) {
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
       var map = pair[1]; if (!map) return; var sid = node.id + '-edited-' + pair[0];
@@ -551,7 +598,7 @@
     if (geom) { (_engineEdited[node.id] = _engineEdited[node.id] || {})[fid] = geom; ensureEditedOverlay(node); refreshEditedOverlay(node); }
     try { if (draw && draw.get(drawId)) draw.delete(drawId); } catch (e) {}
     // fid stays in _engineEditIds → the tile copy remains hidden; the overlay shows the saved geometry instead
-    delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId]; delete featureMeta[drawId]; delete _geomSnap[drawId];
+    delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId]; delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId];
     hideFeaturePanel();
     setStatus('Done editing — saved');
   }
@@ -904,7 +951,7 @@
   var RADIUS = ['coalesce', ['get', 'user_radius'], 5];                    // circle size; the circle-stroke is drawn at this edge, so it auto-follows
   var DRAW_STYLES = [
     { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': OUTLINE_FILL, 'fill-opacity': FILL_OPACITY } },
-    { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.25 } },
+    { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.55 } },
     { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': OUTLINE_FILL, 'line-width': STROKE_WIDTH, 'line-opacity': OUTLINE_OPACITY } },
     { id: 'gl-draw-polygon-stroke-active', type: 'line', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
     { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': STROKE_WIDTH, 'line-opacity': STROKE_OPACITY } },
@@ -997,7 +1044,7 @@
   }
   async function setDrawnGeom(drawId, geom) {
     var fid = featureToDb[drawId];
-    if (fid) { try { await db.from('features').update({ geom: geom }).eq('feature_id', fid); } catch (e) {} }
+    if (fid) { try { await db.from('features').update({ geom: toDbGeom(drawId, geom) }).eq('feature_id', fid); } catch (e) {} }
     try { var f = draw && draw.get(drawId); var props = f ? f.properties : {}; _suppressFeatureDelete = true; if (f) draw.delete(drawId); if (draw) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props }); setTimeout(function () { _suppressFeatureDelete = false; }, 0); } catch (e) {}
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
   }
@@ -1283,7 +1330,8 @@
     for (var i = 0; i < (e.features || []).length; i++) {
       var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
       var oldGeom = _geomSnap[f.id], newGeom = JSON.parse(JSON.stringify(f.geometry));
-      try { await db.from('features').update({ geom: f.geometry }).eq('feature_id', fid); } catch (err) { console.warn('feature update failed', err); }
+      var saveGeom = toDbGeom(f.id, f.geometry); if (_engineWasMulti[f.id]) _engineOrigMulti[f.id] = saveGeom;
+      try { await db.from('features').update({ geom: saveGeom }).eq('feature_id', fid); } catch (err) { console.warn('feature update failed', err); }
       _geomSnap[f.id] = newGeom;
       if (oldGeom) (function (drawId, oldG, newG) {
         pushUndo(function () { return setDrawnGeom(drawId, oldG); }, function () { return setDrawnGeom(drawId, newG); }, 'move feature');
@@ -1579,7 +1627,15 @@
       '</div>' +
       '<div id="elp-enc-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia base URL</label>' +
       '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>';
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>' +
+      '<div id="elp-interact-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;">' +
+        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:4px;">Interaction</label>' +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
+        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label field</label>' +
+        '<input id="elp-labelfield" type="text" placeholder="label" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+        '<div style="font-size:10px;color:#888888;margin-top:3px;">Label field = which property the popup shows (defaults to &ldquo;label&rdquo;). Popups are wired at page load, so <b>reload to apply</b> on/off changes.</div>' +
+      '</div>';
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
@@ -1597,6 +1653,27 @@
     document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
     document.getElementById('elp-src-apply').addEventListener('click', onApplySource);
     document.getElementById('elp-src-url').addEventListener('input', function () { document.getElementById('elp-src-zooms').style.display = (this.value.trim().indexOf('mapbox://') === 0) ? 'none' : 'block'; });
+    document.getElementById('elp-hover').addEventListener('change', onInteraction);
+    document.getElementById('elp-click').addEventListener('change', onInteraction);
+    document.getElementById('elp-labelfield').addEventListener('change', onInteraction);
+  }
+  // Per-layer hover/click popup toggles + which property the popup shows. The engine wires hover/click
+  // only for layers that have a popupStyle (the CSS bubble class), so "Popup on hover" maps to setting it.
+  async function onInteraction() {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var hover = document.getElementById('elp-hover').checked;
+    var click = document.getElementById('elp-click').checked;
+    var labelField = (document.getElementById('elp-labelfield').value || '').trim() || 'label';
+    var popupStyle = hover ? (node._popupStyle || node.popupStyle || 'infoLayerGreenPopUp') : null;
+    // The engine wires hover/click popups at PAGE LOAD, so on/off applies on reload. Do NOT mutate the live
+    // node's popupStyle: the popup is already wired, and nulling the style mid-session leaves the bubble
+    // showing but stripped of its colour class. Persist to the DB + keep a UI shadow for the panel.
+    node._uiHover = hover; node._uiClick = click; node._uiLabel = labelField; if (popupStyle) node._popupStyle = popupStyle;
+    setStatus('Saving…');
+    try { var r = await db.from('layers').update({ popup_style: popupStyle, popup_prop: labelField, click: click }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved — reload to apply'); }
+    catch (e) { setStatus('Save failed'); }
   }
   async function onEncUrl(value) {
     if (!activeLayerId) return;
@@ -1682,6 +1759,9 @@
       document.getElementById('elp-src-maxz').value = (src.maxzoom != null) ? src.maxzoom : '';
       document.getElementById('elp-src-info').textContent = (node.source_type || (isTilesUrl ? 'vector-tiles-url' : 'mapbox-tileset')) + (node.type ? ' · ' + node.type : '');
     }
+    document.getElementById('elp-hover').checked = (node._uiHover != null) ? node._uiHover : !!node.popupStyle;
+    document.getElementById('elp-click').checked = (node._uiClick != null) ? node._uiClick : !!node.click;
+    document.getElementById('elp-labelfield').value = (node._uiLabel != null) ? node._uiLabel : (node.prop || 'label');
     p.style.display = 'block';
   }
   function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
