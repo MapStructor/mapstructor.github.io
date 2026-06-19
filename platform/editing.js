@@ -10,7 +10,7 @@
    failure can never corrupt the project, unlike a delete-and-rewrite). Field
    mapping mirrors tools/seed/seed.js. */
 (function () {
-  console.log('%c[editing.js] BUILD 2026-06-18w — reverted zoom-button work (original zoom buttons restored)', 'background:#ce5c00;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;');
+  console.log('%c[editing.js] BUILD 2026-06-18z — fix: re-render no longer setStyles (layers stay); map radio switches basemap', 'background:#ce5c00;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;');
   if (typeof platformProjectId === 'undefined' || !platformProjectId) return;
 
   var SUPABASE_URL = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co';
@@ -1094,9 +1094,11 @@
   //    groups no. (Slice 2 = map sections.) ──
   var _mapEditIdx = null;
   var _mapDragIdx = null;
+  var _btnEditIdx = null;
   // baseMaps is a top-level `const` in mapData.js → a lexical global, NOT window.baseMaps. Read the bare binding.
   function bmaps() { try { return (typeof baseMaps !== 'undefined' && baseMaps) ? baseMaps : null; } catch (e) { return null; } }
   function msecs() { try { return (typeof mapSections !== 'undefined' && mapSections) ? mapSections : []; } catch (e) { return []; } }
+  function bzbtns() { try { return (typeof zoomButtons !== 'undefined' && zoomButtons) ? zoomButtons : []; } catch (e) { return []; } }
   function patchMapsRender() {   // re-enhance after the engine re-renders the maps panel
     if (window.__mapsRenderPatched || typeof window.generateBaseMapsPanel !== 'function') return;
     window.__mapsRenderPatched = true;
@@ -1115,7 +1117,8 @@
         '#editor-maps-add-bar input{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +
         '#base-maps-section .map-section-title{position:relative;}' +
         '#base-maps-section .map-section-title:hover .editor-del{opacity:1;}' +
-        '#base-maps-section .map-section-title.editor-drop-into{background:rgba(206,92,0,0.15);box-shadow:inset 0 0 0 1px #ce5c00;}';
+        '#base-maps-section .map-section-title.editor-drop-into{background:rgba(206,92,0,0.15);box-shadow:inset 0 0 0 1px #ce5c00;}' +
+        '#base-maps-section .zoom-btn-row .editor-del{right:12px;}';
       document.head.appendChild(st);
     }
     if (document.getElementById('editor-maps-add-bar')) return;
@@ -1125,9 +1128,10 @@
   }
   function restoreMapBar() {
     var bar = document.getElementById('editor-maps-add-bar'); if (!bar) return;
-    bar.innerHTML = '<div class="erow"><button id="editor-addmap" data-type="map">+ Map</button><button id="editor-addmapsection" data-type="mapsection">+ Section</button></div>';
+    bar.innerHTML = '<div class="erow"><button id="editor-addmap" data-type="map">+ Map</button><button id="editor-addmapsection" data-type="mapsection">+ Section</button><button id="editor-addzbtn" data-type="zbtn">+ Button</button></div>';
     bar.querySelector('#editor-addmap').addEventListener('click', function (e) { e.preventDefault(); addMap(); });
     bar.querySelector('#editor-addmapsection').addEventListener('click', function (e) { e.preventDefault(); showMapSectionForm(); });
+    bar.querySelector('#editor-addzbtn').addEventListener('click', function (e) { e.preventDefault(); addZoomButton(); });
   }
   function showMapSectionForm() {   // inline name form, like the layers + Section button
     var bar = document.getElementById('editor-maps-add-bar'); if (!bar) return;
@@ -1154,6 +1158,7 @@
       del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); deleteMap(idx); });
       row.appendChild(del);
       row.querySelectorAll('input[type="radio"]').forEach(function (rad) {
+        rad.onchange = null;   // drop the engine's setupMapSwitching handler — we do the switch + persist here (one setStyle, only on map-radio change)
         rad.addEventListener('change', function () { onMapRadio(idx, rad); });
       });
       // drag a map: reorder before/after another map (adopting its section)
@@ -1177,6 +1182,15 @@
       h.addEventListener('dragleave', function () { h.classList.remove('editor-drop-into'); });
       h.addEventListener('drop', function (e) { e.preventDefault(); e.stopPropagation(); clearMapDropMarks(); var d = _mapDragIdx; _mapDragIdx = null; if (d == null) return; if (moveMapToSection(d, sid)) { saveBaseMaps(); rerenderMaps(); } });
     });
+    sec.querySelectorAll('.zoom-btn-row').forEach(function (row) {   // zoom buttons: click → run action AND open the editor; × → delete
+      if (row.getAttribute('data-zbtnenh')) return;
+      row.setAttribute('data-zbtnenh', '1'); row.style.position = 'relative';
+      var idx = parseInt(row.getAttribute('data-zbtn-idx'), 10); if (isNaN(idx)) return;
+      var btnEl = row.querySelector('button'); if (btnEl) btnEl.addEventListener('click', function (e) { openButtonEdit(idx); });   // keep the inline onclick (zoom/link) AND open the editor
+      var del = document.createElement('span'); del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete button';
+      del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); deleteZoomButton(idx); });
+      row.appendChild(del);
+    });
   }
   function clearMapDropMarks() {
     var sec = document.getElementById('base-maps-section'); if (!sec) return;
@@ -1196,11 +1210,14 @@
     dragMap.section = sid; bm.splice(dragIdx, 1); bm.push(dragMap);
     return true;
   }
-  function onMapRadio(idx, rad) {   // selecting a map's L/R radio sets it as that side's default
+  function onMapRadio(idx, rad) {   // selecting a map's L/R radio sets it as that side's default + switches that side's basemap
     var bm = bmaps(); if (!bm) return;
     var side = rad.name === 'ltoggle' ? 'lChecked' : 'rChecked';
     bm.forEach(function (m, i) { m[side] = (i === idx); });
     saveBaseMaps();
+    var user = (typeof siteConfig !== 'undefined' && siteConfig && siteConfig.mapboxUsername) ? siteConfig.mapboxUsername : 'mapbox';
+    var map = (rad.name === 'ltoggle') ? beforeMap : afterMap;
+    try { if (map && rad.value) map.setStyle('mapbox://styles/' + user + '/' + rad.value); } catch (e) {}
   }
   function injectMapsPanel() {
     if (document.getElementById('editor-maps-panel')) return;
@@ -1263,12 +1280,95 @@
     var name = prompt('Section name:', s.name); if (name == null) return;
     s.name = name; await saveBaseMaps(); rerenderMaps();
   }
+  // ── Zoom buttons in the maps area: add / edit (label · captured zoom OR url-in-new-tab · section) / delete ──
+  async function addZoomButton() {
+    var btns = bzbtns(); btns.push({ label: 'New button', icon: 'fa-location-crosshairs' });
+    await saveBaseMaps(); rerenderMaps();
+  }
+  async function deleteZoomButton(idx) {
+    var btns = bzbtns(); if (!btns[idx]) return; btns.splice(idx, 1);
+    if (document.getElementById('editor-zbtn-panel')) document.getElementById('editor-zbtn-panel').style.display = 'none';
+    await saveBaseMaps(); rerenderMaps();
+  }
+  function injectButtonPanel() {
+    if (document.getElementById('editor-zbtn-panel')) return;
+    var p = document.createElement('div'); p.id = 'editor-zbtn-panel';
+    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1001;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b>Edit button</b><span id="ezb-x" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label</label>' +
+      '<input id="ezb-label" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;margin-bottom:10px;" />' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:3px;">Action</label>' +
+      '<div style="display:flex;gap:14px;margin-bottom:8px;font-size:12px;color:#333333;">' +
+        '<label style="cursor:pointer;"><input type="radio" name="ezb-mode" value="zoom" style="vertical-align:middle;margin:0 4px 0 0;" />Zoom to a view</label>' +
+        '<label style="cursor:pointer;"><input type="radio" name="ezb-mode" value="link" style="vertical-align:middle;margin:0 4px 0 0;" />Open a link</label>' +
+      '</div>' +
+      '<div id="ezb-zoom-wrap">' +
+        '<button id="ezb-setzoom" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;">Set zoom to current view</button>' +
+        '<div id="ezb-zoominfo" style="font-size:10px;color:#888888;margin-top:4px;"></div>' +
+      '</div>' +
+      '<div id="ezb-link-wrap" style="display:none;">' +
+        '<input id="ezb-url" type="text" placeholder="https://…" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
+        '<div style="font-size:10px;color:#888888;margin-top:3px;">Opens in a new tab.</div>' +
+      '</div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin:10px 0 2px;">Section</label>' +
+      '<select id="ezb-section" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;"></select>';
+    document.body.appendChild(p);
+    document.getElementById('ezb-x').addEventListener('click', function () { p.style.display = 'none'; });
+    document.getElementById('ezb-label').addEventListener('change', onButtonEditSave);
+    document.getElementById('ezb-url').addEventListener('change', onButtonEditSave);
+    document.getElementById('ezb-section').addEventListener('change', onButtonEditSave);
+    document.getElementById('ezb-setzoom').addEventListener('click', captureButtonZoom);
+    Array.prototype.forEach.call(p.querySelectorAll('input[name="ezb-mode"]'), function (r) { r.addEventListener('change', onModeChange); });
+  }
+  function applyMode(mode) {   // show only the chosen action's controls
+    var z = document.getElementById('ezb-zoom-wrap'), l = document.getElementById('ezb-link-wrap');
+    if (z) z.style.display = (mode === 'link') ? 'none' : 'block';
+    if (l) l.style.display = (mode === 'link') ? 'block' : 'none';
+  }
+  async function onModeChange() {   // switching the toggle clears the other action's data (only one or the other)
+    var sel = document.querySelector('input[name="ezb-mode"]:checked'); var mode = sel ? sel.value : 'zoom';
+    applyMode(mode);
+    var b = bzbtns()[_btnEditIdx]; if (!b) return;
+    if (mode === 'link') { delete b.zoomCenter; delete b.zoomLevel; delete b.target; document.getElementById('ezb-zoominfo').textContent = fmtZoom(b); }
+    else { delete b.url; document.getElementById('ezb-url').value = ''; }
+    await saveBaseMaps(); rerenderMaps();
+  }
+  function fmtZoom(b) { return (b && b.zoomCenter) ? ('Zoom: ' + Number(b.zoomCenter[1]).toFixed(4) + ', ' + Number(b.zoomCenter[0]).toFixed(4) + ' · z' + (b.zoomLevel != null ? Number(b.zoomLevel).toFixed(1) : '?')) : 'Zoom not set'; }
+  function openButtonEdit(idx) {
+    injectButtonPanel(); _btnEditIdx = idx;
+    var b = bzbtns()[idx]; if (!b) return;
+    document.getElementById('ezb-label').value = b.label || '';
+    document.getElementById('ezb-url').value = b.url || '';
+    document.getElementById('ezb-zoominfo').textContent = fmtZoom(b);
+    var mode = b.url ? 'link' : 'zoom';
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="ezb-mode"]'), function (r) { r.checked = (r.value === mode); });
+    applyMode(mode);
+    var sel = document.getElementById('ezb-section');
+    sel.innerHTML = '<option value="">Top level</option>' + msecs().map(function (s) { return '<option value="' + s.id + '"' + (b.section === s.id ? ' selected' : '') + '>' + String(s.name == null ? '' : s.name).replace(/</g, '&lt;') + '</option>'; }).join('');
+    document.getElementById('editor-zbtn-panel').style.display = 'block';
+  }
+  async function onButtonEditSave() {
+    var b = bzbtns()[_btnEditIdx]; if (!b) return;
+    b.label = document.getElementById('ezb-label').value;
+    var sv = document.getElementById('ezb-section').value; if (sv) b.section = sv; else delete b.section;
+    var modeSel = document.querySelector('input[name="ezb-mode"]:checked'); var mode = modeSel ? modeSel.value : 'zoom';
+    if (mode === 'link') { var u = (document.getElementById('ezb-url').value || '').trim(); if (u) b.url = u; else delete b.url; delete b.zoomCenter; delete b.zoomLevel; delete b.target; }
+    else { delete b.url; }
+    await saveBaseMaps(); rerenderMaps();
+  }
+  async function captureButtonZoom() {
+    var b = bzbtns()[_btnEditIdx]; if (!b || !beforeMap) return;
+    var c = beforeMap.getCenter(); b.zoomCenter = [c.lng, c.lat]; b.zoomLevel = beforeMap.getZoom(); delete b.url;   // capturing a view = zoom mode
+    document.getElementById('ezb-zoominfo').textContent = fmtZoom(b);
+    await saveBaseMaps(); setStatus('Zoom set — the button now flies here');
+  }
   async function saveBaseMaps() {
     setStatus('Saving…');
-    try { var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.baseMaps = bmaps(); rc.mapSections = msecs(); var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus('Saved'); } catch (e) { setStatus('Save failed'); }
+    try { var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.baseMaps = bmaps(); rc.mapSections = msecs(); rc.zoomButtons = bzbtns(); var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus('Saved'); } catch (e) { setStatus('Save failed'); }
   }
-  function rerenderMaps() {
-    try { if (typeof window.generateBaseMapsPanel === 'function') window.generateBaseMapsPanel(); if (typeof window.setupMapSwitching === 'function') window.setupMapSwitching(); } catch (e) {}
+  function rerenderMaps() {   // re-render the panel only; do NOT re-run setupMapSwitching (it setStyles both maps → wipes layers). enhanceMapRows re-wires the radios.
+    try { if (typeof window.generateBaseMapsPanel === 'function') window.generateBaseMapsPanel(); } catch (e) {}
   }
   function injectChrome() {
     var panel = document.getElementById('layers-panel-content');
