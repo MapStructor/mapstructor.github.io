@@ -10,7 +10,7 @@
    failure can never corrupt the project, unlike a delete-and-rewrite). Field
    mapping mirrors tools/seed/seed.js. */
 (function () {
-  console.log('%c[editing.js] BUILD 2026-06-18e — layer-scoped feature lookup (fixes vanish)', 'background:#ce5c00;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;');
+  console.log('%c[editing.js] BUILD 2026-06-18f — green-glow fix + Map Settings panel', 'background:#ce5c00;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;');
   if (typeof platformProjectId === 'undefined' || !platformProjectId) return;
 
   var SUPABASE_URL = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co';
@@ -479,7 +479,7 @@
           Object.keys(_engineEditIds).forEach(function (slug) {
             if (!(_engineEditIds[slug] || []).length) return;
             var n = findNodeById(layers, slug); if (!n) return;
-            [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) { var m = pair[1]; if (!m) return; [n.id + '-' + pair[0], n.id + '-stroke-' + pair[0]].forEach(function (lid) { delete _engineBaseFilter[lid]; }); });   // re-capture the new date filter as the base
+            [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) { var m = pair[1]; if (!m) return; [n.id + '-' + pair[0], n.id + '-stroke-' + pair[0], n.id + '-highlighted-' + pair[0]].forEach(function (lid) { delete _engineBaseFilter[lid]; }); });   // re-capture the new date filter as the base
             applyEngineEditFilter(n);
           });
         } catch (e) {}
@@ -547,7 +547,7 @@
     var ids = (_engineEditIds[node.id] || []).map(Number);
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
       var map = pair[1]; if (!map) return;
-      [node.id + '-' + pair[0], node.id + '-stroke-' + pair[0]].forEach(function (lid) {
+      [node.id + '-' + pair[0], node.id + '-stroke-' + pair[0], node.id + '-highlighted-' + pair[0]].forEach(function (lid) {   // also exclude the highlight layer, else edited features stay green-glowing
         if (!map.getLayer(lid)) return;
         if (!(lid in _engineBaseFilter)) { try { _engineBaseFilter[lid] = map.getFilter(lid) || null; } catch (e) { _engineBaseFilter[lid] = null; } }
         var base = _engineBaseFilter[lid], filt;
@@ -850,6 +850,42 @@
     el.textContent = msg;
     if (msg === 'Saved') setTimeout(function () { if (el.textContent === 'Saved') el.textContent = ''; }, 1500);
   }
+  // ── Map settings: rename the map + save the current view as its default (per-project `projects` row) ──
+  function injectSettingsPanel() {
+    if (document.getElementById('editor-settings-panel')) return;
+    var p = document.createElement('div');
+    p.id = 'editor-settings-panel';
+    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1001;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b>Map settings</b><span id="esp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Map name</label>' +
+      '<input id="esp-name" type="text" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
+      '<button id="esp-setview" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;">Set current view as default</button>' +
+      '<div id="esp-viewinfo" style="font-size:10px;color:#888888;margin-top:4px;"></div>';
+    document.body.appendChild(p);
+    document.getElementById('esp-close').addEventListener('click', function () { p.style.display = 'none'; });
+    document.getElementById('esp-name').addEventListener('change', onSettingsName);
+    document.getElementById('esp-setview').addEventListener('click', onSetDefaultView);
+  }
+  function fmtView(lat, lng, z) { return (lat != null && lng != null) ? ('Default: ' + Number(lat).toFixed(4) + ', ' + Number(lng).toFixed(4) + ' · z' + (z != null ? Number(z).toFixed(1) : '?')) : 'Default view not set'; }
+  async function openSettingsPanel() {
+    injectSettingsPanel();
+    var p = document.getElementById('editor-settings-panel');
+    if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); } } catch (e) {}
+    p.style.display = 'block';
+  }
+  async function onSettingsName() {
+    var name = (document.getElementById('esp-name').value || '').trim(); if (!name) return;
+    setStatus('Saving…');
+    try { var r = await db.from('projects').update({ name: name }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus('Map renamed'); } catch (e) { setStatus('Save failed'); }
+  }
+  async function onSetDefaultView() {
+    if (!beforeMap) return;
+    var c = beforeMap.getCenter(), z = beforeMap.getZoom(), b = beforeMap.getBearing();
+    setStatus('Saving…');
+    try { var r = await db.from('projects').update({ center_lng: c.lng, center_lat: c.lat, zoom: z, bearing: b }).eq('id', projectId); if (r.error) throw new Error(r.error.message); document.getElementById('esp-viewinfo').textContent = fmtView(c.lat, c.lng, z); setStatus('Default view saved'); } catch (e) { setStatus('Save failed'); }
+  }
   function injectChrome() {
     var panel = document.getElementById('layers-panel-content');
     if (!panel || document.getElementById('editor-add-bar')) return;
@@ -893,7 +929,8 @@
       '<button id="editor-measure-dist" title="Measure distance">📏</button>' +
       '<button id="editor-measure-area" title="Measure area">⬟</button>' +
       '<button id="editor-merge" title="Merge selected polygons (union) or lines (join)">∪</button>' +
-      '<button id="editor-split" title="Split a polygon or line — select one, then draw a line across it">✂</button>';
+      '<button id="editor-split" title="Split a polygon or line — select one, then draw a line across it">✂</button>' +
+      '<button id="editor-settings" title="Map settings — name + default view">⚙</button>';
     document.body.appendChild(maptools);
     var measureReadout = document.createElement('div'); measureReadout.id = 'editor-measure-readout'; measureReadout.title = 'Click to dismiss';
     measureReadout.addEventListener('click', function () { this.style.display = 'none'; clearMeasureShape(); });
@@ -906,6 +943,7 @@
     document.getElementById('editor-measure-area').addEventListener('click', function () { doMeasure('area'); });
     document.getElementById('editor-merge').addEventListener('click', doMerge);
     document.getElementById('editor-split').addEventListener('click', enterSplitMode);
+    document.getElementById('editor-settings').addEventListener('click', openSettingsPanel);
     try { window.infoPanelDefaultHandle = function () {}; } catch (e) {}   // suspend "click map → toggle sidebar" (use the sidebar button instead)
     document.addEventListener('keydown', function (e) {   // Esc cancels measure/split; Ctrl+Z/Y, Ctrl+C/V
       if (e.key === 'Escape' && _measuring) { e.preventDefault(); cancelMeasure(); return; }
