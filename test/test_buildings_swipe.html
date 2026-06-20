@@ -17,6 +17,11 @@
     #edit-overlay canvas { pointer-events: none; }
     #status { position: fixed; left: 8px; bottom: 8px; z-index: 200; background: rgba(0,0,0,.7); color: #fff;
               font-size: 12px; padding: 4px 8px; border-radius: 4px; pointer-events: none; }
+    #draw-btn { position: fixed; left: 8px; top: 8px; z-index: 200; font-size: 13px; padding: 7px 12px; border: 0;
+                border-radius: 4px; background: #2b6cb0; color: #fff; cursor: pointer; }
+    #draw-btn.active { background: #c53030; }
+    #del-btn { position: fixed; left: 152px; top: 8px; z-index: 200; font-size: 13px; padding: 7px 12px; border: 0;
+               border-radius: 4px; background: #c53030; color: #fff; cursor: pointer; display: none; }
   </style>
 </head>
 <body>
@@ -24,6 +29,8 @@
     <div id="before"></div>
     <div id="after"></div>
   </div>
+  <button id="draw-btn">✏️ Draw building</button>
+  <button id="del-btn">🗑️ Delete</button>
   <div id="status">loading…</div>
 
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
@@ -57,6 +64,7 @@
   // ────────────────────────────────────────────────────────────────────────────
   var editing     = null;    // { id, drawId, orig }  feature currently in the draw
   var editedGeoms = {};      // id → saved (MultiPolygon) geometry, shown on the "edited" layer until tiles regen
+  var deletedIds  = {};      // id → true  soft-deleted (status='inactive'); tile copy stays hidden, not shown
   var undoStack   = [], redoStack = [];
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -70,8 +78,8 @@
   var draw = new MapboxDraw({ displayControlsDefault: false, controls: {} });
   var overlayMap = null;
 
-  function buildFilter() {                 // hide every edited id's tile copy (editing + folded) — the edited layer / draw shows them
-    var ids = Object.keys(editedGeoms).map(Number);
+  function buildFilter() {                 // hide tile copies of edited (shown elsewhere), deleted, and the one being edited
+    var ids = Object.keys(editedGeoms).map(Number).concat(Object.keys(deletedIds).map(Number));
     if (editing) ids.push(Number(editing.id));
     return ["!", ["in", ["id"], ["literal", ids]]];
   }
@@ -103,15 +111,18 @@
     new Promise(function (res) { afterMap.on("load",  function () { addBuildingsLayers(afterMap); res(); }); })
   ]).then(loadSavedEdits);
 
-  // On startup, pull back every building we've edited (status='edited') so edits survive refresh even though
-  // the vector TILES are static (they only change when the tileset is regenerated separately).
+  // On startup, pull back our edits (status='edited' → shown) and soft-deletes (status='inactive' → tile stays
+  // hidden), since the vector TILES are static (they only change when the tileset is regenerated separately).
   async function loadSavedEdits() {
     try {
-      var r = await db.from("ames_buildings_2026").select("id, geom").eq("status", "edited");
+      var r = await db.from("ames_buildings_2026").select("id, geom, status").in("status", ["edited", "inactive"]);
       if (r.error) { console.warn("loadSavedEdits", r.error); return; }
-      (r.data || []).forEach(function (row) { if (row.geom) editedGeoms[row.id] = row.geom; });
+      (r.data || []).forEach(function (row) {
+        if (row.status === "inactive") deletedIds[row.id] = true;
+        else if (row.geom) editedGeoms[row.id] = row.geom;
+      });
       applyBuildFilter(); refreshEditedLayer();
-      setStatus("ready — " + (r.data ? r.data.length : 0) + " saved edit(s) loaded · click a building to edit");
+      setStatus("ready — " + Object.keys(editedGeoms).length + " edit(s) loaded · click a building to edit");
     } catch (e) { console.warn("loadSavedEdits", e); }
   }
 
@@ -133,6 +144,7 @@
     beforeMap.on("move", function () { if (syncing) return; syncing = true; overlayMap.jumpTo({ center: beforeMap.getCenter(), zoom: beforeMap.getZoom(), bearing: beforeMap.getBearing() }); syncing = false; });
     overlayMap.on("move", function () { if (syncing) return; syncing = true; beforeMap.jumpTo({ center: overlayMap.getCenter(), zoom: overlayMap.getZoom(), bearing: overlayMap.getBearing() }); syncing = false; });
     overlayMap.on("draw.update", onDrawUpdate);
+    overlayMap.on("draw.create", onDrawCreate);
     // Fold when the user LEAVES direct_select (clicks off) — reliable, unlike selectionchange-empty which
     // doesn't fire when direct_select hands off to simple_select with the feature still selected (= lingering
     // blue outline). selectionchange stays as a backup. _folding guards our own programmatic mode changes.
@@ -173,8 +185,10 @@
     overlayInteractive(true); raiseSlider();
     try { draw.changeMode("direct_select", { featureId: drawId }); } catch (e) { try { draw.changeMode("simple_select", { featureIds: [drawId] }); } catch (e2) {} }
     _folding = false;
-    setStatus("editing " + id + " — drag a vertex or the shape · click off to finish");
+    delBtn(true);
+    setStatus("editing " + id + " — drag a vertex or the shape · 🗑 to delete · click off to finish");
   }
+  function delBtn(show) { var b = document.getElementById("del-btn"); if (b) b.style.display = show ? "inline-block" : "none"; }
 
   function onDrawUpdate(e) {
     if (!editing) return;
@@ -200,7 +214,66 @@
     applyBuildFilter();                    // id stays hidden on the tile layer …
     refreshEditedLayer();                  // … and shows on the edited layer (re-clickable)
     _folding = false;
+    delBtn(false);
     setStatus("saved " + id + " — click it again to re-edit, or another building");
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Delete (soft-delete the building currently being edited)
+  // ────────────────────────────────────────────────────────────────────────────
+  function deleteCurrentBuilding() {
+    if (!editing) { setStatus("click a building first, then 🗑"); return; }
+    var id = editing.id;
+    var wasEdited = !!editedGeoms[id];                 // remember how to restore it on undo
+    var geom = editedGeoms[id] || editing.orig;
+    _folding = true; try { draw.deleteAll(); } catch (e) {} _folding = false;
+    editing = null;
+    overlayInteractive(false); lowerSlider(); delBtn(false);
+    delete editedGeoms[id];
+    deletedIds[id] = true;
+    db.from("ames_buildings_2026").update({ status: "inactive" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
+    applyBuildFilter(); refreshEditedLayer();
+    pushDelete(id, geom, wasEdited);
+    setStatus("deleted " + id + " — Ctrl+Z to undo");
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Draw new buildings (create)
+  // ────────────────────────────────────────────────────────────────────────────
+  var _drawing = false;
+  function startDraw() {
+    if (editing) foldEdit();
+    _folding = true; try { draw.deleteAll(); } catch (e) {} _folding = false;
+    overlayInteractive(true); raiseSlider();
+    _drawing = true;
+    try { draw.changeMode("draw_polygon"); } catch (e) {}
+    var b = document.getElementById("draw-btn"); if (b) b.classList.add("active");
+    setStatus("drawing — click to add points, double-click to finish · Esc to cancel");
+  }
+  function cancelDraw() {
+    _drawing = false;
+    _folding = true; try { draw.deleteAll(); } catch (e) {} try { draw.changeMode("simple_select"); } catch (e) {} _folding = false;
+    overlayInteractive(false); lowerSlider();
+    var b = document.getElementById("draw-btn"); if (b) b.classList.remove("active");
+    setStatus("draw canceled");
+  }
+  // A polygon was completed → INSERT a new row, then fold it onto the edited layer (re-clickable like the rest).
+  async function onDrawCreate(e) {
+    var f = (e.features || [])[0]; if (!f) return;
+    var multi = toMulti(f.geometry, null);
+    _drawing = false;
+    _folding = true; try { draw.deleteAll(); } catch (x) {} _folding = false;   // it'll re-appear via the edited layer once it has a DB id
+    overlayInteractive(false); lowerSlider();
+    var b = document.getElementById("draw-btn"); if (b) b.classList.remove("active");
+    setStatus("saving new building…");
+    var r;
+    try { r = await db.from("ames_buildings_2026").insert({ geom: multi, status: "edited" }).select("id").single(); } catch (x) { r = { error: x }; }
+    if (r.error || !r.data) { console.warn("insert failed", r.error); setStatus("insert failed — see console"); return; }
+    var newId = r.data.id;
+    editedGeoms[newId] = multi;
+    applyBuildFilter(); refreshEditedLayer();
+    pushCreate(newId, multi);
+    setStatus("added building " + newId + " — click it to edit");
   }
 
   function saveGeom(id, multiGeom) {
@@ -209,8 +282,10 @@
       .then(function (r) { if (r.error) console.warn("save failed", r.error); });
   }
 
-  // ── undo / redo (in-memory; restores geometry, never deletes the row) ──
-  function pushUndo(id, before, after) { undoStack.push({ id: id, before: before, after: after }); if (undoStack.length > 200) undoStack.shift(); redoStack = []; }
+  // ── undo / redo (in-memory; restores geometry, soft-deletes creates — never hard-deletes the row) ──
+  function pushUndo(id, before, after) { undoStack.push({ kind: "geom", id: id, before: before, after: after }); if (undoStack.length > 200) undoStack.shift(); redoStack = []; }
+  function pushCreate(id, geom) { undoStack.push({ kind: "create", id: id, geom: geom }); if (undoStack.length > 200) undoStack.shift(); redoStack = []; }
+  function pushDelete(id, geom, wasEdited) { undoStack.push({ kind: "delete", id: id, geom: geom, wasEdited: wasEdited }); if (undoStack.length > 200) undoStack.shift(); redoStack = []; }
   function applyGeom(id, geom) {
     editedGeoms[id] = geom; saveGeom(id, geom);
     if (editing && editing.id === id) {
@@ -221,12 +296,37 @@
     }
     applyBuildFilter(); refreshEditedLayer();
   }
+  function undoCreate(id) {            // soft-delete the drawn building (status→inactive; loadSavedEdits won't reload it)
+    db.from("ames_buildings_2026").update({ status: "inactive" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
+    delete editedGeoms[id];
+    if (editing && editing.id === id) { _folding = true; try { draw.deleteAll(); } catch (e) {} editing = null; overlayInteractive(false); lowerSlider(); _folding = false; }
+    applyBuildFilter(); refreshEditedLayer();
+  }
+  function redoCreate(id, geom) {      // restore the drawn building (status→edited)
+    db.from("ames_buildings_2026").update({ status: "edited" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
+    editedGeoms[id] = geom;
+    applyBuildFilter(); refreshEditedLayer();
+  }
+  function undoDelete(id, geom, wasEdited) {   // bring the building back to how it was before the delete
+    delete deletedIds[id];
+    if (wasEdited) { editedGeoms[id] = geom; db.from("ames_buildings_2026").update({ status: "edited" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); }); }
+    else { db.from("ames_buildings_2026").update({ status: "permanent" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); }); }   // pristine tile building → just un-hide
+    applyBuildFilter(); refreshEditedLayer();
+  }
+  function redoDelete(id) {            // soft-delete again
+    delete editedGeoms[id]; deletedIds[id] = true;
+    db.from("ames_buildings_2026").update({ status: "inactive" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
+    applyBuildFilter(); refreshEditedLayer();
+  }
   document.addEventListener("keydown", function (e) {
     if (!(e.ctrlKey || e.metaKey)) return;
     var z = e.key === "z" || e.key === "Z", y = e.key === "y" || e.key === "Y";
-    if (z && !e.shiftKey) { e.preventDefault(); var op = undoStack.pop(); if (op) { redoStack.push(op); applyGeom(op.id, op.before); setStatus("undo " + op.id); } }
-    else if (y || (z && e.shiftKey)) { e.preventDefault(); var op2 = redoStack.pop(); if (op2) { undoStack.push(op2); applyGeom(op2.id, op2.after); setStatus("redo " + op2.id); } }
+    if (z && !e.shiftKey) { e.preventDefault(); var op = undoStack.pop(); if (op) { redoStack.push(op); if (op.kind === "create") undoCreate(op.id); else if (op.kind === "delete") undoDelete(op.id, op.geom, op.wasEdited); else applyGeom(op.id, op.before); setStatus("undo " + op.id); } }
+    else if (y || (z && e.shiftKey)) { e.preventDefault(); var op2 = redoStack.pop(); if (op2) { undoStack.push(op2); if (op2.kind === "create") redoCreate(op2.id, op2.geom); else if (op2.kind === "delete") redoDelete(op2.id); else applyGeom(op2.id, op2.after); setStatus("redo " + op2.id); } }
   });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && _drawing) cancelDraw(); });
+  document.getElementById("draw-btn").onclick = startDraw;
+  document.getElementById("del-btn").onclick = deleteCurrentBuilding;
   </script>
 </body>
 </html>
