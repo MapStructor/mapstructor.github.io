@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Isolated test — edit current buildings on both sides of the swipe</title>
+
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
+  <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css" rel="stylesheet" />
+  <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css" rel="stylesheet" />
+
+  <style>
+    html, body { margin: 0; height: 100%; font-family: sans-serif; }
+    #comparison-container { position: absolute; inset: 0; }
+    #before, #after { position: absolute; inset: 0; }
+    /* the editing overlay's canvas is click-through except while editing (toggled in JS) */
+    #edit-overlay canvas { pointer-events: none; }
+    #status { position: fixed; left: 8px; bottom: 8px; z-index: 200; background: rgba(0,0,0,.7); color: #fff;
+              font-size: 12px; padding: 4px 8px; border-radius: 4px; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="comparison-container">
+    <div id="before"></div>
+    <div id="after"></div>
+  </div>
+  <div id="status">loading…</div>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+  // ────────────────────────────────────────────────────────────────────────────
+  // Config
+  // ────────────────────────────────────────────────────────────────────────────
+  mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21uZXlzbjMzMDRuejJvb2w0NzVld2RpbCJ9.qdyZm3Y7xasNkoEa537CmA";
+  var TILES   = "https://ames-tiles.mapstructor.workers.dev/buildings/{z}/{x}/{y}.pbf";
+  var CENTER  = [-93.645, 42.025], ZOOM = 15;
+  var SB_URL  = "https://padavlcmwidjnhxzkhyb.supabase.co";
+  var SB_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBhZGF2bGNtd2lkam5oeHpraHliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NzMzODEsImV4cCI6MjA5MjM0OTM4MX0.me5DqJgtSHBHKnZowf2AFIWqof-oydvly40Aeo6wC9o";
+  var db = supabase.createClient(SB_URL, SB_ANON);
+  function setStatus(s) { document.getElementById("status").textContent = s; }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Geometry helpers — DB stores MultiPolygon; MapboxDraw edits a single Polygon
+  // ────────────────────────────────────────────────────────────────────────────
+  function toPolygon(geom)  { return (geom && geom.type === "MultiPolygon")
+      ? { type: "Polygon", coordinates: (geom.coordinates && geom.coordinates[0]) || [] } : geom; }
+  function toMulti(poly, orig) {           // re-wrap, keeping any extra polygons the original had
+    var rest = (orig && orig.type === "MultiPolygon" && orig.coordinates) ? orig.coordinates.slice(1) : [];
+    return { type: "MultiPolygon", coordinates: [poly.coordinates].concat(rest) };
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // State
+  // ────────────────────────────────────────────────────────────────────────────
+  var editing     = null;    // { id, drawId, orig }  feature currently in the draw
+  var editedGeoms = {};      // id → saved (MultiPolygon) geometry, shown on the "edited" layer until tiles regen
+  var undoStack   = [], redoStack = [];
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Maps + swipe (display only) ; one MapboxDraw on one transparent overlay (editing)
+  // ────────────────────────────────────────────────────────────────────────────
+  var beforeMap = new mapboxgl.Map({ container: "before", style: "mapbox://styles/mapbox/satellite-v9", center: CENTER, zoom: ZOOM });
+  var afterMap  = new mapboxgl.Map({ container: "after",  style: "mapbox://styles/mapbox/streets-v12",   center: CENTER, zoom: ZOOM });
+  new mapboxgl.Compare(beforeMap, afterMap, "#comparison-container", {});
+  var baseMaps = [beforeMap, afterMap];
+
+  var draw = new MapboxDraw({ displayControlsDefault: false, controls: {} });
+  var overlayMap = null;
+
+  function buildFilter() {                 // hide every edited id's tile copy (editing + folded) — the edited layer / draw shows them
+    var ids = Object.keys(editedGeoms).map(Number);
+    if (editing) ids.push(Number(editing.id));
+    return ["!", ["in", ["id"], ["literal", ids]]];
+  }
+  function applyBuildFilter() { baseMaps.forEach(function (m) { try { m.setFilter("curr-builds", buildFilter()); } catch (e) {} }); }
+  function refreshEditedLayer() {          // the "edited" layer shows folded geometries (not the one in the draw)
+    var feats = Object.keys(editedGeoms).filter(function (id) { return !(editing && String(editing.id) === id); })
+      .map(function (id) { return { type: "Feature", id: Number(id), properties: { id: Number(id) }, geometry: editedGeoms[id] }; });
+    baseMaps.forEach(function (m) { var s = m.getSource("edited-builds"); if (s) s.setData({ type: "FeatureCollection", features: feats }); });
+  }
+
+  function addBuildingsLayers(m) {
+    if (!m.getSource("curr-builds")) m.addSource("curr-builds", { type: "vector", tiles: [TILES], minzoom: 10, maxzoom: 16 });
+    if (!m.getLayer("curr-builds")) m.addLayer({ id: "curr-builds", type: "fill", source: "curr-builds", "source-layer": "buildings",
+      paint: { "fill-color": "#ffb255", "fill-outline-color": "#ff0000",
+               "fill-opacity": ["case", ["boolean", ["feature-state", "hover"], false], 0.5, 1.0] } });
+    if (!m.getSource("edited-builds")) m.addSource("edited-builds", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    if (!m.getLayer("edited-builds")) m.addLayer({ id: "edited-builds", type: "fill", source: "edited-builds",
+      paint: { "fill-color": "#ffb255", "fill-outline-color": "#ff0000", "fill-opacity": 1.0 } });
+    // click either layer → edit that building (overlay is click-through unless editing, so clicks reach here)
+    ["curr-builds", "edited-builds"].forEach(function (lyr) {
+      m.on("click", lyr, function (e) { if (e.features && e.features.length) enterEdit(e.features[0].id); });
+      m.on("mousemove", lyr, function () { m.getCanvas().style.cursor = "pointer"; });
+      m.on("mouseleave", lyr, function () { m.getCanvas().style.cursor = ""; });
+    });
+    m.setFilter("curr-builds", buildFilter());
+  }
+  Promise.all([
+    new Promise(function (res) { beforeMap.on("load", function () { addBuildingsLayers(beforeMap); setupOverlay(); res(); }); }),
+    new Promise(function (res) { afterMap.on("load",  function () { addBuildingsLayers(afterMap); res(); }); })
+  ]).then(loadSavedEdits);
+
+  // On startup, pull back every building we've edited (status='edited') so edits survive refresh even though
+  // the vector TILES are static (they only change when the tileset is regenerated separately).
+  async function loadSavedEdits() {
+    try {
+      var r = await db.from("ames_buildings_2026").select("id, geom").eq("status", "edited");
+      if (r.error) { console.warn("loadSavedEdits", r.error); return; }
+      (r.data || []).forEach(function (row) { if (row.geom) editedGeoms[row.id] = row.geom; });
+      applyBuildFilter(); refreshEditedLayer();
+      setStatus("ready — " + (r.data ? r.data.length : 0) + " saved edit(s) loaded · click a building to edit");
+    } catch (e) { console.warn("loadSavedEdits", e); }
+  }
+
+  // ── the transparent editing overlay (one draw, spans both swipe sides) ──
+  function setupOverlay() {
+    if (overlayMap) return;
+    var div = document.createElement("div"); div.id = "edit-overlay"; document.body.appendChild(div);
+    function position() {
+      var r = afterMap.getContainer().getBoundingClientRect();
+      div.style.cssText = "position:fixed;top:" + r.top + "px;left:" + r.left + "px;width:" + r.width + "px;height:" + r.height + "px;z-index:5;pointer-events:none;";
+      if (overlayMap) overlayMap.resize();
+    }
+    position(); window.addEventListener("resize", position);
+    overlayMap = new mapboxgl.Map({ container: div, style: { version: 8, sources: {}, layers: [] },
+      center: beforeMap.getCenter(), zoom: beforeMap.getZoom(), bearing: beforeMap.getBearing(), attributionControl: false, doubleClickZoom: false });
+    overlayMap.getCanvas().style.pointerEvents = "none";
+    overlayMap.on("load", function () { overlayMap.addControl(draw); });
+    var syncing = false;
+    beforeMap.on("move", function () { if (syncing) return; syncing = true; overlayMap.jumpTo({ center: beforeMap.getCenter(), zoom: beforeMap.getZoom(), bearing: beforeMap.getBearing() }); syncing = false; });
+    overlayMap.on("move", function () { if (syncing) return; syncing = true; beforeMap.jumpTo({ center: overlayMap.getCenter(), zoom: overlayMap.getZoom(), bearing: overlayMap.getBearing() }); syncing = false; });
+    overlayMap.on("draw.update", onDrawUpdate);
+    // Fold when the user LEAVES direct_select (clicks off) — reliable, unlike selectionchange-empty which
+    // doesn't fire when direct_select hands off to simple_select with the feature still selected (= lingering
+    // blue outline). selectionchange stays as a backup. _folding guards our own programmatic mode changes.
+    overlayMap.on("draw.modechange", function (e) { if (!_folding && editing && e.mode !== "direct_select") foldEdit(); });
+    overlayMap.on("draw.selectionchange", function (e) { if (!_folding && editing && !(e.features && e.features.length)) foldEdit(); });
+    setStatus("ready — click a building to edit");
+  }
+
+  function raiseSlider() { var el = document.querySelector(".mapboxgl-compare"); if (el) el.style.zIndex = "150"; }
+  function lowerSlider() { var el = document.querySelector(".mapboxgl-compare"); if (el) el.style.zIndex = ""; }
+  function overlayInteractive(on) { try { overlayMap.getCanvas().style.pointerEvents = on ? "auto" : "none"; } catch (e) {} }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Edit lifecycle
+  // ────────────────────────────────────────────────────────────────────────────
+  var _folding = false;   // true while we programmatically mutate the draw, so fold handlers don't re-fire
+
+  async function enterEdit(id) {
+    id = Number(id);
+    if (editing && editing.id === id) { try { draw.changeMode("direct_select", { featureId: editing.drawId }); } catch (e) {} return; }
+    if (editing) foldEdit();               // fold whatever was open first
+    setStatus("loading building " + id + "…");
+    var geom = editedGeoms[id];
+    if (!geom) {
+      var r;
+      try { r = await db.from("ames_buildings_2026").select("geom").eq("id", id).single(); } catch (e) { r = { error: e }; }
+      if (r.error || !r.data || !r.data.geom) { setStatus("couldn't load " + id); return; }
+      geom = r.data.geom;
+    }
+    var drawId = String(id);
+    var poly = toPolygon(geom);
+    editing = { id: id, drawId: drawId, orig: geom };
+    applyBuildFilter();                    // hide the tile copy of this id
+    refreshEditedLayer();                  // it's in the draw now, not on the edited layer
+    _folding = true;                       // suppress fold while we set up the draw
+    try { draw.deleteAll(); } catch (e) {} // clean slate — never leave a stale feature behind
+    try { draw.add({ type: "Feature", id: drawId, geometry: poly, properties: {} }); } catch (e) { _folding = false; setStatus("edit add failed"); return; }
+    overlayInteractive(true); raiseSlider();
+    try { draw.changeMode("direct_select", { featureId: drawId }); } catch (e) { try { draw.changeMode("simple_select", { featureIds: [drawId] }); } catch (e2) {} }
+    _folding = false;
+    setStatus("editing " + id + " — drag a vertex or the shape · click off to finish");
+  }
+
+  function onDrawUpdate(e) {
+    if (!editing) return;
+    var f = (e.features || [])[0]; if (!f) return;
+    var newGeom = toMulti(f.geometry, editing.orig);
+    var prev = editedGeoms[editing.id] || editing.orig;
+    editedGeoms[editing.id] = newGeom;
+    pushUndo(editing.id, prev, newGeom);
+    saveGeom(editing.id, newGeom);
+  }
+
+  // Fold the open feature: stash its latest geometry, clear the draw ENTIRELY (so no lingering blue outline),
+  // and show it on the re-clickable edited layer. Fires when the user leaves direct_select (clicks off).
+  function foldEdit() {
+    if (!editing || _folding) return;
+    _folding = true;
+    var id = editing.id, drawId = editing.drawId;
+    var f = draw.get(drawId);
+    if (f) editedGeoms[id] = toMulti(f.geometry, editing.orig);   // keep latest as the folded geometry
+    editing = null;
+    try { draw.deleteAll(); } catch (e) {}                         // remove ALL draw features + their selection rendering
+    overlayInteractive(false); lowerSlider();
+    applyBuildFilter();                    // id stays hidden on the tile layer …
+    refreshEditedLayer();                  // … and shows on the edited layer (re-clickable)
+    _folding = false;
+    setStatus("saved " + id + " — click it again to re-edit, or another building");
+  }
+
+  function saveGeom(id, multiGeom) {
+    // write the new geometry AND flag the row 'edited' so loadSavedEdits() can pull it back after a refresh
+    db.from("ames_buildings_2026").update({ geom: multiGeom, status: "edited" }).eq("id", id)
+      .then(function (r) { if (r.error) console.warn("save failed", r.error); });
+  }
+
+  // ── undo / redo (in-memory; restores geometry, never deletes the row) ──
+  function pushUndo(id, before, after) { undoStack.push({ id: id, before: before, after: after }); if (undoStack.length > 200) undoStack.shift(); redoStack = []; }
+  function applyGeom(id, geom) {
+    editedGeoms[id] = geom; saveGeom(id, geom);
+    if (editing && editing.id === id) {
+      _folding = true;                     // replace the in-draw feature without tripping the fold handlers
+      try { draw.deleteAll(); } catch (e) {}
+      try { draw.add({ type: "Feature", id: editing.drawId, geometry: toPolygon(geom), properties: {} }); draw.changeMode("direct_select", { featureId: editing.drawId }); } catch (e) {}
+      _folding = false;
+    }
+    applyBuildFilter(); refreshEditedLayer();
+  }
+  document.addEventListener("keydown", function (e) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    var z = e.key === "z" || e.key === "Z", y = e.key === "y" || e.key === "Y";
+    if (z && !e.shiftKey) { e.preventDefault(); var op = undoStack.pop(); if (op) { redoStack.push(op); applyGeom(op.id, op.before); setStatus("undo " + op.id); } }
+    else if (y || (z && e.shiftKey)) { e.preventDefault(); var op2 = redoStack.pop(); if (op2) { undoStack.push(op2); applyGeom(op2.id, op2.after); setStatus("redo " + op2.id); } }
+  });
+  </script>
+</body>
+</html>
