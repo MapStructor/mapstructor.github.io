@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Isolated test — edit current buildings on both sides of the swipe</title>
+  <title>Isolated test — edit / draw / delete features on both sides of a swipe map</title>
 
   <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
   <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css" rel="stylesheet" />
@@ -20,7 +20,7 @@
     #draw-btn { position: fixed; left: 8px; top: 8px; z-index: 200; font-size: 13px; padding: 7px 12px; border: 0;
                 border-radius: 4px; background: #2b6cb0; color: #fff; cursor: pointer; }
     #draw-btn.active { background: #c53030; }
-    #del-btn { position: fixed; left: 152px; top: 8px; z-index: 200; font-size: 13px; padding: 7px 12px; border: 0;
+    #del-btn { position: fixed; left: 110px; top: 8px; z-index: 200; font-size: 13px; padding: 7px 12px; border: 0;
                border-radius: 4px; background: #c53030; color: #fff; cursor: pointer; display: none; }
   </style>
 </head>
@@ -29,7 +29,7 @@
     <div id="before"></div>
     <div id="after"></div>
   </div>
-  <button id="draw-btn">✏️ Draw building</button>
+  <button id="draw-btn">✏️ Draw</button>
   <button id="del-btn">🗑️ Delete</button>
   <div id="status">loading…</div>
 
@@ -39,13 +39,15 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
   // ────────────────────────────────────────────────────────────────────────────
-  // Config
+  // Config — the only data-specific bits. Point these at any feature dataset.
   // ────────────────────────────────────────────────────────────────────────────
   mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21uZXlzbjMzMDRuejJvb2w0NzVld2RpbCJ9.qdyZm3Y7xasNkoEa537CmA";
-  var TILES   = "https://ames-tiles.mapstructor.workers.dev/buildings/{z}/{x}/{y}.pbf";
-  var CENTER  = [-93.645, 42.025], ZOOM = 15;
-  var SB_URL  = "https://padavlcmwidjnhxzkhyb.supabase.co";
-  var SB_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBhZGF2bGNtd2lkam5oeHpraHliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NzMzODEsImV4cCI6MjA5MjM0OTM4MX0.me5DqJgtSHBHKnZowf2AFIWqof-oydvly40Aeo6wC9o";
+  var TILES     = "https://ames-tiles.mapstructor.workers.dev/buildings/{z}/{x}/{y}.pbf"; // vector tile source
+  var SRC_LAYER = "buildings";              // source-layer name inside those tiles
+  var TABLE     = "ames_buildings_2026";    // Supabase table holding the canonical geometry
+  var CENTER    = [-93.645, 42.025], ZOOM = 15;
+  var SB_URL    = "https://padavlcmwidjnhxzkhyb.supabase.co";
+  var SB_ANON   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBhZGF2bGNtd2lkam5oeHpraHliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NzMzODEsImV4cCI6MjA5MjM0OTM4MX0.me5DqJgtSHBHKnZowf2AFIWqof-oydvly40Aeo6wC9o";
   var db = supabase.createClient(SB_URL, SB_ANON);
   function setStatus(s) { document.getElementById("status").textContent = s; }
 
@@ -78,51 +80,51 @@
   var draw = new MapboxDraw({ displayControlsDefault: false, controls: {} });
   var overlayMap = null;
 
-  function buildFilter() {                 // hide tile copies of edited (shown elsewhere), deleted, and the one being edited
+  function featureFilter() {               // hide tile copies of edited (shown elsewhere), deleted, and the one being edited
     var ids = Object.keys(editedGeoms).map(Number).concat(Object.keys(deletedIds).map(Number));
     if (editing) ids.push(Number(editing.id));
     return ["!", ["in", ["id"], ["literal", ids]]];
   }
-  function applyBuildFilter() { baseMaps.forEach(function (m) { try { m.setFilter("curr-builds", buildFilter()); } catch (e) {} }); }
+  function applyFeatureFilter() { baseMaps.forEach(function (m) { try { m.setFilter("tile-features", featureFilter()); } catch (e) {} }); }
   function refreshEditedLayer() {          // the "edited" layer shows folded geometries (not the one in the draw)
     var feats = Object.keys(editedGeoms).filter(function (id) { return !(editing && String(editing.id) === id); })
       .map(function (id) { return { type: "Feature", id: Number(id), properties: { id: Number(id) }, geometry: editedGeoms[id] }; });
-    baseMaps.forEach(function (m) { var s = m.getSource("edited-builds"); if (s) s.setData({ type: "FeatureCollection", features: feats }); });
+    baseMaps.forEach(function (m) { var s = m.getSource("edited-features"); if (s) s.setData({ type: "FeatureCollection", features: feats }); });
   }
 
-  function addBuildingsLayers(m) {
-    if (!m.getSource("curr-builds")) m.addSource("curr-builds", { type: "vector", tiles: [TILES], minzoom: 10, maxzoom: 16 });
-    if (!m.getLayer("curr-builds")) m.addLayer({ id: "curr-builds", type: "fill", source: "curr-builds", "source-layer": "buildings",
+  function addFeatureLayers(m) {
+    if (!m.getSource("tile-features")) m.addSource("tile-features", { type: "vector", tiles: [TILES], minzoom: 10, maxzoom: 16 });
+    if (!m.getLayer("tile-features")) m.addLayer({ id: "tile-features", type: "fill", source: "tile-features", "source-layer": SRC_LAYER,
       paint: { "fill-color": "#ffb255", "fill-outline-color": "#ff0000",
                "fill-opacity": ["case", ["boolean", ["feature-state", "hover"], false], 0.5, 1.0] } });
-    if (!m.getSource("edited-builds")) m.addSource("edited-builds", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    if (!m.getLayer("edited-builds")) m.addLayer({ id: "edited-builds", type: "fill", source: "edited-builds",
+    if (!m.getSource("edited-features")) m.addSource("edited-features", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    if (!m.getLayer("edited-features")) m.addLayer({ id: "edited-features", type: "fill", source: "edited-features",
       paint: { "fill-color": "#ffb255", "fill-outline-color": "#ff0000", "fill-opacity": 1.0 } });
-    // click either layer → edit that building (overlay is click-through unless editing, so clicks reach here)
-    ["curr-builds", "edited-builds"].forEach(function (lyr) {
+    // click either layer → edit that feature (overlay is click-through unless editing, so clicks reach here)
+    ["tile-features", "edited-features"].forEach(function (lyr) {
       m.on("click", lyr, function (e) { if (e.features && e.features.length) enterEdit(e.features[0].id); });
       m.on("mousemove", lyr, function () { m.getCanvas().style.cursor = "pointer"; });
       m.on("mouseleave", lyr, function () { m.getCanvas().style.cursor = ""; });
     });
-    m.setFilter("curr-builds", buildFilter());
+    m.setFilter("tile-features", featureFilter());
   }
   Promise.all([
-    new Promise(function (res) { beforeMap.on("load", function () { addBuildingsLayers(beforeMap); setupOverlay(); res(); }); }),
-    new Promise(function (res) { afterMap.on("load",  function () { addBuildingsLayers(afterMap); res(); }); })
+    new Promise(function (res) { beforeMap.on("load", function () { addFeatureLayers(beforeMap); setupOverlay(); res(); }); }),
+    new Promise(function (res) { afterMap.on("load",  function () { addFeatureLayers(afterMap); res(); }); })
   ]).then(loadSavedEdits);
 
   // On startup, pull back our edits (status='edited' → shown) and soft-deletes (status='inactive' → tile stays
   // hidden), since the vector TILES are static (they only change when the tileset is regenerated separately).
   async function loadSavedEdits() {
     try {
-      var r = await db.from("ames_buildings_2026").select("id, geom, status").in("status", ["edited", "inactive"]);
+      var r = await db.from(TABLE).select("id, geom, status").in("status", ["edited", "inactive"]);
       if (r.error) { console.warn("loadSavedEdits", r.error); return; }
       (r.data || []).forEach(function (row) {
         if (row.status === "inactive") deletedIds[row.id] = true;
         else if (row.geom) editedGeoms[row.id] = row.geom;
       });
-      applyBuildFilter(); refreshEditedLayer();
-      setStatus("ready — " + Object.keys(editedGeoms).length + " edit(s) loaded · click a building to edit");
+      applyFeatureFilter(); refreshEditedLayer();
+      setStatus("ready — " + Object.keys(editedGeoms).length + " edit(s) loaded · click a feature to edit");
     } catch (e) { console.warn("loadSavedEdits", e); }
   }
 
@@ -150,7 +152,7 @@
     // blue outline). selectionchange stays as a backup. _folding guards our own programmatic mode changes.
     overlayMap.on("draw.modechange", function (e) { if (!_folding && editing && e.mode !== "direct_select") foldEdit(); });
     overlayMap.on("draw.selectionchange", function (e) { if (!_folding && editing && !(e.features && e.features.length)) foldEdit(); });
-    setStatus("ready — click a building to edit");
+    setStatus("ready — click a feature to edit");
   }
 
   function raiseSlider() { var el = document.querySelector(".mapboxgl-compare"); if (el) el.style.zIndex = "150"; }
@@ -166,18 +168,18 @@
     id = Number(id);
     if (editing && editing.id === id) { try { draw.changeMode("direct_select", { featureId: editing.drawId }); } catch (e) {} return; }
     if (editing) foldEdit();               // fold whatever was open first
-    setStatus("loading building " + id + "…");
+    setStatus("loading feature " + id + "…");
     var geom = editedGeoms[id];
     if (!geom) {
       var r;
-      try { r = await db.from("ames_buildings_2026").select("geom").eq("id", id).single(); } catch (e) { r = { error: e }; }
+      try { r = await db.from(TABLE).select("geom").eq("id", id).single(); } catch (e) { r = { error: e }; }
       if (r.error || !r.data || !r.data.geom) { setStatus("couldn't load " + id); return; }
       geom = r.data.geom;
     }
     var drawId = String(id);
     var poly = toPolygon(geom);
     editing = { id: id, drawId: drawId, orig: geom };
-    applyBuildFilter();                    // hide the tile copy of this id
+    applyFeatureFilter();                  // hide the tile copy of this id
     refreshEditedLayer();                  // it's in the draw now, not on the edited layer
     _folding = true;                       // suppress fold while we set up the draw
     try { draw.deleteAll(); } catch (e) {} // clean slate — never leave a stale feature behind
@@ -211,18 +213,18 @@
     editing = null;
     try { draw.deleteAll(); } catch (e) {}                         // remove ALL draw features + their selection rendering
     overlayInteractive(false); lowerSlider();
-    applyBuildFilter();                    // id stays hidden on the tile layer …
+    applyFeatureFilter();                  // id stays hidden on the tile layer …
     refreshEditedLayer();                  // … and shows on the edited layer (re-clickable)
     _folding = false;
     delBtn(false);
-    setStatus("saved " + id + " — click it again to re-edit, or another building");
+    setStatus("saved " + id + " — click it again to re-edit, or another feature");
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // Delete (soft-delete the building currently being edited)
+  // Delete (soft-delete the feature currently being edited)
   // ────────────────────────────────────────────────────────────────────────────
-  function deleteCurrentBuilding() {
-    if (!editing) { setStatus("click a building first, then 🗑"); return; }
+  function deleteCurrentFeature() {
+    if (!editing) { setStatus("click a feature first, then 🗑"); return; }
     var id = editing.id;
     var wasEdited = !!editedGeoms[id];                 // remember how to restore it on undo
     var geom = editedGeoms[id] || editing.orig;
@@ -231,14 +233,14 @@
     overlayInteractive(false); lowerSlider(); delBtn(false);
     delete editedGeoms[id];
     deletedIds[id] = true;
-    db.from("ames_buildings_2026").update({ status: "inactive" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
-    applyBuildFilter(); refreshEditedLayer();
+    db.from(TABLE).update({ status: "inactive" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
+    applyFeatureFilter(); refreshEditedLayer();
     pushDelete(id, geom, wasEdited);
     setStatus("deleted " + id + " — Ctrl+Z to undo");
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // Draw new buildings (create)
+  // Draw new features (create)
   // ────────────────────────────────────────────────────────────────────────────
   var _drawing = false;
   function startDraw() {
@@ -265,20 +267,20 @@
     _folding = true; try { draw.deleteAll(); } catch (x) {} _folding = false;   // it'll re-appear via the edited layer once it has a DB id
     overlayInteractive(false); lowerSlider();
     var b = document.getElementById("draw-btn"); if (b) b.classList.remove("active");
-    setStatus("saving new building…");
+    setStatus("saving new feature…");
     var r;
-    try { r = await db.from("ames_buildings_2026").insert({ geom: multi, status: "edited" }).select("id").single(); } catch (x) { r = { error: x }; }
+    try { r = await db.from(TABLE).insert({ geom: multi, status: "edited" }).select("id").single(); } catch (x) { r = { error: x }; }
     if (r.error || !r.data) { console.warn("insert failed", r.error); setStatus("insert failed — see console"); return; }
     var newId = r.data.id;
     editedGeoms[newId] = multi;
-    applyBuildFilter(); refreshEditedLayer();
+    applyFeatureFilter(); refreshEditedLayer();
     pushCreate(newId, multi);
-    setStatus("added building " + newId + " — click it to edit");
+    setStatus("added feature " + newId + " — click it to edit");
   }
 
   function saveGeom(id, multiGeom) {
     // write the new geometry AND flag the row 'edited' so loadSavedEdits() can pull it back after a refresh
-    db.from("ames_buildings_2026").update({ geom: multiGeom, status: "edited" }).eq("id", id)
+    db.from(TABLE).update({ geom: multiGeom, status: "edited" }).eq("id", id)
       .then(function (r) { if (r.error) console.warn("save failed", r.error); });
   }
 
@@ -294,29 +296,29 @@
       try { draw.add({ type: "Feature", id: editing.drawId, geometry: toPolygon(geom), properties: {} }); draw.changeMode("direct_select", { featureId: editing.drawId }); } catch (e) {}
       _folding = false;
     }
-    applyBuildFilter(); refreshEditedLayer();
+    applyFeatureFilter(); refreshEditedLayer();
   }
-  function undoCreate(id) {            // soft-delete the drawn building (status→inactive; loadSavedEdits won't reload it)
-    db.from("ames_buildings_2026").update({ status: "inactive" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
+  function undoCreate(id) {            // soft-delete the drawn feature (status→inactive; loadSavedEdits won't reload it)
+    db.from(TABLE).update({ status: "inactive" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
     delete editedGeoms[id];
     if (editing && editing.id === id) { _folding = true; try { draw.deleteAll(); } catch (e) {} editing = null; overlayInteractive(false); lowerSlider(); _folding = false; }
-    applyBuildFilter(); refreshEditedLayer();
+    applyFeatureFilter(); refreshEditedLayer();
   }
-  function redoCreate(id, geom) {      // restore the drawn building (status→edited)
-    db.from("ames_buildings_2026").update({ status: "edited" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
+  function redoCreate(id, geom) {      // restore the drawn feature (status→edited)
+    db.from(TABLE).update({ status: "edited" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
     editedGeoms[id] = geom;
-    applyBuildFilter(); refreshEditedLayer();
+    applyFeatureFilter(); refreshEditedLayer();
   }
-  function undoDelete(id, geom, wasEdited) {   // bring the building back to how it was before the delete
+  function undoDelete(id, geom, wasEdited) {   // bring the feature back to how it was before the delete
     delete deletedIds[id];
-    if (wasEdited) { editedGeoms[id] = geom; db.from("ames_buildings_2026").update({ status: "edited" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); }); }
-    else { db.from("ames_buildings_2026").update({ status: "permanent" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); }); }   // pristine tile building → just un-hide
-    applyBuildFilter(); refreshEditedLayer();
+    if (wasEdited) { editedGeoms[id] = geom; db.from(TABLE).update({ status: "edited" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); }); }
+    else { db.from(TABLE).update({ status: "permanent" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); }); }   // pristine tile feature → just un-hide
+    applyFeatureFilter(); refreshEditedLayer();
   }
   function redoDelete(id) {            // soft-delete again
     delete editedGeoms[id]; deletedIds[id] = true;
-    db.from("ames_buildings_2026").update({ status: "inactive" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
-    applyBuildFilter(); refreshEditedLayer();
+    db.from(TABLE).update({ status: "inactive" }).eq("id", id).then(function (r) { if (r.error) console.warn(r.error); });
+    applyFeatureFilter(); refreshEditedLayer();
   }
   document.addEventListener("keydown", function (e) {
     if (!(e.ctrlKey || e.metaKey)) return;
@@ -326,7 +328,7 @@
   });
   document.addEventListener("keydown", function (e) { if (e.key === "Escape" && _drawing) cancelDraw(); });
   document.getElementById("draw-btn").onclick = startDraw;
-  document.getElementById("del-btn").onclick = deleteCurrentBuilding;
+  document.getElementById("del-btn").onclick = deleteCurrentFeature;
   </script>
 </body>
 </html>
