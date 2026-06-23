@@ -49,6 +49,15 @@ var ConfigLoader = (function () {
     if (type === "line") return { "line-color": color, "line-width": 2 };
     return { "circle-radius": 5, "circle-color": color, "circle-stroke-width": 1.5, "circle-stroke-color": "#000" };
   }
+  // Hover/click highlight overlay for layers with no hover_paint (e.g. drawn features). Gated on feature-state
+  // `hover`; addLayers.js highlightSelectablePaint() also folds in the `selected` (click) case.
+  function defaultHighlightPaint(type, color) {
+    var hc = color || "#3bb2d0";
+    function on(v) { return ["case", ["boolean", ["feature-state", "hover"], false], v, 0]; }
+    if (type === "fill") return { "fill-color": hc, "fill-opacity": on(0.55) };
+    if (type === "line") return { "line-color": hc, "line-width": 5, "line-opacity": on(1) };
+    return { "circle-color": hc, "circle-radius": on(9), "circle-opacity": on(0.85) };
+  }
 
   function leafFromRow(row, registry, features) {
     var raw = row.raw_config || {};
@@ -79,6 +88,7 @@ var ConfigLoader = (function () {
     if (row.source_layer != null) leaf["source-layer"] = row.source_layer;
     if (row.paint != null) leaf.paint = row.paint;
     if (row.hover_paint != null) leaf.highlight = row.hover_paint;
+    leaf.hoverHighlight = row.hover !== false;   // #11: per-layer hover-highlight toggle (default on) — engine gates the hover feature-state on this
     if (row.popup_style != null) leaf.popupStyle = row.popup_style;
     if (row.popup_prop != null) leaf.prop = row.popup_prop;
     if (row.click != null) leaf.click = row.click;
@@ -98,12 +108,13 @@ var ConfigLoader = (function () {
         return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: {
           label: f.label != null ? f.label : null, description: f.description != null ? f.description : null,
           content_id: f.content_id != null ? f.content_id : null,   // the per-feature encyclopedia page id (panel.nidProp = "content_id" for drawn layers)
-          image_url: (f.custom_fields && f.custom_fields.image_url) || null,   // per-feature hero image for the info panel (notes/both modes)
+          image_url: f.image_url != null ? f.image_url : null,   // per-feature hero image (features.image_url column)
           DayStart: ymd(f.start_date, 0), DayEnd: ymd(f.end_date, 99999999)
         } };
       }) } };
       if (leaf.type == null) leaf.type = "circle";
       if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
+      if (leaf.highlight == null) leaf.highlight = defaultHighlightPaint(leaf.type, leaf.iconColor || "#3bb2d0");   // drawn features get a hover/click highlight (both swipe sides; toggle via #11)
     }
 
     // Mapbox fill-outline-color is always 1px; to allow a real (thicker) outline, render a
@@ -212,7 +223,7 @@ var ConfigLoader = (function () {
     var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase"; }).map(function (pl) { return pl.layers.id; });
     if (drawnIds.length) {
       var push = function (data) { (data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); }); };
-      var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields";
+      var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url";
       // Supabase caps a select at 1000 rows; get the total, then page through (the rest in parallel)
       // so layers with many features (e.g. imported datasets) render fully, not just the first 1000.
       var first = await db.from("features").select(sel, { count: "exact" }).in("layer_id", drawnIds).order("feature_id").range(0, 999);

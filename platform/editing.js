@@ -2115,7 +2115,7 @@
     if (document.getElementById('editor-feature-panel')) return;
     var p = document.createElement('div');
     p.id = 'editor-feature-panel';
-    p.style.cssText = 'position:fixed;top:120px;right:12px;width:240px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.style.cssText = 'position:fixed;top:120px;right:12px;width:240px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // scroll + stay above the timeline
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b>Feature</b><span id="efp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label</label>' +
@@ -2369,7 +2369,7 @@
     if (document.getElementById('editor-layer-panel')) return;
     var p = document.createElement('div');
     p.id = 'editor-layer-panel';
-    p.style.cssText = 'position:fixed;top:120px;left:362px;width:210px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.style.cssText = 'position:fixed;top:120px;left:362px;width:210px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // scroll + stay above the timeline (#footer is 67px)
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b id="elp-title">Layer style</b><span id="elp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
       '<div id="elp-style-section">' +
@@ -2412,6 +2412,7 @@
         '<label style="display:block;font-size:11px;color:#555555;margin-bottom:4px;">Interaction</label>' +
         '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
         '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
+        '<label id="elp-hl-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;margin-bottom:6px;"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
         '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label field</label>' +
         '<input id="elp-labelfield" type="text" placeholder="label" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
         '<div style="font-size:10px;color:#888888;margin-top:3px;">Label field = which property the popup shows (defaults to &ldquo;label&rdquo;). Popups are wired at page load, so <b>reload to apply</b> on/off changes.</div>' +
@@ -2438,6 +2439,7 @@
     document.getElementById('elp-src-url').addEventListener('input', function () { document.getElementById('elp-src-zooms').style.display = (this.value.trim().indexOf('mapbox://') === 0) ? 'none' : 'block'; });
     document.getElementById('elp-hover').addEventListener('change', onInteraction);
     document.getElementById('elp-click').addEventListener('change', onInteraction);
+    document.getElementById('elp-hl').addEventListener('change', onInteraction);
     document.getElementById('elp-labelfield').addEventListener('change', onInteraction);
   }
   // Per-layer hover/click popup toggles + which property the popup shows. The engine wires hover/click
@@ -2448,14 +2450,16 @@
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
     var hover = document.getElementById('elp-hover').checked;
     var click = document.getElementById('elp-click').checked;
+    var hl = document.getElementById('elp-hl').checked;
     var labelField = (document.getElementById('elp-labelfield').value || '').trim() || 'label';
     var popupStyle = hover ? (node._popupStyle || node.popupStyle || 'infoLayerGreenPopUp') : null;
     // The engine wires hover/click popups at PAGE LOAD, so on/off applies on reload. Do NOT mutate the live
     // node's popupStyle: the popup is already wired, and nulling the style mid-session leaves the bubble
     // showing but stripped of its colour class. Persist to the DB + keep a UI shadow for the panel.
     node._uiHover = hover; node._uiClick = click; node._uiLabel = labelField; if (popupStyle) node._popupStyle = popupStyle;
+    node.hoverHighlight = hl;   // #11: live — the engine reads this on the next hover (no reload needed for the highlight; popups still need reload)
     setStatus('Saving…');
-    try { var r = await db.from('layers').update({ popup_style: popupStyle, popup_prop: labelField, click: click }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved — reload to apply'); }
+    try { var r = await db.from('layers').update({ popup_style: popupStyle, popup_prop: labelField, click: click, hover: hl }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved — reload to apply'); }
     catch (e) { setStatus('Save failed'); }
   }
   async function onEncUrl(value) {
@@ -2597,6 +2601,8 @@
     }
     document.getElementById('elp-hover').checked = (node._uiHover != null) ? node._uiHover : !!node.popupStyle;
     document.getElementById('elp-click').checked = (node._uiClick != null) ? node._uiClick : !!node.click;
+    document.getElementById('elp-hl').checked = node.hoverHighlight !== false;
+    document.getElementById('elp-hl-label').style.display = node.highlight ? 'block' : 'none';   // hover-highlight toggle only where a highlight exists
     document.getElementById('elp-labelfield').value = (node._uiLabel != null) ? node._uiLabel : (node.prop || 'label');
     p.style.display = 'block';
   }

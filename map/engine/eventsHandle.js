@@ -5,6 +5,7 @@ let hoverPopUp = new Array();
 // clipped top map and only fires events in its own half, so each side's handler must light up both.
 function setHoverBoth(config, fid, on) {
   if (fid == null) return;
+  if (on && config.hoverHighlight === false) return;   // #11: hover-highlight disabled for this layer (click `selected` still works)
   const sl = config["source-layer"];
   try { if (typeof beforeMap !== 'undefined' && beforeMap) beforeMap.setFeatureState({ source: config.id + "-left",  sourceLayer: sl, id: fid }, { hover: on }); } catch (e) {}
   try { if (typeof afterMap  !== 'undefined' && afterMap)  afterMap.setFeatureState({  source: config.id + "-right", sourceLayer: sl, id: fid }, { hover: on }); } catch (e) {}
@@ -64,12 +65,12 @@ function setupLayerEventForMap(map, config, side) {
     const afterPopup  = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 5 });
     const beforePopup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 5 });
 
-    const highlightLeft  = config.id + "-highlighted-left";
-    const highlightRight = config.id + "-highlighted-right";
+    const highlightLeft  = config.id + "-left";    // the REAL sources (slug-highlighted-side has no source); `selected` drives the highlight layer on BOTH sides
+    const highlightRight = config.id + "-right";
 
-    function setHighlight(m, source, featureId, isHovered) {
+    function setHighlight(m, source, featureId, isSelected) {
       if (featureId == null) return;
-      m.setFeatureState({ source, sourceLayer: sourceLayer, id: featureId }, { hover: isHovered });
+      try { m.setFeatureState({ source, sourceLayer: sourceLayer, id: featureId }, { selected: isSelected }); } catch (e) {}
     }
 
     function buildPopupHTML(event) {

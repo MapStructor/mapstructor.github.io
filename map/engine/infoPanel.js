@@ -75,7 +75,7 @@ function registerInfoPanelClicks() {
         if (hoveredId.left !== null)
           beforeMap.setFeatureState({ source: layer.id + "-left", sourceLayer: sourceLayer, id: hoveredId.left }, { hover: false });
         hoveredId.left = e.features[0].id;
-        beforeMap.setFeatureState({ source: layer.id + "-left", sourceLayer: sourceLayer, id: hoveredId.left }, { hover: true });
+        if (layer.hoverHighlight !== false) beforeMap.setFeatureState({ source: layer.id + "-left", sourceLayer: sourceLayer, id: hoveredId.left }, { hover: true });   // #11 gate
       }
     });
     beforeMap.on("mouseleave", layer.id + "-left", function() {
@@ -91,7 +91,7 @@ function registerInfoPanelClicks() {
         if (hoveredId.right !== null)
           afterMap.setFeatureState({ source: layer.id + "-right", sourceLayer: sourceLayer, id: hoveredId.right }, { hover: false });
         hoveredId.right = e.features[0].id;
-        afterMap.setFeatureState({ source: layer.id + "-right", sourceLayer: sourceLayer, id: hoveredId.right }, { hover: true });
+        if (layer.hoverHighlight !== false) afterMap.setFeatureState({ source: layer.id + "-right", sourceLayer: sourceLayer, id: hoveredId.right }, { hover: true });   // #11 gate
       }
     });
     afterMap.on("mouseleave", layer.id + "-right", function() {
@@ -242,17 +242,13 @@ function closePanelInfo(layer) {
   if (state.beforePopup.isOpen()) state.beforePopup.remove();
 }
 
-function setPanelHighlight(layer, featureId, hover) {
+function setPanelHighlight(layer, featureId, on) {
   if (featureId == null) return;
   var sourceLayer = layer["source-layer"];
-  afterMap.setFeatureState(
-    { source: layer.id + "-highlighted-right", sourceLayer: sourceLayer, id: featureId },
-    { hover: hover }
-  );
-  beforeMap.setFeatureState(
-    { source: layer.id + "-highlighted-left", sourceLayer: sourceLayer, id: featureId },
-    { hover: hover }
-  );
+  // Use a persistent `selected` state on the REAL sources (slug-left/right) so the click highlight shows on
+  // BOTH swipe sides and isn't cleared by hover's mouseleave. (Was the non-existent slug-highlighted-side source.)
+  try { afterMap.setFeatureState({ source: layer.id + "-right", sourceLayer: sourceLayer, id: featureId }, { selected: on }); } catch (e) {}
+  try { beforeMap.setFeatureState({ source: layer.id + "-left", sourceLayer: sourceLayer, id: featureId }, { selected: on }); } catch (e) {}
 }
 
 function showPanelPopups(state, lngLat, html) {
