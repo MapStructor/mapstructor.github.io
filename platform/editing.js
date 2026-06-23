@@ -1233,7 +1233,8 @@
         '#base-maps-section .map-section-title{position:relative;}' +
         '#base-maps-section .map-section-title:hover .editor-del{opacity:1;}' +
         '#base-maps-section .map-section-title.editor-drop-into{background:rgba(206,92,0,0.15);box-shadow:inset 0 0 0 1px #ce5c00;}' +
-        '#base-maps-section .zoom-btn-row .editor-del{right:12px;}';
+        '#base-maps-section .zoom-btn-row .editor-del{right:12px;}' +
+        '#base-maps-section .zoom-btn-row:hover .editor-del{opacity:1;}';   // reveal the × on hover (maps + sections already do this; zoom buttons were missing it → couldn't be deleted)
       document.head.appendChild(st);
     }
     if (document.getElementById('editor-maps-add-bar')) return;
