@@ -254,6 +254,7 @@
     var node = findNodeById(layers, id); if (!node || !beforeMap) return;
     var c = beforeMap.getCenter(), z = beforeMap.getZoom();
     node.zoomCenter = [c.lng, c.lat]; node.zoomLevel = z;
+    var _zi = document.getElementById('elp-zoom-info'); if (_zi && activeLayerId === id) _zi.textContent = fmtNodeZoom(node);   // live-update the panel readout
     setStatus('Saving…');
     try {
       if (node.type === 'section') { setStatus('Sections have no zoom button'); return; }
@@ -285,10 +286,15 @@
       del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete';
       del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); onDelete(id); });
       row.appendChild(del);
-      var setz = document.createElement('span');
-      setz.className = 'editor-setzoom'; setz.innerHTML = '◎'; setz.title = 'Set this layer’s zoom-to target to the current view';
-      setz.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); onSetZoom(id); });
-      row.appendChild(setz);
+      // set-zoom: styleable layers set it from the layer editing panel now; keep the row ◎ only for groups +
+      // non-styleable layers (which get no panel), and never for sections (they have no zoom target).
+      var szHasPanel = enNode && (enNode.type === 'group' || enNode.source_type === 'geojson-supabase' || (isTilesetNode(enNode) && ['fill', 'line', 'circle'].indexOf(enNode.type) > -1));
+      if (enNode && enNode.type !== 'section' && !szHasPanel) {
+        var setz = document.createElement('span');
+        setz.className = 'editor-setzoom'; setz.innerHTML = '◎'; setz.title = 'Set this group’s zoom-to target to the current view';
+        setz.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); onSetZoom(id); });
+        row.appendChild(setz);
+      }
       var label = row.querySelector('label') || row.querySelector('.container-name');
       if (label) label.addEventListener('dblclick', function (e) { e.stopPropagation(); e.preventDefault(); onRename(id); });
 
@@ -1612,7 +1618,7 @@
     var node = findNodeById(layers, id);
     // drawn layers always get the style panel; tilesets get it too once they have a styleable type
     var styleable = node && (node.source_type === 'geojson-supabase' || (isTilesetNode(node) && ['fill', 'line', 'circle'].indexOf(node.type) > -1));
-    if (styleable) showLayerPanel(id); else hideLayerPanel();
+    if (node && node.type !== 'section') showLayerPanel(id); else hideLayerPanel();   // every layer + group opens the panel; groups/basemap tilesets get attr/source/zoom (no style)
   }
   function activeLayerDbId() {
     if (!activeLayerId) return null;
@@ -2286,6 +2292,7 @@
     p.style.cssText = 'position:fixed;top:120px;left:362px;width:210px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b id="elp-title">Layer style</b><span id="elp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
+      '<div id="elp-style-section">' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color</label>' +
       '<input id="elp-color" type="color" style="width:100%;height:30px;box-sizing:border-box;margin-bottom:8px;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" />' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Opacity <span id="elp-opacity-val"></span></label>' +
@@ -2301,7 +2308,10 @@
         '<label style="cursor:pointer;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
       '</div>' +
       '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
+      '</div>' +
       '<button id="elp-attrs" style="margin-top:8px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">&#9638; Attribute table</button>' +
+      '<button id="elp-setzoom" style="margin-top:8px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">◎ Set zoom to current view</button>' +
+      '<div id="elp-zoom-info" style="font-size:11px;color:#888888;margin-top:4px;text-align:center;">Zoom target: not set</div>' +
       '<div id="elp-src-row" style="display:none;margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;">' +
         '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Tileset source</label>' +
         '<input id="elp-src-url" type="text" placeholder="mapbox://user.id  or  https://…/{z}/{x}/{y}.pbf" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
@@ -2335,6 +2345,7 @@
       if (n && (n.outlineOf || n.outlineSplit)) onUnsplitOutline(); else onSplitOutline();
     });
     document.getElementById('elp-attrs').addEventListener('click', function () { if (activeLayerId) openAttributeTable(activeLayerId); });
+    document.getElementById('elp-setzoom').addEventListener('click', function () { if (activeLayerId) onSetZoom(activeLayerId); });   // set-zoom moved here from the layer row
     document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
     document.getElementById('elp-src-apply').addEventListener('click', onApplySource);
     document.getElementById('elp-src-url').addEventListener('input', function () { document.getElementById('elp-src-zooms').style.display = (this.value.trim().indexOf('mapbox://') === 0) ? 'none' : 'block'; });
@@ -2403,6 +2414,21 @@
     var fillStroke = (isGeojson || isTilesetNode(node)) && node.type === 'fill';  // drawn AND tileset fills get the real line outline + its width/show toggles
     injectLayerPanel();
     var p = document.getElementById('editor-layer-panel'); if (!p) return;
+    var isGroup = node.type === 'group';
+    if (isGroup) {   // groups have no style — show only the zoom controls + readout
+      document.getElementById('elp-title').textContent = node.label || 'Group';
+      document.getElementById('elp-style-section').style.display = 'none';
+      ['elp-interact-row', 'elp-attrs', 'elp-enc-row', 'elp-src-row'].forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
+      document.getElementById('elp-setzoom').style.display = 'block';
+      document.getElementById('elp-zoom-info').style.display = 'block';
+      document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
+      p.style.display = 'block';
+      return;
+    }
+    var isStyleableLayer = isGeojson || (isTilesetNode(node) && ['fill', 'line', 'circle'].indexOf(node.type) > -1);
+    document.getElementById('elp-style-section').style.display = isStyleableLayer ? '' : 'none';   // typeless/basemap tilesets: hide style, keep attr + source + zoom
+    document.getElementById('elp-interact-row').style.display = isStyleableLayer ? '' : 'none';
+    document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
     var op = paintOpacity(node.paint); if (op == null) op = (node.type === 'fill') ? 0.35 : 1;
     var outline = paintOutline(node.paint) || (node.type === 'fill' ? color : '#000000');
@@ -2430,7 +2456,8 @@
     document.getElementById('elp-radius').value = radius;
     document.getElementById('elp-radius-val').textContent = radius;
     document.getElementById('elp-radius-row').style.display = (node.type === 'circle') ? 'block' : 'none';
-    document.getElementById('elp-attrs').style.display = isGeojson ? 'block' : 'none';   // attribute table = stored (drawn/imported) features only
+    // attribute table: drawn + ALL tilesets (stored features → editable; pure tilesets → read-only from loaded tiles)
+    document.getElementById('elp-attrs').style.display = (isGeojson || isTilesetNode(node)) ? 'block' : 'none';
     document.getElementById('elp-enc-row').style.display = isGeojson ? 'block' : 'none';
     document.getElementById('elp-encurl').value = (node.panel && node.panel.encyclopediaBase) || '';
     var isTs = isTilesetNode(node);   // tilesets show their Source (url / source-layer / zooms) so it can be viewed + repointed (e.g. to a PMTiles worker)
@@ -2450,6 +2477,9 @@
     p.style.display = 'block';
   }
   function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
+  function fmtNodeZoom(node) {   // the readout shown under the panel's "Set zoom" button
+    return (node && node.zoomCenter) ? ('Zoom target: ' + Number(node.zoomCenter[1]).toFixed(4) + ', ' + Number(node.zoomCenter[0]).toFixed(4) + ' · z' + (node.zoomLevel != null ? Number(node.zoomLevel).toFixed(1) : '?')) : 'Zoom target: not set';
+  }
   // ---- Attribute table: a spreadsheet view of one drawn layer's features (label / dates / notes, editable) ----
   function attrEsc(s) { return s == null ? '' : String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
   function injectAttrModal() {
@@ -2503,6 +2533,8 @@
   var _attrCustom = {};   // fid → its custom_fields object, so a single-cell edit rewrites the whole jsonb
   var _attrRows = [], _attrCols = [], _attrSort = null, _attrSel = [];   // loaded rows + column model + {idx,dir} + selected feature_ids (highlighted on the map)
   var _attrById = {}, _attrSlug = null, _attrHover = null, _attrHoverRAF = false, _attrLastPt = null, _attrHoverWired = false;   // hover brushing (map ↔ row): id→row lookup, open layer, hovered fid
+  var _attrReadonly = false;   // true when the table is sourced from vector tiles (pure tileset) rather than the editable `features` table
+  var _attrDelegated = false;  // event-delegation wired once on tbody (so 18k+ rows don't each get listeners)
   function attrCellVal(r, c) { return c.kind === 'custom' ? ((r.custom_fields || {})[c.key]) : r[c.field]; }
   function attrDisp(r, c) { var v = attrCellVal(r, c); if (c.kind === 'date') return v ? String(v).slice(0, 10) : ''; return v == null ? '' : v; }
   function findAttrRow(fid) { return _attrById[String(fid)] || null; }
@@ -2516,12 +2548,41 @@
     var thead = document.getElementById('editor-attr-thead'), tbody = document.getElementById('editor-attr-tbody'), foot = document.getElementById('editor-attr-foot');
     thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">Loading…</td></tr>'; foot.textContent = '';
     modal.style.display = 'block';
-    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; clearAttrHighlight();
-    var res;
-    try { res = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, geom, content_id', { count: 'exact' }).eq('layer_id', lid).order('feature_id').range(0, 999); }
-    catch (e) { res = { error: e }; }
-    if (res.error) { tbody.innerHTML = '<tr><td style="padding:14px;color:#b4453a;">Failed to load features.</td></tr>'; return; }
-    var rows = res.data || [], total = (res.count != null) ? res.count : rows.length;
+    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = false; clearAttrHighlight();
+    var rows = [], total = 0, loadErr = null;   // fetch ALL features (paginated) — no time filter, no 1000 cap
+    try {
+      for (var afrom = 0; afrom < 1000000; afrom += 1000) {
+        var ares = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, geom, content_id', afrom === 0 ? { count: 'exact' } : {}).eq('layer_id', lid).order('feature_id').range(afrom, afrom + 999);
+        if (ares.error) { loadErr = ares.error; break; }
+        if (afrom === 0 && ares.count != null) total = ares.count;
+        var abatch = ares.data || []; rows = rows.concat(abatch);
+        var fEl = document.getElementById('editor-attr-foot'); if (fEl) fEl.textContent = 'Loading ' + rows.length + (total ? ' / ' + total : '') + '…';
+        if (abatch.length < 1000) break;
+      }
+    } catch (e) { loadErr = e; }
+    if (loadErr) { tbody.innerHTML = '<tr><td style="padding:14px;color:#b4453a;">Failed to load features.</td></tr>'; return; }
+    if (!total) total = rows.length;
+    if (!rows.length && isTilesetNode(node)) {   // pure tileset (no rows in `features`): read its attributes from the loaded vector tiles
+      var seen = {}, tfeats = [];
+      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+        var m = pair[1]; if (!m) return;
+        try {
+          var q = node['source-layer'] ? { sourceLayer: node['source-layer'] } : {};
+          (m.querySourceFeatures(node.id + '-' + pair[0], q) || []).forEach(function (f) {
+            var key = (f.id != null ? 'i' + f.id : 'p' + JSON.stringify(f.properties));
+            if (seen[key]) return; seen[key] = 1;
+            tfeats.push({ feature_id: (f.id != null ? f.id : 't' + tfeats.length), custom_fields: f.properties || {}, geom: f.geometry, _tile: true });
+          });
+        } catch (e) {}
+      });
+      if (!tfeats.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">No tile features loaded here — pan/zoom to the layer, then reopen.</td></tr>'; foot.textContent = '0 features (tiles)'; return; }
+      var tkeys = []; tfeats.forEach(function (r) { Object.keys(r.custom_fields).forEach(function (k) { if (tkeys.indexOf(k) < 0) tkeys.push(k); }); }); tkeys = tkeys.slice(0, 40);
+      _attrRows = tfeats; _attrReadonly = true; _attrSlug = slug; _attrById = {}; tfeats.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
+      _attrCols = tkeys.length ? tkeys.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 140 }; }) : [{ title: 'feature', kind: 'std', field: 'feature_id', type: 'text', w: 200 }];
+      buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
+      foot.textContent = tfeats.length + ' feature' + (tfeats.length === 1 ? '' : 's') + ' from loaded tiles · read-only · pan/zoom to load more · click a row to highlight';
+      return;
+    }
     if (!rows.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">No features in this layer yet.</td></tr>'; foot.textContent = '0 features'; return; }
     // dynamic columns = the union of custom_fields keys across the loaded rows (imported attributes), capped
     var keys = [];
@@ -2585,20 +2646,24 @@
       var sel = _attrSel.indexOf(String(r.feature_id)) > -1 ? ' class="attr-row-sel"' : '';
       return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + sel + '>' + _attrCols.map(function (c) {
         var bind = c.kind === 'custom' ? 'data-fc="' + attrEsc(c.key) + '"' : 'data-f="' + attrEsc(c.field) + '"';
-        return '<td><input ' + bind + ' type="' + c.type + '" value="' + attrEsc(attrDisp(r, c)) + '" /></td>';
+        var v = attrEsc(attrDisp(r, c));
+        if (_attrReadonly) return '<td><span ' + bind + ' style="display:block;padding:6px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + v + '</span></td>';
+        return '<td><input ' + bind + ' type="' + c.type + '" value="' + v + '" /></td>';
       }).join('') + '</tr>';
     }).join('');
-    Array.prototype.forEach.call(tbody.querySelectorAll('input'), function (inp) {
-      inp.addEventListener('change', function () {
-        var fid = inp.closest('tr').getAttribute('data-fid'), std = inp.getAttribute('data-f');
-        if (std) saveAttrCell(fid, std, inp.value); else saveAttrCustomCell(fid, inp.getAttribute('data-fc'), inp.value);
-      });
+    if (!_attrDelegated) { _attrDelegated = true; wireAttrDelegation(tbody); }   // delegate once (scales to all features without per-row listeners)
+  }
+  function wireAttrDelegation(tbody) {
+    tbody.addEventListener('change', function (e) {   // edit a cell → persist
+      var inp = e.target.closest('input'); if (!inp) return; var tr = inp.closest('tr[data-fid]'); if (!tr) return;
+      var fid = tr.getAttribute('data-fid'), std = inp.getAttribute('data-f');
+      if (std) saveAttrCell(fid, std, inp.value); else saveAttrCustomCell(fid, inp.getAttribute('data-fc'), inp.value);
     });
-    Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) {
-      tr.addEventListener('click', function (e) { selectAttrRow(tr.getAttribute('data-fid'), e.ctrlKey || e.metaKey); });   // click a row → highlight its feature on the map (Ctrl/Cmd = add to selection); editing a cell still works
-      tr.addEventListener('mouseenter', function () { setAttrHover(tr.getAttribute('data-fid'), false); });   // hover a row → light up its feature
-      tr.addEventListener('mouseleave', function () { setAttrHover(null, false); });
+    tbody.addEventListener('click', function (e) {   // click a row → highlight its feature on the map (Ctrl/Cmd = add); editing a cell still works
+      var tr = e.target.closest('tr[data-fid]'); if (tr) selectAttrRow(tr.getAttribute('data-fid'), e.ctrlKey || e.metaKey);
     });
+    tbody.addEventListener('mouseover', function (e) { var tr = e.target.closest('tr[data-fid]'); setAttrHover(tr ? tr.getAttribute('data-fid') : null, false); });   // hover a row → light up its feature
+    tbody.addEventListener('mouseleave', function () { setAttrHover(null, false); });
   }
   // ---- row selection ↔ map highlight + zoom ----
   function selectAttrRow(fid, additive) {
