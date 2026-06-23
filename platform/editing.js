@@ -654,11 +654,106 @@
     bar.innerHTML = '<div class="erow" style="margin-bottom:6px;">' +
       '<button data-type="layer">+ Layer</button>' +
       '<button data-type="tileset">+ Tileset</button>' +
-      '<button data-type="import">+ Import</button></div>' +
+      '<button data-type="import">+ Import</button>' +
+      '<button data-type="export">⬇ Export</button></div>' +
       '<div class="erow">' +
       '<button data-type="group">+ Group</button>' +
       '<button data-type="section">+ Section</button></div>';
-    bar.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else showForm(t); }); });
+    bar.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else showForm(t); }); });
+  }
+  // ── export: a layer's saved features → downloadable GeoJSON (the inverse of Import; works for drawn
+  //    layers AND tileset layers whose features live in `features`, e.g. Current buildings = 18k rows). ──
+  function showExportForm() {
+    var bar = document.getElementById('editor-add-bar');
+    var opts = '';
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.id && slugToLayerDbId[n.id]) opts += '<option value="' + n.id + '"' + (n.id === activeLayerId ? ' selected' : '') + '>' + (n.label || n.id) + '</option>'; if (n.children) walk(n.children); }); })(layers);
+    if (!opts) { setStatus('No exportable layers yet'); return; }
+    bar.innerHTML =
+      '<div style="font-size:11px;color:#555555;margin-bottom:5px;">Download a layer\'s features (for backup / reuse).</div>' +
+      '<select id="editor-export-layer">' + opts + '</select>' +
+      '<select id="editor-export-format"><option value="geojson">GeoJSON (.geojson)</option><option value="kml">KML (.kml)</option><option value="shp">Shapefile (.zip)</option></select>' +
+      '<div id="editor-export-status" style="font-size:11px;color:#888888;margin:2px 0 6px;min-height:13px;"></div>' +
+      '<div class="erow"><button id="editor-export-ok">⬇ Download</button><button id="editor-cancel">Cancel</button></div>';
+    document.getElementById('editor-export-ok').addEventListener('click', exportLayer);
+    document.getElementById('editor-cancel').addEventListener('click', showButtons);
+  }
+  async function exportLayer() {
+    var sel = document.getElementById('editor-export-layer'); var slug = sel && sel.value; if (!slug) return;
+    var lid = slugToLayerDbId[slug]; if (!lid) { setStatus('That layer has no database id'); return; }
+    var node = findNodeById(layers, slug);
+    var status = document.getElementById('editor-export-status'), btn = document.getElementById('editor-export-ok');
+    if (btn) btn.disabled = true;
+    try {
+      var rows = [];
+      for (var from = 0; from < 1000000; from += 1000) {   // paginate — Supabase caps each request at 1000 rows
+        var res = await db.from('features').select('feature_id, geom, label, description, start_date, end_date, content_id, custom_fields').eq('layer_id', lid).order('feature_id').range(from, from + 999);
+        if (res.error) throw new Error(res.error.message);
+        var batch = res.data || []; rows = rows.concat(batch);
+        if (status) status.textContent = 'Fetched ' + rows.length + ' features…';
+        if (batch.length < 1000) break;
+      }
+      var feats = rows.filter(function (r) { return r.geom; }).map(function (r) {
+        var props = { feature_id: r.feature_id };
+        if (r.label) props.label = r.label;
+        if (r.description) props.description = r.description;
+        if (r.start_date) props.start_date = r.start_date;
+        if (r.end_date) props.end_date = r.end_date;
+        if (r.content_id != null) props.content_id = r.content_id;
+        if (r.custom_fields && typeof r.custom_fields === 'object') Object.keys(r.custom_fields).forEach(function (k) { if (!(k in props)) props[k] = r.custom_fields[k]; });
+        return { type: 'Feature', id: r.feature_id, geometry: r.geom, properties: props };
+      });
+      var fc = { type: 'FeatureCollection', features: feats };
+      var safe = (node && node.label ? node.label : slug).replace(/[^a-z0-9_-]+/gi, '_');
+      var fmt = (document.getElementById('editor-export-format') || {}).value || 'geojson';
+      var blob, ext;
+      if (fmt === 'kml') {
+        blob = new Blob([geojsonToKml(fc)], { type: 'application/vnd.google-earth.kml+xml' }); ext = '.kml';
+      } else if (fmt === 'shp') {
+        if (status) status.textContent = 'Building shapefile (' + feats.length + ' features)…';
+        var mod = await import('https://cdn.jsdelivr.net/npm/@mapbox/shp-write@0.4.3/+esm');   // GeoJSON → zipped .shp/.shx/.dbf/.prj
+        var z = await mod.zip(fc, { outputType: 'blob', compression: 'DEFLATE' });
+        blob = (z instanceof Blob) ? z : new Blob([Uint8Array.from(atob(z), function (c) { return c.charCodeAt(0); })], { type: 'application/zip' });
+        ext = '.zip';
+      } else {
+        blob = new Blob([JSON.stringify(fc)], { type: 'application/geo+json' }); ext = '.geojson';
+      }
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a'); a.href = url; a.download = safe + ext; document.body.appendChild(a); a.click();
+      setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1500);
+      setStatus('Downloaded ' + feats.length + ' feature' + (feats.length === 1 ? '' : 's') + ' (' + fmt + ')');
+      showButtons();
+    } catch (e) { console.warn('editing: export failed', e); if (status) status.textContent = 'Export failed: ' + e.message; if (btn) btn.disabled = false; }
+  }
+  // GeoJSON → KML (all geometry types incl. MultiPolygon/holes), properties as ExtendedData. Hand-rolled
+  // so export needs no extra library for KML (Shapefile still uses shp-write).
+  function geojsonToKml(fc) {
+    function esc(s) { return String(s == null ? '' : s).replace(/[<>&'"]/g, function (c) { return { '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]; }); }
+    function pt(c) { return c[0] + ',' + c[1] + (c.length > 2 ? ',' + c[2] : ''); }
+    function ring(r) { return (r || []).map(pt).join(' '); }
+    function poly(rings) {
+      var s = '<Polygon><outerBoundaryIs><LinearRing><coordinates>' + ring(rings[0]) + '</coordinates></LinearRing></outerBoundaryIs>';
+      for (var i = 1; i < rings.length; i++) s += '<innerBoundaryIs><LinearRing><coordinates>' + ring(rings[i]) + '</coordinates></LinearRing></innerBoundaryIs>';
+      return s + '</Polygon>';
+    }
+    function geom(g) {
+      if (!g) return '';
+      switch (g.type) {
+        case 'Point': return '<Point><coordinates>' + pt(g.coordinates) + '</coordinates></Point>';
+        case 'MultiPoint': return '<MultiGeometry>' + g.coordinates.map(function (c) { return '<Point><coordinates>' + pt(c) + '</coordinates></Point>'; }).join('') + '</MultiGeometry>';
+        case 'LineString': return '<LineString><coordinates>' + ring(g.coordinates) + '</coordinates></LineString>';
+        case 'MultiLineString': return '<MultiGeometry>' + g.coordinates.map(function (l) { return '<LineString><coordinates>' + ring(l) + '</coordinates></LineString>'; }).join('') + '</MultiGeometry>';
+        case 'Polygon': return poly(g.coordinates);
+        case 'MultiPolygon': return '<MultiGeometry>' + g.coordinates.map(poly).join('') + '</MultiGeometry>';
+        case 'GeometryCollection': return '<MultiGeometry>' + (g.geometries || []).map(geom).join('') + '</MultiGeometry>';
+        default: return '';
+      }
+    }
+    var marks = (fc.features || []).map(function (f) {
+      var p = f.properties || {}, name = p.label || p.name || (p.feature_id != null ? '#' + p.feature_id : ''), desc = p.description || p.notes || '', ext = '';
+      Object.keys(p).forEach(function (k) { ext += '<Data name="' + esc(k) + '"><value>' + esc(p[k]) + '</value></Data>'; });
+      return '<Placemark>' + (name ? '<name>' + esc(name) + '</name>' : '') + (desc ? '<description>' + esc(desc) + '</description>' : '') + (ext ? '<ExtendedData>' + ext + '</ExtendedData>' : '') + geom(f.geometry) + '</Placemark>';
+    }).join('');
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document>' + marks + '</Document></kml>';
   }
   function parentOptions() {
     var opts = '<option value="">Top level</option>';
