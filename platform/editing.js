@@ -2693,32 +2693,31 @@
     buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn(); updateAttrHighlight();
     setStatus('Deleted ' + n + ' feature' + (n > 1 ? 's' : ''));
   }
-  function ensureAttrHlLayers() {
-    if (typeof beforeMap === 'undefined' || !beforeMap || beforeMap.getSource('editor-attr-hl-src')) return;
-    try {
-      beforeMap.addSource('editor-attr-hl-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-      beforeMap.addLayer({ id: 'editor-attr-hl-fill', type: 'fill', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#ffd400', 'fill-opacity': 0.3 } });
-      beforeMap.addLayer({ id: 'editor-attr-hl-line', type: 'line', source: 'editor-attr-hl-src', paint: { 'line-color': '#ff8c00', 'line-width': 3 } });
-      beforeMap.addLayer({ id: 'editor-attr-hl-pt', type: 'circle', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#ffd400', 'circle-stroke-color': '#ff8c00', 'circle-stroke-width': 3 } });
-      // hover overlay (cyan) — rides ABOVE the yellow selection so the brushed feature reads clearly
-      beforeMap.addSource('editor-attr-hover-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-      beforeMap.addLayer({ id: 'editor-attr-hover-fill', type: 'fill', source: 'editor-attr-hover-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#00e5ff', 'fill-opacity': 0.25 } });
-      beforeMap.addLayer({ id: 'editor-attr-hover-line', type: 'line', source: 'editor-attr-hover-src', paint: { 'line-color': '#00b8d4', 'line-width': 3.5 } });
-      beforeMap.addLayer({ id: 'editor-attr-hover-pt', type: 'circle', source: 'editor-attr-hover-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 10, 'circle-color': '#00e5ff', 'circle-opacity': 0.5, 'circle-stroke-color': '#00b8d4', 'circle-stroke-width': 3 } });
-    } catch (e) {}
+  function attrMaps() { var a = []; if (typeof beforeMap !== 'undefined' && beforeMap) a.push(beforeMap); if (typeof afterMap !== 'undefined' && afterMap) a.push(afterMap); return a; }
+  function ensureAttrHlLayers() {   // selection + hover overlays on BOTH swipe sides (so highlight shows left AND right)
+    attrMaps().forEach(function (m) {
+      if (m.getSource('editor-attr-hl-src')) return;
+      try {
+        m.addSource('editor-attr-hl-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        m.addLayer({ id: 'editor-attr-hl-fill', type: 'fill', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#ffd400', 'fill-opacity': 0.3 } });
+        m.addLayer({ id: 'editor-attr-hl-line', type: 'line', source: 'editor-attr-hl-src', paint: { 'line-color': '#ff8c00', 'line-width': 3 } });
+        m.addLayer({ id: 'editor-attr-hl-pt', type: 'circle', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#ffd400', 'circle-stroke-color': '#ff8c00', 'circle-stroke-width': 3 } });
+        // hover overlay (cyan) — rides ABOVE the yellow selection so the brushed feature reads clearly
+        m.addSource('editor-attr-hover-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        m.addLayer({ id: 'editor-attr-hover-fill', type: 'fill', source: 'editor-attr-hover-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#00e5ff', 'fill-opacity': 0.25 } });
+        m.addLayer({ id: 'editor-attr-hover-line', type: 'line', source: 'editor-attr-hover-src', paint: { 'line-color': '#00b8d4', 'line-width': 3.5 } });
+        m.addLayer({ id: 'editor-attr-hover-pt', type: 'circle', source: 'editor-attr-hover-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 10, 'circle-color': '#00e5ff', 'circle-opacity': 0.5, 'circle-stroke-color': '#00b8d4', 'circle-stroke-width': 3 } });
+      } catch (e) {}
+    });
   }
   function updateAttrHighlight() {
     ensureAttrHlLayers();
-    if (typeof beforeMap === 'undefined' || !beforeMap) return;
-    try {
-      var src = beforeMap.getSource('editor-attr-hl-src'); if (!src) return;
-      var feats = _attrSel.map(function (fid) { var r = findAttrRow(fid); return (r && r.geom) ? { type: 'Feature', geometry: r.geom, properties: {} } : null; }).filter(Boolean);
-      src.setData({ type: 'FeatureCollection', features: feats });
-    } catch (e) {}
+    var feats = _attrSel.map(function (fid) { var r = findAttrRow(fid); return (r && r.geom) ? { type: 'Feature', geometry: r.geom, properties: {} } : null; }).filter(Boolean);
+    attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {} });
   }
   function clearAttrHighlight() {
     _attrSel = [];
-    try { var src = beforeMap && beforeMap.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: [] }); } catch (e) {}
+    attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: [] }); } catch (e) {} });
   }
   // ---- hover brushing: row ↔ map feature light up together ----
   function setAttrHover(fid, scroll) {
@@ -2731,7 +2730,8 @@
       if (scroll && _attrHover) { var row = tbody.querySelector('tr[data-fid="' + _attrHover + '"]'); if (row) row.scrollIntoView({ block: 'nearest' }); }
     }
     ensureAttrHlLayers();
-    try { var src = beforeMap && beforeMap.getSource('editor-attr-hover-src'); if (src) { var r = _attrHover && findAttrRow(_attrHover); src.setData(r && r.geom ? { type: 'Feature', geometry: r.geom, properties: {} } : { type: 'FeatureCollection', features: [] }); } } catch (e) {}
+    var hdata = (function () { var r = _attrHover && findAttrRow(_attrHover); return (r && r.geom) ? { type: 'Feature', geometry: r.geom, properties: {} } : { type: 'FeatureCollection', features: [] }; })();
+    attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hover-src'); if (src) src.setData(hdata); } catch (e) {} });
   }
   function ensureAttrMapHover() {   // wire the map → row direction once
     if (_attrHoverWired || typeof beforeMap === 'undefined' || !beforeMap) return;

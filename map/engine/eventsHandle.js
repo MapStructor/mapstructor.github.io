@@ -1,8 +1,17 @@
 let hoveredID = new Array();
 let hoverPopUp = new Array();
 
+// Set a feature's hover state on BOTH swipe maps so the highlight shows left AND right. afterMap is the
+// clipped top map and only fires events in its own half, so each side's handler must light up both.
+function setHoverBoth(config, fid, on) {
+  if (fid == null) return;
+  const sl = config["source-layer"];
+  try { if (typeof beforeMap !== 'undefined' && beforeMap) beforeMap.setFeatureState({ source: config.id + "-left",  sourceLayer: sl, id: fid }, { hover: on }); } catch (e) {}
+  try { if (typeof afterMap  !== 'undefined' && afterMap)  afterMap.setFeatureState({  source: config.id + "-right", sourceLayer: sl, id: fid }, { hover: on }); } catch (e) {}
+}
+
 function setupLayerEvents() {
-  flatLayers(layers).filter(l => l.popupStyle).forEach(config => {
+  flatLayers(layers).filter(l => l.popupStyle || l.highlight || l.click).forEach(config => {   // hover-highlight needs only `highlight` (e.g. curr-builds has no popupStyle); popup stays gated to popupStyle
     setupLayerEventForMap(beforeMap, config, "left");
     setupLayerEventForMap(afterMap,  config, "right");
   });
@@ -19,19 +28,19 @@ function setupLayerEventForMap(map, config, side) {
 
   map.on("mouseenter", layerID, function (e) {
     map.getCanvas().style.cursor = "pointer";
-    hoverPopUp[index].setLngLat(e.lngLat).addTo(map);
+    if (config.popupStyle) hoverPopUp[index].setLngLat(e.lngLat).addTo(map);
   });
 
   map.on("mousemove", layerID, function (e) {
     map.getCanvas().style.cursor = "pointer";
     if (e.features.length > 0) {
       if (hoveredID[index]) {
-        map.setFeatureState({ source: layerID, sourceLayer: sourceLayer, id: hoveredID[index] }, { hover: false });
+        setHoverBoth(config, hoveredID[index], false);   // clear on BOTH swipe sides
       }
       hoveredID[index] = e.features[0].id;
-      map.setFeatureState({ source: layerID, sourceLayer: sourceLayer, id: hoveredID[index] }, { hover: true });
+      setHoverBoth(config, hoveredID[index], true);       // highlight on BOTH swipe sides
 
-      if (config.prop) {
+      if (config.popupStyle && config.prop) {
         const val = e.features[0].properties[config.prop];
         if (typeof val !== 'undefined') {
           hoverPopUp[index].setLngLat(e.lngLat).setHTML("<div class='" + config.popupStyle + "'>" + val + "</div>");
@@ -43,7 +52,7 @@ function setupLayerEventForMap(map, config, side) {
   map.on("mouseleave", layerID, function () {
     map.getCanvas().style.cursor = "";
     if (hoveredID[index]) {
-      map.setFeatureState({ source: layerID, sourceLayer: sourceLayer, id: hoveredID[index] }, { hover: false });
+      setHoverBoth(config, hoveredID[index], false);   // clear on BOTH swipe sides
     }
     hoveredID[index] = null;
     if (hoverPopUp[index].isOpen()) hoverPopUp[index].remove();
