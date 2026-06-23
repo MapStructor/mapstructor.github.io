@@ -2024,7 +2024,7 @@
     try {
       var rows = [];
       for (var from = 0; from < 200000; from += 1000) {
-        var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id').in('layer_id', smallIds).order('feature_id').range(from, from + 999);
+        var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields').in('layer_id', smallIds).order('feature_id').range(from, from + 999);
         if (res.error) { console.warn('editing: load features failed', res.error); break; }
         var batch = res.data || [];
         rows = rows.concat(batch);
@@ -2035,7 +2035,7 @@
         if (!row.geom) return;
         var did = 'db-' + row.feature_id;
         featureToDb[did] = row.feature_id;
-        featureMeta[did] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '' };
+        featureMeta[did] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '', image_url: (row.custom_fields && row.custom_fields.image_url) || '' };
         featureLayer[did] = row.layer_id;
         var props = { color: dbColor[row.layer_id] || '#3bb2d0' };
         if (dbOpacity[row.layer_id] != null) props.opacity = dbOpacity[row.layer_id];
@@ -2121,7 +2121,20 @@
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label</label>' +
       '<input id="efp-label" type="text" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Notes</label>' +
-      '<textarea id="efp-notes" rows="3" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;resize:vertical;"></textarea>' +
+      '<div id="efp-notes-tools" style="display:flex;gap:3px;margin-bottom:3px;flex-wrap:wrap;">' +
+        '<button type="button" data-cmd="bold" title="Bold" style="min-width:24px;height:22px;border:1px solid #bbb;border-radius:3px;background:#fff;cursor:pointer;font-weight:bold;font-size:11px;line-height:1;">B</button>' +
+        '<button type="button" data-cmd="italic" title="Italic" style="min-width:24px;height:22px;border:1px solid #bbb;border-radius:3px;background:#fff;cursor:pointer;font-style:italic;font-size:11px;line-height:1;">I</button>' +
+        '<button type="button" data-cmd="underline" title="Underline" style="min-width:24px;height:22px;border:1px solid #bbb;border-radius:3px;background:#fff;cursor:pointer;text-decoration:underline;font-size:11px;line-height:1;">U</button>' +
+        '<button type="button" data-cmd="insertUnorderedList" title="Bullet list" style="min-width:24px;height:22px;border:1px solid #bbb;border-radius:3px;background:#fff;cursor:pointer;font-size:11px;line-height:1;">&bull;</button>' +
+        '<button type="button" data-cmd="createLink" title="Insert link" style="min-width:24px;height:22px;border:1px solid #bbb;border-radius:3px;background:#fff;cursor:pointer;font-size:11px;line-height:1;">&#128279;</button>' +
+        '<button type="button" data-cmd="removeFormat" title="Clear formatting" style="min-width:24px;height:22px;border:1px solid #bbb;border-radius:3px;background:#fff;cursor:pointer;font-size:11px;line-height:1;">&times;A</button>' +
+      '</div>' +
+      '<div id="efp-notes" contenteditable="true" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;min-height:54px;max-height:160px;overflow:auto;background:#fff;"></div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Image</label>' +
+      '<input id="efp-image" type="text" placeholder="https://…/photo.jpg" style="width:100%;box-sizing:border-box;margin-bottom:4px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;"><button id="efp-image-upload" type="button" style="flex:0 0 auto;padding:4px 8px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:11px;">Upload…</button><span id="efp-image-status" style="font-size:10px;color:#888888;"></span></div>' +
+      '<img id="efp-image-preview" alt="" style="display:none;max-width:100%;max-height:90px;border-radius:4px;margin-bottom:8px;border:1px solid #e0e0e0;" />' +
+      '<input id="efp-image-file" type="file" accept="image/*" style="display:none;" />' +
       '<div style="display:flex;gap:8px;">' +
         '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Start date</label>' +
         '<input id="efp-start" type="date" style="width:100%;box-sizing:border-box;padding:4px 5px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
@@ -2139,7 +2152,21 @@
     document.getElementById('efp-delete').addEventListener('click', onDeleteFeature);
     document.getElementById('efp-done').addEventListener('click', function () { var n = _engineEditNode[selectedDrawId]; if (n) finishEngineEdit(n, featureToDb[selectedDrawId]); });
     document.getElementById('efp-label').addEventListener('input', function () { onFeatureField('label', this.value); });
-    document.getElementById('efp-notes').addEventListener('input', function () { onFeatureField('notes', this.value); });
+    var efpNotes = document.getElementById('efp-notes');
+    efpNotes.addEventListener('input', function () { onFeatureField('notes', this.innerHTML); });   // contenteditable → store HTML (WYSIWYG)
+    Array.prototype.forEach.call(document.querySelectorAll('#efp-notes-tools button[data-cmd]'), function (b) {
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); });   // keep the caret/selection inside efp-notes
+      b.addEventListener('click', function (e) {
+        e.preventDefault(); efpNotes.focus();
+        var cmd = b.getAttribute('data-cmd'), val;
+        if (cmd === 'createLink') { val = prompt('Link URL:'); if (!val) return; }
+        try { document.execCommand(cmd, false, val || undefined); } catch (err) {}
+        onFeatureField('notes', efpNotes.innerHTML);   // persist the formatting change
+      });
+    });
+    document.getElementById('efp-image').addEventListener('input', function () { onFeatureField('image_url', this.value); updateImagePreview(this.value); });
+    document.getElementById('efp-image-upload').addEventListener('click', function () { document.getElementById('efp-image-file').click(); });
+    document.getElementById('efp-image-file').addEventListener('change', function () { if (this.files && this.files[0]) uploadFeatureImage(this.files[0]); this.value = ''; });
     document.getElementById('efp-start').addEventListener('change', function () { onFeatureField('start', this.value); });
     document.getElementById('efp-end').addEventListener('change', function () { onFeatureField('end', this.value); });
   }
@@ -2149,14 +2176,23 @@
     var meta = featureMeta[drawId] || { label: '', notes: '', start: '', end: '' };
     var p = document.getElementById('editor-feature-panel'); if (!p) return;
     document.getElementById('efp-label').value = meta.label || '';
-    document.getElementById('efp-notes').value = meta.notes || '';
+    document.getElementById('efp-notes').innerHTML = meta.notes || '';
     document.getElementById('efp-start').value = meta.start || '';
     document.getElementById('efp-end').value = meta.end || '';
     document.getElementById('efp-pageid').value = meta.pageid || '';
+    if (meta.image_url == null && typeof draw !== 'undefined' && draw && draw.get) { try { var _df = draw.get(drawId); if (_df && _df.properties && _df.properties.image_url != null) meta.image_url = _df.properties.image_url; } catch (e) {} }   // recover the saved image from the draw feature's props
+    document.getElementById('efp-image').value = meta.image_url || '';
+    document.getElementById('efp-image-status').textContent = '';
+    updateImagePreview(meta.image_url || '');
     var lnode = featureLayer[drawId] ? nodeByLayerDbId(featureLayer[drawId]) : null;   // Page ID + encyclopedia preview only when the layer links to an encyclopedia
     var hasEnc = !!(lnode && lnode.panel && lnode.panel.encyclopediaBase);
-    document.getElementById('efp-page-row').style.display = hasEnc ? 'block' : 'none';
-    if (hasEnc && meta.pageid) { var ep = { name: meta.label || '' }; ep[(lnode.panel && lnode.panel.nidProp) || 'content_id'] = meta.pageid; showEncyclopediaPreview(lnode, ep); } else hideEncPanel();   // pass the page id under the layer's nidProp key (e.g. 'nid' for buildings) so the lookup in showEncyclopediaPreview finds it
+    var pmode = (lnode && lnode.panel) ? (lnode.panel.mode || (hasEnc ? 'drupal' : 'notes')) : null;
+    document.getElementById('efp-page-row').style.display = (pmode === 'drupal' || pmode === 'both') ? 'block' : 'none';
+    var encProps = (hasEnc && meta.pageid) ? (function () { var ep = { name: meta.label || '' }; ep[(lnode.panel && lnode.panel.nidProp) || 'content_id'] = meta.pageid; return ep; })() : null;
+    if (pmode === 'notes') showNotesPreview(lnode, { label: meta.label, notes: meta.notes, image_url: meta.image_url });
+    else if (pmode === 'drupal') { if (encProps) showEncyclopediaPreview(lnode, encProps); else hideEncPanel(); }
+    else if (pmode === 'both') { showNotesPreview(lnode, { label: meta.label, notes: meta.notes, image_url: meta.image_url }); if (encProps) showEncyclopediaPreview(lnode, encProps, true); }   // title+notes, then append the Drupal page
+    else hideEncPanel();
     document.getElementById('efp-done').style.display = _engineEditNode[drawId] ? 'block' : 'none';   // engine-edited (tileset/large) features get a clean "Done editing" → overlay fold-back
     p.style.display = 'block';
   }
@@ -2209,34 +2245,50 @@
     };
   }
   var _encReq = 0;
-  async function showEncyclopediaPreview(node, props) {
+  async function showEncyclopediaPreview(node, props, append) {   // append=true → "both" mode: add the Drupal page BELOW the title+notes already rendered
     var base = node && node.panel && node.panel.encyclopediaBase, nidProp = (node.panel && node.panel.nidProp) || 'content_id', nid = props[nidProp];
     if (!base || nid == null || nid === '') return;
     var $ = window.$, divId = ensureEncPanelDiv(node); if (!divId || !$) return;
     var $el = $('#' + divId), req = ++_encReq;
-    Array.prototype.forEach.call(document.querySelectorAll('#rightInfoBar .infoLayerElem'), function (el) { if (el.id !== divId) el.style.display = 'none'; });   // one panel at a time
-    $el.html('<p>Loading page…</p>').show();
+    if (!append) {
+      Array.prototype.forEach.call(document.querySelectorAll('#rightInfoBar .infoLayerElem'), function (el) { if (el.id !== divId) el.style.display = 'none'; });   // one panel at a time
+      $el.html('<p>Loading page…</p>').show();
+    }
     shiftFeaturePanelForEnc(true);
     var data;
     try { data = await fetch(base.replace(/\/$/, '') + '/rendered-export-single?nid=' + encodeURIComponent(nid)).then(function (r) { return r.json(); }); }
-    catch (e) { if (req === _encReq) $el.html('<p>Could not load the page (network/CORS).</p>'); return; }
+    catch (e) { if (!append && req === _encReq) $el.html('<p>Could not load the page (network/CORS).</p>'); return; }
     if (req !== _encReq) return;   // superseded by a newer selection
-    if (!data || !data[0] || !data[0].rendered_entity) { $el.html('<p>No encyclopedia entry for id &ldquo;' + attrEsc(String(nid)) + '&rdquo;.</p>'); return; }
+    if (!data || !data[0] || !data[0].rendered_entity) { if (!append) $el.html('<p>No encyclopedia entry for id &ldquo;' + attrEsc(String(nid)) + '&rdquo;.</p>'); return; }
     var html = (typeof processEncyclopediaHtml === 'function') ? processEncyclopediaHtml(data[0].rendered_entity, base) : data[0].rendered_entity;
     var docEl = document.createElement('div'); docEl.innerHTML = html;
     var f = makeEncFieldExtractor(docEl), renderFn = (node.panel && node.panel.render) || function (_p, ff) { return ff(); };
-    try { $el.html(renderFn(props, f)); } catch (e) { $el.html(docEl.innerHTML); }
-    if (typeof floatPanelToTop === 'function') { try { floatPanelToTop(divId); } catch (e) {} }
+    try { if (append) $el.append('<hr class="panel-both-sep"/>' + renderFn(props, f)); else $el.html(renderFn(props, f)); } catch (e) { if (!append) $el.html(docEl.innerHTML); }
+    if (!append && typeof floatPanelToTop === 'function') { try { floatPanelToTop(divId); } catch (e) {} }
     $el.show();
   }
   function hideEncPanel() {
     Array.prototype.forEach.call(document.querySelectorAll('#rightInfoBar .infoLayerElem[id^="infoPanel-"]'), function (el) { el.style.display = 'none'; });
     shiftFeaturePanelForEnc(false);
   }
+  // Notes mode (no encyclopedia): render the feature's OWN title+notes into the SAME #rightInfoBar panel +
+  // chrome as the encyclopedia preview, so the editor shows exactly what the live viewer shows. No fetch.
+  function showNotesPreview(node, props) {
+    var $ = window.$, divId = ensureEncPanelDiv(node); if (!divId || !$) return;
+    var $el = $('#' + divId);
+    Array.prototype.forEach.call(document.querySelectorAll('#rightInfoBar .infoLayerElem'), function (el) { if (el.id !== divId) el.style.display = 'none'; });   // one panel at a time
+    var renderFn = (window.renderRegistry && window.renderRegistry._notes) || (node.panel && node.panel.render);   // always _notes (panel.render is the Drupal one in "both" mode)
+    try { $el.html(renderFn ? renderFn(props, function () { return ''; }) : ('<h3>' + attrEsc(props.label || 'Details') + '</h3>')); } catch (e) { $el.html('<h3>' + attrEsc(props.label || 'Details') + '</h3>'); }
+    if (typeof floatPanelToTop === 'function') { try { floatPanelToTop(divId); } catch (e) {} }
+    $el.show();
+    shiftFeaturePanelForEnc(true);
+  }
   function onFeatureField(field, value) {
     if (!selectedDrawId) return;
     var meta = featureMeta[selectedDrawId] = featureMeta[selectedDrawId] || { label: '', notes: '' };
     meta[field] = value;
+    var _ln = featureLayer[selectedDrawId] ? nodeByLayerDbId(featureLayer[selectedDrawId]) : null;   // live-refresh the notes preview as you type label/notes
+    if (_ln && _ln.panel && _ln.panel.mode === 'notes' && document.getElementById('infoPanel-' + _ln.id)) showNotesPreview(_ln, { label: meta.label, notes: meta.notes, image_url: meta.image_url });
     clearTimeout(_featTimer);
     _featTimer = setTimeout(function () { saveFeatureMeta(selectedDrawId); }, 600);
   }
@@ -2244,8 +2296,36 @@
     var fid = featureToDb[drawId]; if (!fid) return;
     var meta = featureMeta[drawId] || {};
     setStatus('Saving…');
-    try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null, start_date: meta.start || null, end_date: meta.end || null, content_id: meta.pageid || null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    // image_url lives in custom_fields (jsonb) — read-merge-write so we don't clobber imported attributes
+    var cf = {};
+    try { var cur = await db.from('features').select('custom_fields').eq('feature_id', fid).single(); cf = (cur.data && cur.data.custom_fields) || {}; } catch (e) { cf = {}; }
+    if (meta.image_url) cf.image_url = meta.image_url; else delete cf.image_url;
+    var cfVal = Object.keys(cf).length ? cf : null;
+    try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null, start_date: meta.start || null, end_date: meta.end || null, content_id: meta.pageid || null, custom_fields: cfVal }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { console.warn('editing: feature meta save failed', e); setStatus('Save failed'); }
+  }
+  function updateImagePreview(url) {   // small thumbnail under the URL field in the feature panel
+    var img = document.getElementById('efp-image-preview'); if (!img) return;
+    if (url) { img.src = url; img.style.display = 'block'; } else { img.removeAttribute('src'); img.style.display = 'none'; }
+  }
+  var FEATURE_IMAGE_BUCKET = 'feature-images';   // public Supabase Storage bucket (one-time setup; anon-insert RLS)
+  async function uploadFeatureImage(file) {
+    var st = document.getElementById('efp-image-status');
+    if (!file.type || file.type.indexOf('image/') !== 0) { if (st) st.textContent = 'Not an image'; return; }
+    if (st) st.textContent = 'Uploading…';
+    try {
+      if (!db.storage) throw new Error('storage unavailable');
+      var ext = ((file.name || '').split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+      var key = 'feat/' + (featureToDb[selectedDrawId] || 'new') + '-' + (new Date().getTime()) + '.' + ext;
+      var up = await db.storage.from(FEATURE_IMAGE_BUCKET).upload(key, file, { upsert: true, contentType: file.type });
+      if (up.error) throw new Error(up.error.message);
+      var pub = db.storage.from(FEATURE_IMAGE_BUCKET).getPublicUrl(key);
+      var url = (pub && pub.data && pub.data.publicUrl) || '';
+      if (!url) throw new Error('no public URL');
+      var inp = document.getElementById('efp-image'); if (inp) inp.value = url;
+      onFeatureField('image_url', url); updateImagePreview(url);
+      if (st) st.textContent = 'Uploaded ✓';
+    } catch (e) { if (st) st.textContent = 'Upload failed — create the “' + FEATURE_IMAGE_BUCKET + '” bucket'; console.warn('feature image upload failed', e); }
   }
   // Toggling a drawn layer's checkbox shows/hides its features by removing them from
   // (and re-adding them to) the draw control. _suppressFeatureDelete keeps the DB intact.
@@ -2320,8 +2400,13 @@
         '<div id="elp-src-info" style="font-size:10px;color:#888888;margin-bottom:5px;"></div>' +
         '<button id="elp-src-apply" style="width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:12px;">Apply source</button>' +
       '</div>' +
+      '<div id="elp-panel-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Info panel (on feature click)</label>' +
+      '<select id="elp-panel-mode" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="notes">Title + notes</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
       '<div id="elp-enc-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia base URL</label>' +
       '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<div id="elp-nidprop-row" style="display:none;margin-top:6px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Page-ID property</label>' +
+      '<input id="elp-nidprop" type="text" placeholder="e.g. nid" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">For tilesets: which feature property holds the page id (drawn layers always use &ldquo;content_id&rdquo;).</div></div>' +
       '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>' +
       '<div id="elp-interact-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;">' +
         '<label style="display:block;font-size:11px;color:#555555;margin-bottom:4px;">Interaction</label>' +
@@ -2347,6 +2432,8 @@
     document.getElementById('elp-attrs').addEventListener('click', function () { if (activeLayerId) openAttributeTable(activeLayerId); });
     document.getElementById('elp-setzoom').addEventListener('click', function () { if (activeLayerId) onSetZoom(activeLayerId); });   // set-zoom moved here from the layer row
     document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
+    document.getElementById('elp-nidprop').addEventListener('change', function () { onNidProp(this.value); });
+    document.getElementById('elp-panel-mode').addEventListener('change', function () { onPanelMode(this.value); });
     document.getElementById('elp-src-apply').addEventListener('click', onApplySource);
     document.getElementById('elp-src-url').addEventListener('input', function () { document.getElementById('elp-src-zooms').style.display = (this.value.trim().indexOf('mapbox://') === 0) ? 'none' : 'block'; });
     document.getElementById('elp-hover').addEventListener('change', onInteraction);
@@ -2376,11 +2463,41 @@
     var node = findNodeById(layers, activeLayerId); if (!node) return;
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
     var url = (value || '').trim();
-    if (url) { node.panel = node.panel || {}; node.panel.encyclopediaBase = url; node.panel.nidProp = 'content_id'; if (!node.panel.render && window.renderRegistry) node.panel.render = window.renderRegistry._default; }
+    var isTs = isTilesetNode(node);
+    // page-id property: drawn layers use the features.content_id column; tilesets pick a feature/tile property (default nid) — never clobber an existing mapping
+    var nidProp = isTs ? ((node.panel && node.panel.nidProp) || ((document.getElementById('elp-nidprop') || {}).value || '').trim() || 'nid') : 'content_id';
+    if (url) { node.panel = node.panel || {}; node.panel.encyclopediaBase = url; node.panel.nidProp = nidProp; if (!node.panel.render && window.renderRegistry) node.panel.render = window.renderRegistry._default; }
     else if (node.panel) { delete node.panel.encyclopediaBase; }
     setStatus('Saving…');
-    try { var r = await db.from('layers').update({ content_base_url: url || null, content_id_prop: url ? 'content_id' : null }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    try { var r = await db.from('layers').update({ content_base_url: url || null, content_id_prop: url ? nidProp : null }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { setStatus('Save failed'); }
+  }
+  async function onNidProp(value) {   // #7: tilesets choose which feature property holds the Drupal page id (e.g. buildings use "nid")
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var prop = (value || '').trim() || 'nid';
+    node.panel = node.panel || {}; node.panel.nidProp = prop;
+    setStatus('Saving…');
+    try { var r = await db.from('layers').update({ content_id_prop: prop }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    catch (e) { setStatus('Save failed'); }
+  }
+  async function onPanelMode(mode) {   // per-layer info-panel mode: notes / drupal / both → persisted in raw_config.panel.mode (configLoader reads it)
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    node.panel = node.panel || {};
+    node.panel.mode = mode;
+    if (window.renderRegistry) node.panel.render = (mode === 'notes') ? window.renderRegistry._notes : (window.renderRegistry[activeLayerId] || window.renderRegistry._default);
+    document.getElementById('elp-enc-row').style.display = (mode === 'drupal' || mode === 'both') ? 'block' : 'none';   // toggle the encyclopedia URL field live
+    setStatus('Saving…');
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      rc.panel = rc.panel || {}; rc.panel.mode = mode;
+      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid); if (r.error) throw new Error(r.error.message);
+      setStatus('Info panel: ' + mode);
+    } catch (e) { setStatus('Save failed'); }
   }
   // View/edit a tileset's source — repoint the URL (mapbox:// or a {z}/{x}/{y} worker/PMTiles template),
   // source-layer, and zoom range; persist to the layers table + re-render the layer on both maps.
@@ -2458,8 +2575,15 @@
     document.getElementById('elp-radius-row').style.display = (node.type === 'circle') ? 'block' : 'none';
     // attribute table: drawn + ALL tilesets (stored features → editable; pure tilesets → read-only from loaded tiles)
     document.getElementById('elp-attrs').style.display = (isGeojson || isTilesetNode(node)) ? 'block' : 'none';
-    document.getElementById('elp-enc-row').style.display = isGeojson ? 'block' : 'none';
+    var canPanel = isGeojson || isTilesetNode(node);   // layers that can show a feature info panel
+    var pmodeUI = (node.panel && node.panel.mode) || ((node.panel && node.panel.encyclopediaBase) ? 'drupal' : 'notes');
+    document.getElementById('elp-panel-row').style.display = canPanel ? 'block' : 'none';
+    document.getElementById('elp-panel-mode').value = pmodeUI;
+    document.getElementById('elp-enc-row').style.display = (canPanel && (pmodeUI === 'drupal' || pmodeUI === 'both')) ? 'block' : 'none';   // encyclopedia URL only when Drupal is part of the mode
     document.getElementById('elp-encurl').value = (node.panel && node.panel.encyclopediaBase) || '';
+    var isTsPanel = isTilesetNode(node);   // tilesets pick which property holds the page id; drawn layers always use content_id
+    document.getElementById('elp-nidprop-row').style.display = (isTsPanel && (pmodeUI === 'drupal' || pmodeUI === 'both')) ? 'block' : 'none';
+    document.getElementById('elp-nidprop').value = (node.panel && node.panel.nidProp) || (isTsPanel ? 'nid' : 'content_id');
     var isTs = isTilesetNode(node);   // tilesets show their Source (url / source-layer / zooms) so it can be viewed + repointed (e.g. to a PMTiles worker)
     document.getElementById('elp-src-row').style.display = isTs ? 'block' : 'none';
     if (isTs) {

@@ -126,7 +126,8 @@ function handlePanelClick(layer, event) {
   var props = event.features[0].properties;
   var clickedId = event.features[0].id;
 
-  if (!props[panel.nidProp]) return;
+  var mode = panel.mode || (panel.encyclopediaBase ? "drupal" : "notes");
+  if (mode === "drupal" && !props[panel.nidProp]) return;   // drupal needs a nid; notes renders the feature's own title/notes
 
   var popupHTML =
     "<div class='" + state.popupClass + "'>" +
@@ -138,16 +139,36 @@ function handlePanelClick(layer, event) {
     if (state.isOpen) {
       closePanelInfo(layer);
     } else {
-      fetchAndRender(layer, props, clickedId, event.lngLat, popupHTML);
+      renderInfoPanel(layer, props, clickedId, event.lngLat, popupHTML, mode);
     }
   } else {
     setPanelHighlight(layer, state.viewId, false);
     state.viewId = clickedId;
-    fetchAndRender(layer, props, clickedId, event.lngLat, popupHTML);
+    renderInfoPanel(layer, props, clickedId, event.lngLat, popupHTML, mode);
   }
 }
 
-function fetchAndRender(layer, props, clickedId, lngLat, popupHTML) {
+function renderInfoPanel(layer, props, clickedId, lngLat, popupHTML, mode) {
+  if (mode === "notes") renderNotesPanel(layer, props, clickedId, lngLat, popupHTML);
+  else if (mode === "both") { renderNotesPanel(layer, props, clickedId, lngLat, popupHTML); fetchAndRender(layer, props, clickedId, lngLat, popupHTML, true); }   // title+notes, then append the Drupal page
+  else fetchAndRender(layer, props, clickedId, lngLat, popupHTML);   // "drupal"
+}
+function renderNotesPanel(layer, props, clickedId, lngLat, popupHTML) {
+  var state = infoPanelState[layer.id];
+  var $el = $("#" + state.divId);
+  var notesFn = (typeof renderRegistry !== "undefined" && renderRegistry && renderRegistry._notes) || (layer.panel && layer.panel.render);   // always the _notes render (panel.render is the Drupal one in "both" mode)
+  var rendered = document.createElement("div");
+  try { rendered.innerHTML = notesFn ? notesFn(props, function() { return ""; }) : ""; } catch (e) { rendered.innerHTML = ""; }
+  $el.html(rendered.innerHTML);
+  floatPanelToTop(state.divId);
+  openSidebarIfHidden();
+  state.isOpen = true;
+  setPanelHighlight(layer, clickedId, true);
+  showPanelPopups(state, lngLat, popupHTML);
+  $el.slideDown();
+}
+
+function fetchAndRender(layer, props, clickedId, lngLat, popupHTML, append) {
   var panel = layer.panel;
   var state = infoPanelState[layer.id];
   var $el = $("#" + state.divId);
@@ -202,7 +223,7 @@ function fetchAndRender(layer, props, clickedId, lngLat, popupHTML) {
             if (!clone.text().trim()) $p.remove();
           }
         });
-        $el.html(rendered.innerHTML);
+        if (append) $el.append('<hr class="panel-both-sep"/>' + rendered.innerHTML); else $el.html(rendered.innerHTML);   // "both" mode appends the Drupal page below the title+notes
         floatPanelToTop(state.divId);
         openSidebarIfHidden();
         state.isOpen = true;

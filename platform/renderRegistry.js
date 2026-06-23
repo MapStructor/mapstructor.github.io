@@ -35,4 +35,21 @@ var renderRegistry = {
       ${f()}
     `;
   },
+  // Notes mode: no encyclopedia — render the feature's OWN title + notes (+ optional image), using the
+  // SAME panel-hero / h3 / hr structure (and the panel's colour chrome) as the encyclopedia renders, so the
+  // styling is identical. Sourced from props, not Drupal fields. WYSIWYG notes (#9) are stored as HTML and
+  // rendered raw (script-stripped); legacy plain-text notes are escaped with line breaks preserved.
+  "_notes": function(props, _f) {
+    function esc(s) { return String(s == null ? "" : s).replace(/[<>&]/g, function(c) { return c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"; }); }
+    var img      = props.image_url || props.image || "";
+    var title    = props.label || props.name || props.title || "Details";
+    var notesRaw = props.notes != null ? props.notes : (props.description != null ? props.description : "");
+    var isHtml   = /<[a-z!\/][\s\S]*>/i.test(notesRaw);   // WYSIWYG content carries tags
+    var notes    = isHtml ? String(notesRaw).replace(/<script[\s\S]*?<\/script>/gi, "") : esc(notesRaw).replace(/\n/g, "<br/>");
+    return `
+      ${img ? '<div class="panel-hero"><img src="' + esc(img) + '" alt=""></div>' : ''}
+      <h3>${esc(title)}</h3>
+      ${notes ? '<hr/><div class="panel-notes">' + notes + '</div>' : ''}
+    `;
+  },
 };

@@ -98,6 +98,7 @@ var ConfigLoader = (function () {
         return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: {
           label: f.label != null ? f.label : null, description: f.description != null ? f.description : null,
           content_id: f.content_id != null ? f.content_id : null,   // the per-feature encyclopedia page id (panel.nidProp = "content_id" for drawn layers)
+          image_url: (f.custom_fields && f.custom_fields.image_url) || null,   // per-feature hero image for the info panel (notes/both modes)
           DayStart: ymd(f.start_date, 0), DayEnd: ymd(f.end_date, 99999999)
         } };
       }) } };
@@ -121,13 +122,17 @@ var ConfigLoader = (function () {
       };
     }
 
-    if (row.content_base_url != null) {
-      var panel = { encyclopediaBase: row.content_base_url };
-      if (row.content_id_prop != null) panel.nidProp = row.content_id_prop;
+    var hasEncyclopedia = row.content_base_url != null;
+    var notesEligible = row.source_type === "geojson-supabase";   // drawn layers default to notes mode (their features carry label/description)
+    if (hasEncyclopedia || notesEligible || (raw.panel && raw.panel.mode)) {
+      var panel = {};
+      if (hasEncyclopedia) { panel.encyclopediaBase = row.content_base_url; if (row.content_id_prop != null) panel.nidProp = row.content_id_prop; }
       if (raw.panel) Object.keys(raw.panel).forEach(function (k) { panel[k] = raw.panel[k]; });
       if (row.panel_color != null) panel.color = row.panel_color;
       if (panel.color == null) panel.color = leaf.iconColor || "#3bb2d0";   // setupInfoPanels colours the panel via hexToRgba(panel.color); a missing panel_color would throw + break EVERY panel
-      var rend = registry && (registry[row.slug] || registry["_default"]); if (rend) panel.render = rend;   // drawn layers fall back to the generic render
+      if (!panel.mode) panel.mode = hasEncyclopedia ? "drupal" : "notes";   // explicit raw.panel.mode wins; else drupal if it links an encyclopedia, else notes (title+notes from the feature)
+      var rend = registry && (registry[row.slug] || (panel.mode === "notes" ? registry["_notes"] : registry["_default"]));
+      if (rend) panel.render = rend;
       leaf.panel = panel;
     }
 
@@ -207,7 +212,7 @@ var ConfigLoader = (function () {
     var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase"; }).map(function (pl) { return pl.layers.id; });
     if (drawnIds.length) {
       var push = function (data) { (data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); }); };
-      var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id";
+      var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields";
       // Supabase caps a select at 1000 rows; get the total, then page through (the rest in parallel)
       // so layers with many features (e.g. imported datasets) render fully, not just the first 1000.
       var first = await db.from("features").select(sel, { count: "exact" }).in("layer_id", drawnIds).order("feature_id").range(0, 999);
