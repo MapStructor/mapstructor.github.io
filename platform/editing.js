@@ -1516,6 +1516,8 @@
     draw = new MapboxDraw({ displayControlsDefault: false, userProperties: true, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
     beforeMap.addControl(draw, 'top-left');   // left side, clear of the right swipe map (offset past the sidebar in CSS)
     beforeMap.on('draw.render', measureRender);   // live distance while measuring
+    beforeMap.on('draw.render', scheduleMirrorSync);   // mirror the MapboxDraw contents onto the right swipe side (both-sides display)
+    try { if (typeof afterMap !== 'undefined' && afterMap) afterMap.once('idle', syncMirrorRight); } catch (e) {}   // initial paint once the right map is ready
     beforeMap.on('draw.create', onDrawCreate);
     beforeMap.on('draw.update', onDrawUpdate);
     beforeMap.on('draw.delete', onDrawDelete);
@@ -1920,6 +1922,7 @@
         _geomSnap[did] = { type: row.geom.type, coordinates: row.geom.coordinates };
       });
       draw.set({ type: 'FeatureCollection', features: feats });
+      syncMirrorRight();   // show the loaded drawn features on the right swipe side too
     } catch (e) { console.warn('editing: load features failed', e); }
   }
   // The engine (P0) renders geojson-supabase layers as real GeoJSON layers; in the
@@ -1938,6 +1941,44 @@
         if (n.children) walk(n.children);
       });
     })(layers);
+  }
+
+  // ── Both-sides display: everything being edited lives in the LEFT MapboxDraw (drawn features AND a
+  //    clicked building pulled into edit), so the engine shows it on the left only. Mirror the whole
+  //    MapboxDraw contents onto a RIGHT-side overlay (afterMap), styled to match DRAW_STYLES' inactive
+  //    paint via the same per-feature props — so saved draws/edits and in-edit buildings show on the right
+  //    too. It tracks draw.getAll(), so the right always matches the left by construction. ──
+  var MIRROR_SRC = 'editor-draw-mirror-right';
+  function ensureMirrorRight() {
+    if (typeof afterMap === 'undefined' || !afterMap) return false;
+    try {
+      if (afterMap.getSource(MIRROR_SRC)) return true;
+      if (afterMap.isStyleLoaded && !afterMap.isStyleLoaded()) return false;   // retry on the next draw.render
+      var C  = ['coalesce', ['get', 'color'], '#3bb2d0'];                       // mirrors DRAW_STYLES COLOR (user_* → plain props)
+      var OF = ['coalesce', ['get', 'outline'], C];                            // OUTLINE_FILL: polygon outline → fill colour
+      var OP = ['coalesce', ['get', 'opacity'], 1];                            // STROKE_OPACITY: line/point opacity, default 1
+      var SW = ['coalesce', ['get', 'strokewidth'], 2];                        // STROKE_WIDTH
+      afterMap.addSource(MIRROR_SRC, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      afterMap.addLayer({ id: MIRROR_SRC + '-fill', type: 'fill', source: MIRROR_SRC, filter: ['==', '$type', 'Polygon'],
+        paint: { 'fill-color': C, 'fill-outline-color': OF, 'fill-opacity': ['coalesce', ['get', 'opacity'], 0.35] } });
+      afterMap.addLayer({ id: MIRROR_SRC + '-poly-stroke', type: 'line', source: MIRROR_SRC, filter: ['==', '$type', 'Polygon'],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': OF, 'line-width': SW, 'line-opacity': ['coalesce', ['get', 'strokeopacity'], 1] } });
+      afterMap.addLayer({ id: MIRROR_SRC + '-line', type: 'line', source: MIRROR_SRC, filter: ['==', '$type', 'LineString'],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': C, 'line-width': SW, 'line-opacity': OP } });
+      afterMap.addLayer({ id: MIRROR_SRC + '-point', type: 'circle', source: MIRROR_SRC, filter: ['==', '$type', 'Point'],
+        paint: { 'circle-color': C, 'circle-radius': ['coalesce', ['get', 'radius'], 5], 'circle-stroke-width': ['coalesce', ['get', 'strokewidth'], 1.5], 'circle-stroke-color': ['coalesce', ['get', 'outline'], '#000'], 'circle-opacity': OP } });
+      return true;
+    } catch (e) { return false; }
+  }
+  function syncMirrorRight() {
+    try { if (!draw || !ensureMirrorRight()) return; var src = afterMap.getSource(MIRROR_SRC); if (src) src.setData(draw.getAll()); } catch (e) {}
+  }
+  var _mirrorTimer = null;
+  function scheduleMirrorSync() {   // coalesce the many draw.render ticks during a drag into one setData
+    if (_mirrorTimer) return;
+    _mirrorTimer = setTimeout(function () { _mirrorTimer = null; syncMirrorRight(); }, 120);
   }
 
   // ── feature panel: click a drawn feature → edit its label/notes ─────────────
