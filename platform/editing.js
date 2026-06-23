@@ -533,6 +533,25 @@
     var fid = e.features[0].id; if (fid == null) return;   // tile features carry the db id (Tippecanoe --use-attribute-for-id=id)
     enterEngineEdit(node, fid);
   }
+  // ── Edit-backend adapter (Phase 2a): which DB + table a layer's feature edits read/write, keyed off
+  //    source_type. Drawn (geojson-supabase) AND every tileset that hasn't declared its own backend
+  //    resolve to the platform `features` table — today's behavior. A tileset can later carry
+  //    node.editBackend = { db_url, anon_key, table, id_col, geom_col, layer_col } to route its edits to
+  //    its OWN source table (e.g. curr-builds → ames_buildings_2026) instead of `features`. (Phase 2b wires
+  //    that config + tile regen; INSERT/DELETE routing also lands then — for now only geom read/write is
+  //    routed, which is enough to prove the seam without changing any behavior.) ──
+  var PLATFORM_FEATURES = { db: db, table: 'features', idCol: 'feature_id', layerCol: 'layer_id', geomCol: 'geom' };
+  var _editClients = {};
+  function getEditBackend(node) {
+    var eb = node && node.editBackend;
+    if (!eb || !eb.table) return PLATFORM_FEATURES;                       // drawn + unconfigured tilesets → platform features (unchanged)
+    var client = db;
+    if (eb.db_url && eb.anon_key && window.supabase) {                    // a tileset pointing at its own DB
+      client = _editClients[eb.db_url] || (_editClients[eb.db_url] = window.supabase.createClient(eb.db_url, eb.anon_key));
+    }
+    return { db: client, table: eb.table, idCol: eb.id_col || 'feature_id', layerCol: eb.layer_col || 'layer_id', geomCol: eb.geom_col || 'geom' };
+  }
+
   async function enterEngineEdit(node, fid) {
     var drawId = 'db-' + fid;
     if (draw && draw.get(drawId)) { try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {} showFeaturePanel(drawId); return; }
@@ -540,12 +559,13 @@
     if (!lyrId) return;   // this layer's data isn't in our `features` table → not editable here
     // Scope to THIS layer's id. feature_id alone is GLOBAL, so a tile id can collide with an unrelated
     // migrated feature on another layer and "edit" (and hide) the wrong thing — the vanishing-feature bug.
-    var res; try { res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id').eq('feature_id', fid).eq('layer_id', lyrId).single(); } catch (e) { res = { error: e }; }
-    if (res.error || !res.data || !res.data.geom) return;   // not a feature of this layer → ignore the click, don't filter/hide it
-    var row = res.data, origGeom = { type: row.geom.type, coordinates: row.geom.coordinates };
+    var EB = getEditBackend(node);   // Phase 2a: read from this layer's edit backend (platform `features` unless the tileset declared its own)
+    var res; try { res = await EB.db.from(EB.table).select(EB.idCol + ', ' + EB.layerCol + ', ' + EB.geomCol + ', label, description, start_date, end_date, content_id').eq(EB.idCol, fid).eq(EB.layerCol, lyrId).single(); } catch (e) { res = { error: e }; }
+    if (res.error || !res.data || !res.data[EB.geomCol]) return;   // not a feature of this layer → ignore the click, don't filter/hide it
+    var row = res.data, rowGeom = row[EB.geomCol], origGeom = { type: rowGeom.type, coordinates: rowGeom.coordinates };
     if (origGeom.type === 'MultiPolygon') { _engineWasMulti[drawId] = true; _engineOrigMulti[drawId] = origGeom; }
     var geom = toDrawPolygon(origGeom);   // mapbox-gl-draw needs a Polygon
-    featureToDb[drawId] = fid; featureLayer[drawId] = row.layer_id; _engineEditNode[drawId] = node;
+    featureToDb[drawId] = fid; featureLayer[drawId] = row[EB.layerCol]; _engineEditNode[drawId] = node;
     featureMeta[drawId] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '' };
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
     try { draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: featureProps(node) || {} }); } catch (e) { setStatus('Edit failed'); return; }
@@ -1571,7 +1591,8 @@
   }
   async function setDrawnGeom(drawId, geom) {
     var fid = featureToDb[drawId];
-    if (fid) { try { await db.from('features').update({ geom: toDbGeom(drawId, geom) }).eq('feature_id', fid); } catch (e) {} }
+    var EBg = _engineEditNode[drawId] ? getEditBackend(_engineEditNode[drawId]) : PLATFORM_FEATURES;   // Phase 2a
+    if (fid) { try { var gpatch = {}; gpatch[EBg.geomCol] = toDbGeom(drawId, geom); await EBg.db.from(EBg.table).update(gpatch).eq(EBg.idCol, fid); } catch (e) {} }
     try { var f = draw && draw.get(drawId); var props = f ? f.properties : {}; _suppressFeatureDelete = true; if (f) draw.delete(drawId); if (draw) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props }); setTimeout(function () { _suppressFeatureDelete = false; }, 0); } catch (e) {}
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
   }
@@ -1858,7 +1879,9 @@
       var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
       var oldGeom = _geomSnap[f.id], newGeom = JSON.parse(JSON.stringify(f.geometry));
       var saveGeom = toDbGeom(f.id, f.geometry); if (_engineWasMulti[f.id]) _engineOrigMulti[f.id] = saveGeom;
-      try { await db.from('features').update({ geom: saveGeom }).eq('feature_id', fid); } catch (err) { console.warn('feature update failed', err); }
+      var EBu = _engineEditNode[f.id] ? getEditBackend(_engineEditNode[f.id]) : PLATFORM_FEATURES;   // Phase 2a: tileset edits → the layer's backend; drawn → platform features
+      var upatch = {}; upatch[EBu.geomCol] = saveGeom;
+      try { await EBu.db.from(EBu.table).update(upatch).eq(EBu.idCol, fid); } catch (err) { console.warn('feature update failed', err); }
       _geomSnap[f.id] = newGeom;
       if (oldGeom) (function (drawId, oldG, newG) {
         pushUndo(function () { return setDrawnGeom(drawId, oldG); }, function () { return setDrawnGeom(drawId, newG); }, 'move feature');
