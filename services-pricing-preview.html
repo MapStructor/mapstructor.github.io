@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Map Services — MapStructor</title>
+  <link rel="icon" type="image/png" href="images/nittygrittymapping_logo.png">
+  <style>
+    :root { --p: #7c5cbf; --ink: #1e1b2e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Source Sans Pro', system-ui, Arial, sans-serif; color: var(--ink); background: #faf9fd; }
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 14px 26px; border-bottom: 1px solid #eae6f3; background: #fff; }
+    nav a.brand { font-weight: 800; font-size: 18px; color: var(--ink); text-decoration: none; }
+    nav .nav-right { display: flex; gap: 16px; font-size: 14px; }
+    nav .nav-right a { color: var(--p); text-decoration: none; }
+    main { max-width: 740px; margin: 0 auto; padding: 44px 24px 90px; }
+    h1 { font-size: 30px; margin: 0 0 18px; }
+    .content { font-size: 16px; line-height: 1.65; color: #3a3550; }
+    .content p { margin: 0 0 16px; }
+    .content a { color: var(--p); }
+
+    /* ── Pricing table ────────────────────────────────────────────── */
+    .pricing { margin-top: 64px; }
+    .pricing h2 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.01em; }
+    .pricing .sub { color: #6b6680; font-size: 15px; margin: 0 0 26px; max-width: 56ch; line-height: 1.55; }
+    .ptable { border: 1px solid #e9e4f3; border-radius: 16px; overflow: hidden; background: #fff; box-shadow: 0 6px 30px rgba(124,92,191,.07); }
+    .prow { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px; padding: 16px 22px; border-top: 1px solid #f0ecf8; transition: background .12s; }
+    .prow:first-child { border-top: none; }
+    .prow:not(.phead):hover { background: #faf8fe; }
+    .phead { background: #faf9fd; padding: 12px 22px; }
+    .phead div { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #9a93ad; }
+    .pstore { font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+    .pprice { font-size: 20px; font-weight: 800; white-space: nowrap; }
+    .pprice span { font-size: 13px; font-weight: 600; color: #9a93ad; margin-left: 1px; }
+    .pprice a { color: var(--p); font-size: 15px; font-weight: 700; text-decoration: none; }
+    .pprice a:hover { text-decoration: underline; }
+    .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; letter-spacing: .02em; }
+    .badge.free { background: #e6f6ea; color: #2d7a2d; }
+    .badge.pop { background: var(--p); color: #fff; }
+    .prow.hot { background: #f6f2fe; }
+    .prow.hot:hover { background: #f1ebfd; }
+    .pnote { font-size: 13px; color: #9a93ad; margin: 16px 2px 0; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js"></script>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="index.html">MapStructor</a>
+    <div class="nav-right"><a href="about.html">About</a><a href="index.html">Home</a></div>
+  </nav>
+  <main>
+    <h1 data-edit="services-title">Map Services</h1>
+    <div class="content" data-edit="services-body">
+      <p>Want a map built for you? We make custom maps for museums, universities, and organizations — historical atlases, interactive data maps, and more.</p>
+      <p>Get in touch: <a href="mailto:hello@mapstructor.com">hello@mapstructor.com</a> or <a href="https://github.com/MapStructor" target="_blank" rel="noopener">github.com/MapStructor</a>.</p>
+    </div>
+
+    <section class="pricing">
+      <h2>Pricing</h2>
+      <p class="sub">Building maps and adding features is always free. You only pay for <b>storage</b> — and only if you need a lot of it.</p>
+      <div class="ptable">
+        <div class="prow phead"><div>Storage</div><div>Price</div></div>
+        <div class="prow"><div class="pstore">500&nbsp;MB <span class="badge free">Free</span></div><div class="pprice">$0</div></div>
+        <div class="prow"><div class="pstore">20&nbsp;GB</div><div class="pprice">$1<span>/mo</span></div></div>
+        <div class="prow"><div class="pstore">50&nbsp;GB</div><div class="pprice">$2<span>/mo</span></div></div>
+        <div class="prow hot"><div class="pstore">100&nbsp;GB <span class="badge pop">Popular</span></div><div class="pprice">$4<span>/mo</span></div></div>
+        <div class="prow"><div class="pstore">250&nbsp;GB</div><div class="pprice">$8<span>/mo</span></div></div>
+        <div class="prow"><div class="pstore">500&nbsp;GB</div><div class="pprice">$15<span>/mo</span></div></div>
+        <div class="prow"><div class="pstore">1&nbsp;TB</div><div class="pprice">$25<span>/mo</span></div></div>
+        <div class="prow"><div class="pstore">2&nbsp;TB</div><div class="pprice">$45<span>/mo</span></div></div>
+        <div class="prow"><div class="pstore">2&nbsp;TB+</div><div class="pprice"><a href="mailto:hello@mapstructor.com">Contact us</a></div></div>
+      </div>
+      <p class="pnote">Prices are monthly. Cancel anytime — your maps stay viewable, you just can't add more once you're full.</p>
+    </section>
+  </main>
+  <script src="platform/pageEditor.js"></script>
+</body>
+</html>

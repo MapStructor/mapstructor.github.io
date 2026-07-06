@@ -44,10 +44,53 @@ var ConfigLoader = (function () {
     return isNaN(n) ? fallback : n;
   }
 
+  // features-table row → GeoJSON feature with the engine's property contract (label/description/panel id/
+  // image + timeline DayStart/DayEnd + custom_fields spread in; reserved keys never overwritten)
+  function featureToGeo(f) {
+    var props = {
+      label: f.label != null ? f.label : null, description: f.description != null ? f.description : null,
+      content_id: f.content_id != null ? f.content_id : null,
+      image_url: f.image_url != null ? f.image_url : null,
+      DayStart: ymd(f.start_date, 0), DayEnd: ymd(f.end_date, 99999999)
+    };
+    if (f.custom_fields && typeof f.custom_fields === "object") {
+      Object.keys(f.custom_fields).forEach(function (k) { if (!(k in props)) props[k] = f.custom_fields[k]; });
+    }
+    return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: props };
+  }
+
+  // Off-by-default drawn layers boot with EMPTY sources (marked _deferred) so the visible map paints fast;
+  // call this after boot to fetch their features and fill the live sources (they're hidden — no flash).
+  async function hydrateDeferredFeatures(db, layersArr, maps) {
+    var flat = [];
+    (function w(a) { (a || []).forEach(function (n) { flat.push(n); if (n.children) w(n.children); }); })(layersArr || []);
+    var targets = flat.filter(function (n) { return n._deferred && n._layerDbId; });
+    if (!targets.length) return 0;
+    var ids = targets.map(function (n) { return n._layerDbId; });
+    var byLayer = {};
+    var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url, custom_fields";
+    for (var off = 0; ; off += 1000) {
+      var r = await db.from("features").select(sel).in("layer_id", ids).order("feature_id").range(off, off + 999);
+      if (r.error || !r.data || !r.data.length) break;
+      r.data.forEach(function (row) { (byLayer[row.layer_id] = byLayer[row.layer_id] || []).push(row); });
+      if (r.data.length < 1000) break;
+    }
+    targets.forEach(function (n) {
+      var fc = { type: "FeatureCollection", features: (byLayer[n._layerDbId] || []).map(featureToGeo) };
+      if (n.source && n.source.type === "geojson") n.source.data = fc;   // style switches re-add with the data
+      n._deferred = false;
+      (maps || []).forEach(function (m) {
+        if (!m) return;
+        ["-left", "-right"].forEach(function (sfx) { try { var s = m.getSource(n.id + sfx); if (s) s.setData(fc); } catch (e) {} });
+      });
+    });
+    return targets.length;
+  }
+
   function geojsonDefaultPaint(type, color) {
     if (type === "fill") return { "fill-color": color, "fill-opacity": 0.35, "fill-outline-color": color };
     if (type === "line") return { "line-color": color, "line-width": 2 };
-    return { "circle-radius": 5, "circle-color": color, "circle-stroke-width": 1.5, "circle-stroke-color": "#000" };
+    return { "circle-radius": 6, "circle-color": color, "circle-stroke-width": 1.5, "circle-stroke-color": "#fff" };
   }
   // Hover/click highlight overlay for layers with no hover_paint (e.g. drawn features). Gated on feature-state
   // `hover`; addLayers.js highlightSelectablePaint() also folds in the `selected` (click) case.
@@ -74,6 +117,9 @@ var ConfigLoader = (function () {
     if (row.name != null) leaf.label = row.name;
     if (row.color != null) leaf.iconColor = row.color;
     if (row.enabled_by_default != null) leaf.checked = row.enabled_by_default;
+    // off-by-default layers are ADDED hidden — previously they rendered visible and refreshLayers hid
+    // them a beat later (the "shows everything, then turns off" load flash). refreshLayers still toggles.
+    if (leaf.checked === false) { leaf.layout = leaf.layout || {}; if (leaf.layout.visibility == null) leaf.layout.visibility = "none"; }
     if (row.type != null) leaf.type = row.type;
 
     if (row.source_type === "vector-tiles-url") {
@@ -101,17 +147,10 @@ var ConfigLoader = (function () {
     // Drawn (geojson-supabase) layers render from their Supabase features as a real
     // GeoJSON map layer — so they get the engine's paint/popup/panel like any tileset.
     if (row.source_type === "geojson-supabase") {
-      leaf.source = { type: "geojson", data: { type: "FeatureCollection", features: (features || []).map(function (f) {
-        // DayStart/DayEnd gate visibility on the timeline (engine date filter is a
-        // YYYYMMDD int). Derive from the feature's start_date/end_date columns; a null
-        // date means "no bound", so default to an always-visible range.
-        return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: {
-          label: f.label != null ? f.label : null, description: f.description != null ? f.description : null,
-          content_id: f.content_id != null ? f.content_id : null,   // the per-feature encyclopedia page id (panel.nidProp = "content_id" for drawn layers)
-          image_url: f.image_url != null ? f.image_url : null,   // per-feature hero image (features.image_url column)
-          DayStart: ymd(f.start_date, 0), DayEnd: ymd(f.end_date, 99999999)
-        } };
-      }) } };
+      leaf._layerDbId = row.id;
+      leaf.source = { type: "geojson", data: { type: "FeatureCollection", features: (features || []).map(featureToGeo) } };
+      // off-by-default layer that got no features from the bundle → deferred (hydrateDeferredFeatures fills it post-boot)
+      if (row.enabled_by_default === false && (!features || !features.length)) leaf._deferred = true;
       if (leaf.type == null) leaf.type = "circle";
       if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
       if (leaf.highlight == null) leaf.highlight = defaultHighlightPaint(leaf.type, leaf.iconColor || "#3bb2d0");   // drawn features get a hover/click highlight (both swipe sides; toggle via #11)
@@ -203,7 +242,15 @@ var ConfigLoader = (function () {
     function finalize(holder) {
       holder.node.children = holder.kids.sort(bySort).map(function (e) { return e.node; });
     }
-    Object.keys(groupNodes).forEach(function (id) { finalize(groupNodes[id]); });
+    // groups created in the EDITOR never carried the layersList collapse plumbing (itemSelector on the
+    // group + <slug>_item class on each child) — the ± caret silently did nothing. Derive them here.
+    Object.keys(groupNodes).forEach(function (id) {
+      var gn = groupNodes[id];
+      if (gn.node.itemSelector == null) gn.node.itemSelector = "." + gn.node.id + "_item";
+      if (gn.node.caretId == null) gn.node.caretId = "caret-" + gn.node.id;
+      gn.kids.forEach(function (k) { k.node.topLayerClass = gn.node.id; });   // FORCE: leaves persist their own id there, which breaks the caret
+      finalize(gn);
+    });
     Object.keys(sectionNodes).forEach(function (id) { finalize(sectionNodes[id]); });
 
     return top.sort(bySort).map(function (e) { return e.node; });
@@ -220,10 +267,11 @@ var ConfigLoader = (function () {
     if (l.error) throw l.error;
     var bundle = { project: p.data, sections: s.data, groups: g.data, projectLayers: l.data, featuresByLayer: {} };
     // Pull features for drawn (geojson-supabase) layers so synthesize can build their source.
-    var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase"; }).map(function (pl) { return pl.layers.id; });
+    // Off-by-default layers are SKIPPED here (fast first paint) — hydrateDeferredFeatures loads them post-boot.
+    var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase" && pl.layers.enabled_by_default !== false; }).map(function (pl) { return pl.layers.id; });
     if (drawnIds.length) {
       var push = function (data) { (data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); }); };
-      var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url";
+      var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url, custom_fields";   // custom_fields feed data-driven styling (color-by-attribute)
       // Supabase caps a select at 1000 rows; get the total, then page through (the rest in parallel)
       // so layers with many features (e.g. imported datasets) render fully, not just the first 1000.
       var first = await db.from("features").select(sel, { count: "exact" }).in("layer_id", drawnIds).order("feature_id").range(0, 999);
@@ -248,5 +296,6 @@ var ConfigLoader = (function () {
     synthesize: synthesize,
     fetchProjectBundle: fetchProjectBundle,
     loadProjectConfig: loadProjectConfig,
+    hydrateDeferredFeatures: hydrateDeferredFeatures,
   };
 })();

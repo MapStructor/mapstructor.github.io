@@ -11,12 +11,22 @@ function setHoverBoth(config, fid, on) {
   try { if (typeof afterMap  !== 'undefined' && afterMap)  afterMap.setFeatureState({  source: config.id + "-right", sourceLayer: sl, id: fid }, { hover: on }); } catch (e) {}
 }
 
+let wiredInteraction = {};
+
 function setupLayerEvents() {
-  flatLayers(layers).filter(l => l.popupStyle || l.highlight || l.click).forEach(config => {   // hover-highlight needs only `highlight` (e.g. curr-builds has no popupStyle); popup stays gated to popupStyle
-    setupLayerEventForMap(beforeMap, config, "left");
-    setupLayerEventForMap(afterMap,  config, "right");
-  });
+  flatLayers(layers).filter(l => l.popupStyle || l.highlight || l.click).forEach(wireLayerInteraction);   // hover-highlight needs only `highlight` (e.g. curr-builds has no popupStyle); popup stays gated to popupStyle
 }
+
+// Idempotent per-layer wiring, also callable LIVE from the editor when the user turns interaction on for a
+// layer that had none at load (#12 — no reload needed). Handlers read config at event time, so toggling
+// popupStyle/click off applies live too.
+function wireLayerInteraction(config) {
+  if (wiredInteraction[config.id]) return;
+  wiredInteraction[config.id] = true;
+  setupLayerEventForMap(beforeMap, config, "left");
+  setupLayerEventForMap(afterMap,  config, "right");
+}
+window.wireLayerInteraction = wireLayerInteraction;
 
 function setupLayerEventForMap(map, config, side) {
   const layerID = config.id + "-" + side;
@@ -28,8 +38,10 @@ function setupLayerEventForMap(map, config, side) {
   hoverPopUp[index] = new mapboxgl.Popup({ closeButton: false, closeOnClick: false });
 
   map.on("mouseenter", layerID, function (e) {
+    if (!config.popupStyle && !config.click && !config.highlight) return;   // #12: interaction toggled off live → no cursor/popup
     map.getCanvas().style.cursor = "pointer";
-    if (config.popupStyle) hoverPopUp[index].setLngLat(e.lngLat).addTo(map);
+    // #13: don't open the popup here — it would show the PREVIOUS feature's HTML until mousemove
+    // overwrites it (the stale-label bug). mousemove opens it once it has this feature's own label.
   });
 
   map.on("mousemove", layerID, function (e) {
@@ -42,9 +54,28 @@ function setupLayerEventForMap(map, config, side) {
       setHoverBoth(config, hoveredID[index], true);       // highlight on BOTH swipe sides
 
       if (config.popupStyle && config.prop) {
+        // If this feature's click pill (infoPanel) is already open, it labels the feature — no hover
+        // bubble on top of it (that stack was the double-bubble bug).
+        var pillOpen = false;
+        try { var st = (typeof infoPanelState !== "undefined") ? infoPanelState[config.id] : null; pillOpen = !!(st && st.isOpen && st.viewId === e.features[0].id); } catch (err) {}
         const val = e.features[0].properties[config.prop];
-        if (typeof val !== 'undefined') {
-          hoverPopUp[index].setLngLat(e.lngLat).setHTML("<div class='" + config.popupStyle + "'>" + val + "</div>");
+        // #13: a feature with no label gets NO bubble — never leave the previous feature's label showing
+        if (!pillOpen && val !== undefined && val !== null && String(val) !== "") {
+          // panel layers use the layer-coloured pill class (colour rule) instead of the legacy green;
+          // colour-by-attribute layers go further — the bubble takes the FEATURE's own colour
+          var cls = config.panel ? ("infoPanelPopUp-" + config.id) : config.popupStyle;
+          var styleAttr = "";
+          try {
+            if (config.colorBy && config.colorBy.mapping) {
+              var cbv = e.features[0].properties[config.colorBy.prop];
+              var cbc = cbv != null ? config.colorBy.mapping[String(cbv)] : null;
+              if (cbc && typeof hexToRgba === "function") styleAttr = " style=\"background-color:" + hexToRgba(cbc, 0.5) + ";border-color:" + cbc + "\"";
+            }
+          } catch (err2) {}
+          hoverPopUp[index].setLngLat(e.lngLat).setHTML("<div class='" + cls + "'" + styleAttr + ">" + val + "</div>");
+          if (!hoverPopUp[index].isOpen()) hoverPopUp[index].addTo(map);
+        } else if (hoverPopUp[index].isOpen()) {
+          hoverPopUp[index].remove();
         }
       }
     }
@@ -59,8 +90,8 @@ function setupLayerEventForMap(map, config, side) {
     if (hoverPopUp[index].isOpen()) hoverPopUp[index].remove();
   });
 
-  // CLICK
-  if (config.click) {
+  // CLICK — always wired; clickHandle gates on live config.click so the editor toggle applies without reload (#12)
+  {
     let viewId = null;
     const afterPopup  = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 5 });
     const beforePopup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 5 });
@@ -87,6 +118,8 @@ function setupLayerEventForMap(map, config, side) {
     }
 
     function clickHandle(event) {
+      if (config.panel) return;   // layers with an info panel: infoPanel.js owns the click (pill + side panel) — never BOTH bubbles stacked
+      if (!config.click) { closeInfo(); return; }   // #12: click-popup toggled off live
       const clickedId = event.features?.[0]?.id;
       if (clickedId == null) return;
       if (viewId === clickedId) { closeInfo(); return; }
@@ -97,6 +130,13 @@ function setupLayerEventForMap(map, config, side) {
       setHighlight(beforeMap, highlightLeft,  clickedId, true);
       viewId = clickedId;
 
+      // #13: no label → no bubble (the highlight above still shows the selection)
+      const val = event.features?.[0]?.properties?.[config.prop];
+      if (val === undefined || val === null || String(val) === "") {
+        if (afterPopup.isOpen())  afterPopup.remove();
+        if (beforePopup.isOpen()) beforePopup.remove();
+        return;
+      }
       const html = buildPopupHTML(event);
       afterPopup.setLngLat(event.lngLat).setHTML(html);
       beforePopup.setLngLat(event.lngLat).setHTML(html);

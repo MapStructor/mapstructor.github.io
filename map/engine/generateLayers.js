@@ -7,6 +7,19 @@ function renderGroupNode(groupNode) {
   return r;
 }
 
+// Row buttons, in order: ℹ info (ONLY when that layer actually has info content) · ⌖ zoom · ▦ attribute
+// table (editor only, leaves only — the editor sets window.__msEditorAttr and wires the click).
+function layerRowButtons(layerData, zoomName, isLeaf) {
+  const infoKey = layerData.infoId || ((layerData.id || "") + "-info");
+  const hasInfo = typeof window !== "undefined" && window.modal_content_html && window.modal_content_html[infoKey];
+  const infoBtn = hasInfo ? `<i class="fa fa-info-circle layer-info trigger-popup" id="${infoKey}" title="Layer Info"></i>` : "";
+  const zn = String(zoomName == null ? "" : zoomName).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const zoomBtn = `<i class="fa fa-crosshairs zoom-to-layer" onclick="zoomToLayer('${zn}')" title="Zoom to Layer"></i>`;
+  const tableBtn = (isLeaf && typeof window !== "undefined" && window.__msEditorAttr)
+    ? `<i class="fa fa-table attr-table-btn" title="Attribute table"></i>` : "";
+  return `<div class="layer-buttons-block"><div class="layer-buttons-list">${infoBtn}${zoomBtn}${tableBtn}</div></div>`;
+}
+
 function renderLayerRow(layerData, groupName) {
   const iconClass = layerData.collapsed ? "fa-plus-square" : "fa-minus-square";
   const html = `
@@ -27,20 +40,7 @@ function renderLayerRow(layerData, groupName) {
           ${layerData.label || ""}
           <div class="dummy-label-layer-space"></div>
         </label>
-        <div class="layer-buttons-block">
-          <div class="layer-buttons-list">
-            <i
-              class="fa fa-crosshairs zoom-to-layer"
-              onclick="zoomToLayer('${groupName}')"
-              title="Zoom to Layer"
-            ></i>
-            <i
-              class="fa fa-info-circle layer-info trigger-popup"
-              id="${layerData.infoId || "group-info"}"
-              title="Layer Info"
-            ></i>
-          </div>
-        </div>
+        ${layerRowButtons(layerData, groupName, false)}
       </div>
     `;
   return html;
@@ -59,9 +59,10 @@ function renderGroupLayerItem(layerData, groupName, isGroupCollapsed) {
           ${layerData.checked ? 'checked="checked"' : ""}
         />
         <label for="${layerData.id}">
-          <i class="${layerData.isSolid ? "fas" : "far"} fa-${layerData.iconType || "slash"} ${["square", "circle", "comment-dots"].includes(layerData.iconType) ? "" : "slash-icon"}" style="color: ${layerData.iconColor || "#ff0000"}"></i>
+          <i class="${layerData.isSolid ? "fas" : "far"} fa-${layerData.iconType || "slash"} ${["square", "circle", "comment-dots"].includes(layerData.iconType) ? "" : "slash-icon"}${layerData.colorBy ? " multicolor-icon" : ""}" style="color: ${layerData.iconColor || "#ff0000"}"></i>
           ${layerData.label || ""}
         </label>
+        ${layerRowButtons(layerData, layerData.label, true)}
       </div>
     `;
   return html;
@@ -78,23 +79,10 @@ function renderSingleLayer(layerData) {
           ${layerData.checked ? 'checked="checked"' : ""}
         />
         <label for="${layerData.id}">
-          <i class="${layerData.isSolid ? "fas" : "far"} fa-${layerData.iconType || "slash"} ${["square", "circle", "comment-dots"].includes(layerData.iconType) ? "" : "slash-icon"}" style="color: ${layerData.iconColor || "#ff0000"}"></i>
+          <i class="${layerData.isSolid ? "fas" : "far"} fa-${layerData.iconType || "slash"} ${["square", "circle", "comment-dots"].includes(layerData.iconType) ? "" : "slash-icon"}${layerData.colorBy ? " multicolor-icon" : ""}" style="color: ${layerData.iconColor || "#ff0000"}"></i>
           ${layerData.label}
         </label>
-        <div class="layer-buttons-block">
-          <div class="layer-buttons-list">
-            <i
-              class="fa fa-crosshairs zoom-to-layer"
-              onclick="zoomToLayer('${layerData.label}')"
-              title="Zoom to Layer"
-            ></i>
-            <i
-              class="fa fa-info-circle layer-info trigger-popup"
-              id="${layerData.infoId}"
-              title="Layer Info"
-            ></i>
-          </div>
-        </div>
+        ${layerRowButtons(layerData, layerData.label, true)}
       </div>
     `;
   return html;

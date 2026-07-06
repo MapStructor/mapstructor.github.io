@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- <script src="platform/sitelock.js"></script> --> <!-- dev lock DISABLED — uncomment to re-lock -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Map Services — MapStructor</title>
+  <link rel="icon" type="image/png" href="images/nittygrittymapping_logo.png">
+  <style>
+    :root { --p: #7c5cbf; --ink: #1e1b2e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Source Sans Pro', system-ui, Arial, sans-serif; color: var(--ink); background: #faf9fd; }
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 14px 26px; border-bottom: 1px solid #eae6f3; background: #fff; }
+    nav a.brand { font-weight: 800; font-size: 18px; color: var(--ink); text-decoration: none; }
+    nav .nav-right { display: flex; gap: 16px; font-size: 14px; }
+    nav .nav-right a { color: var(--p); text-decoration: none; }
+    main { max-width: 740px; margin: 0 auto; padding: 44px 24px 90px; }
+    h1 { font-size: 30px; margin: 0 0 18px; }
+    .content { font-size: 16px; line-height: 1.65; color: #3a3550; }
+    .content p { margin: 0 0 16px; }
+    .content a { color: var(--p); }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js"></script>
+  <script src="platform/topbar.js"></script>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="index.html">MapStructor</a>
+    <div class="nav-right"><a href="about.html">About</a><a href="index.html">Home</a></div>
+  </nav>
+  <main>
+    <h1 data-edit="services-title">Map Services</h1>
+    <div class="content" data-edit="services-body">
+      <p>Want a map built for you? We make custom maps for museums, universities, and organizations — historical atlases, interactive data maps, and more.</p>
+      <p>Get in touch: <a href="mailto:hello@mapstructor.com">hello@mapstructor.com</a> or <a href="https://github.com/MapStructor" target="_blank" rel="noopener">github.com/MapStructor</a>.</p>
+    </div>
+  </main>
+  <script src="platform/pageEditor.js"></script>
+</body>
+</html>

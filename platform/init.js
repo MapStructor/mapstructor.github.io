@@ -23,14 +23,7 @@ async function run() {
 
   if (error || !project) return;
 
-  // Set title and header
+  // Set the browser tab title (projectLoader owns the on-page header name — for the viewer that's the
+  // PUBLISHED name, so don't set the header here or we'd leak the live name onto a published view).
   document.title = project.name;
-  var headerEl = document.getElementById('header-text-value');
-  if (headerEl) headerEl.textContent = project.name;
-
-  // Warn before closing without an account
-  window.addEventListener('beforeunload', function (e) {
-    e.preventDefault();
-    e.returnValue = '';
-  });
 }

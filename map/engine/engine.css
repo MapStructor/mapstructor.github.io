@@ -283,7 +283,7 @@ label#close:active { background-color: #ccc; }
 .map {
   position: absolute;
   display: block;
-  top: 80px;
+  top: 120px;   /* 80px header + 40px site top bar */
   bottom: 67px;
   width: 100%;
   border-top: 2px solid #b0691d;
@@ -487,7 +487,7 @@ div.layer-list-row:hover {
 #rightInfoBar {
   position: absolute;
   display: block;
-  top: 82px;
+  top: 122px;   /* +40px site top bar */
   right: 0;
   max-height: calc(100% - 230px);
   max-height: -o-calc(100% - 230px);
@@ -500,6 +500,14 @@ div.layer-list-row:hover {
 
 .rightInfoBarBorder {
   border: solid #ffffff 3px;
+}
+
+/* Layers coloured BY A DATA COLUMN (no single colour) show a multicoloured sidebar icon */
+.multicolor-icon {
+  background-image: linear-gradient(90deg, #e6194b, #f58231, #ffe119, #3cb44b, #4363d8, #911eb4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
 }
 
 .panel-hero {
@@ -541,12 +549,12 @@ div.layer-list-row:hover {
 #studioMenu {
   position: absolute;
   display: block;
-  top: 82px;
-  height: calc(100% - 171px);
-  height: -o-calc(100% - 171px);
-  height: -moz-calc(100% - 171px);
-  height: -webkit-calc(100% - 171px);
-  max-height: calc(100% - 171px);
+  top: 122px;   /* +40px site top bar */
+  height: calc(100% - 211px);
+  height: -o-calc(100% - 211px);
+  height: -moz-calc(100% - 211px);
+  height: -webkit-calc(100% - 211px);
+  max-height: calc(100% - 211px);
   max-height: -o-calc(100% - 171px);
   max-height: -moz-calc(100% - 171px);
   max-height: -webkit-calc(100% - 171px);
@@ -590,7 +598,7 @@ div.layer-list-row:hover {
 
 #view-hide-layer-panel {
   position: absolute;
-  top: 88px;
+  top: 128px;   /* +40px site top bar */
   left: 337px;
   z-index: 500;
   cursor: pointer;
@@ -641,31 +649,37 @@ i.compress-expand-icon {
   cursor: pointer;
   color: #555;
 }
-i.zoom-to-layer {
+i.zoom-to-layer,
+i.attr-table-btn {
   color: #1d43de;
 }
 i.layer-info,
-i.zoom-to-layer {
+i.zoom-to-layer,
+i.attr-table-btn {
   cursor: pointer;
 }
 i.layer-info:hover,
 i.zoom-to-layer:hover,
+i.attr-table-btn:hover,
 i.compress-expand-icon:hover {
   opacity: 0.7;
 }
 
 div.dummy-label-layer-space {
-  width: 37px;
+  width: 62px;   /* keeps long labels clear of up to three right-anchored row buttons */
   display: inline-block;
 }
 div.layer-buttons-list {
-  width: 100%;
+  /* icons anchor to the RIGHT edge and grow leftward, so the columns line up
+     whether a row has 1, 2 or 3 buttons (info is conditional, table is editor-only) */
+  width: auto;
   display: flex;
   flex-direction: row;
-  justify-content: space-between;
+  justify-content: flex-end;
+  gap: 4px;
 }
 div.layer-buttons-block {
-  width: 38px;
+  width: auto;
   right: 3px;
   margin-right: 3px;
   position: absolute;
@@ -877,7 +891,7 @@ div[class*="field field--name-field-old-title field--type-string field--label-ab
     display: none;
   }
   div.layer-buttons-block {
-    width: 111px;
+    width: auto;
   }
   div.dummy-label-layer-space {
     width: 100px;
@@ -900,20 +914,20 @@ div[class*="field field--name-field-old-title field--type-string field--label-ab
 
 @media (max-width: 1025px) {
   .map {
-    top: 43px;
+    top: 83px;   /* +40px site top bar */
   }
 
   #rightInfoBar {
-    top: 45px;
+    top: 85px;
   }
 
   #studioMenu {
-    top: 45px;
-    height: calc(100% - 134px);
-    height: -o-calc(100% - 134px);
-    height: -moz-calc(100% - 134px);
-    height: -webkit-calc(100% - 134px);
-    max-height: calc(100% - 134px);
+    top: 85px;
+    height: calc(100% - 174px);
+    height: -o-calc(100% - 174px);
+    height: -moz-calc(100% - 174px);
+    height: -webkit-calc(100% - 174px);
+    max-height: calc(100% - 174px);
     max-height: -o-calc(100% - 134px);
     max-height: -moz-calc(100% - 134px);
     max-height: -webkit-calc(100% - 134px);

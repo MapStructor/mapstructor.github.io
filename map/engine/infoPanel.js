@@ -26,9 +26,11 @@ function setupInfoPanels() {
         "  background-color: " + hexToRgba(panel.color, 0.5) + ";" +
         "  border-color: " + panel.color + ";" +
         "}" +
+        // pills match the legacy .infoLayer*PopUp box model exactly (2px solid border, 5px padding
+        // all round) — only the colour is per-layer
         "." + popupClass + " {" +
-        "  padding-left: 5px;" +
-        "  padding-right: 5px;" +
+        "  border: solid " + panel.color + " 2px;" +
+        "  padding: 5px;" +
         "}"
       )
       .appendTo("head");
@@ -129,11 +131,20 @@ function handlePanelClick(layer, event) {
   var mode = panel.mode || (panel.encyclopediaBase ? "drupal" : "notes");
   if (mode === "drupal" && !props[panel.nidProp]) return;   // drupal needs a nid; notes renders the feature's own title/notes
 
-  var popupHTML =
-    "<div class='" + state.popupClass + "'>" +
-    (props.name || "") +
-    (panel.popupLabel ? "<br><b>" + panel.popupLabel + ": </b>" + props[panel.popupProp] : "") +
-    "</div>";
+  // #13: no name/label content → no floating map bubble (empty pills looked broken); the side panel still opens
+  var popupBody =
+    (props.name || props.label || "") +
+    (panel.popupLabel ? "<br><b>" + panel.popupLabel + ": </b>" + props[panel.popupProp] : "");
+  // colour-by-attribute layers: the pill takes the FEATURE's own colour (matches the rendered feature)
+  var pillStyle = "";
+  try {
+    if (layer.colorBy && layer.colorBy.mapping) {
+      var cbv = props[layer.colorBy.prop];
+      var cbc = cbv != null ? layer.colorBy.mapping[String(cbv)] : null;
+      if (cbc) pillStyle = " style=\"background-color:" + hexToRgba(cbc, 0.5) + ";border-color:" + cbc + "\"";
+    }
+  } catch (e2) {}
+  var popupHTML = popupBody ? "<div class='" + state.popupClass + "'" + pillStyle + ">" + popupBody + "</div>" : null;
 
   if (state.viewId === clickedId) {
     if (state.isOpen) {
@@ -154,6 +165,9 @@ function renderInfoPanel(layer, props, clickedId, lngLat, popupHTML, mode) {
   else fetchAndRender(layer, props, clickedId, lngLat, popupHTML);   // "drupal"
 }
 function renderNotesPanel(layer, props, clickedId, lngLat, popupHTML) {
+  // A feature with NO info (no title, notes, or image) gets no panel in the viewer — nothing to show.
+  var hasInfo = (props.label || props.name || props.title || "") || (props.notes || props.description || "") || (props.image_url || props.image || "");
+  if (!hasInfo) return;
   var state = infoPanelState[layer.id];
   var $el = $("#" + state.divId);
   var notesFn = (typeof renderRegistry !== "undefined" && renderRegistry && renderRegistry._notes) || (layer.panel && layer.panel.render);   // always the _notes render (panel.render is the Drupal one in "both" mode)
@@ -252,6 +266,11 @@ function setPanelHighlight(layer, featureId, on) {
 }
 
 function showPanelPopups(state, lngLat, html) {
+  if (!html) {   // #13: nothing to say → no bubble (and clear any previous one)
+    if (state.afterPopup.isOpen())  state.afterPopup.remove();
+    if (state.beforePopup.isOpen()) state.beforePopup.remove();
+    return;
+  }
   state.afterPopup.setLngLat(lngLat).setHTML(html);
   if (!state.afterPopup.isOpen()) state.afterPopup.addTo(afterMap);
   state.beforePopup.setLngLat(lngLat).setHTML(html);

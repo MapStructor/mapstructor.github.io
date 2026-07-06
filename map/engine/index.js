@@ -156,11 +156,13 @@ if (jQuery.browser.msie)
       $("a.ui-slider-handle").css("background", "");
     });
 
-  $(".trigger-popup").click(function (e) {
+  // DELEGATED (was $(".trigger-popup").click): the platform viewer builds the layer rows AFTER page-ready
+  // (async project load), so statically-bound ℹ icons had no handler and info modals never opened in view.
+  $(document).on("click", ".trigger-popup", function (e) {
     var popup_id =
-      e.target.id == "info" || e.target.id == "about-info"
+      this.id == "info" || this.id == "about-info"
         ? "about"
-        : e.target.id;
+        : this.id;
 
 	console.log(popup_id);
 	//if(popup_id == "about") { }

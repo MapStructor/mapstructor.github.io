@@ -19,22 +19,10 @@ const siteMeta = {
   twitterImageAlt: "Map preview image",
 };
 
-const siteLogoLink   = "https://your-site.com/";
+const siteLogoLink   = "../index.html";   // the MapStructor home page (default; a map can override via raw_config.headerLink)
 const siteHeaderText = "Map";
 
 const zoomButtons = [
-
-  {
-    label:  "Zoom to Region", // Replace label and target with your region (defined in bounds.js)
-    icon:   "fa-location-crosshairs",
-    target: "Region",
-  },
-
-  {
-    label:  "Zoom to USA",
-    icon:   "fa-flag-usa",
-    target: "USA",
-  },
 
   {
     label:  "Zoom to World",

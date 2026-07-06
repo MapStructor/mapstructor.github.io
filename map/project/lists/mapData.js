@@ -19,6 +19,6 @@ const mapSections = [];
 
 const mapConfig = {
   style: "mapbox://styles/mapbox/streets-v12", // Starting style for the map
-  center: [-14.22, 19.28], // [longitude, latitude]
-  zoom: 1.87,
+  center: [-27.5, 11], // [longitude, latitude] — default world view for new maps (#1.4/11/-27.5)
+  zoom: 1.4,
 };

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- <script src="platform/sitelock.js"></script> --> <!-- dev lock DISABLED — uncomment to re-lock -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your maps — MapStructor</title>
+  <link rel="icon" type="image/png" href="images/nittygrittymapping_logo.png">
+  <style>
+    :root { --p: #7c5cbf; --ink: #1e1b2e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Source Sans Pro', system-ui, Arial, sans-serif; color: var(--ink); background: #faf9fd; }
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 14px 26px; border-bottom: 1px solid #eae6f3; background: #fff; }
+    nav a.brand { font-weight: 800; font-size: 18px; color: var(--ink); text-decoration: none; }
+    nav .nav-right { display: flex; align-items: center; gap: 14px; font-size: 14px; }
+    nav .nav-right a { color: var(--p); text-decoration: none; cursor: pointer; }
+    main { max-width: 820px; margin: 0 auto; padding: 30px 24px 80px; }
+    h1 { font-size: 26px; margin: 8px 0 4px; }
+    h2 { font-size: 18px; margin: 34px 0 10px; }
+    .sub { color: #6b6680; font-size: 14px; margin: 0 0 18px; }
+    .btn { border: none; border-radius: 8px; background: var(--p); color: #fff; font-weight: 700; font-size: 14px; padding: 9px 16px; cursor: pointer; }
+    .btn:disabled { opacity: .6; cursor: default; }
+    .btn-light { background: #efeaf8; color: var(--ink); }
+    .btn-danger { background: #fdeaea; color: #b4453a; border: 1px solid #e9c4c0; }
+    .map-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #eae6f3; border-radius: 10px; margin-bottom: 8px; background: #fff; }
+    .map-name { flex: 1; font-weight: 600; }
+    .map-meta { font-size: 12px; color: #9a93ad; }
+    .map-row .btn { padding: 6px 12px; font-size: 13px; }
+    .pill { font-size: 11px; padding: 3px 9px; border-radius: 20px; background: #eef; color: #6b6680; border: 1px solid #dcd6ec; cursor: pointer; font-family: inherit; }
+    .pill:hover { filter: brightness(0.97); }
+    .pill.pub { background: #e6f6ea; color: #2d7a2d; border-color: #bfe3c8; }
+    .row-actions { display: flex; gap: 6px; }
+    input[type=password] { padding: 9px 12px; border: 1px solid #cdc6e0; border-radius: 8px; font-size: 14px; width: 240px; max-width: 100%; }
+    .msg { font-size: 13px; margin-left: 8px; } .msg.ok { color: #2d7a2d; } .msg.err { color: #b4453a; }
+    .card-box { border: 1px solid #eae6f3; border-radius: 12px; padding: 18px; background: #fff; margin-bottom: 14px; }
+    .danger-box { border-color: #e9c4c0; }
+    #anon-note { background: #fff7e6; border: 1px solid #f0dca8; border-radius: 10px; padding: 12px 14px; font-size: 14px; margin-bottom: 20px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js"></script>
+  <script src="platform/topbar.js"></script>
+  <script src="platform/pricing.js"></script>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="index.html">MapStructor</a>
+    <div class="nav-right"><a id="nav-admin" href="admin.html" style="display:none;">Admin</a><span id="nav-user"></span><a id="nav-logout">Log out</a></div>
+  </nav>
+
+  <main>
+    <h1>Your maps</h1>
+    <p class="sub" id="sub"></p>
+
+    <div id="anon-note" style="display:none;">
+      You're using a temporary anonymous session. <a href="index.html">Sign up</a> to keep these maps permanently — nothing you've made will be lost.
+    </div>
+
+    <div id="maps-list"><p class="sub">Loading your maps…</p></div>
+    <button class="btn" id="btn-new-map" style="margin-top:8px;">+ Create a map</button>
+
+    <section id="storage-section">
+      <h2>Storage</h2>
+      <div class="card-box">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+          <span><b id="storage-used">…</b> <span style="color:#9a93ad;">of <span id="storage-quota"></span> · <span id="storage-tier"></span> plan</span></span>
+          <span id="storage-pct" style="font-size:13px;color:#9a93ad;"></span>
+        </div>
+        <div style="height:10px;background:#eee;border-radius:6px;overflow:hidden;"><div id="storage-bar" style="height:100%;width:0;background:#2d7a2d;transition:width .3s;"></div></div>
+        <div id="storage-note" style="font-size:13px;margin-top:10px;color:#6b6680;"></div>
+        <div id="storage-actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"></div>
+      </div>
+    </section>
+
+    <section id="profile-section">
+      <h2>Your public profile</h2>
+      <div class="card-box">
+        <p class="sub" style="margin:0 0 10px;">Pick a username — anyone can browse your <b>public</b> maps at your profile page.</p>
+        <input type="text" id="username-input" placeholder="username (letters, numbers, _)" maxlength="20" style="padding:9px 12px;border:1px solid #cdc6e0;border-radius:8px;font-size:14px;width:240px;max-width:100%;">
+        <button class="btn btn-light" id="btn-username">Save</button>
+        <span class="msg" id="username-msg"></span>
+        <div id="profile-link" style="margin-top:10px;font-size:13px;"></div>
+      </div>
+    </section>
+
+    <section id="account-section" style="display:none;">
+      <h2>Account</h2>
+      <div class="card-box">
+        <div style="font-weight:600;margin-bottom:8px;">Change password</div>
+        <input type="password" id="pw-new" placeholder="new password (6+ characters)" minlength="6" autocomplete="new-password">
+        <button class="btn btn-light" id="btn-pw">Update</button>
+        <span class="msg" id="pw-msg"></span>
+      </div>
+      <div class="card-box danger-box">
+        <div style="font-weight:600;margin-bottom:6px;">Delete account</div>
+        <p class="sub" style="margin:0 0 10px;">Permanently removes your maps and data. This can't be undone.</p>
+        <button class="btn btn-danger" id="btn-delete-account">Delete my account</button>
+        <span class="msg" id="del-msg"></span>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (async function () {
+      if (!window.MapAuth || !MapAuth.db) { location.replace('index.html'); return; }
+      var db = MapAuth.db;
+      var user = await MapAuth.currentUser();
+      if (!user) { location.replace('index.html'); return; }   // not logged in at all
+
+      var real = MapAuth.isReal(user);
+      document.getElementById('nav-user').textContent = real ? user.email : 'anonymous';
+      if (user.email === 'nittyjee@gmail.com') document.getElementById('nav-admin').style.display = 'inline';   // owner-only link
+      document.getElementById('sub').textContent = real ? ('Signed in as ' + user.email) : 'Temporary anonymous session';
+      if (real) document.getElementById('account-section').style.display = 'block';
+      else document.getElementById('anon-note').style.display = 'block';
+
+      document.getElementById('nav-logout').addEventListener('click', async function () {
+        await MapAuth.signOut(); location.replace('index.html');
+      });
+
+      // ---- My Maps ----
+      var listEl = document.getElementById('maps-list');
+      function esc(s) { return String(s == null ? '' : s).replace(/[<>&"]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]; }); }
+      function fmtDate(d) { try { return d ? new Date(d).toLocaleDateString() : ''; } catch (e) { return ''; } }
+
+      async function loadMaps() {
+        var res = await db.from('projects').select('id,name,updated_at,is_public').eq('user_id', user.id).order('updated_at', { ascending: false });   // only THIS user's maps (RLS is still permissive — tighten at Step 25)
+        if (res.error) { listEl.innerHTML = '<p class="msg err">Could not load your maps.</p>'; return; }
+        render(res.data || []);
+      }
+      function render(maps) {
+        if (!maps.length) { listEl.innerHTML = '<p class="sub">No maps yet — create your first one below.</p>'; return; }
+        listEl.innerHTML = '';
+        maps.forEach(function (m) {
+          var row = document.createElement('div'); row.className = 'map-row';
+          row.innerHTML = '<span class="map-name">' + esc(m.name || 'Untitled Map') + '</span>'
+            + '<button class="pill' + (m.is_public ? ' pub' : '') + '" data-act="vis" title="Click to toggle visibility">' + (m.is_public ? 'public' : 'private') + '</button>'
+            + '<span class="map-meta">' + fmtDate(m.updated_at) + '</span>'
+            + '<div class="row-actions">'
+            + '<button class="btn" data-act="open">Open</button>'
+            + '<button class="btn btn-light" data-act="rename">Rename</button>'
+            + '<button class="btn btn-danger" data-act="delete">Delete</button>'
+            + '</div>';
+          row.querySelector('[data-act=open]').onclick = function () { location.href = 'map/editor.html?id=' + m.id; };
+          row.querySelector('[data-act=vis]').onclick = async function () {   // Step 17: private/public toggle (enforcement needs RLS — Step 25)
+            var r = await db.from('projects').update({ is_public: !m.is_public }).eq('id', m.id);
+            if (!r.error) loadMaps();
+          };
+          row.querySelector('[data-act=rename]').onclick = async function () {
+            var name = prompt('Rename map:', m.name || 'Untitled Map'); if (name == null) return;
+            var r = await db.from('projects').update({ name: name }).eq('id', m.id);
+            if (!r.error) loadMaps();
+          };
+          row.querySelector('[data-act=delete]').onclick = async function () {
+            if (!confirm('Delete "' + (m.name || 'Untitled Map') + '"? This removes the map. (Trash/restore is coming.)')) return;
+            var r = await db.from('projects').delete().eq('id', m.id);
+            if (!r.error) loadMaps();
+          };
+          listEl.appendChild(row);
+        });
+      }
+      loadMaps();
+
+      // ---- Storage usage ----
+      // Precise tracking (profiles.storage_used_bytes / an RPC) needs a one-time SQL migration — see
+      // mapstructor_docs/pricing-setup.sql. Until then this estimates from the user's feature data.
+      async function estimateStorage() {
+        try {
+          var ls = await db.from('layers').select('id').eq('user_id', user.id);
+          var ids = (ls.data || []).map(function (l) { return l.id; }); if (!ids.length) return 0;
+          var fs = await db.from('features').select('geom, description, label, image_url').in('layer_id', ids).limit(2000);
+          var bytes = 0; (fs.data || []).forEach(function (f) { bytes += JSON.stringify(f.geom || '').length + (f.description || '').length + (f.label || '').length + (f.image_url || '').length; });
+          return bytes;
+        } catch (e) { return 0; }
+      }
+      function renderStorage(P, tierKey, used, approx) {
+        var tier = P.tierFor(tierKey), frac = P.fraction(used, tierKey), pct = Math.round(frac * 100), next = P.nextTier(tierKey);
+        document.getElementById('storage-used').textContent = (approx ? '≈ ' : '') + P.fmtBytes(used);
+        document.getElementById('storage-quota').textContent = P.fmtBytes(tier.quotaBytes);
+        document.getElementById('storage-tier').textContent = tier.name;
+        document.getElementById('storage-pct').textContent = pct + '%';
+        var bar = document.getElementById('storage-bar');
+        bar.style.width = Math.max(2, frac * 100) + '%';
+        bar.style.background = pct >= 100 ? '#b4453a' : pct >= 80 ? '#d98a00' : '#2d7a2d';
+        var note = document.getElementById('storage-note');
+        if (pct >= 100) note.innerHTML = '<b style="color:#b4453a;">You’re out of space.</b> ' + (next ? ('Upgrade to ' + next.name + ' (' + P.fmtBytes(next.quotaBytes) + ', $' + next.priceMonthly + '/mo).') : 'Contact us about a larger plan.');
+        else if (pct >= 80) note.innerHTML = 'You’re using ' + pct + '% of your storage.' + (next ? ' Consider upgrading to ' + next.name + '.' : '');
+        else note.textContent = approx ? 'Estimated from your map data.' : '';
+        // upgrade buttons (higher tiers) + manage-billing for paid users
+        var actions = document.getElementById('storage-actions'); actions.innerHTML = '';
+        P.order.forEach(function (k) {
+          if (P.order.indexOf(k) > P.order.indexOf(tierKey)) {
+            var t = P.tierFor(k), btn = document.createElement('button');
+            btn.className = 'btn btn-light'; btn.style.fontSize = '13px';
+            btn.textContent = 'Upgrade to ' + t.name + ' — $' + t.priceMonthly + '/mo';
+            btn.onclick = function () { startCheckout(k, btn); };
+            actions.appendChild(btn);
+          }
+        });
+        if (tierKey !== 'free') {
+          var mb = document.createElement('button'); mb.className = 'btn btn-light'; mb.style.fontSize = '13px';
+          mb.textContent = 'Manage billing'; mb.onclick = function () { openPortal(mb); }; actions.appendChild(mb);
+        }
+      }
+      // ---- Stripe checkout / portal (via Supabase Edge Functions) ----
+      async function startCheckout(tierKey, btn) {
+        var P = window.MapStructorPricing, tier = P.tierFor(tierKey);
+        if (!tier.stripePriceId) return;
+        if (btn) { btn.disabled = true; btn.textContent = 'Redirecting…'; }
+        try {
+          var r = await db.functions.invoke('create-checkout-session', { body: { priceId: tier.stripePriceId, tier: tierKey, successUrl: location.href, cancelUrl: location.href } });
+          if (r.data && r.data.url) { location.href = r.data.url; return; }
+          alert('Could not start checkout: ' + ((r.error && r.error.message) || (r.data && r.data.error) || 'unknown'));
+        } catch (e) { alert('Checkout error: ' + (e && e.message)); }
+        if (btn) { btn.disabled = false; }
+      }
+      async function openPortal(btn) {
+        if (btn) { btn.disabled = true; }
+        try {
+          var r = await db.functions.invoke('create-portal-session', { body: { returnUrl: location.href } });
+          if (r.data && r.data.url) { location.href = r.data.url; return; }
+          alert((r.data && r.data.error) || (r.error && r.error.message) || 'No billing set up yet.');
+        } catch (e) { alert('Portal error: ' + (e && e.message)); }
+        if (btn) { btn.disabled = false; }
+      }
+      async function loadStorage() {
+        var P = window.MapStructorPricing; if (!P) return;
+        var tierKey = 'free', used = null;
+        try { var pr = await db.from('profiles').select('subscription_tier, storage_used_bytes').eq('id', user.id).maybeSingle(); if (pr.data) { if (pr.data.subscription_tier) tierKey = pr.data.subscription_tier; if (typeof pr.data.storage_used_bytes === 'number') used = pr.data.storage_used_bytes; } } catch (e) {}
+        if (used == null) { try { var rpc = await db.rpc('mapstructor_user_storage'); if (!rpc.error && typeof rpc.data === 'number') used = rpc.data; } catch (e) {} }
+        var approx = false;
+        if (used == null) { used = await estimateStorage(); approx = true; }
+        renderStorage(P, tierKey, used, approx);
+      }
+      loadStorage();
+
+      // ---- New map ----
+      document.getElementById('btn-new-map').addEventListener('click', async function () {
+        this.disabled = true; this.textContent = 'Creating…';
+        var r = await db.from('projects').insert({ name: 'Untitled Map', user_id: user.id, is_public: false }).select('id').single();
+        if (r.data) location.href = 'map/editor.html?id=' + r.data.id;
+        else { this.disabled = false; this.textContent = '+ Create a map'; }
+      });
+
+      // ---- Profile / username ----
+      var unameInput = document.getElementById('username-input'), unameBtn = document.getElementById('btn-username'),
+          unameMsg = document.getElementById('username-msg'), profLink = document.getElementById('profile-link');
+      function showProfileLink(u) { profLink.innerHTML = 'Your page: <a href="u.html?u=' + encodeURIComponent(u) + '" target="_blank">u.html?u=' + esc(u) + '</a>'; }
+      async function loadProfile() {
+        var r = await db.from('profiles').select('username').eq('id', user.id).maybeSingle();
+        if (r.data && r.data.username) { unameInput.value = r.data.username; showProfileLink(r.data.username); }
+      }
+      unameBtn.addEventListener('click', async function () {
+        var u = (unameInput.value || '').trim().toLowerCase();
+        if (!/^[a-z0-9_]{3,20}$/.test(u)) { unameMsg.textContent = '3–20 chars: letters, numbers, _'; unameMsg.className = 'msg err'; return; }
+        unameBtn.disabled = true; unameMsg.textContent = '…'; unameMsg.className = 'msg';
+        var r = await db.from('profiles').upsert({ id: user.id, username: u }).select('username').single();
+        unameBtn.disabled = false;
+        if (r.error) { unameMsg.textContent = (r.error.code === '23505' || /duplicate|unique/i.test(r.error.message || '')) ? 'That username is taken.' : r.error.message; unameMsg.className = 'msg err'; return; }
+        unameMsg.textContent = 'Saved.'; unameMsg.className = 'msg ok'; showProfileLink(u);
+      });
+      loadProfile();
+
+      // ---- Change password ----
+      var pwBtn = document.getElementById('btn-pw'), pwMsg = document.getElementById('pw-msg');
+      if (pwBtn) pwBtn.addEventListener('click', async function () {
+        var pw = document.getElementById('pw-new').value;
+        if (!pw || pw.length < 6) { pwMsg.textContent = 'At least 6 characters.'; pwMsg.className = 'msg err'; return; }
+        pwBtn.disabled = true; pwMsg.textContent = '…'; pwMsg.className = 'msg';
+        var r = await db.auth.updateUser({ password: pw }); pwBtn.disabled = false;
+        if (r.error) { pwMsg.textContent = r.error.message; pwMsg.className = 'msg err'; }
+        else { pwMsg.textContent = 'Password updated.'; pwMsg.className = 'msg ok'; document.getElementById('pw-new').value = ''; }
+      });
+
+      // ---- Delete account ----
+      var delBtn = document.getElementById('btn-delete-account'), delMsg = document.getElementById('del-msg');
+      if (delBtn) delBtn.addEventListener('click', async function () {
+        if (!confirm('Delete your account and all your maps? This cannot be undone.')) return;
+        delBtn.disabled = true; delMsg.textContent = 'Deleting your maps…'; delMsg.className = 'msg';
+        // Remove the user's data (RLS scopes this to them). Removing the login record itself
+        // needs a server step (Supabase admin / Edge Function) — flagged in the dev plan.
+        var r = await db.from('projects').delete().eq('user_id', user.id);
+        if (r.error) { delBtn.disabled = false; delMsg.textContent = 'Could not delete: ' + r.error.message; delMsg.className = 'msg err'; return; }
+        delMsg.textContent = 'Your maps are deleted. Signing out…'; delMsg.className = 'msg ok';
+        await MapAuth.signOut();
+        setTimeout(function () { location.replace('index.html'); }, 1200);
+      });
+    })();
+  </script>
+  <script src="platform/pageEditor.js"></script>
+</body>
+</html>

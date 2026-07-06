@@ -42,14 +42,14 @@ var renderRegistry = {
   "_notes": function(props, _f) {
     function esc(s) { return String(s == null ? "" : s).replace(/[<>&]/g, function(c) { return c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"; }); }
     var img      = props.image_url || props.image || "";
-    var title    = props.label || props.name || props.title || "Details";
+    var title    = props.label || props.name || props.title || "";   // no placeholder "Details" — an untitled feature just has no heading
     var notesRaw = props.notes != null ? props.notes : (props.description != null ? props.description : "");
     var isHtml   = /<[a-z!\/][\s\S]*>/i.test(notesRaw);   // WYSIWYG content carries tags
     var notes    = isHtml ? String(notesRaw).replace(/<script[\s\S]*?<\/script>/gi, "") : esc(notesRaw).replace(/\n/g, "<br/>");
     return `
       ${img ? '<div class="panel-hero"><img src="' + esc(img) + '" alt=""></div>' : ''}
-      <h3>${esc(title)}</h3>
-      ${notes ? '<hr/><div class="panel-notes">' + notes + '</div>' : ''}
+      ${title ? '<h3>' + esc(title) + '</h3>' : ''}
+      ${notes ? (title ? '<hr/>' : '') + '<div class="panel-notes">' + notes + '</div>' : ''}
     `;
   },
 };

@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- <script src="platform/sitelock.js"></script> --> <!-- dev lock DISABLED — uncomment to re-lock -->
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MapStructor</title>
+  <link rel="icon" type="image/png" href="images/nittygrittymapping_logo.png">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -273,20 +275,23 @@
     .btn-hero:disabled { opacity: 0.6; cursor: default; transform: none !important; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js"></script>
+  <script src="platform/topbar.js"></script>
 </head>
 <body>
 
   <nav>
-    <a href="#">Map Services</a>
-    <a href="#">About</a>
-    <a href="#" class="btn-nav">Login</a>
+    <a href="services.html" id="nav-services">Map Services</a>
+    <a href="about.html" id="nav-about">About</a>
+    <a href="#" class="btn-nav" id="nav-auth">Login</a>
   </nav>
 
   <div class="hero">
     <img class="hero-logo" src="images/nittygrittymapping_logo.png" alt="MapStructor logo">
     <div class="hero-title">MapStructor</div>
-    <p class="hero-sub">Create and explore maps</p>
+    <p class="hero-sub" data-edit="home-tagline">Create and explore maps</p>
     <button id="btn-create-map" class="btn-hero">Create a Map</button>
+    <span class="free-tag" style="display:inline-block;margin-left:12px;background:#e6f6ea;color:#2d7a2d;font-weight:700;font-size:13px;padding:4px 12px;border-radius:20px;vertical-align:middle;">Free</span>
   </div>
 
   <hr class="section-divider">
@@ -311,6 +316,8 @@
     </div>
   </div>
 
+  <!-- Login / signup modal now lives in platform/auth.js (MapAuth.openAuthModal) — shared with the editor -->
+
   <script src="config.js"></script>
   <script>
     var PLACEHOLDER = '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#9b8ec4" stroke-width="1.5"><circle cx="12" cy="10" r="4"/><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>';
@@ -321,12 +328,13 @@
     // Render cards
     var container = document.getElementById('cards');
     PROJECTS.forEach(function(p) {
-      var thumbHtml = p.thumb
-        ? '<img src="' + p.thumb + '" alt="' + p.title + '">' + (p.badge ? '<span class="card-badge">' + p.badge + '</span>' : '')
-        : PLACEHOLDER;
+      var isLogo = !p.thumb;
+      var thumbSrc = p.thumb || 'images/nittygrittymapping_logo.png';   // default thumbnail = MapStructor logo
+      var imgStyle = isLogo ? ' style="object-fit:contain;padding:18px;box-sizing:border-box;background:#f3f0fa;"' : '';
+      var thumbHtml = '<div class="card-thumb"><img src="' + thumbSrc + '" alt="' + p.title + '"' + imgStyle + '>' + (p.badge ? '<span class="card-badge">' + p.badge + '</span>' : '') + '</div>';
       var card = document.createElement('div');
       card.className = 'card';
-      card.innerHTML = '<div class="card-thumb">' + thumbHtml + '</div>'
+      card.innerHTML = thumbHtml
                      + '<div class="card-info"><div class="card-title">' + p.title + '</div></div>';
       card.addEventListener('click', function() { openModal(p); });
       container.appendChild(card);
@@ -369,10 +377,18 @@
     document.getElementById('modal-close').addEventListener('click', closeModal);
     overlay.addEventListener('click', function(e) { if (e.target === overlay) closeModal(); });
     document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+
+    // About / Map Services info modals (copy drafted from the dev plan — plain, direct, never corporate)
+    function openInfoModal(title, html) {
+      modalTitle.textContent = title;
+      modalLinks.innerHTML = '<div style="text-align:left;font-size:14px;line-height:1.55;color:#3a3550;">' + html + '</div>';
+      overlay.classList.add('open');
+    }
+    // About / Map Services are now their own pages (about.html / services.html) — the nav links point there.
   </script>
 
   <script>
-    var db = supabase.createClient(
+    var db = (window.MapAuth && MapAuth.db) || supabase.createClient(
       'https://eqpxlwbjqiwfjlsuapvu.supabase.co',
       'sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD'
     );
@@ -382,12 +398,12 @@
       btn.textContent = 'Creating…';
       btn.disabled = true;
 
-      var { error: authErr } = await db.auth.signInAnonymously();
-      if (authErr) { btn.textContent = 'Create a Map'; btn.disabled = false; return; }
+      var u = (window.MapAuth) ? await MapAuth.currentUser() : null;
+      if (!u) { var a = await db.auth.signInAnonymously(); if (a.error) { btn.textContent = 'Create a Map'; btn.disabled = false; return; } u = a.data && a.data.user; }
 
       var { data, error } = await db
         .from('projects')
-        .insert({ name: 'Untitled Map' })
+        .insert({ name: 'Untitled Map', user_id: u && u.id, is_public: false })   // scope to creator (was null → every account saw every map); private by default
         .select('id')
         .single();
 
@@ -397,5 +413,30 @@
     });
   </script>
 
+  <script>
+    // Nav account state — opens the shared MapAuth modal when logged out, links to the dashboard when signed in.
+    (function () {
+      var navAuth = document.getElementById('nav-auth');
+      async function refreshNav() {
+        if (!window.MapAuth) return;
+        var u = await MapAuth.currentUser();
+        if (MapAuth.isReal(u)) {
+          navAuth.textContent = u.email;
+          navAuth.href = 'dashboard.html';
+          navAuth.title = 'Your maps & account';
+          navAuth.onclick = null;
+        } else {
+          navAuth.textContent = 'Login';
+          navAuth.href = '#';
+          navAuth.title = '';
+          navAuth.onclick = function (e) { e.preventDefault(); MapAuth.openAuthModal('login'); };
+        }
+      }
+      refreshNav();
+      if (window.MapAuth) MapAuth.onChange(function () { refreshNav(); });
+    })();
+  </script>
+
+  <script src="platform/pageEditor.js"></script>
 </body>
 </html>

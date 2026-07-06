@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- <script src="platform/sitelock.js"></script> --> <!-- dev lock DISABLED — uncomment to re-lock -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin — MapStructor</title>
+  <link rel="icon" type="image/png" href="images/nittygrittymapping_logo.png">
+  <style>
+    :root { --p: #7c5cbf; --ink: #1e1b2e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Source Sans Pro', system-ui, Arial, sans-serif; color: var(--ink); background: #faf9fd; }
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 14px 26px; border-bottom: 1px solid #eae6f3; background: #fff; }
+    nav a.brand { font-weight: 800; font-size: 18px; color: var(--ink); text-decoration: none; }
+    nav .nav-right a { color: var(--p); text-decoration: none; cursor: pointer; font-size: 14px; }
+    main { max-width: 880px; margin: 0 auto; padding: 30px 24px 80px; }
+    h1 { font-size: 26px; margin: 8px 0 2px; }
+    .sub { color: #6b6680; font-size: 14px; margin: 0 0 22px; }
+    h2 { font-size: 17px; margin: 30px 0 12px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+    .stat { border: 1px solid #eae6f3; border-radius: 12px; background: #fff; padding: 16px; }
+    .stat .n { font-size: 28px; font-weight: 800; }
+    .stat .l { font-size: 12px; color: #9a93ad; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+    th { color: #9a93ad; font-weight: 600; font-size: 12px; }
+    thead th[data-sort] { cursor: pointer; user-select: none; white-space: nowrap; }
+    thead th[data-sort]:hover { color: #7c5cbf; }
+    .note { font-size: 13px; color: #6b6680; background: #fff7e6; border: 1px solid #f0dca8; border-radius: 10px; padding: 10px 12px; margin-top: 10px; }
+    .pub { color: #2d7a2d; } .priv { color: #9a93ad; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js"></script>
+  <script src="platform/topbar.js"></script>
+  <script src="platform/pricing.js"></script>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="index.html">MapStructor</a>
+    <div class="nav-right"><a href="dashboard.html">My maps</a></div>
+  </nav>
+  <main id="main" style="display:none;">
+    <h1>Admin dashboard</h1>
+    <p class="sub" id="sub"></p>
+
+    <h2>Overview</h2>
+    <div class="cards">
+      <div class="stat"><div class="n" id="s-maps">—</div><div class="l">Total maps</div></div>
+      <div class="stat"><div class="n" id="s-public">—</div><div class="l">Public maps</div></div>
+      <div class="stat"><div class="n" id="s-owners">—</div><div class="l">Map owners</div></div>
+      <div class="stat"><div class="n" id="s-users">—</div><div class="l">Registered users</div></div>
+      <div class="stat"><div class="n" id="s-storage">—</div><div class="l">Total storage</div></div>
+    </div>
+
+    <h2>Plans</h2>
+    <div class="cards" id="tiers"></div>
+    <div class="note" id="tiers-note" style="display:none;">Plan breakdown + exact storage appear after you run <b>pricing-setup.sql</b>.</div>
+
+    <h2>Recent maps</h2>
+    <table><thead><tr><th data-sort="name" data-label="Name">Name</th><th data-sort="owner" data-label="Owner">Owner</th><th data-sort="email" data-label="Email">Email</th><th data-sort="is_public" data-label="Visibility">Visibility</th><th data-sort="created_at" data-label="Created">Created</th><th data-sort="updated_at" data-label="Updated">Updated</th></tr></thead><tbody id="recent"></tbody></table>
+    <div style="margin-top:8px;"><a id="maps-see-all" href="#" style="color:#7c5cbf;font-size:13px;display:none;"></a></div>
+
+    <h2>Datasets</h2>
+    <table><thead id="datasets-head"><tr><th data-dsort="layer_name" data-label="Layer">Layer</th><th data-dsort="map_name" data-label="Map">Map</th><th data-dsort="owner_name" data-label="Owner">Owner</th><th data-dsort="owner_email" data-label="Email">Email</th><th data-dsort="feature_count" data-label="Features">Features</th><th data-dsort="approx_bytes" data-label="Size">Size</th><th data-dsort="created_at" data-label="Created">Created</th><th data-dsort="updated_at" data-label="Updated">Updated</th></tr></thead><tbody id="datasets"></tbody></table>
+    <div class="note" id="datasets-note" style="display:none;">Dataset stats need the <b>mapstructor_layer_stats</b> function (deployed 7/2).</div>
+
+    <div class="note" style="background:#f3f0fa;border-color:#e0d8f0;margin-top:22px;">Daily email digest needs an email provider (Resend/Postmark) — comes with notifications.</div>
+  </main>
+  <div id="deny" style="display:none;max-width:480px;margin:80px auto;text-align:center;color:#6b6680;font-family:'Source Sans Pro',Arial,sans-serif;">
+    <p style="font-size:16px;">This page is for the site admin.</p>
+    <p><a href="index.html" style="color:#7c5cbf;">Back to MapStructor</a></p>
+  </div>
+
+  <script>
+    (function () {
+      var ADMIN_EMAILS = ['nittyjee@gmail.com'];   // owner allow-list (client gate; real gate = RLS/Edge Function before launch)
+      var SHOW_PRIVATE_MAPS = true;                // #25 DEV ONLY — set to false at LAUNCH: private maps disappear from this page (names never listed; counts stay aggregate)
+      function fmtDate(d) { try { return d ? new Date(d).toLocaleString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; } catch (e) { return ''; } }
+      function esc(s) { return String(s == null ? '' : s).replace(/[<>&]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]; }); }
+
+      async function run() {
+        if (!window.MapAuth || !MapAuth.db) { location.replace('index.html'); return; }
+        var db = MapAuth.db, user = await MapAuth.currentUser();
+        if (!user || !user.email || ADMIN_EMAILS.indexOf(user.email) === -1) { document.getElementById('deny').style.display = 'block'; return; }
+        document.getElementById('main').style.display = 'block';
+        document.getElementById('sub').textContent = 'Signed in as ' + user.email;
+
+        // maps
+        var pr = await db.from('projects').select('id,name,user_id,is_public,updated_at,created_at');
+        var maps = (pr.data) || [];
+        document.getElementById('s-maps').textContent = maps.length;
+        document.getElementById('s-public').textContent = maps.filter(function (m) { return m.is_public; }).length;
+        var owners = {}; maps.forEach(function (m) { if (m.user_id) owners[m.user_id] = 1; });
+
+        // users + tiers (subscription_tier may not exist yet). Usernames/display names tell REGISTERED
+        // accounts apart from the anonymous session every visitor gets automatically — anon accounts own
+        // maps too, which is why the plain owner count looked absurd (#26).
+        var P = window.MapStructorPricing, tierCounts = {}, profById = {};
+        var prof = await db.from('profiles').select('id, username, display_name, email, subscription_tier');
+        var hasTier = !prof.error;
+        if (prof.error) prof = await db.from('profiles').select('id, username, display_name, email');
+        if (prof.error) { prof = await db.from('profiles').select('id, username, display_name, subscription_tier'); hasTier = !prof.error; }
+        if (prof.error) prof = await db.from('profiles').select('id');
+        var rows = (prof.data) || [];
+        rows.forEach(function (r) { profById[r.id] = r; });
+        document.getElementById('s-users').textContent = rows.length;
+        if (hasTier) {
+          P.order.forEach(function (k) { tierCounts[k] = 0; });
+          rows.forEach(function (r) { var t = r.subscription_tier || 'free'; tierCounts[t] = (tierCounts[t] || 0) + 1; });
+          document.getElementById('tiers').innerHTML = P.order.map(function (k) {
+            var t = P.tierFor(k);
+            return '<div class="stat"><div class="n">' + (tierCounts[k] || 0) + '</div><div class="l">' + t.name + ' ($' + t.priceMonthly + '/mo)</div></div>';
+          }).join('');
+        } else { document.getElementById('tiers-note').style.display = 'block'; }
+
+        // #26: owners split — registered (has an email — usernames are optional) vs anonymous sessions
+        function isRegistered(uid) { var p = profById[uid]; return !!(p && (p.email || p.username || p.display_name)); }
+        var ownerIds = Object.keys(owners), regOwners = ownerIds.filter(isRegistered);
+        document.getElementById('s-owners').textContent = regOwners.length;
+        var ownersLbl = document.getElementById('s-owners').parentNode.querySelector('.l');
+        if (ownersLbl) ownersLbl.textContent = 'Registered map owners (+' + (ownerIds.length - regOwners.length) + ' anonymous)';
+
+        // total storage (needs the admin RPC from pricing-setup.sql)
+        try { var ts = await db.rpc('mapstructor_total_storage'); if (!ts.error && typeof ts.data === 'number') document.getElementById('s-storage').textContent = P.fmtBytes(ts.data); else document.getElementById('s-storage').textContent = '—'; }
+        catch (e) { document.getElementById('s-storage').textContent = '—'; }
+
+        // datasets: every layer with its project, owner, feature count and size — sortable, biggest first
+        try {
+          var ds = await db.rpc('mapstructor_layer_stats');
+          if (!ds.error && Array.isArray(ds.data)) {
+            // PROGRESSIVE sort, like a spreadsheet: each click re-sorts the ALREADY-SORTED rows in place —
+            // JS sorts are stable, so equal values keep the previous column's order (multi-level grouping).
+            var dsRows = ds.data, _dsKey = 'approx_bytes', _dsDir = -1;
+            var dsSort = function () {
+              dsRows.sort(function (a, b) {
+                var va = a[_dsKey], vb = b[_dsKey];
+                if (typeof va !== 'number' && typeof vb !== 'number') { va = String(va || '').toLowerCase(); vb = String(vb || '').toLowerCase(); }
+                return (va < vb ? -1 : va > vb ? 1 : 0) * _dsDir;
+              });
+            };
+            var renderDatasets = function () {
+              document.getElementById('datasets').innerHTML = dsRows.map(function (r) {
+                return '<tr><td>' + esc(r.layer_name || '—') + '</td><td>' + esc(r.map_name || '—') + '</td><td>' + esc(r.owner_name || '—') + '</td><td>' + esc(r.owner_email || '—') + '</td><td>' + (r.feature_count || 0) + '</td><td>' + P.fmtBytes(r.approx_bytes || 0) + '</td><td>' + fmtDate(r.created_at) + '</td><td>' + fmtDate(r.updated_at) + '</td></tr>';
+              }).join('') || '<tr><td colspan="8" style="color:#9a93ad;">No datasets yet.</td></tr>';
+              Array.prototype.forEach.call(document.querySelectorAll('#datasets-head th[data-dsort]'), function (th) {
+                th.textContent = th.getAttribute('data-label') + (th.getAttribute('data-dsort') === _dsKey ? (_dsDir > 0 ? ' ▲' : ' ▼') : '');
+              });
+            };
+            Array.prototype.forEach.call(document.querySelectorAll('#datasets-head th[data-dsort]'), function (th) {
+              th.style.cursor = 'pointer';
+              th.addEventListener('click', function () {
+                var k = th.getAttribute('data-dsort');
+                if (_dsKey === k) _dsDir = -_dsDir;
+                else { _dsKey = k; _dsDir = (k === 'feature_count' || k === 'approx_bytes' || k === 'created_at' || k === 'updated_at') ? -1 : 1; }
+                dsSort(); renderDatasets();
+              });
+            });
+            dsSort(); renderDatasets();
+          } else { document.getElementById('datasets-note').style.display = 'block'; }
+        } catch (e) { document.getElementById('datasets-note').style.display = 'block'; }
+
+        // maps table (#25 private filter · #27 owner · email · #28 created · #29 see-all · sortable headers)
+        function ownerName(m) { var p = profById[m.user_id]; if (p && p.username) return '@' + p.username; if (p && p.display_name) return p.display_name; return 'anonymous'; }
+        function ownerEmail(m) { var p = profById[m.user_id]; return (p && p.email) || ''; }
+        var _showAllMaps = false, _sortKey = 'updated_at', _sortDir = -1;
+        function sortVal(m, k) {
+          if (k === 'owner') return ownerName(m).toLowerCase();
+          if (k === 'email') return ownerEmail(m).toLowerCase();
+          if (k === 'is_public') return m.is_public ? 1 : 0;
+          if (k === 'name') return String(m.name || '').toLowerCase();
+          return String(m[k] || '');
+        }
+        function renderMapsTable() {
+          // progressive sort (spreadsheet-style): sort the maps array IN PLACE — stable sorts keep the
+          // previous column's order within equal values
+          maps.sort(function (a, b) { var va = sortVal(a, _sortKey), vb = sortVal(b, _sortKey); return (va < vb ? -1 : va > vb ? 1 : 0) * _sortDir; });
+          var sorted = SHOW_PRIVATE_MAPS ? maps : maps.filter(function (m) { return m.is_public; });
+          var show = _showAllMaps ? sorted : sorted.slice(0, 10);
+          document.getElementById('recent').innerHTML = show.map(function (m) {
+            return '<tr><td>' + esc(m.name || 'Untitled Map') + '</td><td>' + esc(ownerName(m)) + '</td><td>' + esc(ownerEmail(m) || '—') + '</td><td class="' + (m.is_public ? 'pub">public' : 'priv">private') + '</td><td>' + fmtDate(m.created_at) + '</td><td>' + fmtDate(m.updated_at) + '</td></tr>';
+          }).join('') || '<tr><td colspan="6" style="color:#9a93ad;">No maps yet.</td></tr>';
+          Array.prototype.forEach.call(document.querySelectorAll('thead th[data-sort]'), function (th) {   // ▲/▼ on the active column
+            th.textContent = th.getAttribute('data-label') + (th.getAttribute('data-sort') === _sortKey ? (_sortDir > 0 ? ' ▲' : ' ▼') : '');
+          });
+          var more = document.getElementById('maps-see-all');
+          if (more) {
+            more.style.display = sorted.length > 10 ? 'inline' : 'none';
+            more.textContent = _showAllMaps ? 'Show recent only' : 'See all ' + sorted.length + ' maps';
+          }
+        }
+        Array.prototype.forEach.call(document.querySelectorAll('thead th[data-sort]'), function (th) {
+          th.addEventListener('click', function () {
+            var k = th.getAttribute('data-sort');
+            if (_sortKey === k) _sortDir = -_sortDir;
+            else { _sortKey = k; _sortDir = (k === 'created_at' || k === 'updated_at') ? -1 : 1; }   // dates default newest-first
+            renderMapsTable();
+          });
+        });
+        var seeAll = document.getElementById('maps-see-all');
+        if (seeAll) seeAll.addEventListener('click', function (e) { e.preventDefault(); _showAllMaps = !_showAllMaps; renderMapsTable(); });
+        renderMapsTable();
+      }
+      run();
+    })();
+  </script>
+  <script src="platform/pageEditor.js"></script>
+</body>
+</html>

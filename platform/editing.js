@@ -1,4 +1,4 @@
-/* editing.js — the ONLY editor-specific code, loaded dead-last in editor_temp.html.
+/* editing.js — the ONLY editor-specific code, loaded dead-last in editor.html (formerly editor_temp.html, promoted 6/23).
    It adds editing chrome ON TOP of the viewer and never changes how the viewer
    renders. The engine renders the layer tree (generateLayersPanel); editing.js
    mutates the shared `layers` config, asks the engine to re-render, and persists.
@@ -105,7 +105,18 @@
   }
 
   // ── tree helpers ────────────────────────────────────────────────────────────
-  function rerender() { if (typeof generateLayersPanel === 'function') generateLayersPanel(); }
+  function rerender() {
+    if (typeof generateLayersPanel !== 'function') return;
+    // generateLayersPanel rebuilds every checkbox from the SAVED default (layerData.checked), which
+    // silently reset session toggles — layers "suddenly turned on" after any style change. Capture the
+    // live checkbox states and restore them after the rebuild so a rerender never changes visibility.
+    var live = {};
+    var root = document.getElementById('layers-panel-content');
+    if (root) root.querySelectorAll('input[type=checkbox][id]').forEach(function (cb) { live[cb.id] = cb.checked; });
+    generateLayersPanel();
+    var root2 = document.getElementById('layers-panel-content');
+    if (root2) root2.querySelectorAll('input[type=checkbox][id]').forEach(function (cb) { if (cb.id in live) cb.checked = live[cb.id]; });
+  }
   function uid() { return 'new-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
   var LAYER_COLORS = ['#4a9eff', '#e8553e', '#3bb273', '#b56cd6', '#e8a33e', '#3ec0d0', '#d64576'];
   function nextColor() {
@@ -125,7 +136,7 @@
   function tilesetDefaultPaint(type, color) {
     if (type === 'fill') return { 'fill-color': color, 'fill-opacity': 0.4, 'fill-outline-color': color };
     if (type === 'line') return { 'line-color': color, 'line-width': 1.5 };
-    return { 'circle-radius': 5, 'circle-color': color, 'circle-stroke-width': 1, 'circle-stroke-color': '#000' };
+    return { 'circle-radius': 6, 'circle-color': color, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffffff' };   // white ring = classic marker look, reads on any basemap
   }
   function makeTilesetNode(name, url, sourceLayer, type, color) {
     var id = uid();
@@ -195,11 +206,37 @@
         // Ungroup: splice the children into the container's place, then delete ONLY
         // the container row. persistOrder re-parents the children + renumbers.
         var loc = locate(layers, node);
+        var kidsMoved = (node.children || []).slice();          // capture for undo
+        var parentSecId = null;                                  // a group's owning section (for undo re-insert)
+        if (node.type === 'group') { var gp = findParent(layers, node); if (gp && gp.type === 'section') parentSecId = gp._dbId; }
         if (loc) loc.arr.splice.apply(loc.arr, [loc.idx, 1].concat(node.children || []));
         else removeFromTree(layers, node);
         if (node._dbId) { var dc = await db.from(node.type === 'group' ? 'layer_groups' : 'layer_sections').delete().eq('id', node._dbId); if (dc.error) throw new Error(dc.error.message); }
         rerender();
         await persistOrder();
+        // Undoable: re-create the container DB row (new id), move its children back under it,
+        // restore it to its slot, then re-persist. Redo re-runs the same ungroup+delete.
+        (function (cnode, ctype, kids, arr, idx, secId) {
+          var table = ctype === 'group' ? 'layer_groups' : 'layer_sections';
+          async function readd() {
+            try {
+              if (ctype === 'section') cnode._dbId = await insertOne(table, sectionRow(cnode, idx));
+              else cnode._dbId = await insertOne(table, groupRow(cnode, secId, idx));
+            } catch (e) {}
+            kids.forEach(function (k) { removeFromTree(layers, k); });   // pull them back out of wherever they landed
+            cnode.children = kids;
+            var a = arr || layers; a.splice(Math.min(idx, a.length), 0, cnode);
+            rerender(); await persistOrder();
+          }
+          async function reremove() {
+            var l2 = locate(layers, cnode);
+            if (l2) l2.arr.splice.apply(l2.arr, [l2.idx, 1].concat(cnode.children || []));
+            else removeFromTree(layers, cnode);
+            if (cnode._dbId) { try { await db.from(table).delete().eq('id', cnode._dbId); } catch (e) {} }
+            rerender(); await persistOrder();
+          }
+          pushUndo(readd, reremove, 'delete ' + (cnode.label || ctype));
+        })(node, node.type, kidsMoved, loc ? loc.arr : layers, loc ? loc.idx : 0, parentSecId);
       } else {
         // Leaf: remove from the project but KEEP the features + layers row, so it's fully undoable
         // (re-adding its project_layers row restores it with its data — works for any layer size).
@@ -263,6 +300,17 @@
       setStatus('Zoom target set — its ◎ now flies here');
     } catch (e) { setStatus('Save failed'); }
   }
+  window.__msEditorAttr = true;   // generateLayers renders the per-row ▦ attribute-table icon when set
+  if (!window.__msAttrBtnWired) {
+    window.__msAttrBtnWired = true;
+    document.addEventListener('click', function (e) {
+      var t = e.target && e.target.closest && e.target.closest('.attr-table-btn'); if (!t) return;
+      e.stopPropagation(); e.preventDefault();
+      var row = t.closest('.layer-list-row'); if (!row) return;
+      var cb = row.querySelector('input[type="checkbox"]');
+      if (cb && cb.id) openAttributeTable(cb.id);
+    }, true);
+  }
   function enhanceRows() {
     var panel = document.getElementById('layers-panel-content');
     if (!panel) return;
@@ -272,20 +320,34 @@
       row.setAttribute('data-enh', '1');
       row.setAttribute('data-node-id', id);
       if (id === activeLayerId) row.classList.add('editor-active');
-      // click the row body (not a control) to make it the active draw target
+      // click the row body (not a control) to open the panel / make it the active draw target.
+      // In EDIT mode ONLY the checkbox toggles visibility — a label click must not ALSO flip the
+      // checkbox (it used to do both at once), so cancel the label's native for= activation.
       row.addEventListener('click', function (e) {
         if (e.target.closest('input,.layer-buttons-block,.editor-del,.editor-setzoom,.compress-expand-icon,.toggle')) return;
+        if (e.target.closest('label')) e.preventDefault();
         setActiveLayer(id);
       });
       var enNode = findNodeById(layers, id);
-      if (enNode && enNode.source_type === 'geojson-supabase') {
-        var enCb = row.querySelector('input[type="checkbox"]');
-        if (enCb) enCb.addEventListener('change', function () { toggleDrawnLayer(id, enCb.checked); });
+      var enCb = row.querySelector('input[type="checkbox"]');
+      // Checkbox toggles are SESSION-ONLY (defaults are set explicitly in each item's panel — see
+      // elp-default-vis). Drawn layers need their MapboxDraw copies toggled by hand; group/section
+      // checkboxes must cascade to them too (the engine only flips child checkbox props — no events).
+      if (enNode && enCb && enNode.type !== 'group' && enNode.type !== 'section') {
+        if (enNode.source_type === 'geojson-supabase') enCb.addEventListener('change', function () { toggleDrawnLayer(id, enCb.checked); });
+      } else if (enNode && enCb) {
+        enCb.addEventListener('change', function () {
+          var on = enCb.checked;
+          (function walk(n) {
+            (n.children || []).forEach(function (c) {
+              if (c.type === 'group' || c.type === 'section') { walk(c); return; }
+              if (c.source_type === 'geojson-supabase') toggleDrawnLayer(c.id, on);
+            });
+          })(enNode);
+        });
       }
-      var del = document.createElement('span');
-      del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete';
-      del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); onDelete(id); });
-      row.appendChild(del);
+      // #4: inline × removed for layers, groups AND sections — delete now lives inside the item's edit panel
+      // (showLayerPanel → "Delete this item…"; sections get a minimal title+Delete panel).
       // set-zoom: styleable layers set it from the layer editing panel now; keep the row ◎ only for groups +
       // non-styleable layers (which get no panel), and never for sections (they have no zoom target).
       var szHasPanel = enNode && (enNode.type === 'group' || enNode.source_type === 'geojson-supabase' || (isTilesetNode(enNode) && ['fill', 'line', 'circle'].indexOf(enNode.type) > -1));
@@ -403,14 +465,16 @@
         await insertOne('project_layers', { project_id: projectId, layer_id: layerId, sort_order: sort, section_id: sId, group_id: gId });
       }
       // persisted OK → show it in the tree
-      if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; }
+      if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; if (parent.type === 'group') node.topLayerClass = parent.id; }   // group children need the group's _item class for the ± caret
       else layers.push(node);
       rerender();
       if (type === 'layer') setActiveLayer(node.id);  // draw into the layer you just made
       setStatus('Saved');
+      return node;
     } catch (e) {
       console.warn('editing: add failed', e);
       setStatus('Save failed: ' + e.message);
+      return null;
     }
   }
 
@@ -560,7 +624,7 @@
 
   async function enterEngineEdit(node, fid) {
     var drawId = 'db-' + fid;
-    if (draw && draw.get(drawId)) { try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {} showFeaturePanel(drawId); return; }
+    if (draw && draw.get(drawId)) { try { _skipArmOnce = true; draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {} showFeaturePanel(drawId); return; }
     var lyrId = (typeof slugToLayerDbId !== 'undefined') ? slugToLayerDbId[node.id] : null;
     if (!lyrId) return;   // this layer's data isn't in our `features` table → not editable here
     // Scope to THIS layer's id. feature_id alone is GLOBAL, so a tile id can collide with an unrelated
@@ -582,7 +646,7 @@
       var m = pair[1]; if (!m) return; var tgt = { source: node.id + '-' + pair[0], id: Number(fid) }; if (node['source-layer']) tgt.sourceLayer = node['source-layer'];
       try { m.setFeatureState(tgt, { hover: false }); } catch (e) {}
     });
-    try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {}
+    try { _skipArmOnce = true; draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {}
     showFeaturePanel(drawId);
     setStatus('Editing feature ' + fid);
   }
@@ -655,22 +719,33 @@
     showButtons();
     addItem(type, name, parent);
   }
+  // #2: the add buttons NEVER disappear — the bar is split into a persistent button area + a form area
+  // below it. Clicking a button fills the form area; clicking another button switches the form mid-action.
   function showButtons() {
     var bar = document.getElementById('editor-add-bar');
-    bar.innerHTML = '<div class="erow" style="margin-bottom:6px;">' +
+    bar.innerHTML = '<div id="editor-add-buttons"><div class="erow" style="margin-bottom:6px;">' +
       '<button data-type="layer">+ Layer</button>' +
       '<button data-type="tileset">+ Tileset</button>' +
       '<button data-type="import">+ Import</button>' +
       '<button data-type="export">⬇ Export</button></div>' +
       '<div class="erow">' +
       '<button data-type="group">+ Group</button>' +
-      '<button data-type="section">+ Section</button></div>';
-    bar.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else showForm(t); }); });
+      '<button data-type="section">+ Section</button></div></div>' +
+      '<div id="editor-add-form"></div>';
+    bar.querySelectorAll('#editor-add-buttons button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else showForm(t); }); });
   }
+  function markAddActive(type) {   // highlight which add-action's form is open (or none)
+    var btns = document.querySelectorAll('#editor-add-buttons button');
+    Array.prototype.forEach.call(btns, function (b) { b.classList.toggle('active', b.getAttribute('data-type') === type); });
+  }
+  function addFormEl() {   // the form area under the persistent buttons; falls back to the bar if chrome is old
+    return document.getElementById('editor-add-form') || document.getElementById('editor-add-bar');
+  }
+  function closeAddForm() { var f = document.getElementById('editor-add-form'); if (f) f.innerHTML = ''; markAddActive(null); }
   // ── export: a layer's saved features → downloadable GeoJSON (the inverse of Import; works for drawn
   //    layers AND tileset layers whose features live in `features`, e.g. Current buildings = 18k rows). ──
   function showExportForm() {
-    var bar = document.getElementById('editor-add-bar');
+    var bar = addFormEl();   // #2: buttons stay visible
     var opts = '';
     (function walk(arr) { (arr || []).forEach(function (n) { if (n.id && slugToLayerDbId[n.id]) opts += '<option value="' + n.id + '"' + (n.id === activeLayerId ? ' selected' : '') + '>' + (n.label || n.id) + '</option>'; if (n.children) walk(n.children); }); })(layers);
     if (!opts) { setStatus('No exportable layers yet'); return; }
@@ -681,7 +756,7 @@
       '<div id="editor-export-status" style="font-size:11px;color:#888888;margin:2px 0 6px;min-height:13px;"></div>' +
       '<div class="erow"><button id="editor-export-ok">⬇ Download</button><button id="editor-cancel">Cancel</button></div>';
     document.getElementById('editor-export-ok').addEventListener('click', exportLayer);
-    document.getElementById('editor-cancel').addEventListener('click', showButtons);
+    document.getElementById('editor-cancel').addEventListener('click', closeAddForm);
   }
   async function exportLayer() {
     var sel = document.getElementById('editor-export-layer'); var slug = sel && sel.value; if (!slug) return;
@@ -692,20 +767,31 @@
     try {
       var rows = [];
       for (var from = 0; from < 1000000; from += 1000) {   // paginate — Supabase caps each request at 1000 rows
-        var res = await db.from('features').select('feature_id, geom, label, description, start_date, end_date, content_id, custom_fields').eq('layer_id', lid).order('feature_id').range(from, from + 999);
+        var res = await db.from('features').select('feature_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url').eq('layer_id', lid).order('feature_id').range(from, from + 999);
         if (res.error) throw new Error(res.error.message);
         var batch = res.data || []; rows = rows.concat(batch);
         if (status) status.textContent = 'Fetched ' + rows.length + ' features…';
         if (batch.length < 1000) break;
       }
+      // property order = the layer's attribute-table column order when one is saved (raw_config.attrView),
+      // else the default display order (msid first, ms_* last). GeoJSON/KML/DBF all honor insertion order.
+      var _custKeys = [];
+      rows.forEach(function (r) { if (r.custom_fields) Object.keys(r.custom_fields).forEach(function (k) { if (_custKeys.indexOf(k) < 0) _custKeys.push(k); }); });
+      var _ordKeys = (node && node.attrView && node.attrView.order && node.attrView.order.length)
+        ? node.attrView.order
+        : ['label', 'start_date', 'end_date', 'description', 'content_id'].concat(orderAttrKeys(_custKeys));
       var feats = rows.filter(function (r) { return r.geom; }).map(function (r) {
-        var props = { feature_id: r.feature_id };
-        if (r.label) props.label = r.label;
-        if (r.description) props.description = r.description;
-        if (r.start_date) props.start_date = r.start_date;
-        if (r.end_date) props.end_date = r.end_date;
-        if (r.content_id != null) props.content_id = r.content_id;
-        if (r.custom_fields && typeof r.custom_fields === 'object') Object.keys(r.custom_fields).forEach(function (k) { if (!(k in props)) props[k] = r.custom_fields[k]; });
+        var raw = { feature_id: r.feature_id };
+        if (r.label) raw.label = r.label;
+        if (r.description) raw.description = r.description;
+        if (r.start_date) raw.start_date = r.start_date;
+        if (r.end_date) raw.end_date = r.end_date;
+        if (r.content_id != null) raw.content_id = r.content_id;
+        if (r.image_url) raw.image_url = r.image_url;
+        if (r.custom_fields && typeof r.custom_fields === 'object') Object.keys(r.custom_fields).forEach(function (k) { if (!(k in raw)) raw[k] = r.custom_fields[k]; });
+        var props = { feature_id: raw.feature_id };
+        _ordKeys.forEach(function (k) { if (k in raw && !(k in props)) props[k] = raw[k]; });
+        Object.keys(raw).forEach(function (k) { if (!(k in props)) props[k] = raw[k]; });
         return { type: 'Feature', id: r.feature_id, geometry: r.geom, properties: props };
       });
       var fc = { type: 'FeatureCollection', features: feats };
@@ -767,7 +853,7 @@
     return opts;
   }
   function showTilesetForm() {
-    var bar = document.getElementById('editor-add-bar');
+    var bar = addFormEl();   // #2: buttons stay visible
     bar.innerHTML =
       '<input id="editor-name" type="text" placeholder="tileset name…" />' +
       '<input id="editor-ts-url" type="text" placeholder="mapbox://username.tilesetid" />' +
@@ -780,7 +866,7 @@
     var urlInput = document.getElementById('editor-ts-url');
     urlInput.addEventListener('change', function () { detectSourceLayers(urlInput.value.trim()); });   // paste URL + tab/click away → list its layers
     document.getElementById('editor-ok').addEventListener('click', commitTileset);
-    document.getElementById('editor-cancel').addEventListener('click', showButtons);
+    document.getElementById('editor-cancel').addEventListener('click', closeAddForm);
   }
   function mapboxTilesetId(url) { return (url && url.indexOf('mapbox://') === 0) ? url.slice(9) : null; }
   // Read a mapbox:// tileset's vector layers from its TileJSON and offer them as autocomplete,
@@ -828,13 +914,16 @@
     return _scripts[url];
   }
   function showImportForm() {
-    var bar = document.getElementById('editor-add-bar');
+    var bar = addFormEl();   // #2: buttons stay visible
     bar.innerHTML =
       '<div style="font-size:11px;color:#555555;margin-bottom:5px;">Import a file → a new editable layer.<br>GeoJSON · KML · Shapefile (.zip)</div>' +
       '<input id="editor-import-file" type="file" accept=".geojson,.json,.kml,.zip" style="width:100%;box-sizing:border-box;margin-bottom:6px;font-size:12px;" />' +
+      '<div style="font-size:11px;color:#555555;margin:8px 0 3px;border-top:1px solid #e8e8e8;padding-top:6px;">&hellip;or from a URL — ArcGIS/ESRI service, Hub page, or .geojson<br><span style="color:#999999;font-size:10px;">(URL imports are capped at 20,000 features per layer for now)</span></div>' +
+      '<input id="editor-import-url" type="text" placeholder="https://…/MapServer · hub.arcgis.com/maps/… · ….geojson" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<select id="editor-import-svc-layer" style="display:none;width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"></select>' +
       '<select id="editor-parent">' + parentOptions() + '</select>' +
       '<div id="editor-import-status" style="font-size:11px;color:#888888;margin:2px 0 6px;min-height:13px;"></div>' +
-      '<div class="erow"><button id="editor-cancel">Cancel</button></div>';
+      '<div class="erow"><button id="editor-import-url-go">Import from URL</button><button id="editor-cancel">Cancel</button></div>';
     var fileInput = document.getElementById('editor-import-file');
     fileInput.addEventListener('change', function () {
       if (!fileInput.files || !fileInput.files.length) return;
@@ -842,11 +931,208 @@
       var parent = (sel && sel.value) ? findNodeById(layers, sel.value) : null;
       handleImportFile(fileInput.files[0], parent);
     });
-    document.getElementById('editor-cancel').addEventListener('click', showButtons);
+    document.getElementById('editor-import-url-go').addEventListener('click', importFromUrl);
+    document.getElementById('editor-cancel').addEventListener('click', closeAddForm);
+  }
+  // ── URL import: ArcGIS/ESRI REST services (MapServer/FeatureServer, incl. Hub links) + plain GeoJSON URLs.
+  //    A service root lists its drawable sublayers first (pick → Import again); a sublayer is fetched as
+  //    paged GeoJSON (outSR=4326) and runs through the SAME import pipeline as files. ──
+  async function resolveHubUrl(url) {   // hub.arcgis.com/maps/<org>::<slug> → the underlying service URL
+    var m = url.match(/hub\.arcgis\.com\/(?:maps|datasets)\/([^:\/]+)::([^\/?#]+)/i);
+    if (!m) return null;
+    var title = decodeURIComponent(m[2]).replace(/-/g, ' ');
+    var r = await fetch('https://www.arcgis.com/sharing/rest/search?q=title:%22' + encodeURIComponent(title) + '%22&f=json');
+    var d = await r.json();
+    var hit = (d.results || []).filter(function (x) { return x.url; })[0];
+    return hit ? hit.url : null;
+  }
+  function esriColorToHex(c) {
+    if (!Array.isArray(c) || c.length < 3) return null;
+    function h(n) { n = Math.max(0, Math.min(255, Math.round(n))); var s = n.toString(16); return s.length < 2 ? '0' + s : s; }
+    return '#' + h(c[0]) + h(c[1]) + h(c[2]);
+  }
+  // Carry the service's OWN symbology over: a uniqueValue renderer becomes color-by-attribute with the
+  // exact per-class colors; a simple renderer becomes the layer colour.
+  async function applyEsriRenderer(node, renderer) {
+    if (!node || !renderer) return;
+    var lid = slugToLayerDbId[node.id]; if (!lid) return;
+    var key = colorKeyFor(node.type);
+    var paint = JSON.parse(JSON.stringify(node.paint || {}));
+    try {
+      if (renderer.type === 'uniqueValue' && renderer.field2) return;   // composite-key renderer: colour-by can't express it — the materialized ms_* columns carry the styling instead
+      // alpha + fill-style aware: a transparent/hatched ESRI fill must NOT become a solid colour here
+      // (Overlay District: every class is a colour with alpha 0 + a coloured outline — the fill is hollow)
+      function carryColor(sym) { var st = esriSymbolStyle(sym); if (!st || st.color == null) return null; return st.color === 'none' ? 'rgba(0,0,0,0)' : st.color; }
+      if (renderer.type === 'uniqueValue' && renderer.field1 && (renderer.uniqueValueInfos || []).length) {
+        var mapping = {}, order = [];
+        renderer.uniqueValueInfos.forEach(function (uv) {
+          var col = carryColor(uv.symbol); if (!col) return;
+          var v = String(uv.value); if (!(v in mapping)) { mapping[v] = col; order.push(v); }
+        });
+        if (!order.length) return;
+        var fallback = carryColor(renderer.defaultSymbol) || node.iconColor || '#3bb2d0';
+        var expr = ['match', ['to-string', ['get', renderer.field1]]];
+        order.forEach(function (v) { expr.push(v, mapping[v]); });
+        expr.push(fallback);
+        paint[key] = expr;
+        node.colorBy = { prop: renderer.field1, mode: 'category', mapping: mapping };
+      } else if (renderer.type === 'simple' && renderer.symbol) {
+        var col2 = carryColor(renderer.symbol); if (!col2) return;
+        paint[key] = col2;
+        var icon2 = esriColorToHex(renderer.symbol.color);   // sidebar icon needs a REAL colour: outline colour when the fill is hollow
+        if (col2 === 'rgba(0,0,0,0)' && renderer.symbol.outline) icon2 = esriColorToHex(renderer.symbol.outline.color) || icon2;
+        if (icon2) node.iconColor = icon2;
+      } else return;
+      node.paint = paint;
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (node.colorBy) rc.colorBy = node.colorBy;
+      var upd = { paint: paint, raw_config: rc };
+      if (renderer.type === 'simple') upd.color = node.iconColor;   // sidebar icon colour comes from layers.color
+      await db.from('layers').update(upd).eq('id', lid);
+      rerender();   // refresh the sidebar so the icon shows the carried colour
+    } catch (e) { console.warn('esri renderer apply failed', e); }
+  }
+  // Materialize the ESRI symbology into the UNIVERSAL STYLE COLUMNS on each feature (ms_color always;
+  // ms_linecolor from the symbol's outline; ms_thickness from line width / point size / fill outline width).
+  // AS-IS principle: ESRI colours are [R,G,B,A] arrays — keep the numbers verbatim as rgb()/rgba()
+  // (no base-16 conversion, alpha included). Our style columns accept any CSS colour and interpret it.
+  function esriCssColor(c) {
+    if (!Array.isArray(c) || c.length < 3) return null;
+    var r = Math.round(c[0]), g = Math.round(c[1]), b = Math.round(c[2]);
+    var a = c[3] != null ? Math.round(c[3] / 255 * 100) / 100 : 1;
+    return a >= 1 ? 'rgb(' + r + ',' + g + ',' + b + ')' : 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+  }
+  function esriOutlineOn(o) { return o && o.style !== 'esriSLSNull' && o.style !== 'None' && Array.isArray(o.color); }
+  function esriSymbolStyle(sym) {
+    if (!sym) return null;
+    var st = {}, t = sym.type || '';
+    if (t === 'esriSFS') {
+      // Only a SOLID fill is a real fill colour. Hatch/pattern styles (DiagonalCross etc.) read as mostly-open
+      // in ESRI and we can't draw patterns — nearest faithful render is un-filled ('none'); the outline carries the look.
+      st.color = (!sym.style || sym.style === 'esriSFSSolid') ? (esriCssColor(sym.color) || 'none') : 'none';
+      if (esriOutlineOn(sym.outline)) {
+        st.linecolor = esriCssColor(sym.outline.color);
+        if (sym.outline.width != null) st.thickness = sym.outline.width;
+      }
+    } else if (t === 'esriSLS') {
+      st.color = esriCssColor(sym.color); if (st.color == null) return null;
+      if (sym.width != null) st.thickness = sym.width;
+    } else if (t === 'esriSMS' || t === 'esriPMS') {
+      // marker symbols (sometimes used on polygon layers): the marker colour is the fill; alpha kept as-is
+      st.color = esriCssColor(sym.color) || 'none';
+      if (sym.size != null) st.thickness = sym.size;
+      if (esriOutlineOn(sym.outline)) st.linecolor = esriCssColor(sym.outline.color);
+    } else {
+      st.color = esriCssColor(sym.color); if (st.color == null) return null;
+    }
+    return st;
+  }
+  function esriValueKey(props, renderer) {   // uniqueValue renderers can key on up to 3 fields joined by a delimiter
+    var delim = renderer.fieldDelimiter || ',';
+    var parts = [];
+    ['field1', 'field2', 'field3'].forEach(function (fk) { if (renderer[fk]) parts.push(String(props[renderer[fk]] != null ? props[renderer[fk]] : '')); });
+    return parts.join(delim);
+  }
+  function materializeEsriStyle(feats, renderer) {
+    var byVal = null, simple = null;
+    if (renderer.type === 'uniqueValue' && renderer.field1 && (renderer.uniqueValueInfos || []).length) {
+      byVal = {};
+      renderer.uniqueValueInfos.forEach(function (uv) { var st = esriSymbolStyle(uv.symbol); if (st) byVal[String(uv.value)] = st; });
+    } else if (renderer.type === 'simple') simple = esriSymbolStyle(renderer.symbol);
+    if (!byVal && !simple) return;
+    var dflt = renderer.defaultSymbol ? esriSymbolStyle(renderer.defaultSymbol) : null;
+    feats.forEach(function (f) {
+      var props = f.properties = f.properties || {};
+      var st = simple || (byVal ? (byVal[esriValueKey(props, renderer)] || dflt) : null);
+      if (!st) { if (props.ms_color == null) props.ms_color = 'none'; return; }   // unstyled in the SOURCE renderer → explicit entry ("none" renders as the layer colour)
+      if (props.ms_color == null) props.ms_color = st.color;   // source columns win if they already exist
+      if (st.linecolor != null && props.ms_linecolor == null) props.ms_linecolor = st.linecolor;
+      if (st.opacity != null && props.ms_opacity == null) props.ms_opacity = st.opacity;
+      if (st.thickness != null && props.ms_thickness == null) props.ms_thickness = st.thickness;
+    });
+  }
+  async function importArcgisLayer(url, parent) {   // one service sublayer → import + carry its symbology
+    var lmeta = null, name = null;
+    try { lmeta = await (await fetch(url + '?f=json')).json(); if (lmeta && lmeta.name) name = lmeta.name; } catch (e) {}
+    var feats = [];
+    for (var off = 0; ; off += 1000) {
+      importStatus('Fetching ' + (name || 'features') + '… ' + feats.length);
+      var page = await (await fetch(url + '/query?where=1%3D1&outFields=*&outSR=4326&f=geojson&resultOffset=' + off + '&resultRecordCount=1000')).json();
+      if (page.error) throw new Error(page.error.message || 'ArcGIS query failed');
+      feats = feats.concat(page.features || []);
+      if (!page.features || page.features.length < 1000) break;
+      if (feats.length >= 20000) throw new Error('service too large (20k+ features) — filter it first');
+    }
+    if (!feats.length) throw new Error('no features in ' + (name || url));
+    var renderer = lmeta && lmeta.drawingInfo && lmeta.drawingInfo.renderer;
+    if (renderer) materializeEsriStyle(feats, renderer);   // ESRI style → ms_color / ms_opacity / ms_thickness per feature
+    var made = await importFeatureCollection({ type: 'FeatureCollection', features: feats }, name || 'ArcGIS layer', parent) || [];
+    if (renderer && made.length) {
+      for (var i = 0; i < made.length; i++) await applyEsriRenderer(made[i], renderer);
+      await loadFeatures();   // re-color the MapboxDraw copies with the carried symbology
+    }
+    return made;
+  }
+  async function importFromUrl() {
+    var inp = document.getElementById('editor-import-url'); if (!inp) return;
+    var url = (inp.value || '').trim(); if (!url) { importStatus('Paste a URL first'); return; }
+    var sel = document.getElementById('editor-import-svc-layer');
+    var pSel = document.getElementById('editor-parent');
+    var parent = (pSel && pSel.value) ? findNodeById(layers, pSel.value) : null;
+    if (storageGate()) return;
+    try {
+      importStatus('Reading URL…');
+      if (/hub\.arcgis\.com\//i.test(url)) {
+        var svc = await resolveHubUrl(url);
+        if (!svc) throw new Error('could not resolve the Hub link — paste the REST service URL instead');
+        url = svc; inp.value = url;
+      }
+      url = url.replace(/[?#].*$/, '').replace(/\/+$/, '');
+      if (/(MapServer|FeatureServer)$/i.test(url)) {   // service root → offer its drawable sublayers (or all)
+        if (sel.style.display === 'none' || sel._svcUrl !== url) {
+          var meta = await (await fetch(url + '?f=json')).json();
+          var lyrs = (meta.layers || []).filter(function (l) { return l.geometryType; });
+          if (!lyrs.length) throw new Error('no drawable layers in this service');
+          sel.innerHTML = '<option value="*">— All ' + lyrs.length + ' layers (as a group) —</option>' +
+            lyrs.map(function (l) { return '<option value="' + l.id + '">' + attrEsc(l.name) + '</option>'; }).join('');
+          sel.style.display = 'block'; sel._svcUrl = url; sel._svcLayers = lyrs; sel._svcMeta = meta;
+          importStatus('Pick a layer (or all) above, then click Import again');
+          return;
+        }
+        var chosen = sel.options[sel.selectedIndex];
+        if (chosen.value === '*') {   // whole service → a group with every drawable sublayer inside
+          var svcName = (sel._svcMeta && (sel._svcMeta.mapName || (sel._svcMeta.documentInfo && sel._svcMeta.documentInfo.Title))) || 'ArcGIS import';
+          var grp = await addItem('group', svcName, (parent && parent.type === 'section') ? parent : null);
+          if (!grp) throw new Error('could not create the group');
+          var ok = 0, failed = [];
+          for (var li = 0; li < sel._svcLayers.length; li++) {
+            var lyr = sel._svcLayers[li];
+            importStatus('Layer ' + (li + 1) + '/' + sel._svcLayers.length + ': ' + lyr.name);
+            try { await importArcgisLayer(sel._svcUrl + '/' + lyr.id, grp); ok++; }
+            catch (le) { console.warn('sublayer import failed', lyr.name, le); failed.push(lyr.name); }
+          }
+          setStatus('Imported ' + ok + '/' + sel._svcLayers.length + ' layers into "' + svcName + '"' + (failed.length ? ' — failed: ' + failed.join(', ') : ''));
+          sel.style.display = 'none';
+          return;
+        }
+        await importArcgisLayer(url + '/' + chosen.value, parent);
+        sel.style.display = 'none';
+        return;
+      }
+      if (/(MapServer|FeatureServer)\/\d+$/i.test(url)) { await importArcgisLayer(url, parent); sel.style.display = 'none'; return; }
+      // plain GeoJSON URL
+      var fc = await (await fetch(url)).json();
+      var name = stripExt(decodeURIComponent((url.split('/').pop() || '') || 'Imported layer'));
+      if (!fc || !fc.features || !fc.features.length) throw new Error('no features found');
+      await importFeatureCollection(fc, name || 'Imported layer', parent);
+      sel.style.display = 'none';
+    } catch (e) { console.warn('editing: url import failed', e); importStatus('Import failed: ' + (e && e.message)); }
   }
   function importStatus(m) { var s = document.getElementById('editor-import-status'); if (s) s.textContent = m; else setStatus(m); }
   // Route a file by extension → a GeoJSON FeatureCollection → import it.
   async function handleImportFile(file, parent) {
+    if (storageGate()) return;   // storage hard-stop: don't import data over the limit
     var ext = (file.name.split('.').pop() || '').toLowerCase();
     importStatus('Reading ' + file.name + '…');
     try {
@@ -897,7 +1183,7 @@
         slugToLayerDbId[node.id] = layerId;
         await insertOne('project_layers', { project_id: projectId, layer_id: layerId, sort_order: nextSort++, section_id: sId, group_id: gId });
         await batchInsertFeatures(layerId, groups[type]);
-        if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; }
+        if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; if (parent.type === 'group') node.topLayerClass = parent.id; }
         else layers.push(node);
         made.push(node);
       }
@@ -907,7 +1193,8 @@
       if (made.length) setActiveLayer(made[0].id);
       showButtons();
       setStatus('Imported ' + total + ' feature' + (total !== 1 ? 's' : ''));
-    } catch (e) { console.warn('editing: import persist failed', e); importStatus('Import failed: ' + e.message); }
+      return made;
+    } catch (e) { console.warn('editing: import persist failed', e); importStatus('Import failed: ' + e.message); return []; }
   }
   async function batchInsertFeatures(layerId, feats) {
     var BATCH = 500;
@@ -917,7 +1204,7 @@
       if (r.error) throw new Error('feature insert: ' + r.error.message);
     }
   }
-  var LABEL_KEYS = ['name', 'Name', 'NAME', 'label', 'Label', 'title', 'Title'];
+  var LABEL_KEYS = ['name', 'Name', 'NAME', 'label', 'Label', 'LABEL', 'title', 'Title', 'TITLE'];
   function importLabelKey(props) {
     if (!props) return null;
     for (var i = 0; i < LABEL_KEYS.length; i++) { if (props[LABEL_KEYS[i]] != null && props[LABEL_KEYS[i]] !== '') return LABEL_KEYS[i]; }
@@ -962,7 +1249,7 @@
   }
 
   function showForm(type) {
-    var bar = document.getElementById('editor-add-bar');
+    var bar = addFormEl();   // #2: fill the form area under the buttons — the buttons stay visible
     var picker = '';
     if (type !== 'section') {
       var opts = '<option value="">Top level</option>';
@@ -978,15 +1265,22 @@
       '<button id="editor-cancel">Cancel</button></div>';
     var input = document.getElementById('editor-name');
     input.focus();
-    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); commit(type); } if (e.key === 'Escape') showButtons(); });
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); commit(type); } if (e.key === 'Escape') closeAddForm(); });
     document.getElementById('editor-ok').addEventListener('click', function () { commit(type); });
-    document.getElementById('editor-cancel').addEventListener('click', showButtons);
+    document.getElementById('editor-cancel').addEventListener('click', closeAddForm);
   }
   function setStatus(msg) {
     var el = document.getElementById('editor-save-status');
     if (!el) return;
     el.textContent = msg;
     if (msg === 'Saved') setTimeout(function () { if (el.textContent === 'Saved') el.textContent = ''; }, 1500);
+  }
+  var _toastTimer = null;
+  function showToast(msg, ms) {   // #1: prominent, auto-dismissing message (the save-status text is too subtle for rejections)
+    var el = document.getElementById('editor-toast'); if (!el) { setStatus(msg); return; }
+    el.textContent = msg; el.style.display = 'block';
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(function () { el.style.display = 'none'; }, ms || 3200);
   }
   // ── Map settings: rename the map + save the current view as its default (per-project `projects` row) ──
   // ── In-place popup editing: clicking the ℹ "About" button (or a layer/group info button) opens the
@@ -1005,7 +1299,6 @@
         '#editor-modal-tools.on{display:flex;}' +
         '#editor-modal-tools button{min-width:28px;height:26px;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer;font-size:12px;line-height:1;}' +
         '#editor-modal-tools button:hover{background:#e8e8e8;}' +
-        '#editor-modal-save{margin-left:auto;background:#ce5c00;color:#fff;border-color:#ce5c00;font-weight:600;padding:0 12px;}' +
         'div.modal-content[contenteditable="true"]{outline:2px dashed rgba(206,92,0,0.55);outline-offset:5px;min-height:48px;}';
       document.head.appendChild(st);
       var tools = document.createElement('div'); tools.id = 'editor-modal-tools';
@@ -1018,8 +1311,8 @@
         '<button data-cmd="insertUnorderedList" title="Bullet list">&bull;</button>' +
         '<button data-cmd="insertOrderedList" title="Numbered list">1.</button>' +
         '<button data-cmd="createLink" title="Insert link">&#128279;</button>' +
-        '<button data-cmd="removeFormat" title="Clear formatting">&times;A</button>' +
-        '<button id="editor-modal-save" title="Save">Save</button>';
+        '<button data-cmd="removeFormat" title="Clear formatting">&times;A</button>';
+        // #24: Save button removed — the popup autosaves as you type, like every other field.
       content.parentNode.insertBefore(tools, content);
       Array.prototype.forEach.call(tools.querySelectorAll('button[data-cmd]'), function (b) {
         b.addEventListener('mousedown', function (e) { e.preventDefault(); });   // keep caret/selection inside .modal-content
@@ -1030,7 +1323,13 @@
           try { document.execCommand(cmd, false, val || undefined); } catch (err) {}
         });
       });
-      document.getElementById('editor-modal-save').addEventListener('click', function (e) { e.preventDefault(); savePopupEdit(); });
+      // #24: autosave — debounced on typing (and the formatting buttons trigger it too, via execCommand → input)
+      var _modalSaveTimer = null;
+      content.addEventListener('input', function () {
+        if (!_editPopupId) return;
+        clearTimeout(_modalSaveTimer);
+        _modalSaveTimer = setTimeout(savePopupEdit, 600);
+      });
     }
     if (!window.__editorPopupEditWired) {
       window.__editorPopupEditWired = true;
@@ -1085,7 +1384,17 @@
       }
       var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message);
       setStatus('Saved');
+      rerender();   // the row's ℹ button exists only while there is content — reflect edits immediately
     } catch (e) { setStatus('Save failed'); }
+  }
+  function onLayerInfoEdit() {   // panel button: edit this layer's ℹ popup — the row button appears only when content exists
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var pid = activeLayerId + '-info';
+    var html = (window.modal_content_html && window.modal_content_html[pid]) || '';
+    var hdr = (window.modal_header_text && window.modal_header_text[pid]) || node.label || 'Info';
+    openPopupForEdit(pid, hdr, html);
+    enableModalEdit(pid);
   }
   function injectSettingsPanel() {
     if (document.getElementById('editor-settings-panel')) return;
@@ -1098,6 +1407,12 @@
       '<input id="esp-name" type="text" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
       '<button id="esp-setview" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;">Set current view as default</button>' +
       '<div id="esp-viewinfo" style="font-size:10px;color:#888888;margin-top:4px;"></div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin:12px 0 2px;border-top:1px solid #eee;padding-top:8px;">Sharing</label>' +
+      '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:6px;"><input id="esp-public" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Public &mdash; anyone with the link can view</label>' +
+      '<button id="esp-copylink" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;">Copy view link</button>' +
+      '<div id="esp-share-msg" style="font-size:10px;color:#888888;margin-top:4px;word-break:break-all;"></div>' +
+      '<button id="esp-publish" style="width:100%;margin-top:8px;padding:8px;border:none;border-radius:4px;background:#2d7a2d;color:#fff;font-weight:700;cursor:pointer;font-size:12px;">Publish current state</button>' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">The public <b>View</b> shows the last <b>published</b> version (edits autosave but stay private until you publish). <a id="esp-preview" href="#" target="_blank" rel="noopener">Preview live edits &#8599;</a></div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin:10px 0 2px;">Timeline range</label>' +
       '<div style="display:flex;gap:6px;align-items:center;">' +
         '<input id="esp-tl-start" type="date" style="width:50%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
@@ -1120,6 +1435,97 @@
     document.getElementById('esp-tl-today').addEventListener('change', function () { document.getElementById('esp-tl-end').disabled = this.checked; onTimelineSave(); });
     document.getElementById('esp-logo-file').addEventListener('change', onLogoFile);
     document.getElementById('esp-logo-link').addEventListener('change', onLogoLink);
+    document.getElementById('esp-public').addEventListener('change', onSharePublic);
+    document.getElementById('esp-copylink').addEventListener('click', onCopyViewLink);
+    document.getElementById('esp-publish').addEventListener('click', onPublish);
+    document.getElementById('esp-preview').addEventListener('click', function () { this.href = location.href.split('#')[0].split('?')[0].replace(/editor\.html$/, 'index.html') + '?id=' + projectId + '&preview=1'; });
+  }
+  // ── Copy map (Google-My-Maps-style): clone the WHOLE project — sections, groups, layers (new rows, so
+  //    edits never touch the original), project_layers links, and every feature — into a new private map
+  //    owned by the CURRENT account. Solves "started the map before logging in" too. ──
+  async function copyMapToMyAccount() {
+    var btn = document.getElementById('editor-copy-btn');
+    var u = window.MapAuth ? await MapAuth.currentUser() : null;
+    if (!u) { if (window.MapAuth) MapAuth.openAuthModal('login'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Copying…'; }
+    setStatus('Copying map…');
+    function strip(row, extra) { var o = {}; Object.keys(row).forEach(function (k) { if (k === 'id' || k === 'created_at' || k === 'updated_at' || (extra && extra.indexOf(k) > -1)) return; o[k] = row[k]; }); return o; }
+    try {
+      var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);
+      var src = bundle.project;
+      // 1 — the project row (private, owned by me)
+      var np = strip(src); np.name = (src.name || 'Untitled Map') + ' (copy)'; np.user_id = u.id; np.is_public = false;
+      var rp = await db.from('projects').insert(np).select('id').single(); if (rp.error) throw new Error(rp.error.message);
+      var newId = rp.data.id;
+      // 2 — sections, 3 — groups (remap ids)
+      var secMap = {}, grpMap = {};
+      for (var i = 0; i < (bundle.sections || []).length; i++) {
+        var s = bundle.sections[i]; var ns = strip(s); ns.project_id = newId;
+        var rs = await db.from('layer_sections').insert(ns).select('id').single(); if (rs.error) throw new Error(rs.error.message);
+        secMap[s.id] = rs.data.id;
+      }
+      for (var j = 0; j < (bundle.groups || []).length; j++) {
+        var g = bundle.groups[j]; var ng = strip(g); ng.project_id = newId;
+        if (ng.section_id) ng.section_id = secMap[ng.section_id] || null;
+        var rg = await db.from('layer_groups').insert(ng).select('id').single(); if (rg.error) throw new Error(rg.error.message);
+        grpMap[g.id] = rg.data.id;
+      }
+      // 4 — layers (new rows + fresh slugs), their project link, and their features
+      var featTotal = 0;
+      for (var k = 0; k < (bundle.projectLayers || []).length; k++) {
+        var pl = bundle.projectLayers[k], L = pl.layers; if (!L) continue;
+        var nl = strip(L); if (nl.slug) nl.slug = L.slug + '-c' + Math.random().toString(36).slice(2, 7);
+        var rl = await db.from('layers').insert(nl).select('id').single(); if (rl.error) throw new Error(rl.error.message);
+        var newLid = rl.data.id;
+        var npl = strip(pl, ['layers']);
+        npl.project_id = newId; npl.layer_id = newLid;
+        npl.section_id = pl.section_id ? (secMap[pl.section_id] || null) : null;
+        npl.group_id = pl.group_id ? (grpMap[pl.group_id] || null) : null;
+        var rpl = await db.from('project_layers').insert(npl); if (rpl.error) throw new Error(rpl.error.message);
+        if (L.source_type === 'geojson-supabase') {   // duplicate the features (paged; select * so custom fields survive)
+          for (var off = 0; ; off += 1000) {
+            var fr = await db.from('features').select('*').eq('layer_id', L.id).order('feature_id').range(off, off + 999);
+            if (fr.error || !fr.data || !fr.data.length) break;
+            var rows = fr.data.map(function (f) { var nf = strip(f, ['feature_id']); nf.layer_id = newLid; return nf; });
+            var ri = await db.from('features').insert(rows); if (ri.error) throw new Error(ri.error.message);
+            featTotal += rows.length;
+            if (fr.data.length < 1000) break;
+          }
+        }
+        setStatus('Copying… ' + (k + 1) + '/' + bundle.projectLayers.length + ' layers');
+      }
+      setStatus('Copied ✓ (' + featTotal + ' features)');
+      window.location.href = 'editor.html?id=' + newId;
+    } catch (e) {
+      console.warn('copy failed', e); setStatus('Copy failed: ' + (e && e.message));
+      if (btn) { btn.disabled = false; btn.textContent = '⧉ Copy'; }
+    }
+  }
+  async function onPublish() {
+    var hb = document.getElementById('editor-publish-btn');
+    if (hb) { hb.disabled = true; hb.textContent = 'Publishing…'; }
+    setStatus('Publishing…');
+    try {
+      var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);   // snapshot the current live config
+      await db.from('project_snapshots').delete().eq('project_id', projectId).eq('label', 'published');   // one published snapshot per project
+      var r = await db.from('project_snapshots').insert({ project_id: projectId, label: 'published', state: bundle });
+      if (r.error) throw new Error(r.error.message);
+      setStatus('Published ✓');
+      if (hb) { hb.textContent = 'Published ✓'; setTimeout(function () { hb.textContent = 'Publish'; hb.disabled = false; }, 2500); }
+    } catch (e) { console.warn('publish failed', e); setStatus('Publish failed'); if (hb) { hb.textContent = 'Publish'; hb.disabled = false; } }
+  }
+  async function onSharePublic() {
+    var pub = document.getElementById('esp-public').checked;
+    setStatus('Saving…');
+    try { var r = await db.from('projects').update({ is_public: pub }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus(pub ? 'Map is public' : 'Map is private'); }
+    catch (e) { setStatus('Save failed'); }
+  }
+  function onCopyViewLink() {
+    var url = location.href.split('#')[0].split('?')[0].replace(/editor\.html$/, 'index.html') + '?id=' + projectId;
+    var msg = document.getElementById('esp-share-msg');
+    function show() { if (msg) msg.textContent = url; }
+    try { navigator.clipboard.writeText(url).then(function () { if (msg) msg.textContent = 'Copied: ' + url; }, show); }
+    catch (e) { show(); }
   }
   // Re-init the bottom timeline slider + rulers to a [startYear, endYear] range (the engine reads a static
   // const at load, so we update the live jQuery-UI slider + ruler labels + globals instead).
@@ -1157,13 +1563,20 @@
     injectSettingsPanel();
     var p = document.getElementById('editor-settings-panel');
     if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
-    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; } } catch (e) {}
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config, is_public').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-public').checked = !!r.data.is_public; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; } } catch (e) {}
     p.style.display = 'block';
   }
-  async function onSettingsName() {
-    var name = (document.getElementById('esp-name').value || '').trim(); if (!name) return;
+  async function saveMapName(name) {
+    name = (name || '').trim(); if (!name) return;
     setStatus('Saving…');
-    try { var r = await db.from('projects').update({ name: name }).eq('id', projectId); if (r.error) throw new Error(r.error.message); applyHeaderText(name); setStatus('Map renamed'); } catch (e) { setStatus('Save failed'); }
+    try { var r = await db.from('projects').update({ name: name }).eq('id', projectId); if (r.error) throw new Error(r.error.message); applyHeaderText(name); var ei = document.getElementById('esp-name'); if (ei && ei.value !== name) ei.value = name; setStatus('Map renamed'); } catch (e) { setStatus('Save failed'); }
+  }
+  async function onSettingsName() { return saveMapName(document.getElementById('esp-name').value); }
+  function makeHeaderTitleEditable() {
+    var h = document.getElementById('header-text-value'); if (!h || h._peEditable) return; h._peEditable = true;
+    h.setAttribute('contenteditable', 'true'); h.setAttribute('spellcheck', 'false'); h.title = 'Click to rename this map';
+    h.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); h.blur(); } });
+    h.addEventListener('blur', function () { saveMapName(h.textContent); });
   }
   // ── Header chrome: text (= map name), logo image, logo link — applied live (no refresh) + on load ──
   function applyHeaderText(name) { try { var el = document.getElementById('header-text-value'); if (el) el.textContent = name; if (name) document.title = name; } catch (e) {} }
@@ -1275,10 +1688,7 @@
         if (e.target.closest('input,.layer-buttons-block,.editor-del,.trigger-popup')) return;
         openMapEdit(idx);
       });
-      var del = document.createElement('span');
-      del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete map';
-      del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); deleteMap(idx); });
-      row.appendChild(del);
+      // #4: inline × removed — delete now lives in the Edit map panel (openMapEdit → "Delete this map…").
       row.querySelectorAll('input[type="radio"]').forEach(function (rad) {
         rad.onchange = null;   // drop the engine's setupMapSwitching handler — we do the switch + persist here (one setStyle, only on map-radio change)
         rad.addEventListener('change', function () { onMapRadio(idx, rad); });
@@ -1309,9 +1719,7 @@
       row.setAttribute('data-zbtnenh', '1'); row.style.position = 'relative';
       var idx = parseInt(row.getAttribute('data-zbtn-idx'), 10); if (isNaN(idx)) return;
       var btnEl = row.querySelector('button'); if (btnEl) btnEl.addEventListener('click', function (e) { openButtonEdit(idx); });   // keep the inline onclick (zoom/link) AND open the editor
-      var del = document.createElement('span'); del.className = 'editor-del'; del.innerHTML = '&times;'; del.title = 'Delete button';
-      del.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); deleteZoomButton(idx); });
-      row.appendChild(del);
+      // #4: inline × removed — delete now lives in the Edit button panel (openButtonEdit → "Delete this button…").
     });
   }
   function clearMapDropMarks() {
@@ -1332,14 +1740,35 @@
     dragMap.section = sid; bm.splice(dragIdx, 1); bm.push(dragMap);
     return true;
   }
-  function onMapRadio(idx, rad) {   // selecting a map's L/R radio sets it as that side's default + switches that side's basemap
-    var bm = bmaps(); if (!bm) return;
-    var side = rad.name === 'ltoggle' ? 'lChecked' : 'rChecked';
-    bm.forEach(function (m, i) { m[side] = (i === idx); });
-    saveBaseMaps();
+  var _sessionBasemap = {};   // ltoggle/rtoggle → the style id chosen THIS session (radios are session-only)
+  function onMapRadio(idx, rad) {   // SESSION-ONLY basemap switch — the per-side DEFAULT is set explicitly in the Edit-map panel
+    _sessionBasemap[rad.name] = rad.value;
     var user = (typeof siteConfig !== 'undefined' && siteConfig && siteConfig.mapboxUsername) ? siteConfig.mapboxUsername : 'mapbox';
     var map = (rad.name === 'ltoggle') ? beforeMap : afterMap;
     try { if (map && rad.value) map.setStyle('mapbox://styles/' + user + '/' + rad.value); } catch (e) {}
+  }
+  function restoreSessionRadios() {   // after a re-render (which draws radios from the DEFAULTS), put the SESSION selection back
+    ['ltoggle', 'rtoggle'].forEach(function (nm) {
+      var v = _sessionBasemap[nm]; if (!v) return;
+      var r = Array.prototype.slice.call(document.querySelectorAll('#base-maps-section input[type="radio"][name="' + nm + '"]')).filter(function (x) { return x.value === v; })[0];
+      if (r) r.checked = true;
+    });
+  }
+  function onMapDefaultSide(side, checked) {   // exclusive per side; a side always keeps exactly one default
+    var bm = bmaps(); var m = bm && bm[_mapEditIdx]; if (!m) return;
+    var key = side === 'left' ? 'lChecked' : 'rChecked';
+    var box = document.getElementById(side === 'left' ? 'emp-def-left' : 'emp-def-right');
+    if (!checked) { if (box) box.checked = true; setStatus('A side always needs a default — pick another map for the ' + side + ' side instead'); return; }
+    // capture what the session's radios currently show, so changing the DEFAULT doesn't flip them
+    var nm = side === 'left' ? 'ltoggle' : 'rtoggle';
+    if (!_sessionBasemap[nm]) {
+      var cur = document.querySelector('#base-maps-section input[type="radio"][name="' + nm + '"]:checked');
+      if (cur) _sessionBasemap[nm] = cur.value;
+    }
+    bm.forEach(function (x, i) { x[key] = (i === _mapEditIdx); });
+    saveBaseMaps(); rerenderMaps();
+    setTimeout(restoreSessionRadios, 150);   // rerenderMaps redraws radios from the defaults — put the session state back
+    setStatus('Saved — default ' + side + ' basemap: ' + (m.name || m.id));
   }
   function injectMapsPanel() {
     if (document.getElementById('editor-maps-panel')) return;
@@ -1353,18 +1782,31 @@
       '<input id="emp-style" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
       '<div style="font-size:10px;color:#888888;margin-top:3px;">The style id under your Mapbox account (e.g. <code>satellite-v9</code>).</div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin:8px 0 2px;">Section</label>' +
-      '<select id="emp-section" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;"></select>';
+      '<select id="emp-section" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;"></select>' +
+      '<div style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;">' +
+        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:4px;">Defaults (how the map opens — one per side)</label>' +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="emp-def-left" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Default on the left side</label>' +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;"><input id="emp-def-right" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Default on the right side</label>' +
+      '</div>' +
+      '<div style="margin-top:12px;border-top:1px solid #e8e8e8;padding-top:8px;">' +   // #4: delete moved off the sidebar row into the panel
+        '<button id="emp-delete" style="width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete this map…</button>' +
+      '</div>';
     document.body.appendChild(p);
     document.getElementById('emp-x').addEventListener('click', function () { p.style.display = 'none'; });
     document.getElementById('emp-name').addEventListener('change', onMapEditSave);
     document.getElementById('emp-style').addEventListener('change', onMapEditSave);
     document.getElementById('emp-section').addEventListener('change', onMapEditSave);
+    document.getElementById('emp-def-left').addEventListener('change', function () { onMapDefaultSide('left', this.checked); });
+    document.getElementById('emp-def-right').addEventListener('change', function () { onMapDefaultSide('right', this.checked); });
+    document.getElementById('emp-delete').addEventListener('click', function () { if (_mapEditIdx != null) { deleteMap(_mapEditIdx); p.style.display = 'none'; } });
   }
   function openMapEdit(idx) {
     injectMapsPanel(); _mapEditIdx = idx;
     var m = (bmaps() || [])[idx]; if (!m) return;
     document.getElementById('emp-name').value = m.name || '';
     document.getElementById('emp-style').value = m.id || '';
+    document.getElementById('emp-def-left').checked = !!m.lChecked;
+    document.getElementById('emp-def-right').checked = !!m.rChecked;
     var sel = document.getElementById('emp-section');
     sel.innerHTML = '<option value="">Top level</option>' + msecs().map(function (s) { return '<option value="' + s.id + '"' + (m.section === s.id ? ' selected' : '') + '>' + String(s.name == null ? '' : s.name).replace(/</g, '&lt;') + '</option>'; }).join('');
     document.getElementById('editor-maps-panel').style.display = 'block';
@@ -1434,9 +1876,13 @@
         '<div style="font-size:10px;color:#888888;margin-top:3px;">Opens in a new tab.</div>' +
       '</div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin:10px 0 2px;">Section</label>' +
-      '<select id="ezb-section" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;"></select>';
+      '<select id="ezb-section" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;"></select>' +
+      '<div style="margin-top:12px;border-top:1px solid #e8e8e8;padding-top:8px;">' +   // #4: delete moved off the sidebar row into the panel
+        '<button id="ezb-delete" style="width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete this button…</button>' +
+      '</div>';
     document.body.appendChild(p);
     document.getElementById('ezb-x').addEventListener('click', function () { p.style.display = 'none'; });
+    document.getElementById('ezb-delete').addEventListener('click', function () { if (_btnEditIdx != null) { deleteZoomButton(_btnEditIdx); p.style.display = 'none'; } });
     document.getElementById('ezb-label').addEventListener('change', onButtonEditSave);
     document.getElementById('ezb-url').addEventListener('change', onButtonEditSave);
     document.getElementById('ezb-section').addEventListener('change', onButtonEditSave);
@@ -1492,15 +1938,58 @@
   function rerenderMaps() {   // re-render the panel only; do NOT re-run setupMapSwitching (it setStyles both maps → wipes layers). enhanceMapRows re-wires the radios.
     try { if (typeof window.generateBaseMapsPanel === 'function') window.generateBaseMapsPanel(); } catch (e) {}
   }
+  // #17: show the signed-in account in the map header, like the front page nav — email → dashboard when
+  // logged in; "Login" → the shared MapAuth modal otherwise. Styled like the View/Preview header pills.
+  function wireHeaderUser() {
+    // lives in the site-wide top bar now (right slot); the editor's chip also offers Login
+    window.__msTopbarUserByPage = true;   // tell topbar.js not to add its own generic chip
+    var gen = document.getElementById('ms-topbar-user'); if (gen) gen.remove();   // ...and drop one it already added (race at boot)
+    var right = document.getElementById('ms-topbar-right') || document.getElementById('editor-actions-status') || document.querySelector('.header-right');
+    if (!right || document.getElementById('editor-nav-user')) return;
+    var a = document.createElement('a');
+    a.id = 'editor-nav-user';
+    a.style.cssText = 'display:none;padding:3px 10px;border:1px solid #ccc;border-radius:5px;background:#fff;color:#222;font-size:11px;font-weight:600;text-decoration:none;font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;';
+    right.appendChild(a);
+    async function refresh() {
+      if (!window.MapAuth) return;
+      var u = await MapAuth.currentUser();
+      if (MapAuth.isReal(u)) { a.textContent = u.email; a.href = '../dashboard.html'; a.title = 'Your maps & account'; a.onclick = null; }
+      else { a.textContent = 'Login'; a.href = '#'; a.title = 'Log in / register'; a.onclick = function (e) { e.preventDefault(); MapAuth.openAuthModal('login'); }; }
+      a.style.display = 'inline-block';
+    }
+    refresh();
+    try { if (window.MapAuth && MapAuth.onChange) MapAuth.onChange(refresh); } catch (e) {}
+  }
+  function moveActionsToTopbar() {
+    var left = document.getElementById('ms-topbar-left');
+    var src = document.getElementById('editor-actions');
+    if (!left || !src || src.getAttribute('data-moved')) return;
+    src.setAttribute('data-moved', '1');
+    ['editor-mode-badge', 'editor-publish-btn', 'editor-view-btn', 'editor-preview-btn', 'editor-copy-btn', 'editor-settings'].forEach(function (id9) {
+      var el = document.getElementById(id9); if (!el) return;
+      left.appendChild(el);   // the bar's CSS normalizes size/padding for every item
+    });
+    src.remove();
+  }
   function injectChrome() {
     var panel = document.getElementById('layers-panel-content');
     if (!panel || document.getElementById('editor-add-bar')) return;
+    // the top bar mounts on DOMContentLoaded, which lands AFTER this boot path — retry until it's there
+    var _tbTries = 0;
+    var _tbIv = setInterval(function () {
+      moveActionsToTopbar(); wireHeaderUser();
+      if ((document.getElementById('editor-nav-user') && !document.getElementById('editor-actions')) || ++_tbTries > 50) clearInterval(_tbIv);
+    }, 200);
+    moveActionsToTopbar();
+    wireHeaderUser();
     var style = document.createElement('style');
     style.textContent =
       '#editor-add-bar{padding:6px;}' +
       '#editor-add-bar .erow{display:flex;gap:6px;}' +
       '#editor-add-bar button{flex:1;padding:6px 0;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;background:#e8e8e8;color:#222222;}' +
       '#editor-add-bar button:hover{background:#d8d8d8;}' +
+      '#editor-add-bar #editor-add-buttons button.active{background:#23374d;color:#fff;}' +   // #2: shows which add-form is open
+      '#editor-add-form{margin-top:6px;}' +
       '#editor-add-bar input,#editor-add-bar select{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +
       '#editor-save-status{font-size:11px;color:#888888;padding:2px 6px;min-height:13px;}' +
       '.layer-list-row{position:relative;}' +
@@ -1516,13 +2005,29 @@
       '.layer-list-row.editor-drop-into{background:rgba(206,92,0,0.15);box-shadow:inset 0 0 0 1px #ce5c00;}' +
       '.layer-list-row.editor-active{background:rgba(206,92,0,0.12);}' +
       // draw toolbar: float on the LEFT just past the 325px layers sidebar (was top-right, hidden under the right swipe map)
-      '#before .mapboxgl-ctrl-top-left{left:400px;z-index:50;}' +
-      '#editor-map-tools{position:fixed;top:92px;left:534px;z-index:50;display:flex;gap:3px;padding:3px;background:rgba(255,255,255,0.96);border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,0.3);pointer-events:auto;width:max-content;}' +
+      // Tool cluster CENTERED over the whole map, OUTSIDE the swipe-clipped #before container (the compare
+      // plugin clips the left map's container — controls included — at the divider, which hid the tools on
+      // the right side). Body-level fixed dock: row1 = draw + extra tools, row2 = geolocate + search.
+      '#editor-tool-dock{position:fixed;left:50%;transform:translateX(-50%);z-index:60;display:grid;grid-template-columns:auto auto;gap:6px;justify-items:start;align-items:start;pointer-events:none;}' +
+      '#editor-tool-dock>*{margin:0 !important;pointer-events:auto;}' +
+      '#editor-tool-dock .mapboxgl-ctrl-group:has(.mapbox-gl-draw_ctrl-draw-btn){grid-row:1;grid-column:1;}' +
+      '#editor-map-tools{grid-row:1;grid-column:2;position:static;display:flex;gap:3px;padding:3px;background:rgba(255,255,255,0.96);border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,0.3);pointer-events:auto;width:max-content;}' +
+      '#editor-tool-dock .mapboxgl-ctrl-group:has(.mapboxgl-ctrl-geolocate){grid-row:2;grid-column:1;position:static;height:36px;justify-self:end;}' +
+      '#editor-tool-dock .mapboxgl-ctrl-group:has(.mapboxgl-ctrl-geolocate) button{height:36px;width:36px;}' +   // expand the BUTTON to match the search-bar height
+      '#editor-tool-dock .mapboxgl-ctrl-group:has(.mapboxgl-ctrl-geolocate) button .mapboxgl-ctrl-icon{background-size:20px 20px;}' +   // but keep the ICON its original size (don\'t scale with the button)
+      '#editor-tool-dock .mapboxgl-ctrl-geocoder{grid-row:2;grid-column:2;position:static;justify-self:start;}' +
+      '#header-text-value{cursor:text;}' +
+      '#header-text-value:hover{outline:1px dashed #ccc;outline-offset:3px;border-radius:3px;}' +
+      '#header-text-value:focus{outline:2px solid #7c5cbf;outline-offset:3px;border-radius:3px;}' +
+      '#editor-settings{padding:4px 12px;height:28px;border:1px solid #bbb;border-radius:6px;background:#fff;color:#444;font-size:13px;font-weight:600;cursor:pointer;vertical-align:middle;white-space:nowrap;}' +
+      '#editor-settings:hover{background:#f2f2f2;}' +
       '#editor-map-tools button{width:29px;height:29px;border:1px solid #bbbbbb;border-radius:4px;background:#fff;color:#222222;cursor:pointer;font-size:14px;line-height:1;padding:0;}' +
       '#editor-map-tools button:disabled{opacity:0.4;cursor:default;}' +
       '#editor-map-tools button:not(:disabled):hover{background:#e8e8e8;}' +
       '#editor-map-tools button.active{background:#ce5c00;color:#fff;border-color:#ce5c00;}' +
-      '#editor-measure-readout{position:fixed;top:90px;left:calc(50% + 160px);transform:translateX(-50%);z-index:60;display:none;background:rgba(35,55,77,0.96);color:#fff;font-size:14px;font-weight:600;padding:7px 14px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;}';
+      '#editor-measure-readout{position:fixed;top:90px;left:calc(50% + 160px);transform:translateX(-50%);z-index:60;display:none;background:rgba(35,55,77,0.96);color:#fff;font-size:14px;font-weight:600;padding:7px 14px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;}' +
+      // #1: prominent transient toast for draw rejections (the tiny save-status text was too easy to miss).
+      '#editor-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;display:none;background:rgba(206,92,0,0.97);color:#fff;font-size:15px;font-weight:600;padding:12px 20px;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;pointer-events:none;}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
     var bar = document.createElement('div'); bar.id = 'editor-add-bar';
@@ -1538,12 +2043,35 @@
       '<button id="editor-measure-dist" title="Measure distance">📏</button>' +
       '<button id="editor-measure-area" title="Measure area">⬟</button>' +
       '<button id="editor-merge" title="Merge selected polygons (union) or lines (join)">∪</button>' +
-      '<button id="editor-split" title="Split a polygon or line — select one, then draw a line across it">✂</button>' +
-      '<button id="editor-settings" title="Map settings — name + default view">⚙</button>';
-    document.body.appendChild(maptools);
+      '<button id="editor-split" title="Split a polygon or line — select one, then draw a line across it">✂</button>';
+    // body-level dock: pull the draw group, geolocate and geocoder OUT of the swipe-clipped map container
+    var toolDock = document.createElement('div'); toolDock.id = 'editor-tool-dock';
+    document.body.appendChild(toolDock);
+    toolDock.appendChild(maptools);
+    function positionToolDock() {
+      try { var mc = document.getElementById('comparison-container'); toolDock.style.top = (mc ? mc.getBoundingClientRect().top + 10 : 140) + 'px'; }
+      catch (e) { toolDock.style.top = '140px'; }
+    }
+    positionToolDock();
+    window.addEventListener('resize', positionToolDock);
+    var _dockTries = 0, _dockIv = setInterval(function () {
+      try {
+        var src = document.querySelector('#before .mapboxgl-ctrl-top-left');
+        if (src) Array.prototype.slice.call(src.children).forEach(function (el) {
+          var isDraw = el.querySelector && el.querySelector('.mapbox-gl-draw_ctrl-draw-btn');
+          var isGeo = el.querySelector && el.querySelector('.mapboxgl-ctrl-geolocate');
+          var isSearch = el.classList && el.classList.contains('mapboxgl-ctrl-geocoder');
+          if (isDraw || isGeo || isSearch) toolDock.appendChild(el);
+        });
+        positionToolDock();
+        var done = toolDock.querySelector('.mapbox-gl-draw_ctrl-draw-btn') && toolDock.querySelector('.mapboxgl-ctrl-geolocate') && toolDock.querySelector('.mapboxgl-ctrl-geocoder');
+        if (done || ++_dockTries > 60) clearInterval(_dockIv);
+      } catch (e) { if (++_dockTries > 60) clearInterval(_dockIv); }
+    }, 400);
     var measureReadout = document.createElement('div'); measureReadout.id = 'editor-measure-readout'; measureReadout.title = 'Click to dismiss';
     measureReadout.addEventListener('click', function () { this.style.display = 'none'; clearMeasureShape(); });
     document.body.appendChild(measureReadout);
+    var toastEl = document.createElement('div'); toastEl.id = 'editor-toast'; document.body.appendChild(toastEl);   // #1
     document.getElementById('editor-undo').addEventListener('click', doUndo);
     document.getElementById('editor-redo').addEventListener('click', doRedo);
     document.getElementById('editor-copy').addEventListener('click', doCopy);
@@ -1553,6 +2081,10 @@
     document.getElementById('editor-merge').addEventListener('click', doMerge);
     document.getElementById('editor-split').addEventListener('click', enterSplitMode);
     document.getElementById('editor-settings').addEventListener('click', openSettingsPanel);
+    var pubBtn = document.getElementById('editor-publish-btn'); if (pubBtn) pubBtn.addEventListener('click', onPublish);
+    var copyBtn = document.getElementById('editor-copy-btn'); if (copyBtn) copyBtn.addEventListener('click', copyMapToMyAccount);
+    setTimeout(checkStorage, 2500);   // storage-quota state (warn banner / hard-stop) once the session is ready
+    makeHeaderTitleEditable();   // click the map title in the header to rename it
     try { window.infoPanelDefaultHandle = function () {}; } catch (e) {}   // suspend "click map → toggle sidebar" (use the sidebar button instead)
     document.addEventListener('keydown', function (e) {   // Esc cancels measure/split; Ctrl+Z/Y, Ctrl+C/V
       if (e.key === 'Escape' && _measuring) { e.preventDefault(); cancelMeasure(); return; }
@@ -1595,7 +2127,8 @@
   var OUTLINE_OPACITY = ['coalesce', ['get', 'user_strokeopacity'], 1];   // polygon outline opacity, INDEPENDENT of fill — so fill→0 leaves the lines
   var STROKE_WIDTH = ['coalesce', ['get', 'user_strokewidth'], 2];        // polygon outline / line width, per-feature so width edits preview live
   var POINT_STROKE_WIDTH = ['coalesce', ['get', 'user_strokewidth'], 1.5]; // circle outline width — NOT 1px-capped like fill-outline, no separate layer needed
-  var RADIUS = ['coalesce', ['get', 'user_radius'], 5];                    // circle size; the circle-stroke is drawn at this edge, so it auto-follows
+  var RADIUS_BASE = ['coalesce', ['get', 'user_radius'], 6];               // the radius slider sets the ZOOMED-IN size; farther out points shrink like real markers
+  var RADIUS = ['interpolate', ['linear'], ['zoom'], 6, ['max', 2, ['*', 0.35, RADIUS_BASE]], 11, ['*', 0.65, RADIUS_BASE], 16, RADIUS_BASE];
   var DRAW_STYLES = [
     { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': OUTLINE_FILL, 'fill-opacity': FILL_OPACITY } },
     { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.55 } },
@@ -1618,7 +2151,7 @@
     var node = findNodeById(layers, id);
     // drawn layers always get the style panel; tilesets get it too once they have a styleable type
     var styleable = node && (node.source_type === 'geojson-supabase' || (isTilesetNode(node) && ['fill', 'line', 'circle'].indexOf(node.type) > -1));
-    if (node && node.type !== 'section') showLayerPanel(id); else hideLayerPanel();   // every layer + group opens the panel; groups/basemap tilesets get attr/source/zoom (no style)
+    if (node) showLayerPanel(id); else hideLayerPanel();   // every layer + group + section opens the panel; sections get a minimal title+Delete panel (#4)
   }
   function activeLayerDbId() {
     if (!activeLayerId) return null;
@@ -1644,8 +2177,118 @@
     beforeMap.on('draw.update', onDrawUpdate);
     beforeMap.on('draw.delete', onDrawDelete);
     beforeMap.on('draw.selectionchange', onSelectionChange);
+    // modifier state at the moment of the click, for the multi-select bypass (selectionchange carries no originalEvent)
+    try { beforeMap.getCanvasContainer().addEventListener('mousedown', function (ev) { window._msModClick = !!(ev.shiftKey || ev.ctrlKey || ev.metaKey); }, true); } catch (e) {}
     injectFeaturePanel();
     loadFeatures();
+    wireDrawPopups();
+  }
+  // ── #14: hover/click popups for MapboxDraw-rendered (edit-mode) features ─────
+  // The engine's popup handlers listen on the slug-left/right layers, which are HIDDEN in the editor for
+  // small drawn layers (their features live in MapboxDraw) — hidden layers fire no mouse events, so bubbles
+  // never showed while editing. These handlers read the LIVE toggles (#12), and clicking still selects the
+  // feature for editing (editor = viewer + tools; neither suppresses the other).
+  var _drawHoverPop = null, _drawClickPop = null, _drawClickPopId = null, _hoverHlId = null;
+  function drawNodeFor(did) { var lid = featureLayer[did]; return lid ? nodeByLayerDbId(lid) : null; }
+  // Hover-highlight for MapboxDraw features: a dedicated overlay source/layers on BOTH maps, fed the hovered
+  // feature's geometry (proven be-merge-hl approach — works for features drawn this session too, which the
+  // engine's feature-state sources can't see). Styling mirrors configLoader's defaultHighlightPaint.
+  function ensureHoverHlLayers(map) {
+    try {
+      if (!map || map.getSource('edit-hover-hl')) return;
+      map.addSource('edit-hover-hl', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({ id: 'edit-hover-hl-fill', type: 'fill', source: 'edit-hover-hl', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': ['coalesce', ['get', 'color'], '#3bb2d0'], 'fill-opacity': 0.55 } });
+      map.addLayer({ id: 'edit-hover-hl-line', type: 'line', source: 'edit-hover-hl', filter: ['==', '$type', 'LineString'], paint: { 'line-color': ['coalesce', ['get', 'color'], '#3bb2d0'], 'line-width': 5 } });
+      map.addLayer({ id: 'edit-hover-hl-point', type: 'circle', source: 'edit-hover-hl', filter: ['==', '$type', 'Point'], paint: { 'circle-color': ['coalesce', ['get', 'color'], '#3bb2d0'], 'circle-radius': 9, 'circle-opacity': 0.85 } });
+      if (typeof msRaiseLabelLayers === 'function') msRaiseLabelLayers(map, layers);   // the highlight must glow UNDER the labels
+    } catch (e) {}
+  }
+  function setHoverHl(did, node) {   // did=null clears
+    if (did === _hoverHlId) return;
+    _hoverHlId = did;
+    var fc = { type: 'FeatureCollection', features: [] };
+    if (did) {
+      var f = null; try { f = draw && draw.get(did); } catch (e) {}
+      if (f && f.geometry) fc.features.push({ type: 'Feature', geometry: f.geometry, properties: { color: (node && node.iconColor) || '#3bb2d0' } });
+    }
+    [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
+      if (!m) return;
+      ensureHoverHlLayers(m);
+      try { var s = m.getSource('edit-hover-hl'); if (s) s.setData(fc); } catch (e) {}
+    });
+  }
+  function drawFeatureAt(pt) {
+    try {
+      var fs = beforeMap.queryRenderedFeatures(pt);
+      for (var i = 0; i < fs.length; i++) {
+        var f = fs[i];
+        if (!f.layer || String(f.layer.id).indexOf('gl-draw') !== 0) continue;
+        var did = f.properties && (f.properties.id || f.properties.parent);
+        if (did && featureMeta[did]) return did;
+      }
+    } catch (e) {}
+    return null;
+  }
+  function drawPopupHtml(node, did) {
+    var meta = featureMeta[did] || {};
+    var prop = node._uiLabel || node.prop || 'label';
+    // label-field lookup: meta field → imported attribute column (custom_fields, e.g. ESRI "LABEL") → label
+    var val = (prop === 'label') ? (meta.label || '')
+      : ((meta[prop] != null ? meta[prop] : (meta.custom && meta.custom[prop] != null ? meta.custom[prop] : meta.label)) || '');
+    if (!val) return null;   // no label → no bubble (never show a stale/empty one)
+    // chrome = the FEATURE's own colour (matches icons + multicolor layers), legacy pill box model
+    var col = drawFeatureColor(node, did);
+    var bg = colorTint(col, 0.5);
+    return "<div style=\"background-color:" + bg + ";border:solid " + col + " 2px;padding:5px;\">" + String(val).replace(/[<>&]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]; }) + '</div>';
+  }
+  function colorTint(col, a) {   // translucent version of ANY css colour format (hex / rgb() / rgba() / other)
+    col = String(col || '').trim();
+    if (col[0] === '#' && typeof hexToRgba === 'function') return hexToRgba(col, a);
+    var m = col.match(/^rgba?\(([^)]+)\)$/i);
+    if (m) { var parts = m[1].split(',').slice(0, 3).map(function (x) { return x.trim(); }); return 'rgba(' + parts.join(',') + ',' + a + ')'; }
+    return col;   // named colours etc. — used solid (no cheap tint available)
+  }
+  function drawFeatureColor(node, did) {   // the bubble chrome uses the FEATURE's own colour (colour rule) —
+    try { var f = draw && draw.get(did); if (f && f.properties && f.properties.color) return f.properties.color; } catch (e) {}
+    return (node && node.iconColor) || '#3bb2d0';   // identical to the layer colour on single-colour layers
+  }
+  function wireDrawPopups() {
+    if (wireDrawPopups._done || typeof beforeMap === 'undefined') return; wireDrawPopups._done = true;
+    var _clickPops = [];
+    function closeClickPops() { _clickPops.forEach(function (cp) { try { if (cp.isOpen()) cp.remove(); } catch (e) {} }); _drawClickPopId = null; }
+    [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (m) {
+      if (!m) return;   // BOTH swipe sides get hover/click popups (the maps are camera-synced, so the left
+      var hoverPop = new mapboxgl.Popup({ closeButton: false, closeOnClick: false });          // map's rendered features answer hit-tests for either side)
+      var clickPop = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 5 });
+      _clickPops.push(clickPop);
+      m.on('mousemove', function (e) {
+        if (window._msPanelDrag) return;   // dragging a panel edge over the map is not a feature hover
+        var did = drawFeatureAt(e.point);
+        var node = did ? drawNodeFor(did) : null;
+        // the RIGHT map has no MapboxDraw (which handles the left cursor) — set the pointer here
+        if (m !== beforeMap) { try { m.getCanvas().style.cursor = did ? 'pointer' : ''; } catch (x) {} }
+        // hover-HIGHLIGHT (independent of the popup toggle; default on, gated by the layer's elp-hl setting)
+        setHoverHl((did && node && node.hoverHighlight !== false) ? did : null, node);
+        var on = node && (node._uiHover != null ? node._uiHover : !!node.popupStyle);
+        if (did && _drawClickPopId === did) on = false;   // click bubble already labels it — never stack a hover bubble on top
+        var html = (did && node && on) ? drawPopupHtml(node, did) : null;
+        if (!html) { if (hoverPop.isOpen()) hoverPop.remove(); return; }
+        hoverPop.setLngLat(e.lngLat).setHTML(html);
+        if (!hoverPop.isOpen()) hoverPop.addTo(m);
+      });
+      m.on('click', function (e) {
+        var did = drawFeatureAt(e.point);
+        var node = did ? drawNodeFor(did) : null;
+        var on = node && (node._uiClick != null ? node._uiClick : !!node.click);
+        var html = (did && node && on) ? drawPopupHtml(node, did) : null;
+        if (!html) { closeClickPops(); return; }
+        if (_drawClickPopId === did) { closeClickPops(); return; }   // second click toggles off, like the viewer
+        closeClickPops();
+        _drawClickPopId = did;
+        clickPop.setLngLat(e.lngLat).setHTML(html);
+        clickPop.addTo(m);
+      });
+    });
   }
   // ── undo / redo (in-session stack; mirrors v3 undoEngine) ────────────────────
   var _undoStack = [], _redoStack = [], _undoing = false, _geomSnap = {};
@@ -1804,6 +2447,7 @@
   }
   async function doPaste() {
     if (!_clipboard) { setStatus('Nothing to paste'); return; }
+    if (storageGate()) return;   // storage hard-stop
     var lid = null, node = null;
     if (_clipboardLayer) { lid = _clipboardLayer; node = nodeByLayerDbId(lid); }   // paste into the COPIED feature's OWN layer (coincident duplicate)
     if (!node) { lid = activeLayerDbId(); node = activeLayerId ? findNodeById(layers, activeLayerId) : null; }
@@ -1856,7 +2500,7 @@
     try {
       for (var j = 0; j < origs.length; j++) await removeDrawnFeature(origs[j].drawId);
       await addDrawnFeature(mergedId, mergedGeom, lid, mprops);
-      try { draw.changeMode('simple_select', { featureIds: [mergedId] }); } catch (e) {}
+      try { _skipArmOnce = true; draw.changeMode('simple_select', { featureIds: [mergedId] }); } catch (e) {}
       pushUndo(
         async function () { await removeDrawnFeature(mergedId); for (var k = 0; k < origs.length; k++) await addDrawnFeature(origs[k].drawId, origs[k].geom, origs[k].lyr, origs[k].props); },
         async function () { for (var k = 0; k < origs.length; k++) await removeDrawnFeature(origs[k].drawId); await addDrawnFeature(mergedId, mergedGeom, lid, mprops); },
@@ -1931,7 +2575,44 @@
     } catch (e) { console.warn('editing: split failed', e); setStatus('Split failed: ' + e.message); }
   }
 
+  // ── Storage enforcement (Step 22): warn at 80%, hard-stop new features at 100% ──
+  var _storageOver = false, _storageInfo = null, _storageBusy = false, _storageLast = 0, _storageTries = 0;
+  async function checkStorage() {
+    if (_storageBusy) return; _storageBusy = true;
+    try {
+      var P = window.MapStructorPricing; if (!P) return;
+      var u = await db.auth.getUser(); var uid = u && u.data && u.data.user && u.data.user.id;
+      if (!uid) { if (_storageTries++ < 10) setTimeout(checkStorage, 1500); return; }   // session not ready yet — retry
+      var tierKey = 'free';
+      try { var pr = await db.from('profiles').select('subscription_tier').eq('id', uid).maybeSingle(); if (pr.data && pr.data.subscription_tier) tierKey = pr.data.subscription_tier; } catch (e) {}
+      var used = 0;
+      try { var rpc = await db.rpc('mapstructor_user_storage'); if (!rpc.error && typeof rpc.data === 'number') used = rpc.data; } catch (e) {}
+      var quota = P.tierFor(tierKey).quotaBytes;
+      _storageInfo = { used: used, quota: quota, tierKey: tierKey, frac: quota ? used / quota : 0 };
+      _storageOver = used >= quota;
+      if (location.search.indexOf('storagefull=1') > -1) { _storageOver = true; _storageInfo = { used: quota, quota: quota, tierKey: tierKey, frac: 1 }; }   // test seam
+      _storageLast = Date.now();
+      updateStorageBanner();
+    } catch (e) {} finally { _storageBusy = false; }
+  }
+  function maybeRecheckStorage() { if (Date.now() - _storageLast > 4000) checkStorage(); }
+  function updateStorageBanner() {
+    var P = window.MapStructorPricing, el = document.getElementById('editor-storage-banner');
+    if (!_storageInfo || !P || _storageInfo.frac < 0.8) { if (el && el.parentNode) el.parentNode.removeChild(el); return; }
+    if (!el) { el = document.createElement('div'); el.id = 'editor-storage-banner'; el.style.cssText = 'position:fixed;top:54px;left:50%;transform:translateX(-50%);z-index:3000;padding:9px 16px;border-radius:8px;color:#fff;font-family:Source Sans Pro,Arial,sans-serif;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,0.2);'; document.body.appendChild(el); }
+    el.style.background = _storageOver ? '#b4453a' : '#d98a00';
+    el.innerHTML = (_storageOver ? '<b>Storage full</b> — ' : 'Storage ' + Math.round(_storageInfo.frac * 100) + '% — ') + P.fmtBytes(_storageInfo.used) + ' / ' + P.fmtBytes(_storageInfo.quota) + '. <a href="../dashboard.html" target="_blank" style="color:#fff;text-decoration:underline;">Manage / upgrade ↗</a>';
+  }
+  function storageGate() {   // returns true if a new feature should be BLOCKED (and tells the user)
+    if (!_storageOver) return false;
+    var P = window.MapStructorPricing;
+    window.alert('You’ve hit your storage limit' + (_storageInfo && P ? ' (' + P.fmtBytes(_storageInfo.used) + ' / ' + P.fmtBytes(_storageInfo.quota) + ')' : '') + '. Upgrade your plan (Dashboard → Storage) or remove some data to keep adding features.');
+    updateStorageBanner();
+    return true;
+  }
+
   async function onDrawCreate(e) {
+    _skipArmOnce = true;   // a freshly drawn feature stays selected/editable — arming is for CLICKS on existing features
     var f = e.features && e.features[0]; if (!f) return;
     if (_splitMode) { doSplit(f); return; }   // the line just drawn is a split cut, not a feature
     if (_measuring) {   // a measuring line/polygon — report distance/area + keep the shape, don't persist it
@@ -1941,22 +2622,38 @@
       try { draw.delete(f.id); } catch (e) {}              // remove the MapboxDraw copy (it lives on the display layer now)
       return;
     }
+    if (storageGate()) { try { if (draw) draw.delete(f.id); } catch (e) {} return; }   // hard-stop at 100% storage
     var lid = activeLayerDbId();
     var node = activeLayerId ? findNodeById(layers, activeLayerId) : null;
-    if (!lid || !node) { window.alert('Select a drawn layer first — click a layer you added (or make one with + Layer).'); if (draw) draw.delete(f.id); return; }
-
-    // One geometry type per layer: the first feature fixes the type; a mismatch
-    // is rejected (draw it into / create a layer of the right type instead).
+    // Need a drawn layer that accepts this geometry. If nothing is selected, OR the selected layer already
+    // holds a different geometry type, auto-create a fresh layer of THIS type and draw into it (Step 13) —
+    // never reject the drawing. (One geometry type per layer is still enforced; we just make a new layer.)
     var mapType = GEOM_TO_TYPE[f.geometry.type];
+    var geomLayerName = function (gt) { return ({ Point: 'Points', MultiPoint: 'Points', LineString: 'Lines', MultiLineString: 'Lines', Polygon: 'Polygons', MultiPolygon: 'Polygons' })[gt] || 'New layer'; };
+    // A feature only goes to the SELECTED layer. We look elsewhere only when no drawn layer is selected, or the
+    // selected one is a different geometry type — and then: auto-create a layer for this type ONLY if none exists
+    // yet; if one already exists (just not selected), reject and ask the user to select it (never silently route
+    // a feature into a layer they didn't pick). Matches test/draw/create (basic + v3).
+    if (!lid || !node || (node.type && node.type !== mapType)) {
+      var existing = flatLayers(layers).filter(function (l) { return l.source_type === 'geojson-supabase' && l.type === mapType; })[0];
+      if (existing) {
+        if (draw) draw.delete(f.id);
+        // #1: prominent centered toast only — no duplicate in the sidebar save-status text.
+        showToast('Select or create a new layer');
+        return;
+      }
+      try { await addItem('layer', geomLayerName(f.geometry.type), null); } catch (e) { console.warn('auto-create layer failed', e); }
+      lid = activeLayerDbId();
+      node = activeLayerId ? findNodeById(layers, activeLayerId) : null;
+      // the new layer must be usable AND of this type — never fall through to add to the previously-active (wrong) layer
+      if (!lid || !node || (node.type && node.type !== mapType)) { if (draw) draw.delete(f.id); setStatus('Could not create a layer — try drawing again.'); return; }
+    }
+    // stamp the geometry type on a fresh (type-less) layer
     if (!node.type) {
       node.type = mapType;
       node.iconType = GEOM_TO_ICON[f.geometry.type] || node.iconType;
       try { await db.from('layers').update({ type: mapType }).eq('id', lid); } catch (err) { console.warn('editing: set layer type failed', err); }
       rerender();
-    } else if (node.type !== mapType) {
-      if (draw) draw.delete(f.id);
-      window.alert('"' + (node.label || 'This layer') + '" holds ' + (TYPE_TO_GEOM[node.type] || node.type) + ' features only. Draw a ' + (TYPE_TO_GEOM[node.type] || node.type) + ', or add/select a separate layer for ' + f.geometry.type.toLowerCase() + 's.');
-      return;
     }
 
     setStatus('Saving…');
@@ -1964,6 +2661,7 @@
       var ins = await db.from('features').insert({ layer_id: lid, geom: f.geometry }).select('feature_id').single();
       if (ins.error) throw new Error(ins.error.message);
       featureToDb[f.id] = ins.data.feature_id;
+      maybeRecheckStorage();   // a new feature added bytes — re-check the quota (debounced)
       featureMeta[f.id] = { label: '', notes: '', start: '', end: '' };
       featureLayer[f.id] = lid;
       _geomSnap[f.id] = JSON.parse(JSON.stringify(f.geometry));
@@ -2009,7 +2707,7 @@
 
     // map each drawn layer's db id → its style, + collect the geojson layers
     var dbColor = {}, dbOpacity = {}, dbOutline = {}, dbStrokeOp = {}, dbStrokeWidth = {}, dbRadius = {}, gjList = [];
-    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { dbColor[did] = n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; var ol = paintOutline(n.paint); if (ol != null) dbOutline[did] = ol; if (n.paint && n.paint['line-opacity'] != null) dbStrokeOp[did] = n.paint['line-opacity']; var wd = paintWidth(n.paint); if (wd != null) dbStrokeWidth[did] = wd; if (n.paint && n.paint['circle-radius'] != null) dbRadius[did] = n.paint['circle-radius']; if (n.outlineSplit) dbStrokeOp[did] = 0; gjList.push({ slug: n.id, did: did }); } } if (n.children) walk(n.children); }); })(layers);
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { /* paint's literal colour wins: an imported hollow fill (rgba(0,0,0,0)) must not fall back to the sidebar icon colour */ var pc0 = (n.paint && typeof n.paint[colorKeyFor(n.type)] === 'string') ? n.paint[colorKeyFor(n.type)] : null; dbColor[did] = pc0 || n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; var ol = paintOutline(n.paint); if (ol != null) dbOutline[did] = ol; if (n.paint && n.paint['line-opacity'] != null) dbStrokeOp[did] = n.paint['line-opacity']; var wd = paintWidth(n.paint); if (wd != null) dbStrokeWidth[did] = wd; if (n.paint && n.paint['circle-radius'] != null) dbRadius[did] = n.paint['circle-radius']; if (n.outlineSplit) dbStrokeOp[did] = 0; gjList.push({ slug: n.id, did: did }); } } if (n.children) walk(n.children); }); })(layers);
 
     // Classify by size: small layers edit in MapboxDraw; large ones (imported 10k+ datasets) render
     // via the engine like a tileset — MapboxDraw can't hold tens of thousands of features (it freezes).
@@ -2021,34 +2719,85 @@
     hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
     wireEngineEditClicks(); try { if (beforeMap) beforeMap.once('idle', wireEngineEditClicks); } catch (e) {}   // BEFORE the early-return below, so tileset-only / large-layer-only projects still get click→edit
     if (!smallIds.length) { try { draw.set({ type: 'FeatureCollection', features: [] }); } catch (e) {} return; }
-    try {
-      var rows = [];
-      for (var from = 0; from < 200000; from += 1000) {
-        var res = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields').in('layer_id', smallIds).order('feature_id').range(from, from + 999);
-        if (res.error) { console.warn('editing: load features failed', res.error); break; }
-        var batch = res.data || [];
-        rows = rows.concat(batch);
-        if (batch.length < 1000) break;
+    // ON-by-default layers load first (the visible map); OFF-by-default layers' rows are fetched in the
+    // background afterwards, straight into featureCache — nothing hidden ever renders, and first paint
+    // isn't blocked by data nobody sees.
+    // visibility = the CURRENT sidebar checkbox when it exists (session state), falling back to the saved
+    // default — otherwise every loadFeatures() rebuild (style changes etc.) would reset session toggles.
+    function layerOnNow(n) {
+      if (!n) return true;
+      var cb2 = document.getElementById(n.id);
+      return cb2 ? !!cb2.checked : n.checked !== false;
+    }
+    var onIds = smallIds.filter(function (lid2) { return layerOnNow(nodeByLayerDbId(lid2)); });
+    var offIds = smallIds.filter(function (lid2) { return !layerOnNow(nodeByLayerDbId(lid2)); });
+    var FEAT_SEL = 'feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url';
+    function mapRow(row) {
+      if (!row.geom) return null;
+      var did = 'db-' + row.feature_id;
+      featureToDb[did] = row.feature_id;
+      featureMeta[did] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '', image_url: row.image_url || '', custom: row.custom_fields || null };
+      featureLayer[did] = row.layer_id;
+      var props = { color: dbColor[row.layer_id] || '#3bb2d0' };
+      // color-by-attribute: the feature's own column value decides its color in the draw copies too
+      var cbNode = nodeByLayerDbId(row.layer_id);
+      if (cbNode && cbNode.colorBy && row.custom_fields) {
+        var cbv = row.custom_fields[cbNode.colorBy.prop];
+        var cbc = cbv != null ? cbNode.colorBy.mapping[String(cbv)] : null;
+        if (cbc) props.color = cbc;
       }
+      if (dbOpacity[row.layer_id] != null) props.opacity = dbOpacity[row.layer_id];
+      if (dbOutline[row.layer_id] != null) props.outline = dbOutline[row.layer_id];
+      if (dbStrokeOp[row.layer_id] != null) props.strokeopacity = dbStrokeOp[row.layer_id];
+      if (dbStrokeWidth[row.layer_id] != null) props.strokewidth = dbStrokeWidth[row.layer_id];
+      if (dbRadius[row.layer_id] != null) props.radius = dbRadius[row.layer_id];
+      // opacity/thickness-by-column: the feature's own column value drives it in the draw copies too
+      if (cbNode && row.custom_fields) {
+        if (cbNode.opacityBy) { var oby = parseFloat(row.custom_fields[cbNode.opacityBy.prop]); if (!isNaN(oby)) props.opacity = oby; }
+        if (cbNode.thicknessBy) { var tby = parseFloat(row.custom_fields[cbNode.thicknessBy.prop]); if (!isNaN(tby)) { props.strokewidth = tby; props.radius = tby; } }
+      }
+      // UNIVERSAL STYLE COLUMNS: every feature carries ms_color / ms_linecolor / ms_opacity / ms_thickness —
+      // when set they style THAT feature (trumping the layer style AND colour-by). Editable in the attribute table.
+      if (row.custom_fields) {
+        var scv = row.custom_fields.ms_color;
+        if (scv != null && String(scv).trim() !== '' && String(scv).trim().toLowerCase() !== 'none') props.color = looksHex(scv) ? normHex(scv) : String(scv).trim();   // "none" = explicit no-override → layer colour
+        var slv = row.custom_fields.ms_linecolor;   // polygon outline / point stroke colour (lines take ms_color)
+        if (slv != null && String(slv).trim() !== '' && String(slv).trim().toLowerCase() !== 'none') props.outline = looksHex(slv) ? normHex(slv) : String(slv).trim();
+        var sov = parseFloat(row.custom_fields.ms_opacity);
+        if (row.custom_fields.ms_opacity != null && String(row.custom_fields.ms_opacity) !== '' && !isNaN(sov)) props.opacity = sov;
+        var stv = parseFloat(row.custom_fields.ms_thickness);
+        if (row.custom_fields.ms_thickness != null && String(row.custom_fields.ms_thickness) !== '' && !isNaN(stv)) { props.strokewidth = stv; props.radius = stv; }
+      }
+      var fo = { type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: props };
+      _geomSnap[did] = { type: row.geom.type, coordinates: row.geom.coordinates };
+      return { did: did, fo: fo, hidden: !layerOnNow(cbNode) };
+    }
+    try {
       var feats = [];
-      rows.forEach(function (row) {
-        if (!row.geom) return;
-        var did = 'db-' + row.feature_id;
-        featureToDb[did] = row.feature_id;
-        featureMeta[did] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '', image_url: (row.custom_fields && row.custom_fields.image_url) || '' };
-        featureLayer[did] = row.layer_id;
-        var props = { color: dbColor[row.layer_id] || '#3bb2d0' };
-        if (dbOpacity[row.layer_id] != null) props.opacity = dbOpacity[row.layer_id];
-        if (dbOutline[row.layer_id] != null) props.outline = dbOutline[row.layer_id];
-        if (dbStrokeOp[row.layer_id] != null) props.strokeopacity = dbStrokeOp[row.layer_id];
-        if (dbStrokeWidth[row.layer_id] != null) props.strokewidth = dbStrokeWidth[row.layer_id];
-        if (dbRadius[row.layer_id] != null) props.radius = dbRadius[row.layer_id];
-        feats.push({ type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: props });
-        _geomSnap[did] = { type: row.geom.type, coordinates: row.geom.coordinates };
-      });
+      if (onIds.length) {
+        for (var from = 0; from < 200000; from += 1000) {
+          var res = await db.from('features').select(FEAT_SEL).in('layer_id', onIds).order('feature_id').range(from, from + 999);
+          if (res.error) { console.warn('editing: load features failed', res.error); break; }
+          (res.data || []).forEach(function (row) { var m = mapRow(row); if (!m) return; if (m.hidden) featureCache[m.did] = m.fo; else feats.push(m.fo); });
+          if (!res.data || res.data.length < 1000) break;
+        }
+      }
       draw.set({ type: 'FeatureCollection', features: feats });
       syncMirrorRight();   // show the loaded drawn features on the right swipe side too
+      // labels ride ABOVE everything — MapboxDraw's fills and the right mirror are added after the
+      // engine's label layers, so put labels back on top after every rebuild
+      if (typeof msRaiseLabelLayers === 'function') { msRaiseLabelLayers(beforeMap, layers); msRaiseLabelLayers(typeof afterMap !== 'undefined' ? afterMap : null, layers); }
     } catch (e) { console.warn('editing: load features failed', e); }
+    if (offIds.length) setTimeout(async function () {   // hidden layers hydrate after the visible map is up
+      try {
+        for (var from2 = 0; from2 < 200000; from2 += 1000) {
+          var res2 = await db.from('features').select(FEAT_SEL).in('layer_id', offIds).order('feature_id').range(from2, from2 + 999);
+          if (res2.error || !res2.data || !res2.data.length) break;
+          res2.data.forEach(function (row) { var m = mapRow(row); if (m) featureCache[m.did] = m.fo; });
+          if (res2.data.length < 1000) break;
+        }
+      } catch (e) {}
+    }, 1200);
   }
   // The engine (P0) renders geojson-supabase layers as real GeoJSON layers; in the
   // EDITOR those same features live in MapboxDraw, so hide the engine's copy (both maps).
@@ -2093,7 +2842,7 @@
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-color': C, 'line-width': SW, 'line-opacity': OP } });
       afterMap.addLayer({ id: MIRROR_SRC + '-point', type: 'circle', source: MIRROR_SRC, filter: ['==', '$type', 'Point'],
-        paint: { 'circle-color': C, 'circle-radius': ['coalesce', ['get', 'radius'], 5], 'circle-stroke-width': ['coalesce', ['get', 'strokewidth'], 1.5], 'circle-stroke-color': ['coalesce', ['get', 'outline'], '#000'], 'circle-opacity': OP } });
+        paint: (function () { var R = ['coalesce', ['get', 'radius'], 6]; return { 'circle-color': C, 'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, ['max', 2, ['*', 0.35, R]], 11, ['*', 0.65, R], 16, R], 'circle-stroke-width': ['coalesce', ['get', 'strokewidth'], 1.5], 'circle-stroke-color': ['coalesce', ['get', 'outline'], '#ffffff'], 'circle-opacity': OP }; })() });
       return true;
     } catch (e) { return false; }
   }
@@ -2107,9 +2856,91 @@
   }
 
   // ── feature panel: click a drawn feature → edit its label/notes ─────────────
+  // click a feature → HIGHLIGHT it (armed); click it again → real selection (geometry editing + panel).
+  // Programmatic selections (paste, merge, click-to-edit) skip the arming via _skipArmOnce.
+  var _armedSet = [], _editingDraw = null, _skipArmOnce = false;
+  function ensureArmedHl() {
+    [beforeMap, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
+      if (!m) return;
+      try {
+        if (m.getSource('editor-armed-hl')) return;
+        m.addSource('editor-armed-hl', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        m.addLayer({ id: 'editor-armed-hl-fill', type: 'fill', source: 'editor-armed-hl', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#ffd54d', 'fill-opacity': 0.45 } });
+        m.addLayer({ id: 'editor-armed-hl-line', type: 'line', source: 'editor-armed-hl', paint: { 'line-color': '#ce5c00', 'line-width': 2.5 } });
+        m.addLayer({ id: 'editor-armed-hl-pt', type: 'circle', source: 'editor-armed-hl', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#ffd54d', 'circle-opacity': 0.7, 'circle-stroke-color': '#ce5c00', 'circle-stroke-width': 2 } });
+      } catch (e) {}
+    });
+  }
+  function setArmedHl(feats) {   // feats: array of GeoJSON features (or null/[] to clear)
+    ensureArmedHl();
+    var list = (feats || []).filter(Boolean).map(function (f2) { return { type: 'Feature', geometry: f2.geometry, properties: {} }; });
+    var data = { type: 'FeatureCollection', features: list };
+    [beforeMap, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
+      if (!m) return; try { var s2 = m.getSource('editor-armed-hl'); if (s2) s2.setData(data); } catch (e) {}
+    });
+  }
+  function updateArmedHl() { setArmedHl(_armedSet.map(function (id2) { try { return draw.get(id2); } catch (e) { return null; } })); }
+  function syncAttrRowsFromMap(feats) {   // clicking feature(s) on the MAP selects their row(s) in the open attribute table
+    if (!_attrSlug) return;
+    if (!feats || !feats.length) { _attrSel = []; applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn(); return; }
+    var fids = feats.map(function (f2) {
+      var did = String(f2.id);
+      var n = featureToDb[did] != null ? featureToDb[did] : (did.indexOf('db-') === 0 ? did.slice(3) : null);
+      return n != null ? String(n) : null;
+    }).filter(function (x) { return x && _attrById[x]; });
+    if (!fids.length) return;   // table open for a different layer
+    _attrSel = fids;
+    applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn();
+    var row = document.querySelector('#editor-attr-tbody tr[data-fid="' + fids[fids.length - 1] + '"]');
+    if (row) row.scrollIntoView({ block: 'nearest' });   // explicit click (not hover) — bringing the row into view is wanted here
+    fillAttrPreview(fids[fids.length - 1]);
+  }
+  // ── click model on the map (mirrors the attribute table + GIS selection): ──
+  //   plain click            → HIGHLIGHT that feature (selection of one; nothing editable)
+  //   shift/ctrl click       → ADD to / REMOVE from the highlight set (multi-select; still nothing editable)
+  //   plain click on a highlighted feature → NOW its geometry is editable (+ feature panel)
+  //   click empty ground     → clear everything
+  // The deselects/selects are DEFERRED one tick: mapbox-draw's click pipeline finishes after this
+  // handler and re-applies its own selection — synchronous changes here get clobbered.
+  function deferDrawSel(list) { setTimeout(function () { try { draw.changeMode('simple_select', { featureIds: list }); } catch (e2) {} }, 0); }
+  function clearArmedSet() { _armedSet = []; setArmedHl(null); }
+  function armedIdsToRows() { syncAttrRowsFromMap(_armedSet.map(function (i3) { return { id: i3 }; })); }
   function onSelectionChange(e) {
-    if (e.features && e.features.length) showFeaturePanel(e.features[0].id);
-    else hideFeaturePanel();
+    if (!e.features || !e.features.length) { _skipArmOnce = false; _editingDraw = null; _armedSet = []; setArmedHl(null); hideFeaturePanel(); syncAttrRowsFromMap([]); return; }
+    if (_skipArmOnce) {   // programmatic (paste/merge/click-to-edit/new draw): behave classically
+      var f0 = e.features[0];
+      _skipArmOnce = false; _editingDraw = String(f0.id); _armedSet = []; setArmedHl(null);
+      showFeaturePanel(f0.id); syncAttrRowsFromMap(e.features);
+      return;
+    }
+    // the CLICKED feature: with something in edit the event may carry [editing, clicked] — take the other one
+    var fc = e.features[0];
+    for (var i = 0; i < e.features.length; i++) { if (String(e.features[i].id) !== _editingDraw) { fc = e.features[i]; break; } }
+    var id = String(fc.id);
+    if (id === _editingDraw && e.features.length === 1) return;   // events from the feature being edited (drag etc.)
+    var mod = !!window._msModClick;
+    if (_armedSet.indexOf(id) > -1) {
+      if (mod) {   // modifier-click a highlighted feature → remove it from the set
+        _armedSet = _armedSet.filter(function (x) { return x !== id; });
+        deferDrawSel([]);
+        updateArmedHl(); armedIdsToRows();
+        return;
+      }
+      // SECOND plain click on a highlighted feature → edit THAT one
+      _editingDraw = id; _armedSet = [];
+      setArmedHl(null);
+      deferDrawSel([id]);
+      showFeaturePanel(id);
+      syncAttrRowsFromMap([{ id: id }]);
+      return;
+    }
+    // clicked an un-highlighted feature
+    if (mod) { if (_editingDraw) _armedSet.push(_editingDraw); _armedSet.push(id); }   // leaving edit mode via modifier keeps that feature highlighted
+    else _armedSet = [id];
+    _editingDraw = null;
+    deferDrawSel([]);
+    updateArmedHl(); armedIdsToRows();
+    hideFeaturePanel();
   }
   function injectFeaturePanel() {
     if (document.getElementById('editor-feature-panel')) return;
@@ -2144,12 +2975,11 @@
       '<div style="font-size:10px;color:#888888;margin-top:4px;">Blank = always visible on the timeline.</div>' +
       '<div id="efp-page-row" style="display:none;margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia page ID</label>' +
       '<input id="efp-pageid" type="text" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" /></div>' +
-      '<button id="efp-done" style="margin-top:10px;width:100%;padding:7px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;font-weight:600;cursor:pointer;font-size:12px;display:none;">✓ Done editing</button>' +
-      '<button id="efp-delete" style="margin-top:8px;width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete feature</button>';
+      '<button id="efp-done" style="margin-top:10px;width:100%;padding:7px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;font-weight:600;cursor:pointer;font-size:12px;display:none;">✓ Done editing</button>';
+      // #10: "Delete feature" button removed — delete via the draw trash button or the keyboard (Delete/Backspace).
     document.body.appendChild(p);
     document.getElementById('efp-close').addEventListener('click', function () { if (draw) draw.changeMode('simple_select'); hideFeaturePanel(); });
     document.getElementById('efp-pageid').addEventListener('input', function () { onFeatureField('pageid', this.value); });
-    document.getElementById('efp-delete').addEventListener('click', onDeleteFeature);
     document.getElementById('efp-done').addEventListener('click', function () { var n = _engineEditNode[selectedDrawId]; if (n) finishEngineEdit(n, featureToDb[selectedDrawId]); });
     document.getElementById('efp-label').addEventListener('input', function () { onFeatureField('label', this.value); });
     var efpNotes = document.getElementById('efp-notes');
@@ -2198,6 +3028,7 @@
   }
   function hideFeaturePanel() {
     selectedDrawId = null;
+    undockEditor();   // #11: pull the editor box back out of the info panel + restore its fixed styles (also hides it)
     var p = document.getElementById('editor-feature-panel'); if (p) p.style.display = 'none';
     hideEncPanel();
   }
@@ -2273,15 +3104,36 @@
   }
   // Notes mode (no encyclopedia): render the feature's OWN title+notes into the SAME #rightInfoBar panel +
   // chrome as the encyclopedia preview, so the editor shows exactly what the live viewer shows. No fetch.
+  // #11: dock the editor box INSIDE the info panel (preview on top, editor form below), instead of a
+  // separate box shifted to the left of it. Save the fixed-position styles so we can restore on undock.
+  var _efpDocked = false, _efpSavedCss = null;
+  function dockEditorIntoInfoPanel(previewDivId) {
+    var box = document.getElementById('editor-feature-panel'), bar = document.getElementById('rightInfoBar'), pv = document.getElementById(previewDivId);
+    if (!box || !bar || !pv) return;
+    if (!_efpDocked) { _efpSavedCss = box.style.cssText; _efpDocked = true; }
+    // flow inside the info panel column (drop fixed positioning / shadow / border — the info panel is the chrome now).
+    // #rightInfoBar has NO fixed width (shrink-wraps its content), so the docked box must be a FIXED width matching
+    // the .infoLayerElem panel (270px, box-sizing:border-box) — otherwise long field text widens the whole info panel.
+    box.style.cssText = 'display:block;position:static;width:270px;box-sizing:border-box;padding:0 5px;max-height:none;overflow-x:hidden;overflow-y:visible;word-break:break-word;overflow-wrap:anywhere;background:transparent;border:none;box-shadow:none;margin-top:10px;font-size:13px;font-family:Source Sans Pro,Arial,sans-serif;';
+    if (pv.nextSibling !== box) pv.parentNode.insertBefore(box, pv.nextSibling);   // editor form right BELOW the preview
+  }
+  function undockEditor() {
+    if (!_efpDocked) return;
+    var box = document.getElementById('editor-feature-panel');
+    if (box) { box.style.cssText = _efpSavedCss != null ? _efpSavedCss : box.style.cssText; box.style.display = 'none'; document.body.appendChild(box); }
+    _efpDocked = false; _efpSavedCss = null;
+  }
   function showNotesPreview(node, props) {
     var $ = window.$, divId = ensureEncPanelDiv(node); if (!divId || !$) return;
     var $el = $('#' + divId);
     Array.prototype.forEach.call(document.querySelectorAll('#rightInfoBar .infoLayerElem'), function (el) { if (el.id !== divId) el.style.display = 'none'; });   // one panel at a time
     var renderFn = (window.renderRegistry && window.renderRegistry._notes) || (node.panel && node.panel.render);   // always _notes (panel.render is the Drupal one in "both" mode)
-    try { $el.html(renderFn ? renderFn(props, function () { return ''; }) : ('<h3>' + attrEsc(props.label || 'Details') + '</h3>')); } catch (e) { $el.html('<h3>' + attrEsc(props.label || 'Details') + '</h3>'); }
+    var hasInfo = (props.label || '') || (props.notes || '') || (props.image_url || '');
+    if (!hasInfo) { $el.html('<h3 style="opacity:.55;font-style:italic;font-weight:400;">(enter details)</h3>'); }   // edit-only placeholder — the viewer shows nothing for empty features
+    else { try { $el.html(renderFn ? renderFn(props, function () { return ''; }) : ('<h3>' + attrEsc(props.label || '') + '</h3>')); } catch (e) { $el.html('<h3>' + attrEsc(props.label || '') + '</h3>'); } }
     if (typeof floatPanelToTop === 'function') { try { floatPanelToTop(divId); } catch (e) {} }
     $el.show();
-    shiftFeaturePanelForEnc(true);
+    dockEditorIntoInfoPanel(divId);   // editor form now lives INSIDE the info panel, below the preview
   }
   function onFeatureField(field, value) {
     if (!selectedDrawId) return;
@@ -2296,12 +3148,7 @@
     var fid = featureToDb[drawId]; if (!fid) return;
     var meta = featureMeta[drawId] || {};
     setStatus('Saving…');
-    // image_url lives in custom_fields (jsonb) — read-merge-write so we don't clobber imported attributes
-    var cf = {};
-    try { var cur = await db.from('features').select('custom_fields').eq('feature_id', fid).single(); cf = (cur.data && cur.data.custom_fields) || {}; } catch (e) { cf = {}; }
-    if (meta.image_url) cf.image_url = meta.image_url; else delete cf.image_url;
-    var cfVal = Object.keys(cf).length ? cf : null;
-    try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null, start_date: meta.start || null, end_date: meta.end || null, content_id: meta.pageid || null, custom_fields: cfVal }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null, start_date: meta.start || null, end_date: meta.end || null, content_id: meta.pageid || null, image_url: meta.image_url || null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { console.warn('editing: feature meta save failed', e); setStatus('Save failed'); }
   }
   function updateImagePreview(url) {   // small thumbnail under the URL field in the feature panel
@@ -2363,18 +3210,377 @@
     var w = width != null ? width : 2;
     if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': outline || color, 'fill-opacity': op != null ? op : 0.35, 'line-opacity': outlineVis != null ? outlineVis : 1, 'line-width': w };
     if (type === 'line') return { 'line-color': color, 'line-width': w, 'line-opacity': op != null ? op : 1 };
-    return { 'circle-color': color, 'circle-radius': radius != null ? radius : 5, 'circle-stroke-width': width != null ? width : 1.5, 'circle-stroke-color': outline || '#000', 'circle-opacity': op != null ? op : 1 };
+    return { 'circle-color': color, 'circle-radius': radius != null ? radius : 6, 'circle-stroke-width': width != null ? width : 1.5, 'circle-stroke-color': outline || '#ffffff', 'circle-opacity': op != null ? op : 1 };
+  }
+  // ── Color by attribute: a hex-color column (with or without '#') is used directly; any other column gets
+  //    a palette color per distinct value (categories / names). Persisted as a mapbox `match` expression in
+  //    layers.paint — the public viewer renders it natively — plus meta in layers.raw_config.colorBy (which
+  //    configLoader spreads back onto the node) so the editor UI + MapboxDraw per-feature colors follow.
+  //    Number RANGES (step expressions) are the planned follow-up.
+  var COLORBY_PALETTE = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', '#ffe119'];
+  function colorKeyFor(type) { return type === 'fill' ? 'fill-color' : type === 'line' ? 'line-color' : 'circle-color'; }
+  function looksHex(v) { return /^#?[0-9a-fA-F]{6}$/.test(String(v == null ? '' : v).trim()); }
+  function normHex(v) { v = String(v).trim(); return (v[0] === '#' ? v : '#' + v).toLowerCase(); }
+  function syncColorInputForColorBy(node) {   // colour-by on → swap the single swatch for the multicolor strip
+    var rowC = document.getElementById('elp-color-row'), strip = document.getElementById('elp-multicolor-strip');
+    if (!rowC || !strip) return;
+    var multi = !!(node && node.colorBy);
+    rowC.style.display = multi ? 'none' : 'block';
+    strip.style.display = multi ? 'flex' : 'none';
+  }
+  async function populateColorBy(node) {
+    var row = document.getElementById('elp-colorby-row'), sel = document.getElementById('elp-colorby'), info = document.getElementById('elp-colorby-info');
+    if (!row || !sel) return;
+    syncColorInputForColorBy(node);
+    var isDrawn = node && node.source_type === 'geojson-supabase';
+    row.style.display = isDrawn ? 'block' : 'none';
+    if (!isDrawn) return;
+    var lid = slugToLayerDbId[node.id];
+    sel.innerHTML = '<option value="">Single color</option>';
+    info.textContent = '';
+    if (!lid) return;
+    try {
+      var r = await db.from('features').select('custom_fields').eq('layer_id', lid).not('custom_fields', 'is', null).limit(100);
+      var keys = {};
+      (r.data || []).forEach(function (f) { Object.keys(f.custom_fields || {}).forEach(function (k) { keys[k] = 1; }); });
+      // dropdowns lead with the UNIVERSAL style columns (the default styling home), then everything else
+      var allKeys = Object.keys(keys).sort();
+      var msFirst = ['ms_color', 'ms_linecolor', 'ms_opacity', 'ms_thickness', 'ms_labelsize'].filter(function (k) { return allKeys.indexOf(k) > -1; });
+      var sortedKeys = msFirst.concat(allKeys.filter(function (k) { return msFirst.indexOf(k) < 0; }));
+      sortedKeys.forEach(function (k) { var o = document.createElement('option'); o.value = k; o.textContent = k; sel.appendChild(o); });
+      var cb = node.colorBy;
+      if (cb && cb.prop) { sel.value = cb.prop; info.textContent = cb.mode === 'hex' ? "Using the column's own hex colors." : (Object.keys(cb.mapping || {}).length + ' categories, one color each.'); }
+      // opacity/thickness-by dropdowns get the same columns
+      [['elp-opacityby', 'opacityBy', 'Single opacity (slider below)', 'opacity'], ['elp-thickby', 'thicknessBy', 'Single thickness (sliders below)', 'thickness']].forEach(function (spec) {
+        var s2 = document.getElementById(spec[0]); if (!s2) return;
+        s2.innerHTML = '<option value="">' + spec[2] + '</option>';
+        sortedKeys.forEach(function (k) { var o3 = document.createElement('option'); o3.value = k; o3.textContent = k; s2.appendChild(o3); });
+        var savedProp = (node[spec[1]] && node[spec[1]].prop) || '';
+        s2.value = savedProp;
+        var inf2 = document.getElementById(spec[0] + '-info');
+        if (inf2) inf2.textContent = savedProp ? ('Per-feature ' + spec[3] + ' from ' + savedProp + ' (slider = fallback).') : '';
+      });
+      // map-labels controls: checkbox + column pick (same columns, "label" first)
+      var mlRow = document.getElementById('elp-maplabels-row'), mlOn = document.getElementById('elp-maplabels-on'),
+          mlSel = document.getElementById('elp-maplabels-field'), mlFieldRow = document.getElementById('elp-maplabels-field-row');
+      if (mlRow && mlOn && mlSel) {
+        mlRow.style.display = 'block';
+        mlSel.innerHTML = '<option value="label">label (the feature\'s own Label)</option>';
+        sortedKeys.forEach(function (k) { var o4 = document.createElement('option'); o4.value = k; o4.textContent = k; mlSel.appendChild(o4); });
+        var lb = node.labels;
+        mlOn.checked = !!(lb && lb.field);
+        if (lb && lb.field) { if (sortedKeys.indexOf(lb.field) < 0 && lb.field !== 'label') { var o5 = document.createElement('option'); o5.value = lb.field; o5.textContent = lb.field; mlSel.appendChild(o5); } mlSel.value = lb.field; }
+        else mlSel.value = 'label';
+        if (mlFieldRow) mlFieldRow.style.display = mlOn.checked ? 'block' : 'none';
+        // styling controls reflect the saved config (or the defaults)
+        var lbc = lb || {};
+        function setv(id6, val) { var el6 = document.getElementById(id6); if (el6) el6.value = val; }
+        setv('elp-lbl-color', lbc.color || '#000000');
+        setv('elp-lbl-halo', lbc.halo || '#ffffff');
+        setv('elp-lbl-halow', lbc.haloWidth != null ? lbc.haloWidth : 2);
+        var hv = document.getElementById('elp-lbl-halow-val'); if (hv) hv.textContent = lbc.haloWidth != null ? lbc.haloWidth : 2;
+        var bd = document.getElementById('elp-lbl-bold'); if (bd) bd.checked = lbc.bold !== false;
+        setv('elp-lbl-size', lbc.sizeUniform != null ? lbc.sizeUniform : 10);
+        setv('elp-lbl-density', 60 - (lbc.density != null ? lbc.density : 10));
+        var vz = document.getElementById('elp-lbl-varyzoom'); if (vz) vz.checked = lbc.varyZoom === true;
+        var zr = document.getElementById('elp-lbl-zoomsizes'); if (zr) zr.style.display = (lbc.varyZoom === true) ? 'block' : 'none';
+        var sz5 = (lbc.size && lbc.size.length === 3) ? lbc.size : [10, 13, 17];
+        setv('elp-lbl-s6', sz5[0]); setv('elp-lbl-s11', sz5[1]); setv('elp-lbl-s16', sz5[2]);
+      }
+      // the Label-field dropdown gets the same columns ("label" = the feature's own Label field)
+      var lf = document.getElementById('elp-labelfield');
+      if (lf) {
+        var want = (node._uiLabel != null) ? node._uiLabel : (node.prop || 'label');
+        lf.innerHTML = '<option value="label">label (the feature\'s own Label)</option>';
+        sortedKeys.forEach(function (k) { var o2 = document.createElement('option'); o2.value = k; o2.textContent = k; lf.appendChild(o2); });
+        if (want !== 'label' && sortedKeys.indexOf(want) < 0) { var oc = document.createElement('option'); oc.value = want; oc.textContent = want; lf.appendChild(oc); }   // keep a saved value that isn't a known column (e.g. tileset "nid")
+        lf.value = want;
+      }
+    } catch (e) {}
+  }
+  async function onColorBy(prop) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var info = document.getElementById('elp-colorby-info');
+    var key = colorKeyFor(node.type);
+    var fallback = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
+    setStatus('Saving…');
+    try {
+      var paint = JSON.parse(JSON.stringify(node.paint || {}));
+      if (!prop) {   // back to single color
+        node.colorBy = null;
+        paint[key] = fallback;
+        if (info) info.textContent = '';
+      } else {
+        var rows = [];
+        for (var off = 0; ; off += 1000) {   // all values (paged)
+          var fr = await db.from('features').select('custom_fields').eq('layer_id', lid).order('feature_id').range(off, off + 999);
+          if (fr.error || !fr.data || !fr.data.length) break;
+          rows = rows.concat(fr.data);
+          if (fr.data.length < 1000) break;
+        }
+        var seen = {}, order = [];
+        rows.forEach(function (f) { var v = f.custom_fields ? f.custom_fields[prop] : null; if (v == null) return; var s = String(v); if (!(s in seen)) { seen[s] = 1; order.push(s); } });
+        if (!order.length) { setStatus('No values in that column'); showToast('That column has no values'); return; }
+        // literal-colour columns: hex (with/without #), rgb()/rgba(), or the explicit "none" (→ un-filled: the
+        // source left these uncolored — ESRI renders them invisible; we keep the outline so the feature stays findable)
+        var isColorVal = function (v) { var s2 = String(v == null ? '' : v).trim(); return looksHex(s2) || /^rgba?\([^)]+\)$/i.test(s2) || s2.toLowerCase() === 'none'; };
+        var allHex = order.every(isColorVal);
+        if (!allHex && order.length > 60) { setStatus('Too many categories'); showToast('Too many distinct values to color by (' + order.length + ')'); return; }
+        var mapping = {};
+        order.forEach(function (v, i) {
+          if (!allHex) { mapping[v] = COLORBY_PALETTE[i % COLORBY_PALETTE.length]; return; }
+          var s3 = String(v).trim();
+          mapping[v] = s3.toLowerCase() === 'none' ? 'rgba(0,0,0,0)' : (looksHex(s3) ? normHex(s3) : s3);   // as-is: rgb() stays rgb()
+        });
+        node.colorBy = { prop: prop, mode: allHex ? 'hex' : 'category', mapping: mapping };
+        var expr = ['match', ['to-string', ['get', prop]]];
+        order.forEach(function (v) { expr.push(v, mapping[v]); });
+        expr.push(fallback);
+        paint[key] = expr;
+        if (info) info.textContent = allHex ? ("Using the column's own hex colors (" + order.length + " values)." + (mapping['none'] ? " 'none' renders un-filled (outline only)." : '')) : (order.length + ' categories, one color each.');
+      }
+      node.paint = paint;
+      // persist: paint renders everywhere (incl. the public viewer); colorBy meta drives this UI + draw colors
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (node.colorBy) rc.colorBy = node.colorBy; else delete rc.colorBy;
+      var r2 = await db.from('layers').update({ paint: paint, raw_config: rc }).eq('id', lid);
+      if (r2.error) throw new Error(r2.error.message);
+      // live: engine copies on both swipe sides + the MapboxDraw copies (loadFeatures re-colors per feature)
+      [[beforeMap, '-left'], [typeof afterMap !== 'undefined' ? afterMap : null, '-right']].forEach(function (ms) {
+        var m = ms[0]; if (!m) return;
+        try { if (m.getLayer(node.id + ms[1])) m.setPaintProperty(node.id + ms[1], key, paint[key]); } catch (e) {}
+      });
+      await loadFeatures();
+      rerender();   // sidebar icon flips to/from the multicolor gradient (generateLayers reads node.colorBy)
+      syncColorInputForColorBy(node);   // panel swatch ↔ multicolor strip
+      setStatus('Saved');
+    } catch (e) { console.warn('colorBy failed', e); setStatus('Save failed'); }
+  }
+  // ── Map labels: raw_config.labels = {field}. The engine adds the symbol layers on load (addLayers.js
+  //    via labels.js); here we persist + rebuild them live on BOTH maps. Anchors come from the freshest
+  //    in-memory geometry (draw copies), falling back to the engine source for large layers.
+  function labelFeaturesFor(node) {
+    var lid = slugToLayerDbId[node.id], out = [];
+    Object.keys(featureLayer).forEach(function (did) {
+      if (featureLayer[did] !== lid) return;
+      var g = _geomSnap[did]; if (!g) return;
+      var m = featureMeta[did] || {};
+      var props = { label: m.label || null };
+      if (m.custom) Object.keys(m.custom).forEach(function (k) { if (!(k in props)) props[k] = m.custom[k]; });
+      out.push({ type: 'Feature', geometry: g, properties: props });
+    });
+    if (!out.length) { try { out = (node.source && node.source.data && node.source.data.features) || []; } catch (e) {} }
+    return out;
+  }
+  function applyLabelLayers(node) {
+    if (typeof msLabelLayerFor !== 'function') return;
+    [[beforeMap, 'left'], [typeof afterMap !== 'undefined' ? afterMap : null, 'right']].forEach(function (pair) {
+      var m = pair[0], side = pair[1]; if (!m) return;
+      var lyrId = node.id + '-label-' + side, srcId = node.id + '-labels-' + side;
+      try { if (m.getLayer(lyrId)) m.removeLayer(lyrId); } catch (e) {}
+      try { if (m.getSource(srcId)) m.removeSource(srcId); } catch (e) {}
+      if (!node.labels || !node.labels.field) return;
+      var proxy = { id: node.id, type: node.type, labels: node.labels,
+        source: { type: 'geojson', data: { type: 'FeatureCollection', features: labelFeaturesFor(node) } } };
+      var ll = msLabelLayerFor(proxy, side, 'visible');
+      if (!ll) return;
+      try {
+        if (ll.sourceId && !m.getSource(ll.sourceId)) m.addSource(ll.sourceId, ll.source);
+        if (!m.getLayer(ll.layer.id)) m.addLayer(ll.layer);   // line labels reuse the engine source (slug-side), which exists even when its layer is hidden
+      } catch (e) { console.warn('label apply failed', e); }
+    });
+  }
+  async function onMapLabelsChange() {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var on = document.getElementById('elp-maplabels-on'), fs = document.getElementById('elp-maplabels-field');
+    var fieldRow = document.getElementById('elp-maplabels-field-row');
+    if (fieldRow) fieldRow.style.display = on && on.checked ? 'block' : 'none';
+    function v2(id2, dflt) { var el = document.getElementById(id2); return el && el.value !== '' ? el.value : dflt; }
+    var boldEl = document.getElementById('elp-lbl-bold'), varyEl = document.getElementById('elp-lbl-varyzoom');
+    node.labels = (on && on.checked) ? {
+      field: (fs && fs.value) || 'label',
+      color: v2('elp-lbl-color', '#000000'),
+      halo: v2('elp-lbl-halo', '#ffffff'),
+      haloWidth: parseFloat(v2('elp-lbl-halow', 2)),
+      bold: boldEl ? !!boldEl.checked : true,
+      sizeUniform: parseFloat(v2('elp-lbl-size', 10)),
+      varyZoom: varyEl ? !!varyEl.checked : false,
+      density: 60 - parseFloat(v2('elp-lbl-density', 50)),   // slider right = "more" = tiny collision margin
+      size: [parseFloat(v2('elp-lbl-s6', 10)), parseFloat(v2('elp-lbl-s11', 13)), parseFloat(v2('elp-lbl-s16', 17))]
+    } : null;
+    setStatus('Saving…');
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (node.labels) rc.labels = node.labels; else delete rc.labels;
+      var r2 = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      if (r2.error) throw new Error(r2.error.message);
+      applyLabelLayers(node);
+      setStatus('Saved');
+    } catch (e) { console.warn('map labels failed', e); setStatus('Save failed'); }
+  }
+  // ── Opacity / Thickness by data column: the column's numeric value drives that feature's opacity or
+  //    width/radius directly (like hex color columns for colour-by). Guarded expressions — to-number(null)
+  //    is 0 and would zero every feature without a value.
+  function numColExpr(prop, fallback) {
+    var g = ['get', prop];
+    return ['case',
+      ['==', ['typeof', g], 'number'], g,
+      ['all', ['==', ['typeof', g], 'string'], ['!=', g, '']], ['to-number', g, fallback],
+      fallback];
+  }
+  function numByKeys(node, kind) {
+    if (kind === 'opacity') return [node.type === 'fill' ? 'fill-opacity' : node.type === 'line' ? 'line-opacity' : 'circle-opacity'];
+    return node.type === 'circle' ? ['circle-radius'] : ['line-width'];   // thickness: line width / point radius / fill outline width
+  }
+  function clearStyleMetaRC(lid2, key) {
+    if (!lid2) return;
+    db.from('layers').select('raw_config').eq('id', lid2).single().then(function (cur) {
+      var rc = (cur.data && cur.data.raw_config) || {}; delete rc[key];
+      return db.from('layers').update({ raw_config: rc }).eq('id', lid2);
+    }).then(function () {}, function () {});
+  }
+  async function onStyleNumBy(kind, prop) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var metaKey = kind === 'opacity' ? 'opacityBy' : 'thicknessBy';
+    var info = document.getElementById(kind === 'opacity' ? 'elp-opacityby-info' : 'elp-thickby-info');
+    var pkeys = numByKeys(node, kind);
+    var paint = JSON.parse(JSON.stringify(node.paint || {}));
+    var fallback = kind === 'opacity'
+      ? (paintOpacity(node.paint) != null ? paintOpacity(node.paint) : 1)
+      : (node.type === 'circle'
+        ? ((node.paint && typeof node.paint['circle-radius'] === 'number') ? node.paint['circle-radius'] : 5)
+        : ((node.paint && typeof node.paint['line-width'] === 'number') ? node.paint['line-width'] : 2));
+    setStatus('Saving…');
+    try {
+      if (!prop) { node[metaKey] = null; pkeys.forEach(function (k) { paint[k] = fallback; }); if (info) info.textContent = ''; }
+      else {
+        node[metaKey] = { prop: prop }; var ex = numColExpr(prop, fallback); pkeys.forEach(function (k) { paint[k] = ex; });
+        // feedback like the multicolor strip: say what engaged and how many features actually carry a value
+        var withVal = 0, total = 0;
+        for (var off = 0; ; off += 1000) {
+          var fr = await db.from('features').select('custom_fields').eq('layer_id', lid).order('feature_id').range(off, off + 999);
+          if (fr.error || !fr.data || !fr.data.length) break;
+          fr.data.forEach(function (f) { total++; var v = f.custom_fields ? f.custom_fields[prop] : null; if (v != null && String(v) !== '' && !isNaN(parseFloat(v))) withVal++; });
+          if (fr.data.length < 1000) break;
+        }
+        if (info) info.textContent = withVal
+          ? ('Per-feature ' + kind + ' from ' + prop + ' (' + withVal + ' of ' + total + ' features have a value; the slider is the fallback for the rest).')
+          : ('No numeric values in ' + prop + ' yet — everything uses the slider until features get values.');
+      }
+      node.paint = paint;
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (node[metaKey]) rc[metaKey] = node[metaKey]; else delete rc[metaKey];
+      var r2 = await db.from('layers').update({ paint: paint, raw_config: rc }).eq('id', lid);
+      if (r2.error) throw new Error(r2.error.message);
+      [[beforeMap, '-left'], [typeof afterMap !== 'undefined' ? afterMap : null, '-right']].forEach(function (ms) {
+        var m = ms[0]; if (!m) return;
+        pkeys.forEach(function (k) {
+          try { if (m.getLayer(node.id + ms[1])) m.setPaintProperty(node.id + ms[1], k, paint[k]); } catch (e) {}
+          // a fill's line-* keys live on its stroke COMPANION layer — update it live too
+          if (node.type === 'fill' && k.indexOf('line-') === 0) {
+            try { var sid = node.id + '-stroke' + ms[1]; if (m.getLayer(sid)) m.setPaintProperty(sid, k, paint[k]); } catch (e) {}
+          }
+        });
+      });
+      await loadFeatures();
+      setStatus('Saved');
+    } catch (e) { console.warn('styleNumBy failed', e); setStatus('Save failed'); }
+  }
+  // ── Defaults: how the map OPENS (distinct from the session-only sidebar toggles). Layers →
+  //    layers.enabled_by_default; groups → layer_groups.checked + every descendant layer's default;
+  //    sections → raw_config.checked + descendants. Expanded → layer_groups.collapsed / sections raw_config.
+  function descendantLayerIds(node, on) {
+    var ids = [];
+    (function walk(n) {
+      (n.children || []).forEach(function (c) {
+        if (c.type === 'group' || c.type === 'section') { walk(c); return; }
+        if (on != null) c.checked = on;
+        if (slugToLayerDbId[c.id]) ids.push(slugToLayerDbId[c.id]);
+      });
+    })(node);
+    return ids;
+  }
+  async function onDefaultVisible(on) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    node.checked = on;
+    setStatus('Saving…');
+    try {
+      if (node.type === 'group') {
+        if (node._dbId) await db.from('layer_groups').update({ checked: on }).eq('id', node._dbId);
+        var gids = descendantLayerIds(node, on);
+        if (gids.length) await db.from('layers').update({ enabled_by_default: on }).in('id', gids);
+      } else if (node.type === 'section') {
+        if (node._dbId) { var cur = await db.from('layer_sections').select('raw_config').eq('id', node._dbId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.checked = on; await db.from('layer_sections').update({ raw_config: rc }).eq('id', node._dbId); }
+        var sids = descendantLayerIds(node, on);
+        if (sids.length) await db.from('layers').update({ enabled_by_default: on }).in('id', sids);
+      } else {
+        var lid = slugToLayerDbId[node.id];
+        if (lid) await db.from('layers').update({ enabled_by_default: on }).eq('id', lid);
+      }
+      setStatus('Saved');
+    } catch (e) { console.warn('default-visible save failed', e); setStatus('Save failed'); }
+  }
+  async function onDefaultExpanded(expanded) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    node.collapsed = !expanded;
+    setStatus('Saving…');
+    try {
+      if (node.type === 'group' && node._dbId) { var r = await db.from('layer_groups').update({ collapsed: !expanded }).eq('id', node._dbId); if (r.error) throw new Error(r.error.message); }
+      else if (node.type === 'section' && node._dbId) { var cur2 = await db.from('layer_sections').select('raw_config').eq('id', node._dbId).single(); var rc2 = (cur2.data && cur2.data.raw_config) || {}; rc2.collapsed = !expanded; var r2 = await db.from('layer_sections').update({ raw_config: rc2 }).eq('id', node._dbId); if (r2.error) throw new Error(r2.error.message); }
+      setStatus('Saved');
+    } catch (e) { console.warn('default-expanded save failed', e); setStatus('Save failed'); }
+  }
+  function populateDefaults(node) {
+    var row = document.getElementById('elp-defaults-row'); if (!row) return;
+    row.style.display = 'block';
+    var isContainer = node.type === 'group' || node.type === 'section';
+    document.getElementById('elp-default-vis').checked = node.checked !== false;
+    document.getElementById('elp-default-exp-label').style.display = isContainer ? 'block' : 'none';
+    if (isContainer) document.getElementById('elp-default-exp').checked = !node.collapsed;
   }
   function injectLayerPanel() {
     if (document.getElementById('editor-layer-panel')) return;
     var p = document.createElement('div');
     p.id = 'editor-layer-panel';
-    p.style.cssText = 'position:fixed;top:120px;left:362px;width:210px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // scroll + stay above the timeline (#footer is 67px)
+    p.style.cssText = 'position:fixed;top:120px;left:362px;width:236px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:8px;box-shadow:0 3px 14px rgba(0,0,0,0.2);padding:12px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // scroll + stay above the timeline (#footer is 67px)
+    var SEC = function (t) { return '<div style="font-size:11px;font-weight:800;letter-spacing:.07em;color:#7c5cbf;margin:0 0 8px;text-transform:uppercase;border-bottom:2px solid #ede9f7;padding-bottom:4px;">' + t + '</div>'; };
+    var SECTOP = 'margin-top:14px;';
     p.innerHTML =
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b id="elp-title">Layer style</b><span id="elp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
-      '<div id="elp-style-section">' +
-      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color</label>' +
-      '<input id="elp-color" type="color" style="width:100%;height:30px;box-sizing:border-box;margin-bottom:8px;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" />' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b id="elp-title" style="font-size:14px;">Layer style</b><span id="elp-close" style="cursor:pointer;color:#888888;font-size:17px;line-height:1;">&times;</span></div>' +
+      // ── layer info: edit the ℹ popup's content here; the sidebar ℹ button only exists when there IS content
+      //    (the attribute table moved to a ▦ icon on the layer row) ──
+      '<button id="elp-info" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;font-weight:600;">&#9432; Layer info&hellip; <span style="font-weight:400;color:#888;">(adds the &#9432; button when filled)</span></button>' +
+      // ── STYLE ──
+      '<div id="elp-style-section" style="' + SECTOP + '">' +
+      SEC('Style') +
+      '<div id="elp-color-row"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color</label>' +
+      '<input id="elp-color" type="color" style="width:100%;height:30px;box-sizing:border-box;margin-bottom:8px;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
+      // colour-by active → the single swatch is replaced by this strip (a solid swatch would lie)
+      '<div id="elp-multicolor-strip" style="display:none;height:30px;box-sizing:border-box;margin-bottom:8px;border:1px solid #bbbbbb;border-radius:4px;background:linear-gradient(90deg,#e6194b,#f58231,#ffe119,#3cb44b,#4363d8,#911eb4);align-items:center;justify-content:center;">' +
+        '<span style="font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.6);">Multiple colors — by column</span>' +
+      '</div>' +
+      '<div id="elp-colorby-row" style="margin:0 0 8px;display:none;">' +
+        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color by data column</label>' +
+        '<select id="elp-colorby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single color</option></select>' +
+        '<div id="elp-colorby-info" style="font-size:10px;color:#888888;margin-top:3px;"></div>' +
+        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Opacity by data column</label>' +
+        '<select id="elp-opacityby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single opacity (slider below)</option></select>' +
+        '<div id="elp-opacityby-info" style="font-size:10px;color:#7a5cc2;margin:2px 0 0;"></div>' +
+        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Thickness by data column</label>' +
+        '<select id="elp-thickby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single thickness (sliders below)</option></select>' +
+        '<div id="elp-thickby-info" style="font-size:10px;color:#7a5cc2;margin:2px 0 0;"></div>' +
+      '</div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Opacity <span id="elp-opacity-val"></span></label>' +
       '<input id="elp-opacity" type="range" min="0" max="1" step="0.05" style="width:100%;box-sizing:border-box;" />' +
       '<div id="elp-radius-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Radius <span id="elp-radius-val"></span></label>' +
@@ -2388,38 +3594,97 @@
         '<label style="cursor:pointer;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
       '</div>' +
       '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
+      // map labels: one checkbox, one field pick; black text / 1px white halo / DIN Pro / zoom-ramped size
+      '<label id="elp-maplabels-row" style="cursor:pointer;font-size:12px;color:#555555;display:none;margin-top:10px;"><input id="elp-maplabels-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Map labels</label>' +
+      '<div id="elp-maplabels-field-row" style="display:none;margin-top:4px;">' +
+        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Labels show this column</label>' +
+        '<select id="elp-maplabels-field" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"></select>' +
+        '<div style="display:flex;gap:8px;margin-top:6px;">' +
+          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Text color</label>' +
+          '<input id="elp-lbl-color" type="color" value="#000000" style="width:100%;height:24px;padding:0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
+          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Halo color</label>' +
+          '<input id="elp-lbl-halo" type="color" value="#ffffff" style="width:100%;height:24px;padding:0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
+        '</div>' +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin:6px 0 0;"><input id="elp-lbl-bold" type="checkbox" checked style="vertical-align:middle;margin:0 5px 0 0;" />Bold</label>' +
+        '<div style="display:flex;gap:8px;align-items:flex-end;margin-top:6px;">' +
+          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label size (px)</label>' +
+          '<input id="elp-lbl-size" type="number" min="6" max="48" value="10" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
+          '<label style="cursor:pointer;font-size:11px;color:#555555;flex:1;padding-bottom:5px;"><input id="elp-lbl-varyzoom" type="checkbox" style="vertical-align:middle;margin:0 4px 0 0;" />Vary size by zoom</label>' +
+        '</div>' +
+        '<div id="elp-lbl-zoomsizes" style="display:none;margin-top:4px;">' +
+        '<div style="display:flex;gap:6px;">' +
+          '<div style="flex:1;"><input id="elp-lbl-s6" type="number" min="6" max="40" value="10" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">far (z6)</div></div>' +
+          '<div style="flex:1;"><input id="elp-lbl-s11" type="number" min="6" max="40" value="13" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">mid (z11)</div></div>' +
+          '<div style="flex:1;"><input id="elp-lbl-s16" type="number" min="6" max="40" value="17" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">close (z16)</div></div>' +
+        '</div></div>' +
+        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Halo width <span id="elp-lbl-halow-val">2</span></label>' +
+        '<input id="elp-lbl-halow" type="range" min="0" max="4" step="0.5" value="2" style="width:100%;box-sizing:border-box;" />' +
+        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Label density</label>' +
+        '<input id="elp-lbl-density" type="range" min="0" max="60" step="2" value="50" style="width:100%;box-sizing:border-box;" />' +
+        '<div style="display:flex;justify-content:space-between;font-size:9px;color:#888888;"><span>fewer</span><span>more</span></div>' +
+        '<div style="font-size:10px;color:#888888;margin-top:3px;">Polygons label at their visual center; lines along the path. Density = breathing room per label — fewer means only labels with room draw.</div>' +
       '</div>' +
-      '<button id="elp-attrs" style="margin-top:8px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">&#9638; Attribute table</button>' +
-      '<button id="elp-setzoom" style="margin-top:8px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">◎ Set zoom to current view</button>' +
+      '</div>' +
+      // ── POPUPS & INFO ──
+      '<div id="elp-interact-row" style="' + SECTOP + '">' +
+        SEC('Popups &amp; info') +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
+        '<label id="elp-hl-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;margin-bottom:6px;"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
+        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label field (what the popup shows)</label>' +
+        '<select id="elp-labelfield" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="label">label (the feature\'s own Label)</option></select>' +
+      '</div>' +
+      '<div id="elp-panel-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Info panel (on feature click)</label>' +
+      '<select id="elp-panel-mode" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="notes">Title + notes</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
+      '<div id="elp-enc-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia base URL</label>' +
+      '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<div id="elp-nidprop-row" style="display:none;margin-top:6px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Page-ID property</label>' +
+      '<input id="elp-nidprop" type="text" placeholder="e.g. nid" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">For tilesets: which feature property holds the page id (drawn layers always use &ldquo;content_id&rdquo;).</div></div>' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>' +
+      // ── ZOOM ──
+      '<div id="elp-zoom-sec" style="' + SECTOP + '">' +
+      SEC('Zoom') +
+      '<button id="elp-setzoom" style="width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">◎ Set zoom to current view</button>' +
+      '<button id="elp-zoomextent" style="width:100%;margin-top:6px;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">⤢ Zoom to features’ extent</button>' +
       '<div id="elp-zoom-info" style="font-size:11px;color:#888888;margin-top:4px;text-align:center;">Zoom target: not set</div>' +
-      '<div id="elp-src-row" style="display:none;margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;">' +
-        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Tileset source</label>' +
+      '</div>' +
+      // ── SOURCE (tilesets only) ──
+      '<div id="elp-src-row" style="display:none;' + SECTOP + '">' +
+        SEC('Source') +
         '<input id="elp-src-url" type="text" placeholder="mapbox://user.id  or  https://…/{z}/{x}/{y}.pbf" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
         '<input id="elp-src-sl" type="text" placeholder="source layer (e.g. buildings)" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
         '<div id="elp-src-zooms" style="display:none;margin-bottom:5px;"><input id="elp-src-minz" type="number" placeholder="min zoom" style="width:48%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /> <input id="elp-src-maxz" type="number" placeholder="max zoom" style="width:48%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
         '<div id="elp-src-info" style="font-size:10px;color:#888888;margin-bottom:5px;"></div>' +
         '<button id="elp-src-apply" style="width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:12px;">Apply source</button>' +
       '</div>' +
-      '<div id="elp-panel-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Info panel (on feature click)</label>' +
-      '<select id="elp-panel-mode" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="notes">Title + notes</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
-      '<div id="elp-enc-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia base URL</label>' +
-      '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-      '<div id="elp-nidprop-row" style="display:none;margin-top:6px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Page-ID property</label>' +
-      '<input id="elp-nidprop" type="text" placeholder="e.g. nid" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">For tilesets: which feature property holds the page id (drawn layers always use &ldquo;content_id&rdquo;).</div></div>' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>' +
-      '<div id="elp-interact-row" style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;">' +
-        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:4px;">Interaction</label>' +
-        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
-        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
-        '<label id="elp-hl-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;margin-bottom:6px;"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
-        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label field</label>' +
-        '<input id="elp-labelfield" type="text" placeholder="label" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-        '<div style="font-size:10px;color:#888888;margin-top:3px;">Label field = which property the popup shows (defaults to &ldquo;label&rdquo;). Popups are wired at page load, so <b>reload to apply</b> on/off changes.</div>' +
+      // ── DEFAULTS ──
+      '<div id="elp-defaults-row" style="' + SECTOP + '">' +
+        SEC('Defaults (how the map opens)') +
+        '<label id="elp-default-vis-label" style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-default-vis" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />On by default</label>' +
+        '<label id="elp-default-exp-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;"><input id="elp-default-exp" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Expanded by default</label>' +
+      '</div>' +
+      '<div style="' + SECTOP + '">' +   // #4: delete moved off the sidebar row into the panel
+        '<button id="elp-delete" style="width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete this item…</button>' +
       '</div>';
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
+    document.getElementById('elp-delete').addEventListener('click', function () { if (activeLayerId) onDelete(activeLayerId); });
+    document.getElementById('elp-default-vis').addEventListener('change', function () { onDefaultVisible(this.checked); });
+    document.getElementById('elp-default-exp').addEventListener('change', function () { onDefaultExpanded(this.checked); });
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
+    document.getElementById('elp-colorby').addEventListener('change', function () { onColorBy(this.value); });
+    document.getElementById('elp-opacityby').addEventListener('change', function () { onStyleNumBy('opacity', this.value); });
+    document.getElementById('elp-thickby').addEventListener('change', function () { onStyleNumBy('thickness', this.value); });
+    document.getElementById('elp-maplabels-on').addEventListener('change', onMapLabelsChange);
+    document.getElementById('elp-maplabels-field').addEventListener('change', onMapLabelsChange);
+    ['elp-lbl-color', 'elp-lbl-halo', 'elp-lbl-bold', 'elp-lbl-size', 'elp-lbl-density', 'elp-lbl-s6', 'elp-lbl-s11', 'elp-lbl-s16'].forEach(function (id2) { document.getElementById(id2).addEventListener('change', onMapLabelsChange); });
+    document.getElementById('elp-lbl-varyzoom').addEventListener('change', function () {
+      var zr = document.getElementById('elp-lbl-zoomsizes'); if (zr) zr.style.display = this.checked ? 'block' : 'none';
+      onMapLabelsChange();
+    });
+    document.getElementById('elp-lbl-halow').addEventListener('input', function () { var v = document.getElementById('elp-lbl-halow-val'); if (v) v.textContent = this.value; });
+    document.getElementById('elp-lbl-halow').addEventListener('change', onMapLabelsChange);
     document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
     document.getElementById('elp-outline').addEventListener('input', function () { onLayerStyle('outline', this.value); });
     document.getElementById('elp-width').addEventListener('input', function () { document.getElementById('elp-width-val').textContent = this.value; onLayerStyle('width', parseFloat(this.value)); });
@@ -2430,8 +3695,9 @@
       var n = activeLayerId && findNodeById(layers, activeLayerId);
       if (n && (n.outlineOf || n.outlineSplit)) onUnsplitOutline(); else onSplitOutline();
     });
-    document.getElementById('elp-attrs').addEventListener('click', function () { if (activeLayerId) openAttributeTable(activeLayerId); });
+    document.getElementById('elp-info').addEventListener('click', onLayerInfoEdit);
     document.getElementById('elp-setzoom').addEventListener('click', function () { if (activeLayerId) onSetZoom(activeLayerId); });   // set-zoom moved here from the layer row
+    document.getElementById('elp-zoomextent').addEventListener('click', onZoomExtent);
     document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
     document.getElementById('elp-nidprop').addEventListener('change', function () { onNidProp(this.value); });
     document.getElementById('elp-panel-mode').addEventListener('change', function () { onPanelMode(this.value); });
@@ -2453,13 +3719,16 @@
     var hl = document.getElementById('elp-hl').checked;
     var labelField = (document.getElementById('elp-labelfield').value || '').trim() || 'label';
     var popupStyle = hover ? (node._popupStyle || node.popupStyle || 'infoLayerGreenPopUp') : null;
-    // The engine wires hover/click popups at PAGE LOAD, so on/off applies on reload. Do NOT mutate the live
-    // node's popupStyle: the popup is already wired, and nulling the style mid-session leaves the bubble
-    // showing but stripped of its colour class. Persist to the DB + keep a UI shadow for the panel.
+    // #12: LIVE — the engine handlers read config at event time now (eventsHandle.js), so mutating the node
+    // applies immediately; wireLayerInteraction hooks up layers that had no interaction at page load.
     node._uiHover = hover; node._uiClick = click; node._uiLabel = labelField; if (popupStyle) node._popupStyle = popupStyle;
-    node.hoverHighlight = hl;   // #11: live — the engine reads this on the next hover (no reload needed for the highlight; popups still need reload)
+    node.popupStyle = popupStyle;
+    node.click = click;
+    node.prop = labelField;
+    node.hoverHighlight = hl;
+    if ((hover || click || hl) && typeof window.wireLayerInteraction === 'function') { try { window.wireLayerInteraction(node); } catch (e) {} }
     setStatus('Saving…');
-    try { var r = await db.from('layers').update({ popup_style: popupStyle, popup_prop: labelField, click: click, hover: hl }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved — reload to apply'); }
+    try { var r = await db.from('layers').update({ popup_style: popupStyle, popup_prop: labelField, click: click, hover: hl }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { setStatus('Save failed'); }
   }
   async function onEncUrl(value) {
@@ -2535,14 +3804,24 @@
     var fillStroke = (isGeojson || isTilesetNode(node)) && node.type === 'fill';  // drawn AND tileset fills get the real line outline + its width/show toggles
     injectLayerPanel();
     var p = document.getElementById('editor-layer-panel'); if (!p) return;
+    if (node.type === 'section') {   // #4: sections get a minimal panel — title + defaults + Delete (no style/zoom)
+      document.getElementById('elp-title').textContent = node.label || 'Section';
+      document.getElementById('elp-style-section').style.display = 'none';
+      ['elp-interact-row', 'elp-enc-row', 'elp-src-row', 'elp-panel-row', 'elp-zoom-sec'].forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
+      populateDefaults(node);
+      p.style.display = 'block';
+      return;
+    }
     var isGroup = node.type === 'group';
     if (isGroup) {   // groups have no style — show only the zoom controls + readout
       document.getElementById('elp-title').textContent = node.label || 'Group';
       document.getElementById('elp-style-section').style.display = 'none';
-      ['elp-interact-row', 'elp-attrs', 'elp-enc-row', 'elp-src-row'].forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
+      ['elp-interact-row', 'elp-enc-row', 'elp-src-row'].forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
+      document.getElementById('elp-zoom-sec').style.display = 'block';
       document.getElementById('elp-setzoom').style.display = 'block';
       document.getElementById('elp-zoom-info').style.display = 'block';
       document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
+      populateDefaults(node);
       p.style.display = 'block';
       return;
     }
@@ -2555,6 +3834,8 @@
     var outline = paintOutline(node.paint) || (node.type === 'fill' ? color : '#000000');
     document.getElementById('elp-title').textContent = node.label || 'Layer style';
     document.getElementById('elp-color').value = color;
+    populateColorBy(node);   // "Color by data column" — drawn layers only (hidden otherwise)
+    populateDefaults(node);  // "On by default" (expanded-by-default is container-only)
     document.getElementById('elp-opacity').value = op;
     document.getElementById('elp-opacity-val').textContent = op;
     document.getElementById('elp-outline').value = /^#[0-9a-fA-F]{6}$/.test(outline) ? outline : '#000000';
@@ -2578,7 +3859,7 @@
     document.getElementById('elp-radius-val').textContent = radius;
     document.getElementById('elp-radius-row').style.display = (node.type === 'circle') ? 'block' : 'none';
     // attribute table: drawn + ALL tilesets (stored features → editable; pure tilesets → read-only from loaded tiles)
-    document.getElementById('elp-attrs').style.display = (isGeojson || isTilesetNode(node)) ? 'block' : 'none';
+    document.getElementById('elp-info').style.display = 'block';
     var canPanel = isGeojson || isTilesetNode(node);   // layers that can show a feature info panel
     var pmodeUI = (node.panel && node.panel.mode) || ((node.panel && node.panel.encyclopediaBase) ? 'drupal' : 'notes');
     document.getElementById('elp-panel-row').style.display = canPanel ? 'block' : 'none';
@@ -2603,7 +3884,12 @@
     document.getElementById('elp-click').checked = (node._uiClick != null) ? node._uiClick : !!node.click;
     document.getElementById('elp-hl').checked = node.hoverHighlight !== false;
     document.getElementById('elp-hl-label').style.display = node.highlight ? 'block' : 'none';   // hover-highlight toggle only where a highlight exists
-    document.getElementById('elp-labelfield').value = (node._uiLabel != null) ? node._uiLabel : (node.prop || 'label');
+    (function () {   // label-field is a SELECT now — make sure the saved value exists as an option before setting it
+      var lf = document.getElementById('elp-labelfield');
+      var want = (node._uiLabel != null) ? node._uiLabel : (node.prop || 'label');
+      if (!Array.prototype.some.call(lf.options, function (o) { return o.value === want; })) { var o = document.createElement('option'); o.value = want; o.textContent = want; lf.appendChild(o); }
+      lf.value = want;
+    })();
     p.style.display = 'block';
   }
   function hideLayerPanel() { var p = document.getElementById('editor-layer-panel'); if (p) p.style.display = 'none'; }
@@ -2618,7 +3904,13 @@
     st.textContent =
       // wrapper is a non-blocking layer (pointer-events:none) so the MAP behind stays pannable; only the panel itself catches events
       '#editor-attr-modal{position:fixed;inset:0;z-index:4000;display:none;pointer-events:none;font-family:"Source Sans Pro",Arial,sans-serif;}' +
-      '#editor-attr-panel{pointer-events:auto;position:absolute;left:540px;top:134px;width:min(820px,70vw);height:60vh;min-width:340px;min-height:180px;max-width:96vw;max-height:84vh;background:#fff;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,0.3);display:flex;flex-direction:column;resize:both;overflow:hidden;}' +   // top:134 clears the map-tools bar (top 92–127) so undo/redo stay reachable
+      '#editor-attr-panel{pointer-events:auto;position:absolute;left:540px;top:134px;width:min(820px,70vw);height:60vh;min-width:340px;min-height:180px;max-width:96vw;max-height:84vh;background:#fff;border:2px solid #666666;border-radius:2px;box-shadow:0px 0px 5px 3px rgb(0 0 0);display:flex;flex-direction:column;overflow:hidden;}' +   // top:134 clears the map-tools bar (top 92–127) so undo/redo stay reachable
+      // custom resize: right edge, bottom edge, and a PROMINENT bottom-right grip
+      '#attr-rz-r{position:absolute;top:0;right:0;width:7px;height:100%;cursor:ew-resize;z-index:6;}' +
+      '#attr-rz-b{position:absolute;left:0;bottom:0;height:7px;width:100%;cursor:ns-resize;z-index:6;}' +
+      '#attr-rz-r:hover,#attr-rz-b:hover{background:rgba(206,92,0,0.35);}' +
+      '#attr-rz-c{position:absolute;right:0;bottom:0;width:20px;height:20px;cursor:nwse-resize;z-index:7;background:linear-gradient(135deg,transparent 50%,#9a9a9a 50%,#9a9a9a 57%,transparent 57%,transparent 64%,#9a9a9a 64%,#9a9a9a 71%,transparent 71%,transparent 78%,#9a9a9a 78%,#9a9a9a 85%,transparent 85%);}' +
+      '#attr-rz-c:hover{background:linear-gradient(135deg,transparent 50%,#ce5c00 50%,#ce5c00 57%,transparent 57%,transparent 64%,#ce5c00 64%,#ce5c00 71%,transparent 71%,transparent 78%,#ce5c00 78%,#ce5c00 85%,transparent 85%);}' +
       '#editor-attr-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #cccccc;font-size:15px;color:#2b3a4a;cursor:move;}' +   // header doubles as the drag handle (move the panel off the map)
       '#editor-attr-head .attr-head-l{display:flex;align-items:center;gap:10px;min-width:0;}' +
       '#editor-attr-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
@@ -2626,9 +3918,10 @@
       '#editor-attr-zoom:disabled{opacity:0.45;cursor:default;}' +
       '#editor-attr-del{font-size:12px;padding:3px 9px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;white-space:nowrap;}' +
       '#editor-attr-del:disabled{opacity:0.45;cursor:default;}' +
-      '#editor-attr-close{cursor:pointer;color:#888888;font-size:22px;line-height:1;padding-left:8px;}' +
+      '#editor-attr-close{cursor:pointer;color:#333333;font-size:20px;font-weight:700;line-height:1;padding:3px 10px;border:1px solid #bbbbbb;border-radius:3px;background:#f2f2f2;}' +
+      '#editor-attr-close:hover{background:#fdeaea;color:#b4453a;border-color:#e0b4b4;}' +
       '#editor-attr-wrap{overflow:auto;flex:1;}' +
-      '#editor-attr-table{border-collapse:collapse;font-size:13px;table-layout:fixed;}' +   // fixed = column widths are honored exactly (so resize works); JS sets the table width = sum of columns
+      '#editor-attr-table{border-collapse:separate;border-spacing:0;font-size:13px;table-layout:fixed;}' +   // separate: border-collapse breaks position:sticky LEFT on cells (pinned columns)   // fixed = column widths are honored exactly (so resize works); JS sets the table width = sum of columns
       '#editor-attr-table th{box-sizing:border-box;position:sticky;top:0;background:#f2f2f2;text-align:left;padding:8px 18px 8px 10px;border-bottom:1px solid #cccccc;color:#555555;font-weight:600;white-space:nowrap;cursor:pointer;user-select:none;overflow:hidden;}' +
       '#editor-attr-table th:hover{background:#eaf0f6;}' +
       '#editor-attr-table th .attr-arrow{margin-left:5px;font-size:10px;color:#ce5c00;}' +
@@ -2638,10 +3931,31 @@
       '#editor-attr-table input{width:100%;box-sizing:border-box;border:1px solid transparent;border-radius:3px;padding:4px 6px;font-size:13px;background:transparent;color:#2b3a4a;}' +
       '#editor-attr-table input:hover{border-color:#d8d8d8;}' +
       '#editor-attr-table input:focus{border-color:#ce5c00;background:#fff;outline:none;}' +
+      '#editor-attr-table tbody tr:not(.attr-row-sel) input{pointer-events:none;}' +   // 1st click: select/highlight the row; 2nd click (selected row) edits the cell
       '#editor-attr-table tbody tr:hover td{background:#f8fafc;}' +
       '#editor-attr-table tbody tr.attr-row-sel td{background:#fff5cc;}' +
       '#editor-attr-table tbody tr.attr-row-sel:hover td{background:#ffefb0;}' +
-      '#editor-attr-table tbody tr.attr-row-hover td{background:#d6f3ff;}' +   // brushed from the map (or direct hover) — matches the cyan map highlight
+      '#editor-attr-table tbody tr.attr-row-hover td{background:#d6f3ff;}' +
+      '#editor-attr-table td.attr-sel-cell{cursor:pointer;text-align:center;padding:2px 0;}' +
+      '#editor-attr-table td.attr-pin-cell{position:sticky;background:#ffffff;z-index:2;box-shadow:2px 0 0 rgba(0,0,0,0.07);}' +
+      '#editor-attr-table tbody tr:hover td.attr-pin-cell{background:#f8fafc;}' +
+      '#editor-attr-table tbody tr.attr-row-sel td.attr-pin-cell{background:#fff5cc;}' +
+      '#editor-attr-table tbody tr.attr-row-hover td.attr-pin-cell{background:#d6f3ff;}' +
+      '#editor-attr-table tr#attr-preview-row td.attr-pin-cell{background:#fffbe6;}' +
+      '#editor-attr-table th .attr-pin{position:absolute;top:1px;right:12px;font-size:15px;opacity:0;cursor:pointer;transition:opacity .12s;}' +
+      '#editor-attr-table th:hover .attr-pin{opacity:0.55;}' +
+      '#editor-attr-table th .attr-pin.on{opacity:1;filter:none;}' +
+      '#editor-attr-table th .attr-pin:hover{opacity:1;}' +
+      '#editor-attr-table th.attr-drop-before{box-shadow:inset 3px 0 0 #ce5c00;}' +
+      '#editor-attr-table th.attr-drop-after{box-shadow:inset -3px 0 0 #ce5c00;}' +
+      '#editor-attr-table th.attr-pin-th{z-index:7;}' +
+
+      '#editor-attr-table td.attr-sel-cell::before{content:"\\2606";color:#bbbbbb;font-size:14px;}' +
+      '#editor-attr-table td.attr-sel-cell:hover::before{color:#ce5c00;}' +
+      '#editor-attr-table tbody tr.attr-row-sel td.attr-sel-cell::before{content:"\\2605";color:#ce5c00;}' +
+      '#editor-attr-table tr#attr-preview-row td{position:sticky;z-index:4;background:#fffbe6;border-bottom:2px solid #e3dcae;box-sizing:border-box;padding:7px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:#333333;}' +
+      '#editor-attr-table tr#attr-preview-row td.attr-preview-empty{color:#999999;font-style:italic;}' +
+      '#editor-attr-table th{z-index:5;}' +   // brushed from the map (or direct hover) — matches the cyan map highlight
       '#editor-attr-foot{padding:8px 16px;border-top:1px solid #cccccc;font-size:12px;color:#888888;}';
     document.head.appendChild(st);
     var m = document.createElement('div'); m.id = 'editor-attr-modal';
@@ -2653,19 +3967,86 @@
           '<span id="editor-attr-close" title="Close">&times;</span></div>' +
         '<div id="editor-attr-wrap"><table id="editor-attr-table"><thead id="editor-attr-thead"></thead><tbody id="editor-attr-tbody"></tbody></table></div>' +
         '<div id="editor-attr-foot"></div>' +
+        '<div id="attr-rz-r"></div><div id="attr-rz-b"></div><div id="attr-rz-c"></div>' +
       '</div>';
     document.body.appendChild(m);
     document.getElementById('editor-attr-close').addEventListener('click', hideAttrModal);
     document.getElementById('editor-attr-zoom').addEventListener('click', zoomToAttrSelected);
     document.getElementById('editor-attr-del').addEventListener('click', deleteAttrSelected);
     document.getElementById('editor-attr-head').addEventListener('mousedown', startAttrPanelDrag);
+    // custom resize (right edge / bottom edge / corner) — native resize:both only gave the corner
+    [['attr-rz-r', true, false], ['attr-rz-b', false, true], ['attr-rz-c', true, true]].forEach(function (spec) {
+      var h = document.getElementById(spec[0]);
+      h.addEventListener('mousedown', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        var panel = document.getElementById('editor-attr-panel');
+        var r0 = panel.getBoundingClientRect(), x0 = e.pageX, y0 = e.pageY;
+        window._msPanelDrag = true;   // resizing must not hover-highlight map features underneath
+        function move(ev) {
+          if (spec[1]) panel.style.width = Math.max(340, r0.width + (ev.pageX - x0)) + 'px';
+          if (spec[2]) panel.style.height = Math.max(180, r0.height + (ev.pageY - y0)) + 'px';
+        }
+        function up() { window._msPanelDrag = false; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.userSelect = ''; }
+        document.body.style.userSelect = 'none';
+        document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+      });
+    });
+  }
+  // ── column view (pin + order): persisted per layer in raw_config.attrView = {order:[keys], pinned:[keys]} ──
+  function attrColKey(c) { return c.kind === 'sel' ? '__sel' : (c.kind === 'custom' ? c.key : c.field); }
+  function applyAttrView(node) {   // reorder _attrCols by the saved order + mark pinned (★ always first)
+    var av = node && node.attrView; if (!av) return;
+    if (av.order && av.order.length) {
+      var byKey = {}; _attrCols.forEach(function (c) { byKey[attrColKey(c)] = c; });
+      var out = [];
+      if (byKey['__sel']) { out.push(byKey['__sel']); delete byKey['__sel']; }
+      av.order.forEach(function (k) { if (byKey[k]) { out.push(byKey[k]); delete byKey[k]; } });
+      _attrCols.forEach(function (c) { var k = attrColKey(c); if (byKey[k]) { out.push(c); delete byKey[k]; } });   // new columns keep their default spot at the end
+      _attrCols = out;
+    }
+    (av.pinned || []).forEach(function (k) { _attrCols.forEach(function (c) { if (attrColKey(c) === k) c.pinned = true; }); });
+  }
+  function attrStickyOffsets() {   // ★ + pinned columns freeze at a computed left; everything else scrolls under
+    var left = 0;
+    _attrCols.forEach(function (c) {
+      if (c.kind === 'sel' || c.pinned) { c._left = left; left += (c.w || 130); }
+      else c._left = null;
+    });
+  }
+  var _attrViewSaveT = null;
+  function persistAttrView() {
+    if (!_attrSlug) return;
+    var node = findNodeById(layers, _attrSlug); var lid = slugToLayerDbId[_attrSlug];
+    if (!node || !lid) return;
+    var order = _attrCols.filter(function (c) { return c.kind !== 'sel'; }).map(attrColKey);
+    var pinned = _attrCols.filter(function (c) { return c.pinned; }).map(attrColKey);
+    node.attrView = { order: order, pinned: pinned };
+    clearTimeout(_attrViewSaveT);
+    _attrViewSaveT = setTimeout(async function () {
+      try {
+        var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+        var rc = (cur.data && cur.data.raw_config) || {};
+        rc.attrView = node.attrView;
+        await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      } catch (e) {}
+    }, 400);
   }
   var _attrCustom = {};   // fid → its custom_fields object, so a single-cell edit rewrites the whole jsonb
   var _attrRows = [], _attrCols = [], _attrSort = null, _attrSel = [];   // loaded rows + column model + {idx,dir} + selected feature_ids (highlighted on the map)
+  function orderAttrKeys(keys, cap) {   // msid FIRST, ms_* style columns LAST, everything else between (cap trims the middle, never msid/ms_*)
+    var style = ['ms_color', 'ms_linecolor', 'ms_opacity', 'ms_thickness', 'ms_labelsize'].filter(function (k) { return keys.indexOf(k) > -1; });
+    var msid = keys.indexOf('msid') > -1 ? ['msid'] : [];
+    var mid = keys.filter(function (k) { return k !== 'msid' && style.indexOf(k) < 0; });
+    if (cap) mid = mid.slice(0, Math.max(0, cap - msid.length - style.length));
+    return msid.concat(mid).concat(style);
+  }
   var _attrById = {}, _attrSlug = null, _attrHover = null, _attrHoverRAF = false, _attrLastPt = null, _attrHoverWired = false;   // hover brushing (map ↔ row): id→row lookup, open layer, hovered fid
   var _attrReadonly = false;   // true when the table is sourced from vector tiles (pure tileset) rather than the editable `features` table
   var _attrDelegated = false;  // event-delegation wired once on tbody (so 18k+ rows don't each get listeners)
-  function attrCellVal(r, c) { return c.kind === 'custom' ? ((r.custom_fields || {})[c.key]) : r[c.field]; }
+  function attrCellVal(r, c) {
+    if (c.kind === 'sel') return _attrSel.indexOf(String(r.feature_id)) > -1 ? 0 : 1;   // selected sort to the top
+    return c.kind === 'custom' ? ((r.custom_fields || {})[c.key]) : r[c.field];
+  }
   function attrDisp(r, c) { var v = attrCellVal(r, c); if (c.kind === 'date') return v ? String(v).slice(0, 10) : ''; return v == null ? '' : v; }
   function findAttrRow(fid) { return _attrById[String(fid)] || null; }
   async function openAttributeTable(slug) {
@@ -2706,46 +4087,134 @@
         } catch (e) {}
       });
       if (!tfeats.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">No tile features loaded here — pan/zoom to the layer, then reopen.</td></tr>'; foot.textContent = '0 features (tiles)'; return; }
-      var tkeys = []; tfeats.forEach(function (r) { Object.keys(r.custom_fields).forEach(function (k) { if (tkeys.indexOf(k) < 0) tkeys.push(k); }); }); tkeys = tkeys.slice(0, 40);
+      var tkeys = []; tfeats.forEach(function (r) { Object.keys(r.custom_fields).forEach(function (k) { if (tkeys.indexOf(k) < 0) tkeys.push(k); }); }); tkeys = orderAttrKeys(tkeys, 40);
       _attrRows = tfeats; _attrReadonly = true; _attrSlug = slug; _attrById = {}; tfeats.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
-      _attrCols = tkeys.length ? tkeys.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 140 }; }) : [{ title: 'feature', kind: 'std', field: 'feature_id', type: 'text', w: 200 }];
+      _attrCols = [{ title: '\u2605', kind: 'sel', type: '', w: 30, tip: 'Selected features \u2014 click the star to select/deselect; sort this column to bring selected to the top' }].concat(tkeys.length ? tkeys.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 140 }; }) : [{ title: 'feature', kind: 'std', field: 'feature_id', type: 'text', w: 200 }]);
+      applyAttrView(findNodeById(layers, slug));
       buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
       foot.textContent = tfeats.length + ' feature' + (tfeats.length === 1 ? '' : 's') + ' from loaded tiles · read-only · pan/zoom to load more · click a row to highlight';
       return;
     }
     if (!rows.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">No features in this layer yet.</td></tr>'; foot.textContent = '0 features'; return; }
-    // dynamic columns = the union of custom_fields keys across the loaded rows (imported attributes), capped
+    // dynamic columns = the union of custom_fields keys across the loaded rows (imported attributes), capped.
+    // Ordered: msid FIRST, the ms_* style columns LAST, imported attributes in between.
     var keys = [];
     rows.forEach(function (r) { var cf = r.custom_fields; if (cf && typeof cf === 'object') { _attrCustom[r.feature_id] = cf; Object.keys(cf).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); }); } });
-    keys = keys.slice(0, 30);
+    keys = orderAttrKeys(keys, 30);
     _attrRows = rows;
     _attrSlug = slug; _attrById = {}; rows.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
     _attrCols = [
+      { title: '\u2605', kind: 'sel', type: '', w: 30, tip: 'Selected features \u2014 click the star to select/deselect; sort this column to bring selected to the top' },
       { title: 'Label', kind: 'std', field: 'label', type: 'text', w: keys.length ? 180 : 240 },
       { title: 'Start', kind: 'date', field: 'start_date', type: 'date', w: 130 },
       { title: 'End', kind: 'date', field: 'end_date', type: 'date', w: 130 },
       { title: 'Notes', kind: 'std', field: 'description', type: 'text', w: 220 },
       { title: 'Page', kind: 'std', field: 'content_id', type: 'text', w: 90 }
     ].concat(keys.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 130 }; }));
+    applyAttrView(nodeByLayerDbId(lid) || findNodeById(layers, slug));
     buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
     foot.textContent = total + ' feature' + (total === 1 ? '' : 's') + (keys.length ? '  ·  ' + keys.length + ' attribute' + (keys.length === 1 ? '' : 's') : '') + (total > rows.length ? '  ·  showing first ' + rows.length : '') + '  ·  click a row to highlight it on the map · Ctrl-click to add';
   }
   function buildAttrHead() {
     var thead = document.getElementById('editor-attr-thead');
+    attrStickyOffsets();
     thead.innerHTML = '<tr>' + _attrCols.map(function (c, i) {
       var arrow = (_attrSort && _attrSort.idx === i) ? '<span class="attr-arrow">' + (_attrSort.dir === 'desc' ? '▼' : '▲') + '</span>' : '';
-      return '<th data-ci="' + i + '" style="width:' + c.w + 'px;" title="' + attrEsc(c.title) + '">' + attrEsc(c.title) + arrow + '<span class="attr-rsz"></span></th>';
-    }).join('') + '</tr>';
+      var stick = c._left != null ? 'left:' + c._left + 'px;z-index:7;' : '';
+      var pinCls = c.pinned ? ' on' : '';
+      if (c.kind === 'sel') return '<th data-ci="' + i + '" class="attr-pin-th" style="width:' + c.w + 'px;padding:8px 2px;text-align:center;' + stick + '" title="' + attrEsc(c.tip || '') + '">' + c.title + arrow + '</th>';
+      return '<th data-ci="' + i + '"' + (c._left != null ? ' class="attr-pin-th"' : '') + ' style="width:' + c.w + 'px;' + stick + '" title="' + attrEsc(c.title) + '">' + attrEsc(c.title) + arrow +
+        '<span class="attr-pin' + pinCls + '" title="' + (c.pinned ? 'Unpin this column' : 'Pin — stays visible when scrolling') + '">&#128204;</span><span class="attr-rsz"></span></th>';
+    }).join('') + '</tr>' +
+      // pinned VIEW row: hovering a feature (map or table) shows its values here — no scrolling to find it
+      '<tr id="attr-preview-row">' + _attrCols.map(function () { return '<td class="attr-preview-empty">&nbsp;</td>'; }).join('') + '</tr>';
     Array.prototype.forEach.call(thead.querySelectorAll('th'), function (th) {
       var ci = parseInt(th.getAttribute('data-ci'), 10);
-      th.addEventListener('click', function (e) { if (e.target.classList.contains('attr-rsz')) return; sortAttrBy(ci); });
-      th.querySelector('.attr-rsz').addEventListener('mousedown', function (e) { startAttrResize(e, th, ci); });
+      th.addEventListener('click', function (e) {
+        if (e.target.classList.contains('attr-rsz') || e.target.classList.contains('attr-pin') || th.getAttribute('data-dragged')) return;
+        sortAttrBy(ci);
+      });
+      var rz = th.querySelector('.attr-rsz'); if (rz) rz.addEventListener('mousedown', function (e) { startAttrResize(e, th, ci); });
+      var pin = th.querySelector('.attr-pin');
+      if (pin) pin.addEventListener('click', function (e) {
+        e.stopPropagation();
+        _attrCols[ci].pinned = !_attrCols[ci].pinned;
+        buildAttrHead(); renderAttrBody(); persistAttrView();
+      });
+      if (_attrCols[ci].kind !== 'sel') th.addEventListener('mousedown', function (e) { startAttrColDrag(e, th, ci); });
     });
+    var _th0 = thead.querySelector('th');
+    var _thH = (_th0 && _th0.offsetHeight) || 34;   // the preview row sticks right under the (sticky) header row
+    Array.prototype.forEach.call(thead.querySelectorAll('#attr-preview-row td'), function (td) { td.style.top = _thH + 'px'; });
+    var _pfs = thead.querySelectorAll('#attr-preview-row td');
+    Array.prototype.forEach.call(_pfs, function (td, i7) {
+      var c7 = _attrCols[i7];
+      if (c7 && c7._left != null) { td.style.left = c7._left + 'px'; td.classList.add('attr-pin-cell'); td.style.zIndex = '5'; }
+    });
+    var _pfIdx = _attrCols[0] && _attrCols[0].kind === 'sel' ? 1 : 0;
+    if (_pfs[_pfIdx]) _pfs[_pfIdx].textContent = 'Hover a feature to view it here…';
+    if (_pfIdx === 1 && _pfs[0]) { _pfs[0].classList.remove('attr-preview-empty'); _pfs[0].innerHTML = '&nbsp;'; }
     applyAttrTableWidth();
   }
   function applyAttrTableWidth() {   // table width = sum of column widths, so fixed layout honors each + the wrap scrolls horizontally
     var t = document.getElementById('editor-attr-table');
     if (t) t.style.width = _attrCols.reduce(function (s, c) { return s + (c.w || 130); }, 0) + 'px';
+  }
+  function startAttrColDrag(e, th, ci) {   // hold a header and drag it left/right to reorder the column
+    if (e.target.classList.contains('attr-rsz') || e.target.classList.contains('attr-pin')) return;
+    var sx = e.pageX, dragging = false;
+    var thead = document.getElementById('editor-attr-thead');
+    var wrap = document.getElementById('editor-attr-wrap');
+    var lastX = e.clientX, scrollDir = 0, scrollTimer = null;
+    function placeMarker(px) {
+      Array.prototype.forEach.call(thead.querySelectorAll('th'), function (t2) { t2.classList.remove('attr-drop-before', 'attr-drop-after'); });
+      var tgt = document.elementFromPoint(px, th.getBoundingClientRect().top + 10);
+      tgt = tgt && tgt.closest ? tgt.closest('th[data-ci]') : null;
+      if (!tgt || tgt === th) return;
+      var r = tgt.getBoundingClientRect();
+      var side = (px - r.left) / r.width > 0.5 ? 'after' : 'before';
+      tgt.setAttribute('data-dropside', side);
+      tgt.classList.add('attr-drop-' + side);
+    }
+    function edgeScroll() {   // fires on a timer so the table keeps sliding while the mouse holds still at an edge
+      if (!scrollDir || !wrap) return;
+      wrap.scrollLeft += scrollDir;
+      placeMarker(lastX);   // columns moved under the pointer — refresh the drop marker
+    }
+    function move(ev) {
+      if (!dragging && Math.abs(ev.pageX - sx) < 6) return;
+      if (!dragging) { dragging = true; th.setAttribute('data-dragged', '1'); th.style.opacity = '0.5'; document.body.style.userSelect = 'none'; scrollTimer = setInterval(edgeScroll, 30); }
+      lastX = ev.clientX;
+      scrollDir = 0;
+      if (wrap) {   // dragging near/past an edge auto-scrolls, faster the closer to the edge
+        var wr = wrap.getBoundingClientRect(), zone = 48, leftEdge = wr.left;
+        Array.prototype.forEach.call(thead.querySelectorAll('th.attr-pin-th'), function (pt) { var pr = pt.getBoundingClientRect().right; if (pr > leftEdge) leftEdge = pr; });
+        if (ev.clientX < leftEdge + zone) scrollDir = -Math.ceil(Math.min(45, leftEdge + zone - ev.clientX) / 3);
+        else if (ev.clientX > wr.right - zone) scrollDir = Math.ceil(Math.min(45, ev.clientX - (wr.right - zone)) / 3);
+      }
+      placeMarker(ev.clientX);
+    }
+    function up(ev) {
+      document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+      if (scrollTimer) { clearInterval(scrollTimer); scrollTimer = null; }
+      document.body.style.userSelect = ''; th.style.opacity = '';
+      var marked = thead.querySelector('th.attr-drop-before, th.attr-drop-after');
+      Array.prototype.forEach.call(thead.querySelectorAll('th'), function (t2) { t2.classList.remove('attr-drop-before', 'attr-drop-after'); });
+      if (!dragging) return;
+      setTimeout(function () { th.removeAttribute('data-dragged'); }, 0);   // swallow the click that follows the mouseup
+      if (!marked) return;
+      var ti = parseInt(marked.getAttribute('data-ci'), 10);
+      if (isNaN(ti) || _attrCols[ti].kind === 'sel') return;
+      var after = marked.getAttribute('data-dropside') === 'after';
+      var col = _attrCols.splice(ci, 1)[0];
+      var ni = ti > ci ? ti - 1 : ti;
+      if (after) ni += 1;
+      if (ni <= 0) ni = 1;   // never before the ★ column
+      _attrCols.splice(ni, 0, col);
+      _attrSort = null;
+      buildAttrHead(); renderAttrBody(); persistAttrView();
+    }
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }
   function startAttrResize(e, th, ci) {
     e.preventDefault(); e.stopPropagation();   // don't let the drag trigger a sort
@@ -2775,10 +4244,12 @@
     tbody.innerHTML = _attrRows.map(function (r) {
       var sel = _attrSel.indexOf(String(r.feature_id)) > -1 ? ' class="attr-row-sel"' : '';
       return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + sel + '>' + _attrCols.map(function (c) {
+        var stick = c._left != null ? ' class="attr-pin-cell" style="left:' + c._left + 'px;"' : '';
+        if (c.kind === 'sel') return '<td class="attr-sel-cell' + (c._left != null ? ' attr-pin-cell' : '') + '"' + (c._left != null ? ' style="left:' + c._left + 'px;"' : '') + ' title="Select / deselect this feature"></td>';
         var bind = c.kind === 'custom' ? 'data-fc="' + attrEsc(c.key) + '"' : 'data-f="' + attrEsc(c.field) + '"';
         var v = attrEsc(attrDisp(r, c));
-        if (_attrReadonly) return '<td><span ' + bind + ' style="display:block;padding:6px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + v + '</span></td>';
-        return '<td><input ' + bind + ' type="' + c.type + '" value="' + v + '" /></td>';
+        if (_attrReadonly) return '<td' + stick + '><span ' + bind + ' style="display:block;padding:6px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + v + '</span></td>';
+        return '<td' + stick + '><input ' + bind + ' type="' + c.type + '" value="' + v + '" /></td>';
       }).join('') + '</tr>';
     }).join('');
     if (!_attrDelegated) { _attrDelegated = true; wireAttrDelegation(tbody); }   // delegate once (scales to all features without per-row listeners)
@@ -2790,7 +4261,9 @@
       if (std) saveAttrCell(fid, std, inp.value); else saveAttrCustomCell(fid, inp.getAttribute('data-fc'), inp.value);
     });
     tbody.addEventListener('click', function (e) {   // click a row → highlight its feature on the map (Ctrl/Cmd = add); editing a cell still works
-      var tr = e.target.closest('tr[data-fid]'); if (tr) selectAttrRow(tr.getAttribute('data-fid'), e.ctrlKey || e.metaKey);
+      var tr = e.target.closest('tr[data-fid]'); if (!tr) return;
+      if (e.target.closest('.attr-sel-cell')) { selectAttrRow(tr.getAttribute('data-fid'), true); return; }   // the ★ always TOGGLES (like starring an email)
+      selectAttrRow(tr.getAttribute('data-fid'), e.ctrlKey || e.metaKey);
     });
     tbody.addEventListener('mouseover', function (e) { var tr = e.target.closest('tr[data-fid]'); setAttrHover(tr ? tr.getAttribute('data-fid') : null, false); });   // hover a row → light up its feature
     tbody.addEventListener('mouseleave', function () { setAttrHover(null, false); });
@@ -2837,6 +4310,7 @@
         m.addLayer({ id: 'editor-attr-hover-fill', type: 'fill', source: 'editor-attr-hover-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#00e5ff', 'fill-opacity': 0.25 } });
         m.addLayer({ id: 'editor-attr-hover-line', type: 'line', source: 'editor-attr-hover-src', paint: { 'line-color': '#00b8d4', 'line-width': 3.5 } });
         m.addLayer({ id: 'editor-attr-hover-pt', type: 'circle', source: 'editor-attr-hover-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 10, 'circle-color': '#00e5ff', 'circle-opacity': 0.5, 'circle-stroke-color': '#00b8d4', 'circle-stroke-width': 3 } });
+        if (typeof msRaiseLabelLayers === 'function') msRaiseLabelLayers(m, layers);   // highlights glow UNDER the labels
       } catch (e) {}
     });
   }
@@ -2850,10 +4324,24 @@
     attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: [] }); } catch (e) {} });
   }
   // ---- hover brushing: row ↔ map feature light up together ----
+  function fillAttrPreview(fid) {
+    var tr = document.getElementById('attr-preview-row'); if (!tr) return;
+    var r = fid && findAttrRow(fid); if (!r) return;   // hover-out keeps the last feature visible for reading
+    var tds = tr.querySelectorAll('td');
+    _attrCols.forEach(function (c, i) {
+      var td = tds[i]; if (!td) return;
+      if (c.kind === 'sel') { td.innerHTML = '&nbsp;'; td.classList.remove('attr-preview-empty'); return; }
+      var v = attrCellVal(r, c);
+      td.textContent = (v == null || v === '') ? '' : String(v);
+      td.title = td.textContent;
+      td.classList.remove('attr-preview-empty');
+    });
+  }
   function setAttrHover(fid, scroll) {
     fid = fid ? String(fid) : null;
     if (_attrHover === fid) return;
     _attrHover = fid;
+    fillAttrPreview(fid);
     var tbody = document.getElementById('editor-attr-tbody');
     if (tbody) {
       Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) { tr.classList.toggle('attr-row-hover', tr.getAttribute('data-fid') === _attrHover); });
@@ -2870,7 +4358,7 @@
     beforeMap.on('mouseout', function () { setAttrHover(null, false); });
   }
   function attrMapHover(e) {   // throttle to one hit-test per frame
-    if (!_attrSlug) return;
+    if (!_attrSlug || window._msPanelDrag) return;
     _attrLastPt = e.point;
     if (_attrHoverRAF) return;
     _attrHoverRAF = true;
@@ -2889,12 +4377,23 @@
         if (f.layer && f.layer.id && f.layer.id.indexOf(_attrSlug) === 0 && f.id != null && _attrById[String(f.id)]) { fid = String(f.id); break; }
       }
     } catch (e) {}
-    setAttrHover(fid, true);
+    setAttrHover(fid, false);   // the pinned preview row shows the feature now — don't yank the table's scroll around
   }
   function geomsBounds(geoms) {
     var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     (geoms || []).forEach(function (g) { collectImportCoords(g, function (lng, lat) { if (lng < x0) x0 = lng; if (lat < y0) y0 = lat; if (lng > x1) x1 = lng; if (lat > y1) y1 = lat; }); });
     return isFinite(x0) ? [[x0, y0], [x1, y1]] : null;
+  }
+  function onZoomExtent() {   // panel: always zoom to the layer's full feature extent (even when a custom zoom target is set)
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var geoms = [];
+    var lid = slugToLayerDbId[node.id];
+    if (lid) Object.keys(featureLayer).forEach(function (did) { if (featureLayer[did] === lid && _geomSnap[did]) geoms.push(_geomSnap[did]); });
+    var b = geoms.length ? geomsBounds(geoms) : (typeof layerExtent === 'function' ? layerExtent(node) : null);
+    if (!b) { showToast('No features to zoom to'); return; }
+    try { beforeMap.fitBounds(b, { padding: 60, bearing: 0, maxZoom: 17 }); } catch (e) {}
+    try { if (typeof afterMap !== 'undefined' && afterMap) afterMap.fitBounds(b, { padding: 60, bearing: 0, maxZoom: 17 }); } catch (e) {}
   }
   function zoomToAttrSelected() {
     if (!_attrSel.length || typeof beforeMap === 'undefined' || !beforeMap) return;
@@ -2910,11 +4409,12 @@
     var panel = document.getElementById('editor-attr-panel'); if (!panel) return;
     e.preventDefault();
     var sx = e.clientX, sy = e.clientY, rect = panel.getBoundingClientRect(), ox = rect.left, oy = rect.top;
+    window._msPanelDrag = true;
     function move(ev) {
       panel.style.left = Math.max(0, Math.min(window.innerWidth - 80, ox + (ev.clientX - sx))) + 'px';
       panel.style.top = Math.max(0, Math.min(window.innerHeight - 40, oy + (ev.clientY - sy))) + 'px';
     }
-    function up() { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.userSelect = ''; }
+    function up() { window._msPanelDrag = false; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.userSelect = ''; }
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }
@@ -2956,7 +4456,40 @@
     var outlineVis = field === 'outlineVisible' ? (value ? 1 : 0) : curStrokeVis;
     var width = field === 'width' ? value : paintWidth(node.paint);
     var radius = field === 'radius' ? value : ((node.paint && node.paint['circle-radius'] != null) ? node.paint['circle-radius'] : null);
+    // by-column styling: buildLayerPaint writes plain values over the expressions — keep them when an
+    // unrelated property changes; moving the MATCHING control explicitly EXITS that by-column mode.
+    var _ck = colorKeyFor(node.type);
+    var _colorExpr = (node.colorBy && node.paint && Array.isArray(node.paint[_ck])) ? node.paint[_ck] : null;
+    var _ok2 = numByKeys(node, 'opacity')[0];
+    var _opExpr = (node.opacityBy && node.paint && Array.isArray(node.paint[_ok2])) ? node.paint[_ok2] : null;
+    var _tk2 = numByKeys(node, 'thickness')[0];
+    var _thExpr = (node.thicknessBy && node.paint && Array.isArray(node.paint[_tk2])) ? node.paint[_tk2] : null;
     node.paint = buildLayerPaint(node.type, color, op, outline, outlineVis, width, radius);
+    if ((field === 'opacity' || field === 'fillVisible') && node.opacityBy) {
+      node.opacityBy = null;
+      var _obSel = document.getElementById('elp-opacityby'); if (_obSel) _obSel.value = '';
+      clearStyleMetaRC(slugToLayerDbId[node.id], 'opacityBy');
+    } else if (_opExpr) { node.paint[_ok2] = _opExpr; }
+    if ((field === 'width' || field === 'radius') && node.thicknessBy) {
+      node.thicknessBy = null;
+      var _tbSel = document.getElementById('elp-thickby'); if (_tbSel) _tbSel.value = '';
+      clearStyleMetaRC(slugToLayerDbId[node.id], 'thicknessBy');
+    } else if (_thExpr) { node.paint[_tk2] = _thExpr; }
+    if (field === 'color' && node.colorBy) {
+      node.colorBy = null;   // user chose one colour → back to single-color mode (persisted below via saveLayerStyle + meta cleanup)
+      var _cbSel = document.getElementById('elp-colorby'); if (_cbSel) _cbSel.value = '';
+      var _cbInfo = document.getElementById('elp-colorby-info'); if (_cbInfo) _cbInfo.textContent = '';
+      var _mcIcon = document.querySelector('.layer-list-row[data-node-id="' + node.id + '"] label i'); if (_mcIcon) _mcIcon.classList.remove('multicolor-icon');   // gradient icon → single colour
+      (function (lid) {
+        if (!lid) return;
+        db.from('layers').select('raw_config').eq('id', lid).single().then(function (cur) {
+          var rc = (cur.data && cur.data.raw_config) || {}; delete rc.colorBy;
+          return db.from('layers').update({ raw_config: rc }).eq('id', lid);
+        }).then(function () {}, function () {});
+      })(slugToLayerDbId[node.id]);
+    } else if (_colorExpr) {
+      node.paint[_ck] = _colorExpr;
+    }
     applyLayerStylePreview(node, op, outline, outlineVis, width, radius);
     clearTimeout(_layerStyleTimer);
     _layerStyleTimer = setTimeout(function () { saveLayerStyle(node.id); }, 500);
@@ -3000,7 +4533,7 @@
         ids.forEach(function (drawId) {
           try {
             var f = draw.get(drawId); if (!f) return;
-            if (node.iconColor) f.properties.color = node.iconColor;
+            if (node.iconColor && !node.colorBy) f.properties.color = node.iconColor;   // colour-by: per-feature colors stay
             if (op != null) f.properties.opacity = op;
             if (outline != null) f.properties.outline = outline;
             if (outlineVis != null) f.properties.strokeopacity = outlineVis;
