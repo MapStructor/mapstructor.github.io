@@ -18,6 +18,57 @@
 
 var PlatformProjectLoader = true;
 
+/* Feature: header on/off. HIDDEN BY DEFAULT — shown only when raw_config.features.header === true.
+   Shared by the viewer (applied at boot below) and the editor (Settings → "Show header" calls this
+   live). With the header hidden its essentials move to a larger, centered section at the top of the
+   sidebar: the logo, the map title, and an About link (About is hidden from visitors when the About
+   modal has no content — the editor always shows it so the owner can fill it in). */
+window.msApplyHeaderFeature = function (visible, projectName) {
+  var css = document.getElementById("ms-noheader-css");
+  if (!css) {
+    css = document.createElement("style"); css.id = "ms-noheader-css";
+    css.textContent =
+      "body.ms-no-header .header{display:none;}" +
+      "body.ms-no-header .map{top:40px;}" +                                                        // was 120 = 40 top bar + 80 header
+      "body.ms-no-header #studioMenu{top:42px;height:calc(100% - 131px);max-height:calc(100% - 131px);}" +
+      "body.ms-no-header #view-hide-layer-panel{top:48px;}" +
+      "body.ms-no-header #rightInfoBar{top:42px;max-height:calc(100% - 150px);}" +
+      // title + About, centered; darker/prominent divider above LAYERS. No logo here — the logo belongs to
+      // the header only (maps with a header); the sidebar section is title + About.
+      "#sidebar-brand{display:none;flex-direction:column;align-items:center;text-align:center;gap:5px;padding:12px 12px 15px;border-bottom:2px solid #23374d;margin-bottom:10px;}" +
+      "body.ms-no-header #sidebar-brand{display:flex;}" +
+      "#sidebar-brand .sb-title{font-weight:700;font-size:31px;color:#23374d;line-height:1.2;max-width:100%;cursor:text;outline:none;}" +
+      "#sidebar-brand .sb-title:hover{outline:1px dashed #ccc;outline-offset:3px;border-radius:3px;}" +
+      "#sidebar-brand .sb-title:focus{outline:2px solid #7c5cbf;outline-offset:3px;border-radius:3px;}" +
+      "#sidebar-brand a#about-info{display:block;font-size:21px;color:#2b6ce8;cursor:pointer;text-decoration:none;}" +
+      "#sidebar-brand a#about-info:hover{text-decoration:underline;}";
+    document.head.appendChild(css);
+  }
+  var brand = document.getElementById("sidebar-brand");
+  if (!brand) {
+    brand = document.createElement("div"); brand.id = "sidebar-brand";
+    brand.innerHTML = "<div class=\"sb-title\"></div>" +
+      "<a id=\"about-info\" class=\"trigger-popup\" title=\"About this map\">About</a>";   // centered column: title, About
+    var menu = document.getElementById("studioMenu");
+    if (menu) menu.insertBefore(brand, menu.firstChild);
+  }
+  try {
+    var t = projectName || (document.getElementById("header-text-value") || {}).textContent || "";
+    brand.querySelector(".sb-title").textContent = t;
+  } catch (e) {}
+  try { if (window.msMakeSidebarTitleEditable) window.msMakeSidebarTitleEditable(); } catch (e) {}   // editor-only: click the sidebar title to rename (like the header)
+  try {   // visitors only see About when it has content; the editor keeps it so the owner can fill it
+    var hasAbout = !!(window.modal_content_html && window.modal_content_html["about"]);
+    var isEditor = /editor\.html/i.test(location.pathname);
+    brand.querySelector("#about-info").style.display = (hasAbout || isEditor) ? "block" : "none";
+  } catch (e) {}
+  document.body.classList.toggle("ms-no-header", visible === false);
+  setTimeout(function () {   // the map containers changed height — re-measure both swipe sides + re-seat any header-relative chrome (editor tool dock, save callout)
+    try { if (typeof beforeMap !== "undefined" && beforeMap) beforeMap.resize(); if (typeof afterMap !== "undefined" && afterMap) afterMap.resize(); } catch (e) {}
+    try { window.dispatchEvent(new Event("resize")); } catch (e) {}
+  }, 80);
+};
+
 (async function () {
   if (typeof platformProjectId === "undefined" || !platformProjectId) return;
 
@@ -123,6 +174,10 @@ var PlatformProjectLoader = true;
         }
       } catch (e) {}
     }, 400);
+    // Feature: header is HIDDEN BY DEFAULT (the map pages set body.ms-no-header at parse so there's no
+    // flash of the header on load). Resolve the real state NOW — header-on maps flip the moment the config
+    // is known (not a late timeout), header-off maps just build the sidebar brand and stay hidden.
+    try { msApplyHeaderFeature(!!(raw.features && raw.features.header === true), project.name); } catch (e) {}
     if (notPublished) showNotPublished();
   } catch (e) {
     console.warn("Platform project load failed — booting the static config:", e);

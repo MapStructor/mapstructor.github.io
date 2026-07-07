@@ -107,13 +107,13 @@
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.3/mapbox-gl-geocoder.min.js"></script>
     <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.3/mapbox-gl-geocoder.css" />
-    <script src="../platform/search.js?v=20260704a"></script>
+    <script src="../platform/search.js?v=20260707e"></script>
 
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="../platform/auth.js?v=20260704a"></script>
-    <script src="../platform/topbar.js?v=20260704a"></script>   <!-- #17: header shows the signed-in account (and enables Edit-map/#16 later) -->
+    <script src="../platform/auth.js?v=20260707e"></script>
+    <script src="../platform/topbar.js?v=20260707e"></script>   <!-- #17: header shows the signed-in account (and enables Edit-map/#16 later) -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
       rel="stylesheet"
@@ -128,7 +128,7 @@
       href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css"
       type="text/css"
     />
-    <link href="engine/engine.css?v=20260704a" rel="stylesheet" />
+    <link href="engine/engine.css?v=20260707e" rel="stylesheet" />
     <!--
     <link
       rel="stylesheet"
@@ -163,7 +163,7 @@
     <!-- <script src="js/lists/modalinfo.js"></script> -->
     <script src="engine/handle-mobile-devices.js"></script>
     <script src="engine/utils.js"></script>
-    <script src="engine/index.js?v=20260704a"></script>
+    <script src="engine/index.js?v=20260707e"></script>
 
     <!-- Google Analytics — driven by siteAnalytics.trackingId in header.js -->
     <!-- To revert: comment out NEW BLOCK below, uncomment OLD BLOCK below -->
@@ -203,10 +203,20 @@
 
 
 
+    <!-- Header hidden by DEFAULT (raw_config.features.header must be true to show it) — applied at parse
+         so there is NO flash of the header on load; projectLoader shows it for header-on maps once config arrives. -->
+    <style id="ms-preheader-css">
+      body.ms-no-header .header{display:none;}
+      body.ms-no-header .map{top:40px;}
+      body.ms-no-header #studioMenu{top:42px;height:calc(100% - 131px);max-height:calc(100% - 131px);}
+      body.ms-no-header #view-hide-layer-panel{top:48px;}
+      body.ms-no-header #rightInfoBar{top:42px;max-height:calc(100% - 150px);}
+    </style>
   </head>
 
   <body>
-    
+    <script>document.body.classList.add('ms-no-header');</script>
+
     <!-- Disclaimer — shown on every page load (toggle in project/lists/disclaimer.js) -->
     <div id="disclaimer-overlay">
       <div id="disclaimer-card">
@@ -268,7 +278,7 @@
 
       <br />
       <div>
-        <script src="engine/generateLayers.js?v=20260704a"></script>
+        <script src="engine/generateLayers.js?v=20260707e"></script>
         <hr />
         <p class="title">MAPS</p>
 
@@ -342,11 +352,11 @@
     <!-- END TESTING -->
     <!-- <script src="js/lists/bounds.js"></script> -->
     <!-- <script src="js/lists/mapData.js"></script> -->
-    <script src="engine/generateMaps.js?v=20260704a"></script>
-    <script src="engine/refreshLayers.js?v=20260704a"></script>
-    <script src="engine/addMapLayer.js?v=20260704a"></script>
-    <script src="engine/eventsHandle.js?v=20260704a"></script>
-    <script src="engine/addLayers.js?v=20260704a"></script>
+    <script src="engine/generateMaps.js?v=20260707e"></script>
+    <script src="engine/refreshLayers.js?v=20260707e"></script>
+    <script src="engine/addMapLayer.js?v=20260707e"></script>
+    <script src="engine/eventsHandle.js?v=20260707e"></script>
+    <script src="engine/addLayers.js?v=20260707e"></script>
     <!-- TESTING: delete this block and uncomment line below to clean up -->
     <script>
       document.write('<script src="' + _project + '/lists/restrictedToken.js"><\/script>');
@@ -354,13 +364,13 @@
     </script>
     <!-- END TESTING -->
     <!-- <script src="js/mapbox-token.js"></script> -->
-    <script src="engine/infoPanel.js?v=20260704a"></script>
-    <script src="engine/mapinit.js?v=20260704a"></script>
+    <script src="engine/infoPanel.js?v=20260707e"></script>
+    <script src="engine/mapinit.js?v=20260707e"></script>
     <script src="engine/sliderpopups.js"></script>
-    <script src="../platform/configLoader.js?v=20260704a" onerror="void(0)"></script>
-    <script src="../platform/labels.js?v=20260704a" onerror="void(0)"></script>
-    <script src="../platform/renderRegistry.js?v=20260704a" onerror="void(0)"></script>
-    <script src="../platform/projectLoader.js?v=20260704a" onerror="void(0)"></script>
+    <script src="../platform/configLoader.js?v=20260707e" onerror="void(0)"></script>
+    <script src="../platform/labels.js?v=20260707e" onerror="void(0)"></script>
+    <script src="../platform/renderRegistry.js?v=20260707e" onerror="void(0)"></script>
+    <script src="../platform/projectLoader.js?v=20260707e" onerror="void(0)"></script>
     <script>
       // Standalone deploys ship map/ without platform/ — if ?id= is set but the
       // loader didn't arrive, boot the static config so the page still works.

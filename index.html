@@ -291,7 +291,13 @@
     <div class="hero-title">MapStructor</div>
     <p class="hero-sub" data-edit="home-tagline">Create and explore maps</p>
     <button id="btn-create-map" class="btn-hero">Create a Map</button>
-    <span class="free-tag" style="display:inline-block;margin-left:12px;background:#e6f6ea;color:#2d7a2d;font-weight:700;font-size:13px;padding:4px 12px;border-radius:20px;vertical-align:middle;">Free</span>
+    <span class="free-tag" id="free-tag" title="Why it's free" style="display:inline-block;margin-left:12px;background:#e6f6ea;color:#2d7a2d;font-weight:700;font-size:13px;padding:4px 12px;border-radius:20px;vertical-align:middle;cursor:pointer;">Free</span>
+  </div>
+
+  <!-- Free-tag pop-up content — editable in place by the owner (pageEditor, data-edit); the Free tag opens it in a modal for everyone. -->
+  <div id="free-modal-src" data-edit="home-free" style="display:none;">
+    <p>MapStructor is free to make and explore maps. You only pay if you need a lot of storage for large datasets.</p>
+    <p>Create a map, draw on it, bring in your own data, and share it — no cost to get started.</p>
   </div>
 
   <hr class="section-divider">
@@ -385,6 +391,16 @@
       overlay.classList.add('open');
     }
     // About / Map Services are now their own pages (about.html / services.html) — the nav links point there.
+
+    // Free tag → opens the editable "why it's free" pop-up. The content lives in #free-modal-src
+    // (data-edit="home-free"); the owner edits it in place via pageEditor, everyone sees it in this modal.
+    (function () {
+      var ft = document.getElementById('free-tag');
+      if (ft) ft.addEventListener('click', function () {
+        var src = document.getElementById('free-modal-src');
+        openInfoModal('Free', src ? src.innerHTML : '');
+      });
+    })();
   </script>
 
   <script>

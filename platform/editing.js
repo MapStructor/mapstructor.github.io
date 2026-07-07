@@ -1425,7 +1425,10 @@
       '<input id="esp-logo-file" type="file" accept="image/*" style="width:100%;box-sizing:border-box;font-size:11px;margin-bottom:8px;" />' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Logo link (URL)</label>' +
       '<input id="esp-logo-link" type="text" placeholder="https://…" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
-      '<div style="font-size:10px;color:#888888;margin-top:12px;border-top:1px solid #eee;padding-top:8px;">To edit the <b>About</b> text, click the &#9432; button on the map and edit the popup directly.</div>';
+      '<label style="display:block;font-size:11px;color:#555555;margin:12px 0 2px;border-top:1px solid #eee;padding-top:8px;">Features</label>' +
+      '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;"><input id="esp-feat-header" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show header (logo &amp; title bar)</label>' +
+      '<div style="font-size:10px;color:#888888;margin-top:2px;">Off: the logo, map name and About link move to the top of the sidebar.</div>' +
+      '<div style="font-size:10px;color:#888888;margin-top:12px;border-top:1px solid #eee;padding-top:8px;">To edit the <b>About</b> text, click the <b>ABOUT</b> button (header) or the sidebar <b>About</b> link and edit the popup directly.</div>';
     document.body.appendChild(p);
     document.getElementById('esp-close').addEventListener('click', function () { p.style.display = 'none'; });
     document.getElementById('esp-name').addEventListener('change', onSettingsName);
@@ -1433,6 +1436,7 @@
     document.getElementById('esp-tl-start').addEventListener('change', onTimelineSave);
     document.getElementById('esp-tl-end').addEventListener('change', onTimelineSave);
     document.getElementById('esp-tl-today').addEventListener('change', function () { document.getElementById('esp-tl-end').disabled = this.checked; onTimelineSave(); });
+    document.getElementById('esp-feat-header').addEventListener('change', onFeatureHeader);
     document.getElementById('esp-logo-file').addEventListener('change', onLogoFile);
     document.getElementById('esp-logo-link').addEventListener('change', onLogoLink);
     document.getElementById('esp-public').addEventListener('change', onSharePublic);
@@ -1563,7 +1567,7 @@
     injectSettingsPanel();
     var p = document.getElementById('editor-settings-panel');
     if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
-    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config, is_public').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-public').checked = !!r.data.is_public; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; } } catch (e) {}
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config, is_public').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-public').checked = !!r.data.is_public; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); } } catch (e) {}
     p.style.display = 'block';
   }
   async function saveMapName(name) {
@@ -1572,14 +1576,39 @@
     try { var r = await db.from('projects').update({ name: name }).eq('id', projectId); if (r.error) throw new Error(r.error.message); applyHeaderText(name); var ei = document.getElementById('esp-name'); if (ei && ei.value !== name) ei.value = name; setStatus('Map renamed'); } catch (e) { setStatus('Save failed'); }
   }
   async function onSettingsName() { return saveMapName(document.getElementById('esp-name').value); }
+  // Feature: header on/off — persists raw_config.features.header and applies live (msApplyHeaderFeature
+  // moves the logo/title/About into the sidebar; a resize event re-seats the tool dock + save callout).
+  async function onFeatureHeader() {
+    var show = document.getElementById('esp-feat-header').checked;
+    setStatus('Saving…');
+    try {
+      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      rc.features = rc.features || {}; rc.features.header = show;
+      var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
+      if (r.error) throw new Error(r.error.message);
+      if (window.msApplyHeaderFeature) msApplyHeaderFeature(show, document.getElementById('esp-name').value);
+      window.dispatchEvent(new Event('resize'));
+      setStatus(show ? 'Header shown' : 'Header hidden — moved to the sidebar');
+    } catch (e) { setStatus('Save failed'); }
+  }
   function makeHeaderTitleEditable() {
     var h = document.getElementById('header-text-value'); if (!h || h._peEditable) return; h._peEditable = true;
     h.setAttribute('contenteditable', 'true'); h.setAttribute('spellcheck', 'false'); h.title = 'Click to rename this map';
     h.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); h.blur(); } });
     h.addEventListener('blur', function () { saveMapName(h.textContent); });
   }
+  // The sidebar title (shown when the header is hidden) renames the map just like the header title.
+  // Exposed on window so projectLoader's msApplyHeaderFeature can wire it whenever it builds the brand.
+  function makeSidebarTitleEditable() {
+    var h = document.querySelector('#sidebar-brand .sb-title'); if (!h || h._peEditable) return; h._peEditable = true;
+    h.setAttribute('contenteditable', 'true'); h.setAttribute('spellcheck', 'false'); h.title = 'Click to rename this map';
+    h.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); h.blur(); } });
+    h.addEventListener('blur', function () { saveMapName(h.textContent); });
+  }
+  window.msMakeSidebarTitleEditable = makeSidebarTitleEditable;
   // ── Header chrome: text (= map name), logo image, logo link — applied live (no refresh) + on load ──
-  function applyHeaderText(name) { try { var el = document.getElementById('header-text-value'); if (el) el.textContent = name; if (name) document.title = name; } catch (e) {} }
+  function applyHeaderText(name) { try { var el = document.getElementById('header-text-value'); if (el) el.textContent = name; var sb = document.querySelector('#sidebar-brand .sb-title'); if (sb) sb.textContent = name; if (name) document.title = name; } catch (e) {} }
   function applyHeaderLogo(dataUrl) { try { if (!dataUrl) return; var img = document.getElementById('logo-img-wide'); if (img) img.src = dataUrl; } catch (e) {} }
   function applyHeaderLink(url) { try { var a = document.getElementById('logo-link'); if (a) a.setAttribute('href', url || ''); } catch (e) {} }
   function applyHeaderChrome(rc) { if (!rc) return; if (rc.headerLogo) applyHeaderLogo(rc.headerLogo); if (rc.headerLink != null) applyHeaderLink(rc.headerLink); }
@@ -1943,7 +1972,8 @@
   function wireHeaderUser() {
     // lives in the site-wide top bar now (right slot); the editor's chip also offers Login
     window.__msTopbarUserByPage = true;   // tell topbar.js not to add its own generic chip
-    var gen = document.getElementById('ms-topbar-user'); if (gen) gen.remove();   // ...and drop one it already added (race at boot)
+    // ...and drop ALL it already added — the boot race could stack several in the pre-mount bar
+    document.querySelectorAll('#ms-topbar-user').forEach(function (n) { n.remove(); });
     var right = document.getElementById('ms-topbar-right') || document.getElementById('editor-actions-status') || document.querySelector('.header-right');
     if (!right || document.getElementById('editor-nav-user')) return;
     var a = document.createElement('a');
@@ -2004,53 +2034,92 @@
       '.layer-list-row.editor-drop-after{box-shadow:inset 0 -2px 0 #ce5c00;}' +
       '.layer-list-row.editor-drop-into{background:rgba(206,92,0,0.15);box-shadow:inset 0 0 0 1px #ce5c00;}' +
       '.layer-list-row.editor-active{background:rgba(206,92,0,0.12);}' +
-      // draw toolbar: float on the LEFT just past the 325px layers sidebar (was top-right, hidden under the right swipe map)
-      // Tool cluster CENTERED over the whole map, OUTSIDE the swipe-clipped #before container (the compare
-      // plugin clips the left map's container — controls included — at the divider, which hid the tools on
-      // the right side). Body-level fixed dock: row1 = draw + extra tools, row2 = geolocate + search.
-      '#editor-tool-dock{position:fixed;left:50%;transform:translateX(-50%);z-index:60;display:grid;grid-template-columns:auto auto;gap:6px;justify-items:start;align-items:start;pointer-events:none;}' +
+      // Master tool panel: one slick frosted card, body-level fixed (OUTSIDE the swipe-clipped #before
+      // container — the compare plugin clips the left map's container, controls included, at the divider),
+      // LEFT-aligned just past the sidebar + its collapse button. pointer-events:auto on the WHOLE card
+      // means the mouse never reaches the map anywhere over the toolbar (gaps included). Grid: row1 = draw
+      // group | edit group, row2 col2 = locate+search (under the edit group, never under the drawing
+      // tools). Three colour-framed groups; every button 36×36; one visual system, tops/bottoms flush.
+      // master card: TRANSPARENT (user devtools 7/7 — no bg/blur/shadow, 3px padding); pointer-events:auto still blocks the map everywhere over it
+      '#editor-tool-dock{position:fixed;left:374px;z-index:60;display:grid;grid-template-columns:auto auto;column-gap:10px;row-gap:8px;justify-items:start;align-items:start;padding:3px;border:1px solid rgba(30,27,46,0.07);border-radius:14px;pointer-events:auto;}' +
       '#editor-tool-dock>*{margin:0 !important;pointer-events:auto;}' +
-      '#editor-tool-dock .mapboxgl-ctrl-group:has(.mapbox-gl-draw_ctrl-draw-btn){grid-row:1;grid-column:1;}' +
-      '#editor-map-tools{grid-row:1;grid-column:2;position:static;display:flex;gap:3px;padding:3px;background:rgba(255,255,255,0.96);border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,0.3);pointer-events:auto;width:max-content;}' +
-      '#editor-tool-dock .mapboxgl-ctrl-group:has(.mapboxgl-ctrl-geolocate){grid-row:2;grid-column:1;position:static;height:36px;justify-self:end;}' +
-      '#editor-tool-dock .mapboxgl-ctrl-group:has(.mapboxgl-ctrl-geolocate) button{height:36px;width:36px;}' +   // expand the BUTTON to match the search-bar height
-      '#editor-tool-dock .mapboxgl-ctrl-group:has(.mapboxgl-ctrl-geolocate) button .mapboxgl-ctrl-icon{background-size:20px 20px;}' +   // but keep the ICON its original size (don\'t scale with the button)
-      '#editor-tool-dock .mapboxgl-ctrl-geocoder{grid-row:2;grid-column:2;position:static;justify-self:start;}' +
+      // three colour-tinted group frames (blue = draw, amber = edit, green = search); the white button boxes sit surrounded by colour
+      '#editor-draw-cluster{grid-row:1;grid-column:1;display:flex;gap:6px;padding:7px;border-radius:10px;background:#e6efff;box-shadow:inset 0 0 0 1px rgba(43,108,232,0.22);}' +
+      '#editor-map-tools{grid-row:1;grid-column:2;display:flex;gap:6px;padding:7px;border-radius:10px;background:#fdeede;box-shadow:inset 0 0 0 1px rgba(206,92,0,0.22);width:max-content;}' +
+      '#editor-search-cluster{grid-row:2;grid-column:2;display:flex;align-items:center;padding:7px;border-radius:10px;background:#e6f4ea;box-shadow:inset 0 0 0 1px rgba(45,122,45,0.22);}' +
+      // white button boxes inside the colour frames
+      '#editor-tool-dock .mapboxgl-ctrl-group,#editor-map-tools .tgrp{background:#fff;border:none;border-radius:7px;box-shadow:0 1px 3px rgba(30,27,46,0.22);overflow:hidden;}' +
+      '#editor-tool-dock .mapboxgl-ctrl-group{display:flex;height:30px;}' +   // group height MUST match the button size or engine.css clips them
+      '#editor-tool-dock .mapboxgl-ctrl-group button{width:30px;height:30px;border:none;border-radius:0;background-color:#fff;}' +
+      // sharp shadow ring: the 3 drawing tools are THE starting point — make that box pop
+      '#editor-tool-dock #editor-draw-main{box-shadow:0 0 2px 2px #2c69de,0 2px 6px rgba(30,27,46,0.4);}' +
+      '#editor-tool-dock .mapboxgl-ctrl-group button:hover{background-color:#eef1f5;}' +
+      '#editor-tool-dock .mapboxgl-ctrl-group button+button,#editor-map-tools .tgrp button+button{border-left:1px solid #ececec;}' +
+      '#editor-map-tools .tgrp{display:flex;}' +
+      // search box: one white pill holding locate + geocoder (overflow VISIBLE so the geocoder dropdown escapes)
+      '#editor-search-box{display:flex;align-items:center;height:30px;background:#fff;border-radius:7px;box-shadow:0 1px 3px rgba(30,27,46,0.22);}' +
+      '#editor-search-box .mapboxgl-ctrl-group{background:none;box-shadow:none;border-radius:0;height:30px;}' +
+      '#editor-search-box .mapboxgl-ctrl-group button{width:30px;height:30px;}' +
+      '#editor-search-box .mapboxgl-ctrl-group button .mapboxgl-ctrl-icon{background-size:18px 18px;}' +   // keep the ICON near its original size (don\'t scale with the button)
+      '#editor-search-box .mapboxgl-ctrl-geocoder{position:static;box-shadow:none;border-radius:0;background:none;border-left:1px solid #ececec;width:220px;max-width:220px;min-width:0;}' +
+      '#editor-search-box .mapboxgl-ctrl-geocoder--input{height:30px;padding:5px 8px 5px 32px;font-size:13px;}' +
+      '#editor-search-box .mapboxgl-ctrl-geocoder--icon-search{top:6px;left:8px;width:18px;height:18px;}' +
       '#header-text-value{cursor:text;}' +
       '#header-text-value:hover{outline:1px dashed #ccc;outline-offset:3px;border-radius:3px;}' +
       '#header-text-value:focus{outline:2px solid #7c5cbf;outline-offset:3px;border-radius:3px;}' +
       '#editor-settings{padding:4px 12px;height:28px;border:1px solid #bbb;border-radius:6px;background:#fff;color:#444;font-size:13px;font-weight:600;cursor:pointer;vertical-align:middle;white-space:nowrap;}' +
       '#editor-settings:hover{background:#f2f2f2;}' +
-      '#editor-map-tools button{width:29px;height:29px;border:1px solid #bbbbbb;border-radius:4px;background:#fff;color:#222222;cursor:pointer;font-size:14px;line-height:1;padding:0;}' +
+      '#editor-map-tools button{width:30px;height:30px;border:none;border-radius:0;background:#fff;color:#222222;cursor:pointer;font-size:13px;line-height:1;padding:0;}' +
       '#editor-map-tools button:disabled{opacity:0.4;cursor:default;}' +
       '#editor-map-tools button:not(:disabled):hover{background:#e8e8e8;}' +
-      '#editor-map-tools button.active{background:#ce5c00;color:#fff;border-color:#ce5c00;}' +
-      '#editor-measure-readout{position:fixed;top:90px;left:calc(50% + 160px);transform:translateX(-50%);z-index:60;display:none;background:rgba(35,55,77,0.96);color:#fff;font-size:14px;font-weight:600;padding:7px 14px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;}' +
+      '#editor-map-tools button.active{background:#ce5c00;color:#fff;}' +
+      '#editor-measure-readout{position:fixed;top:240px;left:374px;z-index:60;display:none;background:rgba(35,55,77,0.96);color:#fff;font-size:14px;font-weight:600;padding:7px 14px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;}' +
       // #1: prominent transient toast for draw rejections (the tiny save-status text was too easy to miss).
-      '#editor-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;display:none;background:rgba(206,92,0,0.97);color:#fff;font-size:15px;font-weight:600;padding:12px 20px;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;pointer-events:none;}';
+      '#editor-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;display:none;background:rgba(206,92,0,0.97);color:#fff;font-size:15px;font-weight:600;padding:12px 20px;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;pointer-events:none;}' +
+      // first-run nudge: a bobbing pill under the draw tools with a tail pointing up at them
+      '#editor-draw-hint{position:fixed;z-index:70;display:flex;align-items:center;gap:8px;background:#2b6ce8;color:#fff;font-family:Source Sans Pro,Arial,sans-serif;font-size:12px;font-weight:600;padding:6px 9px 6px 11px;border-radius:8px;box-shadow:0 5px 14px rgba(43,108,232,0.45);animation:edHintBob 1.3s ease-in-out infinite;}' +
+      '#editor-draw-hint::before{content:"";position:absolute;top:-7px;left:26px;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:7px solid #2b6ce8;}' +
+      '#editor-draw-hint .ed-hint-x{cursor:pointer;opacity:0.85;font-size:16px;line-height:1;padding:0 1px;}' +
+      '#editor-draw-hint .ed-hint-x:hover{opacity:1;}' +
+      '@keyframes edHintBob{0%,100%{transform:translateY(0);}50%{transform:translateY(3px);}}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
     var bar = document.createElement('div'); bar.id = 'editor-add-bar';
     panel.parentNode.insertBefore(status, panel.nextSibling);
     panel.parentNode.insertBefore(bar, status.nextSibling);
-    // editing tools float on the MAP, next to the draw toolbar (icon buttons; hover for labels)
+    // editing tools float on the MAP, next to the draw toolbar — paired sub-boxes (undo/redo,
+    // copy/paste, distance/area, merge/split), single-word tooltips
     var maptools = document.createElement('div'); maptools.id = 'editor-map-tools';
     maptools.innerHTML =
-      '<button id="editor-undo" title="Undo (Ctrl+Z)" disabled>↶</button>' +
-      '<button id="editor-redo" title="Redo (Ctrl+Shift+Z)" disabled>↷</button>' +
-      '<button id="editor-copy" title="Copy feature (Ctrl+C)">⧉</button>' +
-      '<button id="editor-paste" title="Paste (Ctrl+V)" disabled>⎘</button>' +
-      '<button id="editor-measure-dist" title="Measure distance">📏</button>' +
-      '<button id="editor-measure-area" title="Measure area">⬟</button>' +
-      '<button id="editor-merge" title="Merge selected polygons (union) or lines (join)">∪</button>' +
-      '<button id="editor-split" title="Split a polygon or line — select one, then draw a line across it">✂</button>';
-    // body-level dock: pull the draw group, geolocate and geocoder OUT of the swipe-clipped map container
+      '<span class="tgrp"><button id="editor-undo" title="Undo" disabled>↶</button>' +
+      '<button id="editor-redo" title="Redo" disabled>↷</button></span>' +
+      '<span class="tgrp"><button id="editor-measure-dist" title="Distance">📏</button>' +
+      '<button id="editor-measure-area" title="Area">⬟</button></span>' +
+      '<span class="tgrp"><button id="editor-copy" title="Copy">⧉</button>' +
+      '<button id="editor-paste" title="Paste" disabled>⎘</button></span>' +
+      '<span class="tgrp"><button id="editor-merge" title="Merge">∪</button>' +
+      '<button id="editor-split" title="Split">✂</button></span>';
+    // body-level dock: pull the draw group, geolocate and geocoder OUT of the swipe-clipped map container.
+    // Wrappers: draw cluster (point/polygon/line box + its own delete box) | edit tools; locate+search
+    // combine into ONE box on the second row, left-aligned under the edit tools.
     var toolDock = document.createElement('div'); toolDock.id = 'editor-tool-dock';
+    toolDock.style.visibility = 'hidden';   // stay hidden until the map controls have docked — kills the "empty frames" flash on load
     document.body.appendChild(toolDock);
+    var _dockShown = false;
+    function revealDock() { if (_dockShown) return; _dockShown = true; toolDock.style.visibility = 'visible'; try { if (typeof hint !== 'undefined' && hint) { hint.style.visibility = 'visible'; placeHint(); } } catch (e) {} }
+    var drawCluster = document.createElement('div'); drawCluster.id = 'editor-draw-cluster';
+    var trashBox = document.createElement('div'); trashBox.id = 'editor-draw-trash'; trashBox.className = 'mapboxgl-ctrl-group mapboxgl-ctrl';
+    var searchCluster = document.createElement('div'); searchCluster.id = 'editor-search-cluster';
+    var searchBox = document.createElement('div'); searchBox.id = 'editor-search-box';   // white pill inside the green frame; holds locate + geocoder
+    searchCluster.appendChild(searchBox);
+    toolDock.appendChild(drawCluster);
     toolDock.appendChild(maptools);
+    toolDock.appendChild(searchCluster);
     function positionToolDock() {
-      try { var mc = document.getElementById('comparison-container'); toolDock.style.top = (mc ? mc.getBoundingClientRect().top + 10 : 140) + 'px'; }
-      catch (e) { toolDock.style.top = '140px'; }
+      var t = 140;
+      try { var mc = document.getElementById('comparison-container'); if (mc) t = mc.getBoundingClientRect().top + 10; } catch (e) {}
+      toolDock.style.top = t + 'px';
+      var mr = document.getElementById('editor-measure-readout'); if (mr) mr.style.top = (t + 100) + 'px';   // readout sits below the search row, flush with the dock
     }
     positionToolDock();
     window.addEventListener('resize', positionToolDock);
@@ -2061,13 +2130,43 @@
           var isDraw = el.querySelector && el.querySelector('.mapbox-gl-draw_ctrl-draw-btn');
           var isGeo = el.querySelector && el.querySelector('.mapboxgl-ctrl-geolocate');
           var isSearch = el.classList && el.classList.contains('mapboxgl-ctrl-geocoder');
-          if (isDraw || isGeo || isSearch) toolDock.appendChild(el);
+          if (isDraw) {   // reorder Point → Polygon → Line, split Delete into its own slightly-separated box
+            el.id = 'editor-draw-main';   // the 3 drawing tools get the sharp stand-out shadow ring
+            var pt = el.querySelector('.mapbox-gl-draw_point'), pg = el.querySelector('.mapbox-gl-draw_polygon'),
+                ln = el.querySelector('.mapbox-gl-draw_line'), tr = el.querySelector('.mapbox-gl-draw_trash');
+            if (pt) { pt.title = 'Point'; el.appendChild(pt); }
+            if (pg) { pg.title = 'Polygon'; el.appendChild(pg); }
+            if (ln) { ln.title = 'Line'; el.appendChild(ln); }
+            drawCluster.appendChild(el);
+            if (tr) { tr.title = 'Delete'; trashBox.appendChild(tr); drawCluster.appendChild(trashBox); }
+          } else if (isGeo) {
+            var gb = el.querySelector('.mapboxgl-ctrl-geolocate'); if (gb) gb.title = 'Locate';
+            searchBox.insertBefore(el, searchBox.firstChild);   // locate always LEFT of the search input
+          } else if (isSearch) {
+            searchBox.appendChild(el);
+          }
         });
         positionToolDock();
         var done = toolDock.querySelector('.mapbox-gl-draw_ctrl-draw-btn') && toolDock.querySelector('.mapboxgl-ctrl-geolocate') && toolDock.querySelector('.mapboxgl-ctrl-geocoder');
-        if (done || ++_dockTries > 60) clearInterval(_dockIv);
-      } catch (e) { if (++_dockTries > 60) clearInterval(_dockIv); }
+        if (done || ++_dockTries > 60) { revealDock(); clearInterval(_dockIv); }   // reveal only once fully docked (or give up after ~24s and show whatever's there)
+      } catch (e) { if (++_dockTries > 60) { revealDock(); clearInterval(_dockIv); } }
     }, 400);
+    // Nudge users toward the drawing tools. Shows on every open, auto-hides once the map's own features
+    // load (loadFeatures calls _msDismissDrawHint when the map already has features) and on the first
+    // draw / ×; follows the draw cluster's position until the buttons have docked.
+    try {
+      var hint = document.createElement('div'); hint.id = 'editor-draw-hint';
+      hint.innerHTML = '<span>Start here — draw!</span><span class="ed-hint-x" title="Dismiss">&times;</span>';
+      hint.style.visibility = 'hidden';   // revealed together with the dock (revealDock)
+      document.body.appendChild(hint);
+      var placeHint = function () { try { if (!hint) return; var r = drawCluster.getBoundingClientRect(); if (r.width) { hint.style.top = (r.bottom + 11) + 'px'; hint.style.left = r.left + 'px'; } } catch (e) {} };
+      placeHint();
+      var _hintIv = setInterval(placeHint, 500); setTimeout(function () { clearInterval(_hintIv); }, 8000);
+      window.addEventListener('resize', placeHint);
+      var dismissDrawHint = function () { if (!hint) return; hint.remove(); hint = null; clearInterval(_hintIv); };
+      hint.querySelector('.ed-hint-x').addEventListener('click', dismissDrawHint);
+      window._msDismissDrawHint = dismissDrawHint;   // onDrawCreate + loadFeatures(has-features) call this
+    } catch (e) {}
     var measureReadout = document.createElement('div'); measureReadout.id = 'editor-measure-readout'; measureReadout.title = 'Click to dismiss';
     measureReadout.addEventListener('click', function () { this.style.display = 'none'; clearMeasureShape(); });
     document.body.appendChild(measureReadout);
@@ -2612,6 +2711,7 @@
   }
 
   async function onDrawCreate(e) {
+    try { if (window._msDismissDrawHint) window._msDismissDrawHint(); } catch (err) {}   // first feature drawn → retire the "start here" nudge
     _skipArmOnce = true;   // a freshly drawn feature stays selected/editable — arming is for CLICKS on existing features
     var f = e.features && e.features[0]; if (!f) return;
     if (_splitMode) { doSplit(f); return; }   // the line just drawn is a split cut, not a feature
@@ -2717,6 +2817,7 @@
       try { var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gjList[gi].did); var cn = cq.count || 0; if (cn > 0 && cn <= MAX_DRAW) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } } catch (e) {}
     }
     hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
+    if (smallIds.length) { try { if (window._msDismissDrawHint) window._msDismissDrawHint(); } catch (e) {} }   // map already has drawn features — retire the "start here" nudge
     wireEngineEditClicks(); try { if (beforeMap) beforeMap.once('idle', wireEngineEditClicks); } catch (e) {}   // BEFORE the early-return below, so tileset-only / large-layer-only projects still get click→edit
     if (!smallIds.length) { try { draw.set({ type: 'FeatureCollection', features: [] }); } catch (e) {} return; }
     // ON-by-default layers load first (the visible map); OFF-by-default layers' rows are fetched in the

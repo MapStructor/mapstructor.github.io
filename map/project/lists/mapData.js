@@ -2,14 +2,14 @@ const baseMaps = [
   {
     id: "satellite-v9", // Mapbox public style — replace with your own style ID if needed
     name: "Satellite",
-    lChecked: true,
-    rChecked: false,
+    lChecked: false,
+    rChecked: true,
   },
   {
     id: "streets-v12", // Mapbox public style — replace with your own style ID if needed
     name: "Streets",
-    lChecked: false,
-    rChecked: true,
+    lChecked: true,
+    rChecked: false,
   },
 ];
 
