@@ -294,12 +294,6 @@
     <span class="free-tag" id="free-tag" title="Why it's free" style="display:inline-block;margin-left:12px;background:#e6f6ea;color:#2d7a2d;font-weight:700;font-size:13px;padding:4px 12px;border-radius:20px;vertical-align:middle;cursor:pointer;">Free</span>
   </div>
 
-  <!-- Free-tag pop-up content — editable in place by the owner (pageEditor, data-edit); the Free tag opens it in a modal for everyone. -->
-  <div id="free-modal-src" data-edit="home-free" style="display:none;">
-    <p>MapStructor is free to make and explore maps. You only pay if you need a lot of storage for large datasets.</p>
-    <p>Create a map, draw on it, bring in your own data, and share it — no cost to get started.</p>
-  </div>
-
   <hr class="section-divider">
 
   <main>
@@ -319,6 +313,14 @@
       <button class="modal-close" id="modal-close">&times;</button>
       <div class="modal-title" id="modal-title"></div>
       <div class="modal-links" id="modal-links"></div>
+      <!-- Free-tag pop-up content — the LIVE data-edit region lives INSIDE the modal, so the owner edits it
+           right in the pop-up (pageEditor: enter edit mode, click the Free tag, type). It is a dedicated
+           sibling of #modal-links: other modal flows only ever write #modal-title/#modal-links, so nothing
+           can clobber this region; closeModal() restores the display states for the next open. -->
+      <div id="free-modal-src" data-edit="home-free" style="display:none;text-align:left;font-size:14px;line-height:1.55;color:#3a3550;">
+        <p>MapStructor is free to make and explore maps. You only pay if you need a lot of storage for large datasets.</p>
+        <p>Create a map, draw on it, bring in your own data, and share it — no cost to get started.</p>
+      </div>
     </div>
   </div>
 
@@ -378,7 +380,13 @@
       overlay.classList.add('open');
     }
 
-    function closeModal() { overlay.classList.remove('open'); }
+    function closeModal() {
+      overlay.classList.remove('open');
+      // restore the shared modal shell (the Free pop-up hides #modal-links while it shows) — null-guarded
+      // so this can never break other modal flows, whatever gets added later
+      var fsrc = document.getElementById('free-modal-src'); if (fsrc) fsrc.style.display = 'none';
+      if (modalLinks) modalLinks.style.display = '';
+    }
 
     document.getElementById('modal-close').addEventListener('click', closeModal);
     overlay.addEventListener('click', function(e) { if (e.target === overlay) closeModal(); });
@@ -392,13 +400,16 @@
     }
     // About / Map Services are now their own pages (about.html / services.html) — the nav links point there.
 
-    // Free tag → opens the editable "why it's free" pop-up. The content lives in #free-modal-src
-    // (data-edit="home-free"); the owner edits it in place via pageEditor, everyone sees it in this modal.
+    // Free tag → opens the editable "why it's free" pop-up. The LIVE data-edit region shows inside the
+    // modal (not a copy), so in page-edit mode the owner clicks Free and types directly in the pop-up.
     (function () {
       var ft = document.getElementById('free-tag');
       if (ft) ft.addEventListener('click', function () {
         var src = document.getElementById('free-modal-src');
-        openInfoModal('Free', src ? src.innerHTML : '');
+        modalTitle.textContent = 'Free';
+        if (src) { modalLinks.style.display = 'none'; src.style.display = 'block'; }
+        else { modalLinks.innerHTML = ''; }   // region missing (shouldn't happen) — still open a clean modal
+        overlay.classList.add('open');
       });
     })();
   </script>

@@ -273,18 +273,46 @@
     else { var lid = slugToLayerDbId[node.id]; if (lid) { try { await db.from('layers').update({ name: name }).eq('id', lid); } catch (e) {} } }
     node.label = name; rerender();
   }
-  async function onRename(id) {
+  async function commitRename(id, name) {
     var node = findNodeById(layers, id); if (!node) return;
     var oldName = node.label || '';
-    var name = window.prompt('Rename:', oldName);
-    if (name == null) return; name = name.trim(); if (!name || name === oldName) return;
+    name = (name || '').trim(); if (!name || name === oldName) return;
     if (idsReady) { try { await idsReady; } catch (e) {} }
     setStatus('Saving…');
     try {
       await setNodeName(id, name);
       pushUndo(function () { return setNodeName(id, oldName); }, function () { return setNodeName(id, name); }, 'rename');
+      if (activeLayerId === id) {   // keep the open panel's title + name field in sync (both null-guarded)
+        var t9 = document.getElementById('elp-title'); if (t9) t9.textContent = name;
+        var n9 = document.getElementById('elp-name'); if (n9 && n9.value !== name) n9.value = name;
+      }
       setStatus('Saved');
     } catch (e) { console.warn('editing: rename failed', e); setStatus('Rename failed: ' + e.message); }
+  }
+  // Double-click a row's name → rename IN PLACE (no dialog): the label becomes editable right there;
+  // Enter or click-away saves, Esc cancels. (The panel's top Name field edits the same thing.)
+  function startInlineRename(label, id) {
+    var node = findNodeById(layers, id); if (!node || label._msRenaming) return;
+    label._msRenaming = true;
+    var oldName = node.label || '';
+    label.textContent = oldName;   // strip the engine's spacing <div> while editing; rerender rebuilds it after
+    label.setAttribute('contenteditable', 'true'); label.setAttribute('spellcheck', 'false');
+    label.style.outline = '1px dashed #7c5cbf'; label.style.outlineOffset = '2px';
+    try { var sel = window.getSelection(), rng = document.createRange(); rng.selectNodeContents(label); sel.removeAllRanges(); sel.addRange(rng); } catch (e) {}
+    label.focus();
+    var done = false;
+    function finish(save) {
+      if (done) return; done = true;
+      var name = (label.textContent || '').trim();
+      label.removeAttribute('contenteditable'); label.style.outline = ''; label._msRenaming = false;
+      if (save && name && name !== oldName) commitRename(id, name);
+      else { try { rerender(); } catch (e) { label.textContent = oldName; } }   // restore the row's exact structure
+    }
+    label.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+    });
+    label.addEventListener('blur', function () { finish(true); }, { once: true });
   }
   // Set a layer/group's zoom-to target to the CURRENT view, so its (always-rendered) crosshairs ◎ flies here.
   async function onSetZoom(id) {
@@ -358,7 +386,7 @@
         row.appendChild(setz);
       }
       var label = row.querySelector('label') || row.querySelector('.container-name');
-      if (label) label.addEventListener('dblclick', function (e) { e.stopPropagation(); e.preventDefault(); onRename(id); });
+      if (label) label.addEventListener('dblclick', function (e) { e.stopPropagation(); e.preventDefault(); startInlineRename(label, id); });
 
       // drag-reorder
       row.draggable = true;
@@ -1269,7 +1297,25 @@
     document.getElementById('editor-ok').addEventListener('click', function () { commit(type); });
     document.getElementById('editor-cancel').addEventListener('click', closeAddForm);
   }
+  // Unsaved-changes guard: browsers show the native "leave site?" prompt when we flag it. We flag when
+  // (a) a save is in flight or the last save FAILED (data not persisted), or (b) an ANONYMOUS user has
+  // edited this session (their map lives only at this URL — closing risks losing it). All state is kept
+  // in sync from setStatus (the one funnel every save path already goes through), so later features
+  // that save via setStatus get the guard for free.
+  var _msPendingSave = false, _msAnonEdited = false, _msIsAnonUser = false;
+  try {
+    if (window.MapAuth) {
+      var _syncAnon = function () { try { MapAuth.currentUser().then(function (u) { _msIsAnonUser = !!(u && !MapAuth.isReal(u)); }).catch(function () {}); } catch (e) {} };
+      _syncAnon(); try { MapAuth.onChange(_syncAnon); } catch (e) {}
+    }
+  } catch (e) {}
+  window.addEventListener('beforeunload', function (e) {
+    if (_msPendingSave || (_msIsAnonUser && _msAnonEdited)) { e.preventDefault(); e.returnValue = ''; return ''; }
+  });
   function setStatus(msg) {
+    var s = String(msg == null ? '' : msg);
+    if (s.indexOf('Saving') === 0) { _msPendingSave = true; _msAnonEdited = true; }
+    else if (s.toLowerCase().indexOf('failed') === -1) { _msPendingSave = false; }   // "… failed" keeps the flag — that data is NOT persisted
     var el = document.getElementById('editor-save-status');
     if (!el) return;
     el.textContent = msg;
@@ -2081,6 +2127,12 @@
       '#editor-draw-hint::before{content:"";position:absolute;top:-7px;left:26px;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:7px solid #2b6ce8;}' +
       '#editor-draw-hint .ed-hint-x{cursor:pointer;opacity:0.85;font-size:16px;line-height:1;padding:0 1px;}' +
       '#editor-draw-hint .ed-hint-x:hover{opacity:1;}' +
+      // second nudge: green pill under the search box ("find a place first, then draw" — the map opens
+      // world-wide, so search is often the better first step); staggered bob so the two pills alternate
+      '#editor-search-hint{position:fixed;z-index:70;display:flex;align-items:center;gap:8px;background:#2d7a2d;color:#fff;font-family:Source Sans Pro,Arial,sans-serif;font-size:12px;font-weight:600;padding:6px 9px 6px 11px;border-radius:8px;box-shadow:0 5px 14px rgba(45,122,45,0.45);animation:edHintBob 1.3s ease-in-out infinite;animation-delay:.65s;}' +
+      '#editor-search-hint::before{content:"";position:absolute;top:-7px;left:26px;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:7px solid #2d7a2d;}' +
+      '#editor-search-hint .ed-hint-x{cursor:pointer;opacity:0.85;font-size:16px;line-height:1;padding:0 1px;}' +
+      '#editor-search-hint .ed-hint-x:hover{opacity:1;}' +
       '@keyframes edHintBob{0%,100%{transform:translateY(0);}50%{transform:translateY(3px);}}';
     document.head.appendChild(style);
     var status = document.createElement('div'); status.id = 'editor-save-status';
@@ -2106,7 +2158,7 @@
     toolDock.style.visibility = 'hidden';   // stay hidden until the map controls have docked — kills the "empty frames" flash on load
     document.body.appendChild(toolDock);
     var _dockShown = false;
-    function revealDock() { if (_dockShown) return; _dockShown = true; toolDock.style.visibility = 'visible'; try { if (typeof hint !== 'undefined' && hint) { hint.style.visibility = 'visible'; placeHint(); } } catch (e) {} }
+    function revealDock() { if (_dockShown) return; _dockShown = true; toolDock.style.visibility = 'visible'; try { if (typeof hint !== 'undefined' && hint) hint.style.visibility = 'visible'; if (typeof hint2 !== 'undefined' && hint2) hint2.style.visibility = 'visible'; if (typeof placeHint === 'function') placeHint(); } catch (e) {} }
     var drawCluster = document.createElement('div'); drawCluster.id = 'editor-draw-cluster';
     var trashBox = document.createElement('div'); trashBox.id = 'editor-draw-trash'; trashBox.className = 'mapboxgl-ctrl-group mapboxgl-ctrl';
     var searchCluster = document.createElement('div'); searchCluster.id = 'editor-search-cluster';
@@ -2151,21 +2203,33 @@
         if (done || ++_dockTries > 60) { revealDock(); clearInterval(_dockIv); }   // reveal only once fully docked (or give up after ~24s and show whatever's there)
       } catch (e) { if (++_dockTries > 60) { revealDock(); clearInterval(_dockIv); } }
     }, 400);
-    // Nudge users toward the drawing tools. Shows on every open, auto-hides once the map's own features
-    // load (loadFeatures calls _msDismissDrawHint when the map already has features) and on the first
-    // draw / ×; follows the draw cluster's position until the buttons have docked.
+    // Nudges: draw pill (blue, under the draw tools) + search pill (green, under the search box). Both show
+    // on every open, auto-hide once the map's own features load (loadFeatures) or on the first draw / ×;
+    // the search pill also retires the moment the search input is focused (advice taken). Every piece is
+    // independently guarded — if one pill fails to build, nothing else is affected.
     try {
       var hint = document.createElement('div'); hint.id = 'editor-draw-hint';
       hint.innerHTML = '<span>Start here — draw!</span><span class="ed-hint-x" title="Dismiss">&times;</span>';
       hint.style.visibility = 'hidden';   // revealed together with the dock (revealDock)
       document.body.appendChild(hint);
-      var placeHint = function () { try { if (!hint) return; var r = drawCluster.getBoundingClientRect(); if (r.width) { hint.style.top = (r.bottom + 11) + 'px'; hint.style.left = r.left + 'px'; } } catch (e) {} };
+      var hint2 = document.createElement('div'); hint2.id = 'editor-search-hint';
+      hint2.innerHTML = '<span>&hellip;or find a place first</span><span class="ed-hint-x" title="Dismiss">&times;</span>';
+      hint2.style.visibility = 'hidden';
+      document.body.appendChild(hint2);
+      var placeHint = function () {
+        try { if (hint) { var r = drawCluster.getBoundingClientRect(); if (r.width) { hint.style.top = (r.bottom + 11) + 'px'; hint.style.left = r.left + 'px'; } } } catch (e) {}
+        try { if (hint2) { var s = searchCluster.getBoundingClientRect(); if (s.width) { hint2.style.top = (s.bottom + 11) + 'px'; hint2.style.left = s.left + 'px'; } } } catch (e) {}
+      };
       placeHint();
       var _hintIv = setInterval(placeHint, 500); setTimeout(function () { clearInterval(_hintIv); }, 8000);
       window.addEventListener('resize', placeHint);
-      var dismissDrawHint = function () { if (!hint) return; hint.remove(); hint = null; clearInterval(_hintIv); };
+      var dismissDrawHint = function () { if (!hint) return; hint.remove(); hint = null; };
+      var dismissSearchHint = function () { if (!hint2) return; hint2.remove(); hint2 = null; };
       hint.querySelector('.ed-hint-x').addEventListener('click', dismissDrawHint);
-      window._msDismissDrawHint = dismissDrawHint;   // onDrawCreate + loadFeatures(has-features) call this
+      hint2.querySelector('.ed-hint-x').addEventListener('click', dismissSearchHint);
+      document.addEventListener('focusin', function (e) { try { if (e.target && e.target.closest && e.target.closest('#editor-search-box')) dismissSearchHint(); } catch (e2) {} });
+      window._msDismissDrawHint = dismissDrawHint;     // onDrawCreate + loadFeatures(has-features) call these
+      window._msDismissSearchHint = dismissSearchHint;
     } catch (e) {}
     var measureReadout = document.createElement('div'); measureReadout.id = 'editor-measure-readout'; measureReadout.title = 'Click to dismiss';
     measureReadout.addEventListener('click', function () { this.style.display = 'none'; clearMeasureShape(); });
@@ -2268,6 +2332,7 @@
       window._editorWrappedRefresh = true;
     }
     draw = new MapboxDraw({ displayControlsDefault: false, userProperties: true, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
+    window._msDraw = draw;   // engine helpers (Zoom to Layers bounds) read the live drawn features here — guarded there, so its absence never breaks the engine
     beforeMap.addControl(draw, 'top-left');   // left side, clear of the right swipe map (offset past the sidebar in CSS)
     beforeMap.on('draw.render', measureRender);   // live distance while measuring
     beforeMap.on('draw.render', scheduleMirrorSync);   // mirror the MapboxDraw contents onto the right swipe side (both-sides display)
@@ -2711,7 +2776,7 @@
   }
 
   async function onDrawCreate(e) {
-    try { if (window._msDismissDrawHint) window._msDismissDrawHint(); } catch (err) {}   // first feature drawn → retire the "start here" nudge
+    try { if (window._msDismissDrawHint) window._msDismissDrawHint(); if (window._msDismissSearchHint) window._msDismissSearchHint(); } catch (err) {}   // first feature drawn → retire the onboarding nudges
     _skipArmOnce = true;   // a freshly drawn feature stays selected/editable — arming is for CLICKS on existing features
     var f = e.features && e.features[0]; if (!f) return;
     if (_splitMode) { doSplit(f); return; }   // the line just drawn is a split cut, not a feature
@@ -2729,7 +2794,7 @@
     // holds a different geometry type, auto-create a fresh layer of THIS type and draw into it (Step 13) —
     // never reject the drawing. (One geometry type per layer is still enforced; we just make a new layer.)
     var mapType = GEOM_TO_TYPE[f.geometry.type];
-    var geomLayerName = function (gt) { return ({ Point: 'Points', MultiPoint: 'Points', LineString: 'Lines', MultiLineString: 'Lines', Polygon: 'Polygons', MultiPolygon: 'Polygons' })[gt] || 'New layer'; };
+    var geomLayerName = function (gt) { return ({ Point: 'Untitled Points', MultiPoint: 'Untitled Points', LineString: 'Untitled Lines', MultiLineString: 'Untitled Lines', Polygon: 'Untitled Shapes', MultiPolygon: 'Untitled Shapes' })[gt] || 'Untitled layer'; };
     // A feature only goes to the SELECTED layer. We look elsewhere only when no drawn layer is selected, or the
     // selected one is a different geometry type — and then: auto-create a layer for this type ONLY if none exists
     // yet; if one already exists (just not selected), reject and ask the user to select it (never silently route
@@ -2817,7 +2882,7 @@
       try { var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gjList[gi].did); var cn = cq.count || 0; if (cn > 0 && cn <= MAX_DRAW) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } } catch (e) {}
     }
     hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
-    if (smallIds.length) { try { if (window._msDismissDrawHint) window._msDismissDrawHint(); } catch (e) {} }   // map already has drawn features — retire the "start here" nudge
+    if (smallIds.length) { try { if (window._msDismissDrawHint) window._msDismissDrawHint(); if (window._msDismissSearchHint) window._msDismissSearchHint(); } catch (e) {} }   // map already has drawn features — retire the onboarding nudges
     wireEngineEditClicks(); try { if (beforeMap) beforeMap.once('idle', wireEngineEditClicks); } catch (e) {}   // BEFORE the early-return below, so tileset-only / large-layer-only projects still get click→edit
     if (!smallIds.length) { try { draw.set({ type: 'FeatureCollection', features: [] }); } catch (e) {} return; }
     // ON-by-default layers load first (the visible map); OFF-by-default layers' rows are fetched in the
@@ -3659,6 +3724,8 @@
     var SECTOP = 'margin-top:14px;';
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b id="elp-title" style="font-size:14px;">Layer style</b><span id="elp-close" style="cursor:pointer;color:#888888;font-size:17px;line-height:1;">&times;</span></div>' +
+      // name field at the very top — the same rename as double-clicking the row (works for layers, groups and sections)
+      '<input id="elp-name" type="text" placeholder="Name" title="Rename this item" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:6px 8px;border:1px solid #bbbbbb;border-radius:4px;font-size:15px;font-weight:600;" />' +
       // ── layer info: edit the ℹ popup's content here; the sidebar ℹ button only exists when there IS content
       //    (the attribute table moved to a ▦ icon on the layer row) ──
       '<button id="elp-info" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;font-weight:600;">&#9432; Layer info&hellip; <span style="font-weight:400;color:#888;">(adds the &#9432; button when filled)</span></button>' +
@@ -3770,6 +3837,7 @@
       '</div>';
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
+    document.getElementById('elp-name').addEventListener('change', function () { if (activeLayerId) commitRename(activeLayerId, this.value); });
     document.getElementById('elp-delete').addEventListener('click', function () { if (activeLayerId) onDelete(activeLayerId); });
     document.getElementById('elp-default-vis').addEventListener('change', function () { onDefaultVisible(this.checked); });
     document.getElementById('elp-default-exp').addEventListener('change', function () { onDefaultExpanded(this.checked); });
@@ -3905,6 +3973,7 @@
     var fillStroke = (isGeojson || isTilesetNode(node)) && node.type === 'fill';  // drawn AND tileset fills get the real line outline + its width/show toggles
     injectLayerPanel();
     var p = document.getElementById('editor-layer-panel'); if (!p) return;
+    var elpName = document.getElementById('elp-name'); if (elpName) elpName.value = node.label || '';   // top name field — all node types
     if (node.type === 'section') {   // #4: sections get a minimal panel — title + defaults + Delete (no style/zoom)
       document.getElementById('elp-title').textContent = node.label || 'Section';
       document.getElementById('elp-style-section').style.display = 'none';

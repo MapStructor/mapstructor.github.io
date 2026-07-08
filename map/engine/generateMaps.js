@@ -40,13 +40,57 @@ function generateZoomButtonHTML(btn, idx) {
     '</button></center></div>';
 }
 
-// A zoom button opens a URL in a new tab, flies to a captured view, or (legacy) zooms to a bounds key.
+// Combined bounds of the map's VISIBLE (checked) layers: geojson layers from their own feature data,
+// vector tilesets from their tilejson bounds; in the editor, small drawn layers live in MapboxDraw
+// (window._msDraw — optional, editor-only). Every source is individually guarded, so a missing piece
+// just contributes nothing. Returns [minX, minY, maxX, maxY] or null (caller falls back to the default view).
+function mapstructorLayersBounds() {
+  var bb = null;
+  function extend(b) {
+    if (!b || b.length !== 4 || !isFinite(b[0]) || !isFinite(b[1]) || !isFinite(b[2]) || !isFinite(b[3])) return;
+    if (!bb) bb = b.slice();
+    else { bb[0] = Math.min(bb[0], b[0]); bb[1] = Math.min(bb[1], b[1]); bb[2] = Math.max(bb[2], b[2]); bb[3] = Math.max(bb[3], b[3]); }
+  }
+  try {
+    (function walk(arr) {
+      (arr || []).forEach(function (n) {
+        try {
+          if (n.children) { walk(n.children); return; }
+          var cb = document.getElementById(n.toggleElement || n.id);
+          if (cb ? !cb.checked : n.checked === false) return;   // only layers currently toggled ON
+          if (n.source && n.source.type === 'geojson' && n.source.data && n.source.data.features && n.source.data.features.length) {
+            if (typeof turf !== 'undefined') extend(turf.bbox(n.source.data));
+          } else if (typeof beforeMap !== 'undefined' && beforeMap && beforeMap.getSource) {
+            var s = beforeMap.getSource(n.id + '-left'); if (s && s.bounds) extend(s.bounds);   // tilesets: tilejson bounds
+          }
+        } catch (e) {}
+      });
+    })(typeof layers !== 'undefined' ? layers : []);
+  } catch (e) {}
+  try { if (window._msDraw && window._msDraw.getAll && typeof turf !== 'undefined') { var fc = window._msDraw.getAll(); if (fc.features.length) extend(turf.bbox(fc)); } } catch (e) {}
+  return bb;
+}
+
+// A zoom button opens a URL in a new tab, flies to a captured view, zooms to the visible layers'
+// combined extent (target "Layers" — falls back to the default view when there's nothing to measure),
+// or (legacy) zooms to a bounds key.
 function mapstructorZoomButton(idx) {
   var b = (typeof zoomButtons !== 'undefined') ? zoomButtons[idx] : null; if (!b) return;
   if (b.url) { window.open(b.url, '_blank'); return; }
   if (b.zoomCenter && typeof beforeMap !== 'undefined' && beforeMap) {
     beforeMap.flyTo({ center: b.zoomCenter, zoom: b.zoomLevel != null ? b.zoomLevel : beforeMap.getZoom(), bearing: 0 });
     if (typeof afterMap !== 'undefined' && afterMap) afterMap.flyTo({ center: b.zoomCenter, zoom: b.zoomLevel != null ? b.zoomLevel : afterMap.getZoom(), bearing: 0 });
+    return;
+  }
+  if (b.target === 'Layers') {
+    var bb = mapstructorLayersBounds();
+    [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
+      if (!m) return;
+      try {
+        if (bb) m.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 60, maxZoom: 16, bearing: 0 });
+        else if (typeof mapConfig !== 'undefined') m.flyTo({ center: mapConfig.center, zoom: mapConfig.zoom, bearing: 0 });   // nothing drawn/visible yet → the default area
+      } catch (e) {}
+    });
     return;
   }
   if (b.target && typeof zoomtobounds === 'function') zoomtobounds(b.target);

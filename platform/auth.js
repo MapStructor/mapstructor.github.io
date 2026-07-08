@@ -10,9 +10,12 @@
     ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
     : null;
 
+  // LOCAL-first: getSession() reads the persisted session (instant, no network) — getUser() made a
+  // server round-trip on EVERY call, so every widget (top-bar chip, save callout, create button)
+  // visibly waited on the network before painting. Writes still validate server-side via RLS.
   async function currentUser() {
     if (!db) return null;
-    try { var r = await db.auth.getUser(); return (r && r.data && r.data.user) || null; }
+    try { var s = await db.auth.getSession(); return (s && s.data && s.data.session && s.data.session.user) || null; }
     catch (e) { return null; }
   }
   // A "real" (claimed) account = signed in, not anonymous, has an email.

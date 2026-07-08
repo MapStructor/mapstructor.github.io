@@ -8,7 +8,7 @@
   window.__msTopbarBuilt = true;
 
   var css =
-    '#ms-topbar{height:40px;box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:0 12px;background:#f7f7f7;border-bottom:1px solid #ddd;font:600 13px/1 "Source Sans Pro",Arial,sans-serif;color:#444;position:relative;z-index:1200;}' +
+    '#ms-topbar{height:40px;box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:0 12px;background:#f7f7f7;border-bottom:1px solid #ddd;font:600 13px/1 "Source Sans Pro",Arial,sans-serif;color:#444;position:sticky;top:0;z-index:1200;}' +   // sticky: stays on top when content pages scroll (map pages don't scroll — unaffected)
     '#ms-topbar-left,#ms-topbar-right{display:flex;align-items:center;gap:8px;white-space:nowrap;min-width:0;}' +
     '#ms-topbar a{text-decoration:none;color:#444;}' +
     // Hide the page's own <nav> from FIRST paint (this script is in <head>, before <body>). absorbNav then
@@ -16,6 +16,9 @@
     'body > nav{display:none !important;}' +
     // every item in the bar renders at ONE standard size, regardless of where it came from
     '#ms-topbar-left > *, #ms-topbar-right > *{font-size:13px !important;line-height:1 !important;padding:6px 13px !important;border-radius:6px !important;box-sizing:border-box !important;height:28px !important;display:inline-flex !important;align-items:center !important;font-family:"Source Sans Pro",Arial,sans-serif !important;font-weight:600 !important;}' +
+    // ...but never as an EMPTY pill: the !important display above beats a chip\'s inline display:none,
+    // so a not-yet-filled account chip painted as a blank bordered box. Empty = hidden until it has text.
+    '#ms-topbar-right > *:empty{display:none !important;}' +
     '#ms-topbar .ms-tb-home{gap:7px;font-size:14px !important;font-weight:700 !important;letter-spacing:.3px;color:#b0691d;padding:6px 4px !important;border:none !important;}' +
     '#ms-topbar .ms-tb-logo{height:24px;width:auto;display:block;flex-shrink:0;}' +
     '#ms-topbar .ms-tb-home:hover{color:#8a5216;}';

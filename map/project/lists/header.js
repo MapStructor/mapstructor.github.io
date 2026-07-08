@@ -25,9 +25,9 @@ const siteHeaderText = "Map";
 const zoomButtons = [
 
   {
-    label:  "Zoom to World",
-    icon:   "fa-globe",
-    target: "World",
+    label:  "Zoom to Layers",   // fits the visible layers' combined extent; falls back to the default view when the map is empty
+    icon:   "fa-layer-group",
+    target: "Layers",
   },
 
 ];

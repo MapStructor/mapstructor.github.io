@@ -123,7 +123,16 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     if (raw.baseMaps) replaceArray(baseMaps, raw.baseMaps);
     if (raw.mapSections) replaceArray(mapSections, raw.mapSections);
     if (raw.boundsList) replaceObject(boundsList, raw.boundsList);
-    if (raw.zoomButtons) replaceArray(zoomButtons, raw.zoomButtons);
+    if (raw.zoomButtons) replaceArray(zoomButtons, raw.zoomButtons.map(function (b) {
+      // maps saved before 7/8 stored the OLD default button ("Zoom to World") — upgrade exactly that one
+      // to the current default ("Zoom to Layers"); renamed/captured/link buttons are the user's, untouched.
+      if (b && b.target === "World" && b.label === "Zoom to World" && !b.url && !b.zoomCenter) {
+        var nb = { label: "Zoom to Layers", icon: "fa-layer-group", target: "Layers" };
+        if (b.section) nb.section = b.section;
+        return nb;
+      }
+      return b;
+    }));
     if (raw.mapboxUsername) siteConfig.mapboxUsername = raw.mapboxUsername;
     // Layer/group ℹ popups + the About modal, saved by the editor's in-place popup editing. The engine only
     // opens a modal when modal_header_text[id] is set — the editor loads these in loadProjectChrome(), but the
