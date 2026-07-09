@@ -2537,6 +2537,7 @@
     injectFeaturePanel();
     loadFeatures();
     wireDrawPopups();
+    wireRightSideDrawGuard();
   }
   // ── #14: hover/click popups for MapboxDraw-rendered (edit-mode) features ─────
   // The engine's popup handlers listen on the slug-left/right layers, which are HIDDEN in the editor for
@@ -2544,6 +2545,41 @@
   // never showed while editing. These handlers read the LIVE toggles (#12), and clicking still selects the
   // feature for editing (editor = viewer + tools; neither suppresses the other).
   var _drawHoverPop = null, _drawClickPop = null, _drawClickPopId = null, _hoverHlId = null, _refreshOpenPill = null;
+  // ── draw-side guard: drawing only works on the LEFT map; while a draw tool is armed, hovering the RIGHT
+  //    map shows a not-allowed cursor + a pill "Draw on the left side ←" that follows the cursor. ──
+  var _rightHintEl = null;
+  function isDrawArmed() {   // read the live mode (programmatic changeMode doesn't reliably fire draw.modechange in v1.4.3)
+    try { return /^draw_/.test(draw && draw.getMode ? draw.getMode() : ''); } catch (e) { return false; }
+  }
+  function ensureRightHint() {
+    if (_rightHintEl) return _rightHintEl;
+    var el = document.createElement('div');
+    el.id = 'editor-right-draw-hint';
+    el.innerHTML = '&#9940; Draw on the left side &larr;';   // ⛔ + arrow pointing back to the drawable side
+    el.style.cssText = 'position:fixed;z-index:2500;display:none;pointer-events:none;background:rgba(30,27,46,0.92);color:#fff;font:600 12px "Source Sans Pro",Arial,sans-serif;padding:5px 10px;border-radius:7px;box-shadow:0 2px 9px rgba(0,0,0,0.32);white-space:nowrap;transform:translate(16px,16px);';
+    document.body.appendChild(el);
+    _rightHintEl = el; return el;
+  }
+  function hideRightDrawHint() {
+    if (_rightHintEl) _rightHintEl.style.display = 'none';
+    try { if (typeof afterMap !== 'undefined' && afterMap) afterMap.getCanvas().style.cursor = ''; } catch (e) {}
+  }
+  function wireRightSideDrawGuard() {
+    if (typeof beforeMap === 'undefined' || !beforeMap) return;
+    beforeMap.on('draw.modechange', function () { if (!isDrawArmed()) hideRightDrawHint(); });   // returning to simple_select clears a stuck pill/cursor
+    if (typeof afterMap !== 'undefined' && afterMap) {
+      afterMap.on('mousemove', function (e) {
+        if (!isDrawArmed()) { hideRightDrawHint(); return; }
+        try { afterMap.getCanvas().style.cursor = 'not-allowed'; } catch (x) {}
+        var el = ensureRightHint(), oe = e.originalEvent;
+        el.style.left = ((oe ? oe.clientX : 0)) + 'px';
+        el.style.top = ((oe ? oe.clientY : 0)) + 'px';
+        el.style.display = 'block';
+      });
+      afterMap.on('mouseout', hideRightDrawHint);
+    }
+    beforeMap.on('mousemove', function () { if (!isDrawArmed() && _rightHintEl && _rightHintEl.style.display !== 'none') hideRightDrawHint(); });   // disarmed + moved onto the left map → clear any lingering pill
+  }
   function drawNodeFor(did) { var lid = featureLayer[did]; return lid ? nodeByLayerDbId(lid) : null; }
   // Hover-highlight for MapboxDraw features: a dedicated overlay source/layers on BOTH maps, fed the hovered
   // feature's geometry (proven be-merge-hl approach — works for features drawn this session too, which the
@@ -2622,7 +2658,8 @@
         var did = drawFeatureAt(e.point);
         var node = did ? drawNodeFor(did) : null;
         // the RIGHT map has no MapboxDraw (which handles the left cursor) — set the pointer here
-        if (m !== beforeMap) { try { m.getCanvas().style.cursor = did ? 'pointer' : ''; } catch (x) {} }
+        // (but never while a draw tool is armed: the draw-side guard owns the right cursor then = not-allowed)
+        if (m !== beforeMap && !isDrawArmed()) { try { m.getCanvas().style.cursor = did ? 'pointer' : ''; } catch (x) {} }
         // hover-HIGHLIGHT (independent of the popup toggle; default on, gated by the layer's elp-hl setting)
         setHoverHl((did && node && node.hoverHighlight !== false) ? did : null, node);
         var on = node && (node._uiHover != null ? node._uiHover : !!node.popupStyle);
@@ -3985,28 +4022,61 @@
     document.getElementById('elp-default-exp-label').style.display = isContainer ? 'block' : 'none';
     if (isContainer) document.getElementById('elp-default-exp').checked = !node.collapsed;
   }
+  // ── Editor UI design system (7/8): ONE place to restyle the panels. Every recurring "type" of control
+  //    (section heading, field label, checkbox, input/select, slider, button, note, divider…) is a class
+  //    here instead of a repeated inline style — change a rule once and every instance updates together
+  //    (which is exactly what dev-tools inline styles could NOT do). Values below MIRROR the old inline
+  //    styles 1:1, so this is a pure refactor — appearance is byte-identical. To restyle: edit a rule here.
+  //    Namespaced .ms-* so these apply to any editor panel that opts in (layer panel done first). ──
+  function ensureEditorUiCss() {
+    if (document.getElementById('ms-editor-ui-css')) return;
+    var s = document.createElement('style');
+    s.id = 'ms-editor-ui-css';
+    s.textContent =
+      '.ms-sec{font-size:25px;font-weight:800;letter-spacing:.07em;color:#7c5cbf;margin:0 0 8px;text-transform:uppercase;border-bottom:2px solid #ede9f7;padding-bottom:4px;text-align:center;}' +   // section heading
+      '.ms-sectop{margin-top:16px;padding:10px 12px 12px;border:3px solid #e5e0f3;border-radius:10px;background:#fbfaff;box-shadow:0px 0px 3px 4px rgba(124,92,191,0.09);}' +   // each section = a delineated card (border + soft shadow + faint tint)
+      '.ms-grp{margin-top:10px;padding-top:16px;padding-bottom:7px;border-top:2px solid #090909bf;}' +          // paired-control group divider
+      '.ms-lbl{display:block;font-size:11px;color:#555555;margin-bottom:2px;}' +           // small field label above a control
+      '.ms-check{display:block;cursor:pointer;font-size:12px;color:#555555;}' +            // checkbox + text row
+      '.ms-in{width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +  // text input / number / select
+      '.ms-range{width:100%;box-sizing:border-box;}' +                                     // slider
+      '.ms-color{width:100%;box-sizing:border-box;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;}' +   // color swatch (height set inline — it varies)
+      '.ms-btn{width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;}' +   // secondary/action button
+      '.ms-btn:hover{background:#e8e8e8;}' +
+      '.ms-btn-danger{width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;}' +   // destructive button
+      '.ms-note{font-size:10px;color:#888888;margin-top:3px;}' +                           // gray hint text
+      '.ms-note-accent{font-size:10px;color:#7a5cc2;margin-top:2px;}' +                     // purple hint text
+      '#elp-close:hover{background:#e9e5f5;border-color:#c9c2e2;color:#3d3857;}';           // sticky-header Close button hover';
+    document.head.appendChild(s);
+  }
   function injectLayerPanel() {
     if (document.getElementById('editor-layer-panel')) return;
+    ensureEditorUiCss();
     var p = document.createElement('div');
     p.id = 'editor-layer-panel';
-    p.style.cssText = 'position:fixed;top:120px;left:362px;width:236px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:8px;box-shadow:0 3px 14px rgba(0,0,0,0.2);padding:12px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // scroll + stay above the timeline (#footer is 67px)
-    var SEC = function (t) { return '<div style="font-size:11px;font-weight:800;letter-spacing:.07em;color:#7c5cbf;margin:0 0 8px;text-transform:uppercase;border-bottom:2px solid #ede9f7;padding-bottom:4px;">' + t + '</div>'; };
-    var SECTOP = 'margin-top:14px;';
-    var GRP = 'margin-top:10px;padding-top:8px;border-top:1px dashed #e8e4f2;';   // paired-control group divider (7/8 layout pass)
+    p.style.cssText = 'position:fixed;top:120px;left:362px;width:236px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background: #f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:0 3px 14px rgba(0,0,0,0.2);padding:0;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // padding moved to the sticky header + scrolling body; scroll + stay above the timeline (#footer is 67px)
+    var SEC = function (t) { return '<div class="ms-sec">' + t + '</div>'; };   // section heading (was inline; now .ms-sec)
+    var SECTOP = 'ms-sectop';   // section-top spacing — now a CLASS name, used as class="…"
+    var GRP = 'ms-grp';         // paired-control group divider — now a CLASS name
     p.innerHTML =
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b id="elp-title" style="font-size:14px;">Layer style</b><span id="elp-close" style="cursor:pointer;color:#888888;font-size:17px;line-height:1;">&times;</span></div>' +
+      // sticky header: the layer name + a clear Close button stay pinned at the top while the body scrolls.
+      '<div id="elp-header" style="position:sticky;top:0;z-index:5;padding:10px 12px;background:#ffffff;border-bottom:1px solid #e2e0ea;border-radius:8px 8px 0 0;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><b id="elp-title" style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Layer style</b>' +
+        '<button id="elp-close" title="Close this panel" style="flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;padding:3px 9px 3px 7px;border:1px solid #d7d3e4;border-radius:6px;background:#f4f2fa;color:#544f6e;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;line-height:1;"><span style="font-size:15px;line-height:1;">&times;</span> Close</button></div>' +
+      '</div>' +
+      '<div id="elp-body" style="padding:12px;">' +
       // name field at the very top — the same rename as double-clicking the row (works for layers, groups and sections)
       '<input id="elp-name" type="text" placeholder="Name" title="Rename this item" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:6px 8px;border:1px solid #bbbbbb;border-radius:4px;font-size:15px;font-weight:600;" />' +
       // ── on-by-default + delete live AT THE TOP (below the title), no section heading — 7/8 layout pass ──
       '<div id="elp-defaults-row">' +
-        '<label id="elp-default-vis-label" style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-default-vis" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />On by default</label>' +
-        '<label id="elp-default-exp-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;"><input id="elp-default-exp" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Expanded by default</label>' +
+        '<label id="elp-default-vis-label" class="ms-check" style="margin-bottom:3px;"><input id="elp-default-vis" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />On by default</label>' +
+        '<label id="elp-default-exp-label" class="ms-check" style="display:none;"><input id="elp-default-exp" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Expanded by default</label>' +
       '</div>' +
       '<div id="elp-delete-wrap" style="margin:6px 0 2px;">' +
-        '<button id="elp-delete" style="width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete</button>' +
+        '<button id="elp-delete" class="ms-btn-danger">Delete</button>' +
         '<div id="elp-delete-confirm" style="display:none;padding:8px;border:1px solid #e0b4b4;border-radius:4px;background:#fdf3f3;">' +
           '<div style="font-size:12px;color:#7a2e27;font-weight:600;">Are you sure you want to delete this?</div>' +
-          '<div id="elp-delete-note" style="font-size:10px;color:#a05b54;margin-top:2px;"></div>' +
+          '<div id="elp-delete-note" class="ms-note" style="margin-top:2px;color:#a05b54;"></div>' +
           '<div style="display:flex;gap:6px;margin-top:7px;">' +
             '<button id="elp-del-yes" style="flex:1;padding:5px;border:none;border-radius:4px;background:#b4453a;color:#fff;font-weight:700;cursor:pointer;font-size:12px;">Yes</button>' +
             '<button id="elp-del-no" style="flex:1;padding:5px;border:1px solid #bbbbbb;border-radius:4px;background:#fff;color:#333;font-weight:600;cursor:pointer;font-size:12px;">No</button>' +
@@ -4014,118 +4084,122 @@
         '</div>' +
       '</div>' +
       // ══ ORDER (7/8 layout pass 2): Labels → Popups → Style(Color/Fill/Outline) → Zoom → Source → Layer info ══
+      // Inline styles replaced by .ms-* classes (see ensureEditorUiCss) — one rule restyles every instance.
       // ── LABELS (drawn/imported layers only) — the label toggle + all its styling live together ──
-      '<div id="elp-labels-sec" style="' + SECTOP + '">' +
+      '<div id="elp-labels-sec" class="' + SECTOP + '">' +
       SEC('Labels') +
-      '<label id="elp-maplabels-row" style="cursor:pointer;font-size:12px;color:#555555;display:none;"><input id="elp-maplabels-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Map labels</label>' +
+      '<label id="elp-maplabels-row" class="ms-check" style="display:none;"><input id="elp-maplabels-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Map labels</label>' +
       '<div id="elp-maplabels-field-row" style="display:none;margin-top:4px;">' +
-        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Labels show this column</label>' +
-        '<select id="elp-maplabels-field" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"></select>' +
+        '<label class="ms-lbl">Labels show this column</label>' +
+        '<select id="elp-maplabels-field" class="ms-in"></select>' +
         '<div style="display:flex;gap:8px;margin-top:6px;">' +
-          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Text color</label>' +
-          '<input id="elp-lbl-color" type="color" value="#000000" style="width:100%;height:24px;padding:0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
-          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Halo color</label>' +
-          '<input id="elp-lbl-halo" type="color" value="#ffffff" style="width:100%;height:24px;padding:0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
+          '<div style="flex:1;"><label class="ms-lbl">Text color</label>' +
+          '<input id="elp-lbl-color" type="color" value="#000000" class="ms-color" style="height:24px;padding:0;" /></div>' +
+          '<div style="flex:1;"><label class="ms-lbl">Halo color</label>' +
+          '<input id="elp-lbl-halo" type="color" value="#ffffff" class="ms-color" style="height:24px;padding:0;" /></div>' +
         '</div>' +
-        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin:6px 0 0;"><input id="elp-lbl-bold" type="checkbox" checked style="vertical-align:middle;margin:0 5px 0 0;" />Bold</label>' +
+        '<label class="ms-check" style="margin:6px 0 0;"><input id="elp-lbl-bold" type="checkbox" checked style="vertical-align:middle;margin:0 5px 0 0;" />Bold</label>' +
         '<div style="display:flex;gap:8px;align-items:flex-end;margin-top:6px;">' +
-          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label size (px)</label>' +
-          '<input id="elp-lbl-size" type="number" min="6" max="48" value="10" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
-          '<label style="cursor:pointer;font-size:11px;color:#555555;flex:1;padding-bottom:5px;"><input id="elp-lbl-varyzoom" type="checkbox" style="vertical-align:middle;margin:0 4px 0 0;" />Vary size by zoom</label>' +
+          '<div style="flex:1;"><label class="ms-lbl">Label size (px)</label>' +
+          '<input id="elp-lbl-size" type="number" min="6" max="48" value="10" class="ms-in" style="padding:4px;" /></div>' +
+          '<label class="ms-check" style="font-size:11px;flex:1;padding-bottom:5px;"><input id="elp-lbl-varyzoom" type="checkbox" style="vertical-align:middle;margin:0 4px 0 0;" />Vary size by zoom</label>' +
         '</div>' +
         '<div id="elp-lbl-zoomsizes" style="display:none;margin-top:4px;">' +
         '<div style="display:flex;gap:6px;">' +
-          '<div style="flex:1;"><input id="elp-lbl-s6" type="number" min="6" max="40" value="10" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">far (z6)</div></div>' +
-          '<div style="flex:1;"><input id="elp-lbl-s11" type="number" min="6" max="40" value="13" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">mid (z11)</div></div>' +
-          '<div style="flex:1;"><input id="elp-lbl-s16" type="number" min="6" max="40" value="17" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">close (z16)</div></div>' +
+          '<div style="flex:1;"><input id="elp-lbl-s6" type="number" min="6" max="40" value="10" class="ms-in" style="padding:4px;" /><div style="font-size:9px;color:#888888;text-align:center;">far (z6)</div></div>' +
+          '<div style="flex:1;"><input id="elp-lbl-s11" type="number" min="6" max="40" value="13" class="ms-in" style="padding:4px;" /><div style="font-size:9px;color:#888888;text-align:center;">mid (z11)</div></div>' +
+          '<div style="flex:1;"><input id="elp-lbl-s16" type="number" min="6" max="40" value="17" class="ms-in" style="padding:4px;" /><div style="font-size:9px;color:#888888;text-align:center;">close (z16)</div></div>' +
         '</div></div>' +
-        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Halo width <span id="elp-lbl-halow-val">2</span></label>' +
-        '<input id="elp-lbl-halow" type="range" min="0" max="4" step="0.5" value="2" style="width:100%;box-sizing:border-box;" />' +
-        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Label density</label>' +
-        '<input id="elp-lbl-density" type="range" min="0" max="60" step="2" value="50" style="width:100%;box-sizing:border-box;" />' +
+        '<label class="ms-lbl" style="margin-top:6px;">Halo width <span id="elp-lbl-halow-val">2</span></label>' +
+        '<input id="elp-lbl-halow" type="range" min="0" max="4" step="0.5" value="2" class="ms-range" />' +
+        '<label class="ms-lbl" style="margin-top:6px;">Label density</label>' +
+        '<input id="elp-lbl-density" type="range" min="0" max="60" step="2" value="50" class="ms-range" />' +
         '<div style="display:flex;justify-content:space-between;font-size:9px;color:#888888;"><span>fewer</span><span>more</span></div>' +
-        '<div style="font-size:10px;color:#888888;margin-top:3px;">Polygons label at their visual center; lines along the path. Density = breathing room per label — fewer means only labels with room draw.</div>' +
+        '<div class="ms-note">Polygons label at their visual center; lines along the path. Density = breathing room per label — fewer means only labels with room draw.</div>' +
       '</div>' +
       '</div>' +
       // ── POPUPS & INFO ──
-      '<div id="elp-interact-row" style="' + SECTOP + '">' +
+      '<div id="elp-interact-row" class="' + SECTOP + '">' +
         SEC('Popups &amp; info') +
-        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
-        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
-        '<label id="elp-hl-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;margin-bottom:6px;"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
-        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label field (what the popup shows)</label>' +
-        '<select id="elp-labelfield" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="label">label (the feature\'s own Label)</option></select>' +
-      '</div>' +   // close elp-interact-row; panel-row + enc-row follow as siblings (shown/hidden independently)
-      '<div id="elp-panel-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Info panel (on feature click)</label>' +
-      '<select id="elp-panel-mode" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="notes">Title + notes</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
-      '<div id="elp-enc-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia base URL</label>' +
-      '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-      '<div id="elp-nidprop-row" style="display:none;margin-top:6px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Page-ID property</label>' +
-      '<input id="elp-nidprop" type="text" placeholder="e.g. nid" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">For tilesets: which feature property holds the page id (drawn layers always use &ldquo;content_id&rdquo;).</div></div>' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>' +
+        '<label class="ms-check" style="margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
+        '<label class="ms-check" style="margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
+        '<label id="elp-hl-label" class="ms-check" style="display:none;margin-bottom:6px;"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
+        '<label class="ms-lbl">Label field (what the popup shows)</label>' +
+        '<select id="elp-labelfield" class="ms-in"><option value="label">label (the feature\'s own Label)</option></select>' +
+      // panel-row + enc-row live INSIDE the Popups & info card (they're the info-panel + encyclopedia settings)
+      '<div id="elp-panel-row" style="margin-top:8px;"><label class="ms-lbl">Info panel (on feature click)</label>' +
+      '<select id="elp-panel-mode" class="ms-in"><option value="notes">Title + notes</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
+      '<div id="elp-enc-row" style="margin-top:8px;"><label class="ms-lbl">Encyclopedia base URL</label>' +
+      '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" class="ms-in" />' +
+      '<div id="elp-nidprop-row" style="display:none;margin-top:6px;"><label class="ms-lbl">Page-ID property</label>' +
+      '<input id="elp-nidprop" type="text" placeholder="e.g. nid" class="ms-in" />' +
+      '<div class="ms-note">For tilesets: which feature property holds the page id (drawn layers always use &ldquo;content_id&rdquo;).</div></div>' +
+      '<div class="ms-note">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>' +
+      '</div>' +   // close elp-interact-row (the Popups & info card now wraps popups + info-panel + encyclopedia)
       // ── STYLE: Color, then Fill, then Outline (paired groups) ──
-      '<div id="elp-style-section" style="' + SECTOP + '">' +
+      '<div id="elp-style-section" class="' + SECTOP + '">' +
       SEC('Style') +
-      '<div id="elp-color-row"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color</label>' +
-      '<input id="elp-color" type="color" style="width:100%;height:30px;box-sizing:border-box;margin-bottom:8px;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
+      '<div id="elp-color-row"><label class="ms-lbl">Color</label>' +
+      '<input id="elp-color" type="color" class="ms-color" style="height:30px;margin-bottom:8px;" /></div>' +
       // colour-by active → the single swatch is replaced by this strip (a solid swatch would lie)
       '<div id="elp-multicolor-strip" style="display:none;height:30px;box-sizing:border-box;margin-bottom:8px;border:1px solid #bbbbbb;border-radius:4px;background:linear-gradient(90deg,#e6194b,#f58231,#ffe119,#3cb44b,#4363d8,#911eb4);align-items:center;justify-content:center;">' +
         '<span style="font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.6);">Multiple colors — by column</span>' +
       '</div>' +
       '<div id="elp-colorby-row" style="margin:0 0 8px;display:none;">' +
-        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color by data column</label>' +
-        '<select id="elp-colorby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single color</option></select>' +
-        '<div id="elp-colorby-info" style="font-size:10px;color:#888888;margin-top:3px;"></div>' +
+        '<label class="ms-lbl">Color by data column</label>' +
+        '<select id="elp-colorby" class="ms-in"><option value="">Single color</option></select>' +
+        '<div id="elp-colorby-info" class="ms-note"></div>' +
       '</div>' +
       // ── FILL group: everything about the face of the feature, paired (7/8 layout pass) ──
-      '<div style="' + GRP + '">' +
-      '<label id="elp-fill-vis-row" style="display:none;cursor:pointer;font-size:12px;color:#555555;margin-bottom:4px;"><input id="elp-fill-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show fill</label>' +
-      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Opacity <span id="elp-opacity-val"></span></label>' +
-      '<input id="elp-opacity" type="range" min="0" max="1" step="0.05" style="width:100%;box-sizing:border-box;" />' +
+      '<div class="' + GRP + '">' +
+      '<label id="elp-fill-vis-row" class="ms-check" style="display:none;margin-bottom:4px;"><input id="elp-fill-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show fill</label>' +
+      '<label class="ms-lbl">Opacity <span id="elp-opacity-val"></span></label>' +
+      '<input id="elp-opacity" type="range" min="0" max="1" step="0.05" class="ms-range" />' +
       '<div id="elp-opacityby-row" style="margin-top:4px;display:none;">' +
-        '<label style="display:block;font-size:11px;color:#555555;margin:2px 0 2px;">Opacity by data column</label>' +
-        '<select id="elp-opacityby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single opacity (slider above)</option></select>' +
-        '<div id="elp-opacityby-info" style="font-size:10px;color:#7a5cc2;margin:2px 0 0;"></div>' +
+        '<label class="ms-lbl" style="margin-top:2px;">Opacity by data column</label>' +
+        '<select id="elp-opacityby" class="ms-in"><option value="">Single opacity (slider above)</option></select>' +
+        '<div id="elp-opacityby-info" class="ms-note-accent"></div>' +
       '</div>' +
-      '<div id="elp-radius-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Radius <span id="elp-radius-val"></span></label>' +
-      '<input id="elp-radius" type="range" min="1" max="30" step="1" style="width:100%;box-sizing:border-box;" /></div>' +
+      '<div id="elp-radius-row" style="margin-top:8px;"><label class="ms-lbl">Radius <span id="elp-radius-val"></span></label>' +
+      '<input id="elp-radius" type="range" min="1" max="30" step="1" class="ms-range" /></div>' +
       '</div>' +
       // ── OUTLINE group: the stroke's toggle, color, width and per-column thickness together ──
-      '<div style="' + GRP + '">' +
-      '<label id="elp-outline-vis-row" style="display:none;cursor:pointer;font-size:12px;color:#555555;margin-bottom:4px;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
-      '<div id="elp-outline-row"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Outline color</label>' +
-      '<input id="elp-outline" type="color" style="width:100%;height:28px;box-sizing:border-box;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
-      '<div id="elp-width-row" style="margin-top:6px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
-      '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" style="width:100%;box-sizing:border-box;" /></div>' +
+      '<div class="' + GRP + '">' +
+      '<label id="elp-outline-vis-row" class="ms-check" style="display:none;margin-bottom:4px;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
+      '<div id="elp-outline-row"><label class="ms-lbl">Outline color</label>' +
+      '<input id="elp-outline" type="color" class="ms-color" style="height:28px;" /></div>' +
+      '<div id="elp-width-row" style="margin-top:6px;"><label class="ms-lbl"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
+      '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" class="ms-range" /></div>' +
       '<div id="elp-thickby-row" style="margin-top:4px;display:none;">' +
-        '<label style="display:block;font-size:11px;color:#555555;margin:2px 0 2px;">Thickness by data column</label>' +
-        '<select id="elp-thickby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single thickness (slider above)</option></select>' +
-        '<div id="elp-thickby-info" style="font-size:10px;color:#7a5cc2;margin:2px 0 0;"></div>' +
+        '<label class="ms-lbl" style="margin-top:2px;">Thickness by data column</label>' +
+        '<select id="elp-thickby" class="ms-in"><option value="">Single thickness (slider above)</option></select>' +
+        '<div id="elp-thickby-info" class="ms-note-accent"></div>' +
       '</div>' +
-      '<button id="elp-split" style="margin-top:8px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
+      '<button id="elp-split" class="ms-btn" style="margin-top:8px;">Split outline into its own layer</button>' +
       '</div>' +
       '</div>' +
       // ── ZOOM ──
-      '<div id="elp-zoom-sec" style="' + SECTOP + '">' +
+      '<div id="elp-zoom-sec" class="' + SECTOP + '">' +
       SEC('Zoom') +
-      '<button id="elp-setzoom" style="width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">◎ Set zoom to current view</button>' +
-      '<button id="elp-zoomextent" style="width:100%;margin-top:6px;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">⤢ Zoom to features’ extent</button>' +
-      '<div id="elp-zoom-info" style="font-size:11px;color:#888888;margin-top:4px;text-align:center;">Zoom target: not set</div>' +
+      '<button id="elp-setzoom" class="ms-btn">◎ Set zoom to current view</button>' +
+      '<button id="elp-zoomextent" class="ms-btn" style="margin-top:6px;">⤢ Zoom to features’ extent</button>' +
+      '<div id="elp-zoom-info" class="ms-note" style="font-size:11px;margin-top:4px;text-align:center;">Zoom target: not set</div>' +
       '</div>' +
       // ── SOURCE (tilesets only) ──
-      '<div id="elp-src-row" style="display:none;' + SECTOP + '">' +
+      '<div id="elp-src-row" class="' + SECTOP + '" style="display:none;">' +
         SEC('Source') +
-        '<input id="elp-src-url" type="text" placeholder="mapbox://user.id  or  https://…/{z}/{x}/{y}.pbf" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-        '<input id="elp-src-sl" type="text" placeholder="source layer (e.g. buildings)" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-        '<div id="elp-src-zooms" style="display:none;margin-bottom:5px;"><input id="elp-src-minz" type="number" placeholder="min zoom" style="width:48%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /> <input id="elp-src-maxz" type="number" placeholder="max zoom" style="width:48%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
-        '<div id="elp-src-info" style="font-size:10px;color:#888888;margin-bottom:5px;"></div>' +
-        '<button id="elp-src-apply" style="width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:12px;">Apply source</button>' +
+        '<input id="elp-src-url" type="text" placeholder="mapbox://user.id  or  https://…/{z}/{x}/{y}.pbf" class="ms-in" style="margin-bottom:5px;" />' +
+        '<input id="elp-src-sl" type="text" placeholder="source layer (e.g. buildings)" class="ms-in" style="margin-bottom:5px;" />' +
+        '<div id="elp-src-zooms" style="display:none;margin-bottom:5px;"><input id="elp-src-minz" type="number" placeholder="min zoom" class="ms-in" style="width:48%;" /> <input id="elp-src-maxz" type="number" placeholder="max zoom" class="ms-in" style="width:48%;" /></div>' +
+        '<div id="elp-src-info" class="ms-note" style="margin-top:0;margin-bottom:5px;"></div>' +
+        '<button id="elp-src-apply" class="ms-btn" style="background:#e8e8e8;">Apply source</button>' +
       '</div>' +
-      // ── layer info: edit the ℹ popup's content here; at the BOTTOM of the panel (7/8 layout pass) ──
-      '<div style="' + SECTOP + '">' +
-        '<button id="elp-info" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;font-weight:600;">&#9432; Layer info&hellip; <span style="font-weight:400;color:#888;">(adds the &#9432; button when filled)</span></button>' +
-      '</div>';
+      // ── LAYER INFO: edit the ℹ popup's content here; own section at the BOTTOM (7/9) ──
+      '<div class="' + SECTOP + '">' +
+        SEC('Layer info') +
+        '<button id="elp-info" class="ms-btn" style="padding:7px;font-weight:600;">&#9432; Edit&hellip; <span style="font-weight:400;color:#888;">(adds the &#9432; button when filled)</span></button>' +
+      '</div>' +
+      '</div>';   // close #elp-body (the scrolling region under the sticky header)
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
     document.getElementById('elp-name').addEventListener('change', function () { if (activeLayerId) commitRename(activeLayerId, this.value); });
