@@ -199,11 +199,11 @@
     else if (node.type === 'group') { if (node._dbId) acc.groups.push(node._dbId); (node.children || []).forEach(function (c) { collectDbIds(c, acc); }); }
     else { var lid = slugToLayerDbId[node.id]; if (lid) acc.layerIds.push(lid); }
   }
-  async function onDelete(id) {
+  async function onDelete(id, skipConfirm) {   // skipConfirm: the layer panel's in-panel Yes/No already asked
     var node = findNodeById(layers, id); if (!node) return;
     var isContainer = node.type === 'section' || node.type === 'group';
     var kids = isContainer && node.children && node.children.length;
-    if (!window.confirm('Delete "' + (node.label || node.id) + '"?' + (kids ? ' Its contents will move out — they are NOT deleted.' : ''))) return;
+    if (!skipConfirm && !window.confirm('Delete "' + (node.label || node.id) + '"?' + (kids ? ' Its contents will move out — they are NOT deleted.' : ''))) return;
     if (idsReady) { try { await idsReady; } catch (e) {} }
     setStatus('Saving…');
     try {
@@ -2069,88 +2069,167 @@
       gb.addEventListener('click', openGuidePanel);
     }
   }
-  // ── Guide: how to construct a map (auto-generated draft — see the disclaimer it opens with) ──
+  // ── Guide: how to construct a map (auto-generated draft — see the disclaimer it opens with).
+  //    EDITABLE by the platform owner: ✎ in the modal header → WYSIWYG in place → saves to the global
+  //    site_content row (key 'editor-guide', same table/gate as pageEditor). The generated text below is
+  //    the fallback whenever that row doesn't exist (standalone/file:// deploys keep a guide). ──
+  var GUIDE_KEY = 'editor-guide', GUIDE_ADMINS = ['nittyjee@gmail.com'];   // owner allow-list (client gate; RLS restricts writes at lockdown)
+  var _guideFetched = false, _guideEditing = false, _guidePreEdit = null;
   function openGuidePanel() {
     injectGuidePanel();
     var ov = document.getElementById('editor-guide-overlay');
     if (ov) ov.style.display = 'block';
+    loadGuideContent(); maybeShowGuideEdit();
   }
-  function closeGuidePanel() { var ov = document.getElementById('editor-guide-overlay'); if (ov) ov.style.display = 'none'; }
+  function closeGuidePanel() {
+    if (_guideEditing) return;   // backdrop/Esc never eat an edit in progress — Save, Cancel, or ✕ (=cancel) first
+    var ov = document.getElementById('editor-guide-overlay'); if (ov) ov.style.display = 'none';
+  }
+  async function loadGuideContent() {   // owner-edited guide (global site_content row) replaces the generated draft
+    if (_guideFetched || _guideEditing) return;
+    _guideFetched = true;
+    try {
+      var r = await db.from('site_content').select('html').eq('key', GUIDE_KEY).maybeSingle();
+      var body = document.getElementById('editor-guide-body');
+      if (body && !_guideEditing && r && r.data && r.data.html) body.innerHTML = r.data.html;
+    } catch (e) {}
+  }
+  async function maybeShowGuideEdit() {
+    try {
+      if (!window.MapAuth) return;
+      var u = await MapAuth.currentUser();
+      if (!u || !u.email || GUIDE_ADMINS.indexOf(u.email) === -1) return;
+      var eb = document.getElementById('editor-guide-edit'); if (eb && !_guideEditing) eb.style.display = 'inline-block';
+    } catch (e) {}
+  }
+  function guideSetEditing(on) {
+    _guideEditing = on;
+    var body = document.getElementById('editor-guide-body');
+    if (body) { body.contentEditable = on ? 'true' : 'false'; body.style.outline = on ? '2px dashed #7c5cbf' : 'none'; body.style.outlineOffset = '-2px'; }
+    ['editor-guide-save', 'editor-guide-cancel', 'editor-guide-restore'].forEach(function (id2) { var el = document.getElementById(id2); if (el) el.style.display = on ? 'inline-block' : 'none'; });
+    var eb = document.getElementById('editor-guide-edit'); if (eb) eb.style.display = on ? 'none' : 'inline-block';
+  }
+  async function saveGuide() {
+    var body = document.getElementById('editor-guide-body'); if (!body) return;
+    var btn = document.getElementById('editor-guide-save'); if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+      var r = await db.from('site_content').upsert([{ key: GUIDE_KEY, html: body.innerHTML }]);
+      if (r.error) throw new Error(r.error.message);
+      guideSetEditing(false);
+      setStatus('Guide saved');
+    } catch (e) {
+      window.alert('Guide save failed: ' + e.message + (/relation|does not exist|schema cache/i.test(e.message) ? '\n\n(The site_content table isn\'t created yet — run mapstructor_docs/site-content-setup.sql.)' : ''));
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+  }
   function injectGuidePanel() {
     if (document.getElementById('editor-guide-overlay')) return;
+    var css = document.createElement('style');
+    css.textContent =
+      '#editor-guide-overlay{position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:4000;display:none;}' +
+      '#editor-guide-panel{position:absolute;top:5vh;left:50%;transform:translateX(-50%);width:700px;max-width:93vw;max-height:88vh;display:flex;flex-direction:column;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;color:#2a2a33;overflow:hidden;}' +
+      '#editor-guide-head{display:flex;justify-content:space-between;align-items:center;padding:16px 24px 13px;border-bottom:1px solid #ece9f4;background:linear-gradient(180deg,#faf9fd,#fff);}' +
+      '#editor-guide-head b{font-size:17px;letter-spacing:.01em;color:#1e1b2e;}' +
+      '#editor-guide-head small{display:block;font-weight:400;font-size:12px;color:#8a86a0;margin-top:1px;}' +
+      '#editor-guide-close{cursor:pointer;color:#a09cb5;font-size:22px;line-height:1;padding:2px 6px;border-radius:6px;}' +
+      '#editor-guide-close:hover{background:#f1eef9;color:#544f6e;}' +
+      '#editor-guide-body{overflow-y:auto;padding:4px 26px 26px;font-size:13.5px;line-height:1.55;}' +
+      '#editor-guide-body .g-note{margin:14px 0 4px;padding:7px 11px;background:#fbf7ea;border-left:3px solid #d9be62;border-radius:0 6px 6px 0;font-size:11.5px;color:#7a6820;}' +
+      '#editor-guide-body h3{display:flex;align-items:center;gap:8px;margin:24px 0 7px;font-size:14.5px;color:#1e1b2e;letter-spacing:.01em;}' +
+      '#editor-guide-body h3 .g-n{flex:0 0 auto;width:21px;height:21px;border-radius:50%;background:#7c5cbf;color:#fff;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center;}' +
+      '#editor-guide-body p{margin:6px 0;}' +
+      '#editor-guide-body ul{margin:4px 0 6px;padding-left:6px;list-style:none;}' +
+      '#editor-guide-body li{margin:4px 0;padding-left:16px;position:relative;}' +
+      '#editor-guide-body li::before{content:"";position:absolute;left:2px;top:8px;width:5px;height:5px;border-radius:50%;background:#c4b5e6;}' +
+      '#editor-guide-body b{color:#1e1b2e;}' +
+      '#editor-guide-body kbd{font-family:inherit;font-size:11px;font-weight:700;background:#f1eef9;border:1px solid #d9d2ee;border-bottom-width:2px;border-radius:4px;padding:0 5px;color:#544f6e;}' +
+      '#editor-guide-body .g-flow{margin:8px 0 2px;padding:9px 12px;background:#f7f5fc;border-radius:8px;font-size:12.5px;color:#544f6e;}' +
+      '#editor-guide-actions{display:flex;align-items:center;gap:7px;}' +
+      '#editor-guide-actions button{display:none;padding:4px 12px;border:1px solid #cfc7e8;border-radius:6px;background:#fff;color:#544f6e;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;}' +
+      '#editor-guide-actions button:hover{background:#f1eef9;}' +
+      '#editor-guide-actions #editor-guide-save{background:#7c5cbf;border-color:#7c5cbf;color:#fff;}' +
+      '#editor-guide-actions #editor-guide-save:hover{background:#6246a8;}';
+    document.head.appendChild(css);
     var ov = document.createElement('div');
     ov.id = 'editor-guide-overlay';
-    ov.style.cssText = 'position:fixed;inset:0;background:rgba(20,18,30,0.45);z-index:4000;display:none;';
-    var h = function (t) { return '<h3 style="margin:18px 0 6px;font-size:15px;color:#23374d;border-bottom:1px solid #eee;padding-bottom:3px;">' + t + '</h3>'; };
-    var p = function (t) { return '<p style="margin:5px 0;">' + t + '</p>'; };
-    var li = function (t) { return '<li style="margin:3px 0;">' + t + '</li>'; };
     ov.innerHTML =
-      '<div id="editor-guide-panel" style="position:absolute;top:6vh;left:50%;transform:translateX(-50%);width:680px;max-width:92vw;max-height:86vh;display:flex;flex-direction:column;background:#fff;border-radius:9px;box-shadow:0 10px 40px rgba(0,0,0,0.35);font-family:Source Sans Pro,Arial,sans-serif;font-size:13px;color:#222;">' +
-        '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e5e5;">' +
-          '<b style="font-size:16px;">📖 MapStructor Guide — building a map</b>' +
-          '<span id="editor-guide-close" style="cursor:pointer;color:#888;font-size:20px;line-height:1;">&times;</span>' +
+      '<div id="editor-guide-panel">' +
+        '<div id="editor-guide-head">' +
+          '<div><b>📖 Guide</b><small>How to build a map, panel by panel</small></div>' +
+          '<div id="editor-guide-actions">' +
+            '<button id="editor-guide-edit" title="Edit the guide (owner only) — saves for every map">&#9998; Edit</button>' +
+            '<button id="editor-guide-restore" title="Fill the editor with the built-in generated guide (Save to keep)">Restore default</button>' +
+            '<button id="editor-guide-cancel">Cancel</button>' +
+            '<button id="editor-guide-save">Save</button>' +
+            '<span id="editor-guide-close">&times;</span>' +
+          '</div>' +
         '</div>' +
-        '<div style="overflow-y:auto;padding:6px 18px 18px;">' +
-          '<div style="margin:10px 0;padding:8px 10px;background:#fff7e0;border:1px solid #e8d48a;border-radius:6px;font-size:12px;color:#6b5900;"><b>Heads up:</b> this guide was auto-generated (by the AI assistant that builds MapStructor) and hasn\'t been human-reviewed yet. Details may lag behind the app — trust the app over the text.</div>' +
-          h('Overview') +
-          p('A MapStructor map is <b>two synchronized maps with a swipe divider</b> between them (drag the blue handle), a <b>timeline</b> along the bottom, and a <b>layers sidebar</b> on the left. Everything you change autosaves to your map immediately — but the public only sees what you\'ve <b>published</b>.') +
-          p('Rough recipe: pick basemaps → add a layer → draw or import features → label and style them → set the default view in Settings → Publish → share the View link.') +
-          h('The sidebar: sections, groups, layers') +
-          '<ul style="margin:4px 0;padding-left:20px;">' +
-          li('<b>Layers</b> hold features (points, lines, or shapes — one geometry type per layer). <b>Groups</b> hold layers; <b>Sections</b> hold groups — think files, folders, and drives.') +
-          li('The <b>checkbox</b> shows/hides a layer for this session. <b>Click a row</b> to make it the active layer and open its style panel. Drag rows to reorder or move them between groups.') +
-          li('The <b>trash</b> icon on a row deletes it (undoable). The pencil lets you rename directly.') +
-          '</ul>' +
-          h('The add bar (+ buttons)') +
-          '<ul style="margin:4px 0;padding-left:20px;">' +
-          li('<b>+ Layer</b> — a new empty drawn layer. It becomes the active draw target (its style panel opens only when you click the layer).') +
-          li('<b>+ Tileset</b> — a hosted vector tileset (e.g. a Mapbox tileset URL + source layer). Big datasets render fast this way.') +
-          li('<b>+ Import</b> — upload GeoJSON, KML, or zipped Shapefile; features land in a new layer (large imports render engine-side automatically).') +
-          li('<b>⬇ Export</b> — download any layer\'s features as GeoJSON, KML, or Shapefile.') +
-          li('<b>+ Group / + Section</b> — organizers; pick a parent when creating.') +
-          '</ul>' +
-          h('Drawing features') +
-          p('Use the tool dock (top-left over the map): <b>point, line, polygon</b> tools draw on the <b>left side of the swipe</b>. Click to place vertices; finish a line/shape with <b>Enter</b> or a double-click. The freshly drawn feature stays selected with its editor open — type its label right away.') +
-          p('If no drawn layer is selected, drawing auto-creates an "Untitled" layer of the right type — select a layer first to draw into it.') +
-          h('Selecting & editing features (two-stage clicks)') +
-          '<ul style="margin:4px 0;padding-left:20px;">' +
-          li('<b>Click a feature once</b> (either side of the swipe): it highlights, its bubble opens (if enabled) and stays open, and the info panel + feature editor open on the right. Its shape is still locked.') +
-          li('<b>Click it again</b>: the shape unlocks — drag the whole feature, click once more for vertex editing.') +
-          li('<b>Shift/Ctrl-click</b> gathers a multi-selection (highlight only). A plain click on one of them edits that one.') +
-          li('<b>Click empty ground</b> to clear everything (selection, panels, bubbles, highlights).') +
-          li('The feature editor holds <b>Label</b>, formatted <b>Notes</b>, an <b>Image</b> (URL or upload), and <b>Start/End dates</b> for the timeline. The label updates the bubble and map labels as you type.') +
-          li('Tileset/large-layer features work the same; use <b>✓ Done editing</b> to fold an edited feature back.') +
-          '</ul>' +
-          h('Layer style panel (click a layer row)') +
-          '<ul style="margin:4px 0;padding-left:20px;">' +
-          li('<b>Color, fill opacity, outline</b> (color / show / thickness), point size — all preview live on the map.') +
-          li('<b>Labels</b> — turn on map labels from any field; size <b>varies by zoom</b> by default (set the three sizes, or untick to use one uniform size); color, halo, bold, density.') +
-          li('<b>Bubbles</b> — enable hover and/or click bubbles; pick which field they show; hover highlight toggle.') +
-          li('<b>Zoom target</b> — where "zoom to layer" flies; defaults to the layer\'s extent.') +
-          li('<b>Attribute table</b> — every feature as a row: click to select (highlights on the map), click again to edit a cell; star, sort, zoom-to, and delete selected.') +
-          li('<b>Info panel link</b> — connect features to notes or an encyclopedia page id, shown in the right-side panel when clicked.') +
-          li('<b>Split outline</b> (fills) — give the outline its own layer for independent styling. <b>Delete</b> removes the layer.') +
-          '</ul>' +
-          h('Timeline') +
-          p('Features with start/end dates appear only when the slider is inside their range; blank dates = always visible. Set the timeline\'s own start/end in <b>Settings</b>. Drag the slider to travel in time.') +
-          h('Maps (basemaps) & zoom buttons') +
-          p('The MAPS section lists basemaps — pick one for each swipe side. <b>+ Map</b> adds a basemap from a style URL; map sections organize them. <b>+ Button</b> creates a zoom button (capture the current view, or link to a place) shown on the map.') +
-          h('Top bar') +
-          '<ul style="margin:4px 0;padding-left:20px;">' +
-          li('<b>✏ Editing mode</b> — you\'re editing; changes autosave (privately).') +
-          li('<b>Publish</b> — push the current state to the public view.') +
-          li('<b>View ↗</b> — the public page (last published). <b>Preview ↗</b> — your live edits before publishing.') +
-          li('<b>⧉ Copy</b> — clone the whole map as a new private map. <b>⚙ Settings</b> — name, default view, sharing/public link, publish, timeline range, header logo.') +
-          li('<b>Login / your email</b> — anonymous maps live only at their URL; save to an account so you don\'t lose them.') +
-          '</ul>' +
-          h('Other tools') +
-          p('<b>Undo/redo</b> cover drawing, edits, deletes, merges. <b>Measure</b> reports distance/area as you draw. <b>Split</b> cuts a polygon/line with a drawn line; <b>Merge</b> joins same-type selected features. The <b>search box</b> finds places; <b>Zoom to Layers</b> fits everything you\'ve made.') +
-        '</div>' +
+        '<div id="editor-guide-body">' + guideDefaultHtml() + '</div>' +
       '</div>';
     document.body.appendChild(ov);
-    document.getElementById('editor-guide-close').addEventListener('click', closeGuidePanel);
-    ov.addEventListener('click', function (e) { if (e.target === ov) closeGuidePanel(); });   // click the backdrop → close
+    document.getElementById('editor-guide-close').addEventListener('click', function () {   // ✕ while editing = cancel the edit, then close
+      if (_guideEditing) { var b2 = document.getElementById('editor-guide-body'); if (b2 && _guidePreEdit != null) b2.innerHTML = _guidePreEdit; guideSetEditing(false); }
+      closeGuidePanel();
+    });
+    document.getElementById('editor-guide-edit').addEventListener('click', function () { var b2 = document.getElementById('editor-guide-body'); _guidePreEdit = b2 ? b2.innerHTML : null; guideSetEditing(true); });
+    document.getElementById('editor-guide-cancel').addEventListener('click', function () { var b2 = document.getElementById('editor-guide-body'); if (b2 && _guidePreEdit != null) b2.innerHTML = _guidePreEdit; guideSetEditing(false); });
+    document.getElementById('editor-guide-restore').addEventListener('click', function () { var b2 = document.getElementById('editor-guide-body'); if (b2) b2.innerHTML = guideDefaultHtml(); });   // still needs Save to persist
+    document.getElementById('editor-guide-save').addEventListener('click', saveGuide);
+    ov.addEventListener('click', function (e) { if (e.target === ov) closeGuidePanel(); });   // click the backdrop → close (no-op while editing)
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeGuidePanel(); });
+  }
+  function guideDefaultHtml() {
+    var N = 0;
+    var h = function (t) { N++; return '<h3><span class="g-n">' + N + '</span>' + t + '</h3>'; };
+    return '' +
+          '<div class="g-note"><b>Auto-generated draft:</b> written by the AI assistant that builds MapStructor, not yet human-reviewed — where it disagrees with the app, trust the app.</div>' +
+          h('What is MapStructor?') +
+          '<p>MapStructor is a tool for building <b>interactive, layered, time-aware maps</b> — two synchronized maps separated by a swipe you drag to compare them — and publishing them on the web. With it you can:</p>' +
+          '<ul>' +
+          '<li>Draw <b>points, lines, and shapes</b> and give each one a label, notes, an image, and dates.</li>' +
+          '<li><b>Import GIS data</b> (GeoJSON, KML, Shapefile) or connect hosted <b>tilesets</b> for big datasets.</li>' +
+          '<li><b>Swipe between two basemaps</b> — say, a historic map against modern satellite.</li>' +
+          '<li>Put features on a <b>timeline</b> so the map changes as you drag through time.</li>' +
+          '<li>Link features to <b>encyclopedia pages</b> or notes that open in a side panel.</li>' +
+          '<li><b>Publish</b> a public, shareable version whenever you\'re ready — edits stay private until then.</li>' +
+          '</ul>' +
+          h('Drawing on the map') +
+          '<p>Pick the <b>point, line, or polygon</b> tool from the dock at the top-left, then click on the <b>left side of the swipe</b> to place it. Lines and shapes take a click per corner — finish with <kbd>Enter</kbd> or a double-click.</p>' +
+          '<p>The new feature opens ready to describe: type its label right away. Drawing with no layer selected auto-creates an "Untitled" layer of the right type; click a layer first to draw into it. One geometry type lives per layer.</p>' +
+          h('Adding your data') +
+          '<p>Use the buttons above the layer list:</p>' +
+          '<ul>' +
+          '<li><b>+ Import</b> — upload GeoJSON, KML, or a zipped Shapefile. Features arrive as an editable layer; very large files automatically render the fast way.</li>' +
+          '<li><b>+ Tileset</b> — connect a hosted vector tileset (URL + source layer) for city-scale data.</li>' +
+          '<li><b>+ Layer</b> — a new empty layer to draw into.</li>' +
+          '<li><b>⬇ Export</b> — download any layer back out as GeoJSON, KML, or Shapefile.</li>' +
+          '</ul>' +
+          h('Editing features & their info') +
+          '<p>Clicks work in two stages, so you never move something by accident:</p>' +
+          '<ul>' +
+          '<li><b>Click once</b> (either side of the swipe): the feature highlights, its bubble stays open, and the info panel + editor appear — <b>Label</b>, formatted <b>Notes</b>, an <b>Image</b>, and <b>Start/End dates</b>. The bubble and map labels update as you type.</li>' +
+          '<li><b>Click again</b>: the shape unlocks — drag it whole, or click once more to move corners.</li>' +
+          '<li><kbd>Shift</kbd>/<kbd>Ctrl</kbd>-click collects several features; click one of them to edit it.</li>' +
+          '<li><b>Click empty ground</b> to put everything away.</li>' +
+          '</ul>' +
+          '<p>Features from tilesets edit the same way — <b>✓ Done editing</b> folds one back when finished.</p>' +
+          h('Styling layers & labels') +
+          '<p><b>Click a layer</b> to open its style panel — every change previews live:</p>' +
+          '<ul>' +
+          '<li><b>Color, opacity, outline, size</b> — or color/thickness driven by a data column.</li>' +
+          '<li><b>Map labels</b> from any field — sized by zoom by default (set far/mid/close sizes), with color, halo, bold, and density controls.</li>' +
+          '<li><b>Popups</b> on hover and/or click, and which field they show.</li>' +
+          '<li><b>Info panel</b> — notes or an encyclopedia page per feature.</li>' +
+          '<li>A <b>zoom target</b>, the <b>attribute table</b>, outline splitting, and Delete.</li>' +
+          '</ul>' +
+          h('Organizing the sidebar') +
+          '<p><b>Layers</b> hold features; <b>groups</b> hold layers; <b>sections</b> hold groups — files, folders, drives. Checkboxes show/hide for the session ("On by default" in the style panel decides how the map opens). Drag rows to reorder or re-home them; double-click to rename; the ▦ icon opens a layer\'s attribute table.</p>' +
+          h('Setting the scene') +
+          '<p>In the <b>MAPS</b> section, pick each side\'s basemap — this is the heart of the swipe comparison. <b>+ Map</b> adds basemaps from a style URL; <b>+ Button</b> makes a zoom shortcut from the current view. In <b>⚙ Settings</b>, set the map\'s name, its <b>default view</b>, and the <b>timeline range</b>; features with dates then come and go as the slider moves (blank dates = always visible).</p>' +
+          h('Publishing & sharing') +
+          '<p>Edits <b>autosave privately</b>. <b>Publish</b> pushes the current state to the public <b>View</b> page; <b>Preview</b> shows your unpublished edits. <b>⧉ Copy</b> clones any map as a new private one. Anonymous maps live only at their URL — <b>save to an account</b> (top right) so yours can\'t be lost, and toggle <b>Public</b> in Settings to share the link.</p>' +
+          h('Power tools') +
+          '<p><b>Undo/redo</b> cover drawing, edits, and deletes. <b>Measure</b> reads out distance or area as you draw. <b>Split</b> cuts a shape along a drawn line; <b>Merge</b> joins several of the same type. The <b>attribute table</b> edits features in bulk (click a row to select, again to edit; ★ marks a working set). The <b>search box</b> flies to any place; <b>Zoom to Layers</b> fits everything you\'ve made.</p>';
   }
   function injectChrome() {
     var panel = document.getElementById('layers-panel-content');
@@ -3589,6 +3668,7 @@
     syncColorInputForColorBy(node);
     var isDrawn = node && node.source_type === 'geojson-supabase';
     row.style.display = isDrawn ? 'block' : 'none';
+    ['elp-opacityby-row', 'elp-thickby-row'].forEach(function (rid) { var r2 = document.getElementById(rid); if (r2) r2.style.display = isDrawn ? 'block' : 'none'; });   // the by-column selects live NEXT TO their sliders now (paired groups)
     if (!isDrawn) return;
     var lid = slugToLayerDbId[node.id];
     sel.innerHTML = '<option value="">Single color</option>';
@@ -3606,7 +3686,7 @@
       var cb = node.colorBy;
       if (cb && cb.prop) { sel.value = cb.prop; info.textContent = cb.mode === 'hex' ? "Using the column's own hex colors." : (Object.keys(cb.mapping || {}).length + ' categories, one color each.'); }
       // opacity/thickness-by dropdowns get the same columns
-      [['elp-opacityby', 'opacityBy', 'Single opacity (slider below)', 'opacity'], ['elp-thickby', 'thicknessBy', 'Single thickness (sliders below)', 'thickness']].forEach(function (spec) {
+      [['elp-opacityby', 'opacityBy', 'Single opacity (slider above)', 'opacity'], ['elp-thickby', 'thicknessBy', 'Single thickness (slider above)', 'thickness']].forEach(function (spec) {
         var s2 = document.getElementById(spec[0]); if (!s2) return;
         s2.innerHTML = '<option value="">' + spec[2] + '</option>';
         sortedKeys.forEach(function (k) { var o3 = document.createElement('option'); o3.value = k; o3.textContent = k; s2.appendChild(o3); });
@@ -3912,13 +3992,27 @@
     p.style.cssText = 'position:fixed;top:120px;left:362px;width:236px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:8px;box-shadow:0 3px 14px rgba(0,0,0,0.2);padding:12px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // scroll + stay above the timeline (#footer is 67px)
     var SEC = function (t) { return '<div style="font-size:11px;font-weight:800;letter-spacing:.07em;color:#7c5cbf;margin:0 0 8px;text-transform:uppercase;border-bottom:2px solid #ede9f7;padding-bottom:4px;">' + t + '</div>'; };
     var SECTOP = 'margin-top:14px;';
+    var GRP = 'margin-top:10px;padding-top:8px;border-top:1px dashed #e8e4f2;';   // paired-control group divider (7/8 layout pass)
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b id="elp-title" style="font-size:14px;">Layer style</b><span id="elp-close" style="cursor:pointer;color:#888888;font-size:17px;line-height:1;">&times;</span></div>' +
       // name field at the very top — the same rename as double-clicking the row (works for layers, groups and sections)
       '<input id="elp-name" type="text" placeholder="Name" title="Rename this item" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:6px 8px;border:1px solid #bbbbbb;border-radius:4px;font-size:15px;font-weight:600;" />' +
-      // ── layer info: edit the ℹ popup's content here; the sidebar ℹ button only exists when there IS content
-      //    (the attribute table moved to a ▦ icon on the layer row) ──
-      '<button id="elp-info" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;font-weight:600;">&#9432; Layer info&hellip; <span style="font-weight:400;color:#888;">(adds the &#9432; button when filled)</span></button>' +
+      // ── on-by-default + delete live AT THE TOP (below the title), no section heading — 7/8 layout pass ──
+      '<div id="elp-defaults-row">' +
+        '<label id="elp-default-vis-label" style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-default-vis" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />On by default</label>' +
+        '<label id="elp-default-exp-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;"><input id="elp-default-exp" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Expanded by default</label>' +
+      '</div>' +
+      '<div id="elp-delete-wrap" style="margin:6px 0 2px;">' +
+        '<button id="elp-delete" style="width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete</button>' +
+        '<div id="elp-delete-confirm" style="display:none;padding:8px;border:1px solid #e0b4b4;border-radius:4px;background:#fdf3f3;">' +
+          '<div style="font-size:12px;color:#7a2e27;font-weight:600;">Are you sure you want to delete this?</div>' +
+          '<div id="elp-delete-note" style="font-size:10px;color:#a05b54;margin-top:2px;"></div>' +
+          '<div style="display:flex;gap:6px;margin-top:7px;">' +
+            '<button id="elp-del-yes" style="flex:1;padding:5px;border:none;border-radius:4px;background:#b4453a;color:#fff;font-weight:700;cursor:pointer;font-size:12px;">Yes</button>' +
+            '<button id="elp-del-no" style="flex:1;padding:5px;border:1px solid #bbbbbb;border-radius:4px;background:#fff;color:#333;font-weight:600;cursor:pointer;font-size:12px;">No</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
       // ── STYLE ──
       '<div id="elp-style-section" style="' + SECTOP + '">' +
       SEC('Style') +
@@ -3932,26 +4026,34 @@
         '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color by data column</label>' +
         '<select id="elp-colorby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single color</option></select>' +
         '<div id="elp-colorby-info" style="font-size:10px;color:#888888;margin-top:3px;"></div>' +
-        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Opacity by data column</label>' +
-        '<select id="elp-opacityby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single opacity (slider below)</option></select>' +
-        '<div id="elp-opacityby-info" style="font-size:10px;color:#7a5cc2;margin:2px 0 0;"></div>' +
-        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Thickness by data column</label>' +
-        '<select id="elp-thickby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single thickness (sliders below)</option></select>' +
-        '<div id="elp-thickby-info" style="font-size:10px;color:#7a5cc2;margin:2px 0 0;"></div>' +
       '</div>' +
+      // ── FILL group: everything about the face of the feature, paired (7/8 layout pass) ──
+      '<div style="' + GRP + '">' +
+      '<label id="elp-fill-vis-row" style="display:none;cursor:pointer;font-size:12px;color:#555555;margin-bottom:4px;"><input id="elp-fill-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show fill</label>' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Opacity <span id="elp-opacity-val"></span></label>' +
       '<input id="elp-opacity" type="range" min="0" max="1" step="0.05" style="width:100%;box-sizing:border-box;" />' +
+      '<div id="elp-opacityby-row" style="margin-top:4px;display:none;">' +
+        '<label style="display:block;font-size:11px;color:#555555;margin:2px 0 2px;">Opacity by data column</label>' +
+        '<select id="elp-opacityby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single opacity (slider above)</option></select>' +
+        '<div id="elp-opacityby-info" style="font-size:10px;color:#7a5cc2;margin:2px 0 0;"></div>' +
+      '</div>' +
       '<div id="elp-radius-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Radius <span id="elp-radius-val"></span></label>' +
       '<input id="elp-radius" type="range" min="1" max="30" step="1" style="width:100%;box-sizing:border-box;" /></div>' +
-      '<div id="elp-outline-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Outline color</label>' +
-      '<input id="elp-outline" type="color" style="width:100%;height:28px;box-sizing:border-box;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
-      '<div id="elp-width-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
-      '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" style="width:100%;box-sizing:border-box;" /></div>' +
-      '<div id="elp-vis-row" style="margin-top:8px;display:flex;gap:12px;font-size:12px;color:#555555;">' +
-        '<label style="cursor:pointer;"><input id="elp-fill-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show fill</label>' +
-        '<label style="cursor:pointer;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
       '</div>' +
-      '<button id="elp-split" style="margin-top:10px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
+      // ── OUTLINE group: the stroke's toggle, color, width and per-column thickness together ──
+      '<div style="' + GRP + '">' +
+      '<label id="elp-outline-vis-row" style="display:none;cursor:pointer;font-size:12px;color:#555555;margin-bottom:4px;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
+      '<div id="elp-outline-row"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Outline color</label>' +
+      '<input id="elp-outline" type="color" style="width:100%;height:28px;box-sizing:border-box;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
+      '<div id="elp-width-row" style="margin-top:6px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
+      '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" style="width:100%;box-sizing:border-box;" /></div>' +
+      '<div id="elp-thickby-row" style="margin-top:4px;display:none;">' +
+        '<label style="display:block;font-size:11px;color:#555555;margin:2px 0 2px;">Thickness by data column</label>' +
+        '<select id="elp-thickby" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="">Single thickness (slider above)</option></select>' +
+        '<div id="elp-thickby-info" style="font-size:10px;color:#7a5cc2;margin:2px 0 0;"></div>' +
+      '</div>' +
+      '<button id="elp-split" style="margin-top:8px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
+      '</div>' +
       // map labels: one checkbox, one field pick; black text / 1px white halo / DIN Pro / zoom-ramped size
       '<label id="elp-maplabels-row" style="cursor:pointer;font-size:12px;color:#555555;display:none;margin-top:10px;"><input id="elp-maplabels-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Map labels</label>' +
       '<div id="elp-maplabels-field-row" style="display:none;margin-top:4px;">' +
@@ -4016,19 +4118,26 @@
         '<div id="elp-src-info" style="font-size:10px;color:#888888;margin-bottom:5px;"></div>' +
         '<button id="elp-src-apply" style="width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:12px;">Apply source</button>' +
       '</div>' +
-      // ── DEFAULTS ──
-      '<div id="elp-defaults-row" style="' + SECTOP + '">' +
-        SEC('Defaults (how the map opens)') +
-        '<label id="elp-default-vis-label" style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-default-vis" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />On by default</label>' +
-        '<label id="elp-default-exp-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;"><input id="elp-default-exp" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Expanded by default</label>' +
-      '</div>' +
-      '<div style="' + SECTOP + '">' +   // #4: delete moved off the sidebar row into the panel
-        '<button id="elp-delete" style="width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;">Delete this item…</button>' +
+      // ── layer info: edit the ℹ popup's content here; at the BOTTOM of the panel (7/8 layout pass) ──
+      '<div style="' + SECTOP + '">' +
+        '<button id="elp-info" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;font-weight:600;">&#9432; Layer info&hellip; <span style="font-weight:400;color:#888;">(adds the &#9432; button when filled)</span></button>' +
       '</div>';
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
     document.getElementById('elp-name').addEventListener('change', function () { if (activeLayerId) commitRename(activeLayerId, this.value); });
-    document.getElementById('elp-delete').addEventListener('click', function () { if (activeLayerId) onDelete(activeLayerId); });
+    // Delete → in-panel Yes/No confirm (never a browser dialog)
+    function elpDelReset() { var c = document.getElementById('elp-delete-confirm'), b = document.getElementById('elp-delete'); if (c) c.style.display = 'none'; if (b) b.style.display = 'block'; }
+    window._elpDelReset = elpDelReset;   // showLayerPanel resets the confirm when switching items
+    document.getElementById('elp-delete').addEventListener('click', function () {
+      if (!activeLayerId) return;
+      var n = findNodeById(layers, activeLayerId);
+      var kids = n && (n.type === 'group' || n.type === 'section') && n.children && n.children.length;
+      var note = document.getElementById('elp-delete-note'); if (note) note.textContent = kids ? 'Its contents move out — they are NOT deleted.' : '';
+      this.style.display = 'none';
+      var c = document.getElementById('elp-delete-confirm'); if (c) c.style.display = 'block';
+    });
+    document.getElementById('elp-del-no').addEventListener('click', elpDelReset);
+    document.getElementById('elp-del-yes').addEventListener('click', function () { elpDelReset(); if (activeLayerId) onDelete(activeLayerId, true); });
     document.getElementById('elp-default-vis').addEventListener('change', function () { onDefaultVisible(this.checked); });
     document.getElementById('elp-default-exp').addEventListener('change', function () { onDefaultExpanded(this.checked); });
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
@@ -4163,6 +4272,7 @@
     var fillStroke = (isGeojson || isTilesetNode(node)) && node.type === 'fill';  // drawn AND tileset fills get the real line outline + its width/show toggles
     injectLayerPanel();
     var p = document.getElementById('editor-layer-panel'); if (!p) return;
+    try { if (window._elpDelReset) window._elpDelReset(); } catch (e) {}   // switching items collapses a half-open delete confirm
     var elpName = document.getElementById('elp-name'); if (elpName) elpName.value = node.label || '';   // top name field — all node types
     if (node.type === 'section') {   // #4: sections get a minimal panel — title + defaults + Delete (no style/zoom)
       document.getElementById('elp-title').textContent = node.label || 'Section';
@@ -4203,7 +4313,9 @@
     var strokeVis = (node.paint && node.paint['line-opacity'] != null) ? node.paint['line-opacity'] : 1;
     document.getElementById('elp-fill-vis').checked = op > 0;
     document.getElementById('elp-outline-vis').checked = strokeVis !== 0;
-    document.getElementById('elp-vis-row').style.display = (fillStroke && !node.outlineSplit) ? 'flex' : 'none';  // fill + outline toggles ride the real stroke line layer
+    var visOn = (fillStroke && !node.outlineSplit) ? 'block' : 'none';   // fill + outline toggles ride the real stroke line layer — each lives with its own group now
+    document.getElementById('elp-fill-vis-row').style.display = visOn;
+    document.getElementById('elp-outline-vis-row').style.display = visOn;
     var splitBtn = document.getElementById('elp-split');   // doubles as split / merge (un-split)
     if (node.outlineOf) { splitBtn.textContent = 'Merge into polygon'; splitBtn.style.display = 'block'; }
     else if (fillStroke) { splitBtn.textContent = node.outlineSplit ? 'Merge outline back in' : 'Split outline into its own layer'; splitBtn.style.display = 'block'; }
