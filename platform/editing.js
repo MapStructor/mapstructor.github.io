@@ -4013,7 +4013,58 @@
           '</div>' +
         '</div>' +
       '</div>' +
-      // ── STYLE ──
+      // ══ ORDER (7/8 layout pass 2): Labels → Popups → Style(Color/Fill/Outline) → Zoom → Source → Layer info ══
+      // ── LABELS (drawn/imported layers only) — the label toggle + all its styling live together ──
+      '<div id="elp-labels-sec" style="' + SECTOP + '">' +
+      SEC('Labels') +
+      '<label id="elp-maplabels-row" style="cursor:pointer;font-size:12px;color:#555555;display:none;"><input id="elp-maplabels-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Map labels</label>' +
+      '<div id="elp-maplabels-field-row" style="display:none;margin-top:4px;">' +
+        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Labels show this column</label>' +
+        '<select id="elp-maplabels-field" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"></select>' +
+        '<div style="display:flex;gap:8px;margin-top:6px;">' +
+          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Text color</label>' +
+          '<input id="elp-lbl-color" type="color" value="#000000" style="width:100%;height:24px;padding:0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
+          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Halo color</label>' +
+          '<input id="elp-lbl-halo" type="color" value="#ffffff" style="width:100%;height:24px;padding:0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
+        '</div>' +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin:6px 0 0;"><input id="elp-lbl-bold" type="checkbox" checked style="vertical-align:middle;margin:0 5px 0 0;" />Bold</label>' +
+        '<div style="display:flex;gap:8px;align-items:flex-end;margin-top:6px;">' +
+          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label size (px)</label>' +
+          '<input id="elp-lbl-size" type="number" min="6" max="48" value="10" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
+          '<label style="cursor:pointer;font-size:11px;color:#555555;flex:1;padding-bottom:5px;"><input id="elp-lbl-varyzoom" type="checkbox" style="vertical-align:middle;margin:0 4px 0 0;" />Vary size by zoom</label>' +
+        '</div>' +
+        '<div id="elp-lbl-zoomsizes" style="display:none;margin-top:4px;">' +
+        '<div style="display:flex;gap:6px;">' +
+          '<div style="flex:1;"><input id="elp-lbl-s6" type="number" min="6" max="40" value="10" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">far (z6)</div></div>' +
+          '<div style="flex:1;"><input id="elp-lbl-s11" type="number" min="6" max="40" value="13" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">mid (z11)</div></div>' +
+          '<div style="flex:1;"><input id="elp-lbl-s16" type="number" min="6" max="40" value="17" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">close (z16)</div></div>' +
+        '</div></div>' +
+        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Halo width <span id="elp-lbl-halow-val">2</span></label>' +
+        '<input id="elp-lbl-halow" type="range" min="0" max="4" step="0.5" value="2" style="width:100%;box-sizing:border-box;" />' +
+        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Label density</label>' +
+        '<input id="elp-lbl-density" type="range" min="0" max="60" step="2" value="50" style="width:100%;box-sizing:border-box;" />' +
+        '<div style="display:flex;justify-content:space-between;font-size:9px;color:#888888;"><span>fewer</span><span>more</span></div>' +
+        '<div style="font-size:10px;color:#888888;margin-top:3px;">Polygons label at their visual center; lines along the path. Density = breathing room per label — fewer means only labels with room draw.</div>' +
+      '</div>' +
+      '</div>' +
+      // ── POPUPS & INFO ──
+      '<div id="elp-interact-row" style="' + SECTOP + '">' +
+        SEC('Popups &amp; info') +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
+        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
+        '<label id="elp-hl-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;margin-bottom:6px;"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
+        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label field (what the popup shows)</label>' +
+        '<select id="elp-labelfield" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="label">label (the feature\'s own Label)</option></select>' +
+      '</div>' +   // close elp-interact-row; panel-row + enc-row follow as siblings (shown/hidden independently)
+      '<div id="elp-panel-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Info panel (on feature click)</label>' +
+      '<select id="elp-panel-mode" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="notes">Title + notes</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
+      '<div id="elp-enc-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia base URL</label>' +
+      '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<div id="elp-nidprop-row" style="display:none;margin-top:6px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Page-ID property</label>' +
+      '<input id="elp-nidprop" type="text" placeholder="e.g. nid" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">For tilesets: which feature property holds the page id (drawn layers always use &ldquo;content_id&rdquo;).</div></div>' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>' +
+      // ── STYLE: Color, then Fill, then Outline (paired groups) ──
       '<div id="elp-style-section" style="' + SECTOP + '">' +
       SEC('Style') +
       '<div id="elp-color-row"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color</label>' +
@@ -4054,54 +4105,7 @@
       '</div>' +
       '<button id="elp-split" style="margin-top:8px;width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:12px;">Split outline into its own layer</button>' +
       '</div>' +
-      // map labels: one checkbox, one field pick; black text / 1px white halo / DIN Pro / zoom-ramped size
-      '<label id="elp-maplabels-row" style="cursor:pointer;font-size:12px;color:#555555;display:none;margin-top:10px;"><input id="elp-maplabels-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Map labels</label>' +
-      '<div id="elp-maplabels-field-row" style="display:none;margin-top:4px;">' +
-        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Labels show this column</label>' +
-        '<select id="elp-maplabels-field" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"></select>' +
-        '<div style="display:flex;gap:8px;margin-top:6px;">' +
-          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Text color</label>' +
-          '<input id="elp-lbl-color" type="color" value="#000000" style="width:100%;height:24px;padding:0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
-          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Halo color</label>' +
-          '<input id="elp-lbl-halo" type="color" value="#ffffff" style="width:100%;height:24px;padding:0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;" /></div>' +
-        '</div>' +
-        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin:6px 0 0;"><input id="elp-lbl-bold" type="checkbox" checked style="vertical-align:middle;margin:0 5px 0 0;" />Bold</label>' +
-        '<div style="display:flex;gap:8px;align-items:flex-end;margin-top:6px;">' +
-          '<div style="flex:1;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label size (px)</label>' +
-          '<input id="elp-lbl-size" type="number" min="6" max="48" value="10" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
-          '<label style="cursor:pointer;font-size:11px;color:#555555;flex:1;padding-bottom:5px;"><input id="elp-lbl-varyzoom" type="checkbox" style="vertical-align:middle;margin:0 4px 0 0;" />Vary size by zoom</label>' +
-        '</div>' +
-        '<div id="elp-lbl-zoomsizes" style="display:none;margin-top:4px;">' +
-        '<div style="display:flex;gap:6px;">' +
-          '<div style="flex:1;"><input id="elp-lbl-s6" type="number" min="6" max="40" value="10" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">far (z6)</div></div>' +
-          '<div style="flex:1;"><input id="elp-lbl-s11" type="number" min="6" max="40" value="13" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">mid (z11)</div></div>' +
-          '<div style="flex:1;"><input id="elp-lbl-s16" type="number" min="6" max="40" value="17" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /><div style="font-size:9px;color:#888888;text-align:center;">close (z16)</div></div>' +
-        '</div></div>' +
-        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Halo width <span id="elp-lbl-halow-val">2</span></label>' +
-        '<input id="elp-lbl-halow" type="range" min="0" max="4" step="0.5" value="2" style="width:100%;box-sizing:border-box;" />' +
-        '<label style="display:block;font-size:11px;color:#555555;margin:6px 0 2px;">Label density</label>' +
-        '<input id="elp-lbl-density" type="range" min="0" max="60" step="2" value="50" style="width:100%;box-sizing:border-box;" />' +
-        '<div style="display:flex;justify-content:space-between;font-size:9px;color:#888888;"><span>fewer</span><span>more</span></div>' +
-        '<div style="font-size:10px;color:#888888;margin-top:3px;">Polygons label at their visual center; lines along the path. Density = breathing room per label — fewer means only labels with room draw.</div>' +
       '</div>' +
-      '</div>' +
-      // ── POPUPS & INFO ──
-      '<div id="elp-interact-row" style="' + SECTOP + '">' +
-        SEC('Popups &amp; info') +
-        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
-        '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
-        '<label id="elp-hl-label" style="cursor:pointer;font-size:12px;color:#555555;display:none;margin-bottom:6px;"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
-        '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label field (what the popup shows)</label>' +
-        '<select id="elp-labelfield" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="label">label (the feature\'s own Label)</option></select>' +
-      '</div>' +
-      '<div id="elp-panel-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Info panel (on feature click)</label>' +
-      '<select id="elp-panel-mode" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"><option value="notes">Title + notes</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
-      '<div id="elp-enc-row" style="margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia base URL</label>' +
-      '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-      '<div id="elp-nidprop-row" style="display:none;margin-top:6px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Page-ID property</label>' +
-      '<input id="elp-nidprop" type="text" placeholder="e.g. nid" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">For tilesets: which feature property holds the page id (drawn layers always use &ldquo;content_id&rdquo;).</div></div>' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">Set this, then give each feature a Page ID — clicking a feature opens its page.</div></div>' +
       // ── ZOOM ──
       '<div id="elp-zoom-sec" style="' + SECTOP + '">' +
       SEC('Zoom') +
@@ -4277,7 +4281,7 @@
     if (node.type === 'section') {   // #4: sections get a minimal panel — title + defaults + Delete (no style/zoom)
       document.getElementById('elp-title').textContent = node.label || 'Section';
       document.getElementById('elp-style-section').style.display = 'none';
-      ['elp-interact-row', 'elp-enc-row', 'elp-src-row', 'elp-panel-row', 'elp-zoom-sec'].forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
+      ['elp-labels-sec', 'elp-interact-row', 'elp-enc-row', 'elp-src-row', 'elp-panel-row', 'elp-zoom-sec'].forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
       populateDefaults(node);
       p.style.display = 'block';
       return;
@@ -4286,7 +4290,7 @@
     if (isGroup) {   // groups have no style — show only the zoom controls + readout
       document.getElementById('elp-title').textContent = node.label || 'Group';
       document.getElementById('elp-style-section').style.display = 'none';
-      ['elp-interact-row', 'elp-enc-row', 'elp-src-row'].forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
+      ['elp-labels-sec', 'elp-interact-row', 'elp-enc-row', 'elp-src-row'].forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
       document.getElementById('elp-zoom-sec').style.display = 'block';
       document.getElementById('elp-setzoom').style.display = 'block';
       document.getElementById('elp-zoom-info').style.display = 'block';
@@ -4298,6 +4302,7 @@
     var isStyleableLayer = isGeojson || (isTilesetNode(node) && ['fill', 'line', 'circle'].indexOf(node.type) > -1);
     document.getElementById('elp-style-section').style.display = isStyleableLayer ? '' : 'none';   // typeless/basemap tilesets: hide style, keep attr + source + zoom
     document.getElementById('elp-interact-row').style.display = isStyleableLayer ? '' : 'none';
+    document.getElementById('elp-labels-sec').style.display = isGeojson ? '' : 'none';   // map labels are drawn/imported-only (labels.js); its own section now, so hide it explicitly for tilesets
     document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
     var op = paintOpacity(node.paint); if (op == null) op = (node.type === 'fill') ? 0.35 : 1;
