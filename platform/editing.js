@@ -128,7 +128,12 @@
     var id = uid();
     if (type === 'section') return { type: 'section', id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, children: [] };
     if (type === 'group')   return { type: 'group', id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, itemSelector: '.' + id + '_item', children: [], checked: true, collapsed: false };
-    return { id: id, label: name, containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: 'square', iconColor: nextColor(), isSolid: true, checked: true, source_type: 'geojson-supabase' };
+    var col = nextColor();
+    // panel default mirrors configLoader's notesEligible synthesis — WITHOUT it, features drawn into a
+    // brand-new layer show no info-panel preview until the next full reload re-synthesizes the config
+    var pnl = { mode: 'notes', color: col };
+    try { if (window.renderRegistry && window.renderRegistry._notes) pnl.render = window.renderRegistry._notes; } catch (e) {}
+    return { id: id, label: name, containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: 'square', iconColor: col, isSolid: true, checked: true, source_type: 'geojson-supabase', panel: pnl };
   }
   // A tileset layer is an engine-shaped leaf backed by a hosted vector source (NOT geojson-supabase,
   // so MapboxDraw never touches it and leafRow derives source_type 'mapbox-tileset' from source.url).
@@ -496,7 +501,7 @@
       if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; if (parent.type === 'group') node.topLayerClass = parent.id; }   // group children need the group's _item class for the ± caret
       else layers.push(node);
       rerender();
-      if (type === 'layer') setActiveLayer(node.id);  // draw into the layer you just made
+      if (type === 'layer') setActiveLayer(node.id, { noPanel: true });  // draw into the layer you just made — creating a layer (+Layer or draw auto-create) never pops the style panel; only CLICKING a layer opens it
       setStatus('Saved');
       return node;
     } catch (e) {
@@ -582,7 +587,11 @@
     if (!_panelClickPatched && typeof window.handlePanelClick === 'function') {   // editor: editable layers own their clicks (edit), so the engine's encyclopedia panel-click must not ALSO fire — the page shows via the feature panel instead
       _panelClickPatched = true; var _origHPC = window.handlePanelClick;
       window.handlePanelClick = function (layer, event) {
-        try { var n = findNodeById(layers, layer && layer.id); if (n && isEngineEditable(n)) return; } catch (e) {}
+        // ALSO suppress for small drawn layers (their features live in MapboxDraw): if the engine copy is
+        // ever visible/clickable (e.g. it rendered after hideDrawnEngineLayers ran), the engine's panel
+        // toggle runs IN PARALLEL with the editor's — its second-click closePanelInfo slideUp collapses
+        // the info panel the editor just opened (the vanishing-panel-on-second-click bug).
+        try { var n = findNodeById(layers, layer && layer.id); if (n && (isEngineEditable(n) || _drawLayerSlugs[n.id])) return; } catch (e) {}
         return _origHPC.apply(this, arguments);
       };
     }
@@ -652,7 +661,10 @@
 
   async function enterEngineEdit(node, fid) {
     var drawId = 'db-' + fid;
-    if (draw && draw.get(drawId)) { try { _skipArmOnce = true; draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {} showFeaturePanel(drawId); return; }
+    if (draw && draw.get(drawId)) {   // already pulled into draw (re-click via the edited overlay) → stage 1 unless mid-geometry-edit
+      if (_editingDraw !== drawId) { _editingDraw = null; _armedSet = [drawId]; try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {} updateArmedHl(); }
+      showFeaturePanel(drawId); return;
+    }
     var lyrId = (typeof slugToLayerDbId !== 'undefined') ? slugToLayerDbId[node.id] : null;
     if (!lyrId) return;   // this layer's data isn't in our `features` table → not editable here
     // Scope to THIS layer's id. feature_id alone is GLOBAL, so a tile id can collide with an unrelated
@@ -674,9 +686,13 @@
       var m = pair[1]; if (!m) return; var tgt = { source: node.id + '-' + pair[0], id: Number(fid) }; if (node['source-layer']) tgt.sourceLayer = node['source-layer'];
       try { m.setFeatureState(tgt, { hover: false }); } catch (e) {}
     });
-    try { _skipArmOnce = true; draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e) {}
+    // stage 1 (same as drawn features): highlight + panel; the pulled-in draw copy stays UNSELECTED so the
+    // geometry is locked — a second click on it goes through draw's own pipeline → stage 2 (editable)
+    _editingDraw = null; _armedSet = [drawId];
+    try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {}
+    updateArmedHl();
     showFeaturePanel(drawId);
-    setStatus('Editing feature ' + fid);
+    setStatus('Feature ' + fid + ' — click it again to edit its shape');
   }
   function applyEngineEditFilter(node) {
     var ids = (_engineEditIds[node.id] || []).map(Number);
@@ -2046,6 +2062,95 @@
       left.appendChild(el);   // the bar's CSS normalizes size/padding for every item
     });
     src.remove();
+    if (!document.getElementById('editor-guide-btn')) {   // Guide lives next to Settings (editor-only chrome, built here so the shared page markup stays viewer-identical)
+      var gb = document.createElement('button');
+      gb.id = 'editor-guide-btn'; gb.textContent = '📖 Guide'; gb.title = 'How to build a map — every panel and button explained';
+      left.appendChild(gb);
+      gb.addEventListener('click', openGuidePanel);
+    }
+  }
+  // ── Guide: how to construct a map (auto-generated draft — see the disclaimer it opens with) ──
+  function openGuidePanel() {
+    injectGuidePanel();
+    var ov = document.getElementById('editor-guide-overlay');
+    if (ov) ov.style.display = 'block';
+  }
+  function closeGuidePanel() { var ov = document.getElementById('editor-guide-overlay'); if (ov) ov.style.display = 'none'; }
+  function injectGuidePanel() {
+    if (document.getElementById('editor-guide-overlay')) return;
+    var ov = document.createElement('div');
+    ov.id = 'editor-guide-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(20,18,30,0.45);z-index:4000;display:none;';
+    var h = function (t) { return '<h3 style="margin:18px 0 6px;font-size:15px;color:#23374d;border-bottom:1px solid #eee;padding-bottom:3px;">' + t + '</h3>'; };
+    var p = function (t) { return '<p style="margin:5px 0;">' + t + '</p>'; };
+    var li = function (t) { return '<li style="margin:3px 0;">' + t + '</li>'; };
+    ov.innerHTML =
+      '<div id="editor-guide-panel" style="position:absolute;top:6vh;left:50%;transform:translateX(-50%);width:680px;max-width:92vw;max-height:86vh;display:flex;flex-direction:column;background:#fff;border-radius:9px;box-shadow:0 10px 40px rgba(0,0,0,0.35);font-family:Source Sans Pro,Arial,sans-serif;font-size:13px;color:#222;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e5e5;">' +
+          '<b style="font-size:16px;">📖 MapStructor Guide — building a map</b>' +
+          '<span id="editor-guide-close" style="cursor:pointer;color:#888;font-size:20px;line-height:1;">&times;</span>' +
+        '</div>' +
+        '<div style="overflow-y:auto;padding:6px 18px 18px;">' +
+          '<div style="margin:10px 0;padding:8px 10px;background:#fff7e0;border:1px solid #e8d48a;border-radius:6px;font-size:12px;color:#6b5900;"><b>Heads up:</b> this guide was auto-generated (by the AI assistant that builds MapStructor) and hasn\'t been human-reviewed yet. Details may lag behind the app — trust the app over the text.</div>' +
+          h('Overview') +
+          p('A MapStructor map is <b>two synchronized maps with a swipe divider</b> between them (drag the blue handle), a <b>timeline</b> along the bottom, and a <b>layers sidebar</b> on the left. Everything you change autosaves to your map immediately — but the public only sees what you\'ve <b>published</b>.') +
+          p('Rough recipe: pick basemaps → add a layer → draw or import features → label and style them → set the default view in Settings → Publish → share the View link.') +
+          h('The sidebar: sections, groups, layers') +
+          '<ul style="margin:4px 0;padding-left:20px;">' +
+          li('<b>Layers</b> hold features (points, lines, or shapes — one geometry type per layer). <b>Groups</b> hold layers; <b>Sections</b> hold groups — think files, folders, and drives.') +
+          li('The <b>checkbox</b> shows/hides a layer for this session. <b>Click a row</b> to make it the active layer and open its style panel. Drag rows to reorder or move them between groups.') +
+          li('The <b>trash</b> icon on a row deletes it (undoable). The pencil lets you rename directly.') +
+          '</ul>' +
+          h('The add bar (+ buttons)') +
+          '<ul style="margin:4px 0;padding-left:20px;">' +
+          li('<b>+ Layer</b> — a new empty drawn layer. It becomes the active draw target (its style panel opens only when you click the layer).') +
+          li('<b>+ Tileset</b> — a hosted vector tileset (e.g. a Mapbox tileset URL + source layer). Big datasets render fast this way.') +
+          li('<b>+ Import</b> — upload GeoJSON, KML, or zipped Shapefile; features land in a new layer (large imports render engine-side automatically).') +
+          li('<b>⬇ Export</b> — download any layer\'s features as GeoJSON, KML, or Shapefile.') +
+          li('<b>+ Group / + Section</b> — organizers; pick a parent when creating.') +
+          '</ul>' +
+          h('Drawing features') +
+          p('Use the tool dock (top-left over the map): <b>point, line, polygon</b> tools draw on the <b>left side of the swipe</b>. Click to place vertices; finish a line/shape with <b>Enter</b> or a double-click. The freshly drawn feature stays selected with its editor open — type its label right away.') +
+          p('If no drawn layer is selected, drawing auto-creates an "Untitled" layer of the right type — select a layer first to draw into it.') +
+          h('Selecting & editing features (two-stage clicks)') +
+          '<ul style="margin:4px 0;padding-left:20px;">' +
+          li('<b>Click a feature once</b> (either side of the swipe): it highlights, its bubble opens (if enabled) and stays open, and the info panel + feature editor open on the right. Its shape is still locked.') +
+          li('<b>Click it again</b>: the shape unlocks — drag the whole feature, click once more for vertex editing.') +
+          li('<b>Shift/Ctrl-click</b> gathers a multi-selection (highlight only). A plain click on one of them edits that one.') +
+          li('<b>Click empty ground</b> to clear everything (selection, panels, bubbles, highlights).') +
+          li('The feature editor holds <b>Label</b>, formatted <b>Notes</b>, an <b>Image</b> (URL or upload), and <b>Start/End dates</b> for the timeline. The label updates the bubble and map labels as you type.') +
+          li('Tileset/large-layer features work the same; use <b>✓ Done editing</b> to fold an edited feature back.') +
+          '</ul>' +
+          h('Layer style panel (click a layer row)') +
+          '<ul style="margin:4px 0;padding-left:20px;">' +
+          li('<b>Color, fill opacity, outline</b> (color / show / thickness), point size — all preview live on the map.') +
+          li('<b>Labels</b> — turn on map labels from any field; size <b>varies by zoom</b> by default (set the three sizes, or untick to use one uniform size); color, halo, bold, density.') +
+          li('<b>Bubbles</b> — enable hover and/or click bubbles; pick which field they show; hover highlight toggle.') +
+          li('<b>Zoom target</b> — where "zoom to layer" flies; defaults to the layer\'s extent.') +
+          li('<b>Attribute table</b> — every feature as a row: click to select (highlights on the map), click again to edit a cell; star, sort, zoom-to, and delete selected.') +
+          li('<b>Info panel link</b> — connect features to notes or an encyclopedia page id, shown in the right-side panel when clicked.') +
+          li('<b>Split outline</b> (fills) — give the outline its own layer for independent styling. <b>Delete</b> removes the layer.') +
+          '</ul>' +
+          h('Timeline') +
+          p('Features with start/end dates appear only when the slider is inside their range; blank dates = always visible. Set the timeline\'s own start/end in <b>Settings</b>. Drag the slider to travel in time.') +
+          h('Maps (basemaps) & zoom buttons') +
+          p('The MAPS section lists basemaps — pick one for each swipe side. <b>+ Map</b> adds a basemap from a style URL; map sections organize them. <b>+ Button</b> creates a zoom button (capture the current view, or link to a place) shown on the map.') +
+          h('Top bar') +
+          '<ul style="margin:4px 0;padding-left:20px;">' +
+          li('<b>✏ Editing mode</b> — you\'re editing; changes autosave (privately).') +
+          li('<b>Publish</b> — push the current state to the public view.') +
+          li('<b>View ↗</b> — the public page (last published). <b>Preview ↗</b> — your live edits before publishing.') +
+          li('<b>⧉ Copy</b> — clone the whole map as a new private map. <b>⚙ Settings</b> — name, default view, sharing/public link, publish, timeline range, header logo.') +
+          li('<b>Login / your email</b> — anonymous maps live only at their URL; save to an account so you don\'t lose them.') +
+          '</ul>' +
+          h('Other tools') +
+          p('<b>Undo/redo</b> cover drawing, edits, deletes, merges. <b>Measure</b> reports distance/area as you draw. <b>Split</b> cuts a polygon/line with a drawn line; <b>Merge</b> joins same-type selected features. The <b>search box</b> finds places; <b>Zoom to Layers</b> fits everything you\'ve made.') +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    document.getElementById('editor-guide-close').addEventListener('click', closeGuidePanel);
+    ov.addEventListener('click', function (e) { if (e.target === ov) closeGuidePanel(); });   // click the backdrop → close
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeGuidePanel(); });
   }
   function injectChrome() {
     var panel = document.getElementById('layers-panel-content');
@@ -2115,6 +2220,8 @@
       '#header-text-value:focus{outline:2px solid #7c5cbf;outline-offset:3px;border-radius:3px;}' +
       '#editor-settings{padding:4px 12px;height:28px;border:1px solid #bbb;border-radius:6px;background:#fff;color:#444;font-size:13px;font-weight:600;cursor:pointer;vertical-align:middle;white-space:nowrap;}' +
       '#editor-settings:hover{background:#f2f2f2;}' +
+      '#editor-guide-btn{padding:4px 12px;height:28px;border:1px solid #bbb;border-radius:6px;background:#fff;color:#444;font-size:13px;font-weight:600;cursor:pointer;vertical-align:middle;white-space:nowrap;}' +
+      '#editor-guide-btn:hover{background:#f2f2f2;}' +
       '#editor-map-tools button{width:30px;height:30px;border:none;border-radius:0;background:#fff;color:#222222;cursor:pointer;font-size:13px;line-height:1;padding:0;}' +
       '#editor-map-tools button:disabled{opacity:0.4;cursor:default;}' +
       '#editor-map-tools button:not(:disabled):hover{background:#e8e8e8;}' +
@@ -2274,7 +2381,7 @@
   var featureCache = {};  // mapbox-draw feature id → cached GeoJSON while hidden
   var _suppressFeatureDelete = false;  // set during a hide-toggle so onDrawDelete skips the DB
   var selectedDrawId = null;
-  var _featTimer = null;
+  var _featTimer = null, _lblLiveTimer = null;
   var GEOM_TO_TYPE = { Point: 'circle', LineString: 'line', Polygon: 'fill' };
   var TYPE_TO_GEOM = { circle: 'point', line: 'line', fill: 'polygon' };
   var GEOM_TO_ICON = { Point: 'circle', LineString: 'slash', Polygon: 'draw-polygon' };
@@ -2306,7 +2413,7 @@
     { id: 'gl-draw-point-active', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'active', 'true'], ['==', 'meta', 'feature']], paint: { 'circle-radius': 6, 'circle-color': '#fbb03b' } },
   ];
 
-  function setActiveLayer(id) {
+  function setActiveLayer(id, opts) {
     activeLayerId = id;
     var panel = document.getElementById('layers-panel-content'); if (!panel) return;
     panel.querySelectorAll('.layer-list-row.editor-active').forEach(function (el) { el.classList.remove('editor-active'); });
@@ -2314,7 +2421,12 @@
     var node = findNodeById(layers, id);
     // drawn layers always get the style panel; tilesets get it too once they have a styleable type
     var styleable = node && (node.source_type === 'geojson-supabase' || (isTilesetNode(node) && ['fill', 'line', 'circle'].indexOf(node.type) > -1));
-    if (node) showLayerPanel(id); else hideLayerPanel();   // every layer + group + section opens the panel; sections get a minimal title+Delete panel (#4)
+    if (node) {
+      // opts.noPanel (adding a FEATURE auto-activates its layer): never OPEN the style panel — it opens
+      // only when the user clicks the layer. An already-open panel still re-targets so it's never stale.
+      var lp = document.getElementById('editor-layer-panel');
+      if (!(opts && opts.noPanel) || (lp && lp.style.display !== 'none')) showLayerPanel(id);
+    } else hideLayerPanel();   // every layer + group + section opens the panel; sections get a minimal title+Delete panel (#4)
   }
   function activeLayerDbId() {
     if (!activeLayerId) return null;
@@ -2352,7 +2464,7 @@
   // small drawn layers (their features live in MapboxDraw) — hidden layers fire no mouse events, so bubbles
   // never showed while editing. These handlers read the LIVE toggles (#12), and clicking still selects the
   // feature for editing (editor = viewer + tools; neither suppresses the other).
-  var _drawHoverPop = null, _drawClickPop = null, _drawClickPopId = null, _hoverHlId = null;
+  var _drawHoverPop = null, _drawClickPop = null, _drawClickPopId = null, _hoverHlId = null, _refreshOpenPill = null;
   function drawNodeFor(did) { var lid = featureLayer[did]; return lid ? nodeByLayerDbId(lid) : null; }
   // Hover-highlight for MapboxDraw features: a dedicated overlay source/layers on BOTH maps, fed the hovered
   // feature's geometry (proven be-merge-hl approach — works for features drawn this session too, which the
@@ -2418,13 +2530,14 @@
   }
   function wireDrawPopups() {
     if (wireDrawPopups._done || typeof beforeMap === 'undefined') return; wireDrawPopups._done = true;
-    var _clickPops = [];
+    var _clickPops = [], _hoverPops = [];
     function closeClickPops() { _clickPops.forEach(function (cp) { try { if (cp.isOpen()) cp.remove(); } catch (e) {} }); _drawClickPopId = null; }
+    function closeHoverPops() { _hoverPops.forEach(function (hp) { try { if (hp.isOpen()) hp.remove(); } catch (e) {} }); }
     [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (m) {
       if (!m) return;   // BOTH swipe sides get hover/click popups (the maps are camera-synced, so the left
       var hoverPop = new mapboxgl.Popup({ closeButton: false, closeOnClick: false });          // map's rendered features answer hit-tests for either side)
       var clickPop = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 5 });
-      _clickPops.push(clickPop);
+      _clickPops.push(clickPop); _hoverPops.push(hoverPop);
       m.on('mousemove', function (e) {
         if (window._msPanelDrag) return;   // dragging a panel edge over the map is not a feature hover
         var did = drawFeatureAt(e.point);
@@ -2442,17 +2555,63 @@
       });
       m.on('click', function (e) {
         var did = drawFeatureAt(e.point);
+        // click empty ground → clear EVERYTHING ourselves (highlight, panel, bubbles, stage). In stage 1
+        // draw's own selection is already EMPTY, so no selectionchange will ever fire to do this — relying
+        // on draw's event was the "stuck panel/highlight" hole. When something IS selected (stage 2, left
+        // side), draw's own pipeline still deselects and fires; these clears are idempotent alongside it.
+        if (!did && (_armedSet.length || selectedDrawId || _editingDraw)) {
+          clearArmedSet();
+          _editingDraw = null;
+          hideFeaturePanel();
+          closeClickPops(); closeHoverPops();
+          syncAttrRowsFromMap([]);
+        }
+        // the RIGHT swipe map has no MapboxDraw — run the same two-stage click model programmatically
+        // there (stage 1 = panel/highlight, stage 2 = geometry), so both sides feel identical.
+        // Gate on the swipe divider TOO, not just which map fired: if the compare clip ever breaks
+        // (it recomputes on resize), afterMap receives LEFT-side clicks — this path would then silently
+        // pre-select and starve draw's own pipeline of its selectionchange events (verified headless).
+        var rightOfSwipe = (function () {
+          try { var el = document.querySelector('.mapboxgl-compare'); var cx = e.originalEvent && e.originalEvent.clientX; return !el || cx == null || cx >= el.getBoundingClientRect().left; } catch (err) { return true; }
+        })();
+        if (m !== beforeMap && draw && rightOfSwipe) {
+          if (did && did !== _editingDraw) {
+            if (_armedSet.indexOf(did) > -1) {   // stage 2: geometry editable (selection lives in draw on the left; the mirror shows it)
+              _editingDraw = did; _armedSet = []; setArmedHl(null);
+              try { draw.changeMode('simple_select', { featureIds: [did] }); } catch (err) {}
+            } else {                              // stage 1: highlight + panel, geometry NOT editable
+              _editingDraw = null; _armedSet = [did];
+              try { draw.changeMode('simple_select', { featureIds: [] }); } catch (err) {}
+              updateArmedHl();
+            }
+            showFeaturePanel(did);
+            syncAttrRowsFromMap([{ id: did }]);
+          } else if (!did) {
+            // panel/highlight/bubble clears happened in the unified empty-click block above; only draw's
+            // selection lives here (draw can't see right-side clicks). Guarded so an active draw MODE
+            // (draw_point etc.) is never cancelled by a stray right-side click.
+            try { if (draw.getSelectedIds().length && draw.getMode() === 'simple_select') draw.changeMode('simple_select', { featureIds: [] }); } catch (err) {}
+          }
+        }
         var node = did ? drawNodeFor(did) : null;
         var on = node && (node._uiClick != null ? node._uiClick : !!node.click);
         var html = (did && node && on) ? drawPopupHtml(node, did) : null;
         if (!html) { closeClickPops(); return; }
-        if (_drawClickPopId === did) { closeClickPops(); return; }   // second click toggles off, like the viewer
-        closeClickPops();
+        if (_drawClickPopId !== did) closeClickPops();   // a DIFFERENT feature's bubble closes; re-clicks refresh below
         _drawClickPopId = did;
-        clickPop.setLngLat(e.lngLat).setHTML(html);
-        clickPop.addTo(m);
+        clickPop.setLngLat(e.lngLat).setHTML(html);      // re-click = re-anchor + fresh label (no toggle-off: the selected feature's bubble stays open until you click off it)
+        if (!clickPop.isOpen()) clickPop.addTo(m);
       });
     });
+    // live pill refresh: typing in the feature panel updates the OPEN bubble's label in realtime
+    _refreshOpenPill = function (did) {
+      if (!did || _drawClickPopId !== did) return;
+      var node = drawNodeFor(did);
+      var on = node && (node._uiClick != null ? node._uiClick : !!node.click);
+      var html = (node && on) ? drawPopupHtml(node, did) : null;
+      if (!html) { closeClickPops(); return; }   // label emptied → no bubble (never show a stale one)
+      _clickPops.forEach(function (cp) { try { if (cp.isOpen()) cp.setHTML(html); } catch (err) {} });
+    };
   }
   // ── undo / redo (in-session stack; mirrors v3 undoEngine) ────────────────────
   var _undoStack = [], _redoStack = [], _undoing = false, _geomSnap = {};
@@ -2664,7 +2823,7 @@
     try {
       for (var j = 0; j < origs.length; j++) await removeDrawnFeature(origs[j].drawId);
       await addDrawnFeature(mergedId, mergedGeom, lid, mprops);
-      try { _skipArmOnce = true; draw.changeMode('simple_select', { featureIds: [mergedId] }); } catch (e) {}
+      try { _editingDraw = mergedId; _armedSet = []; setArmedHl(null); draw.changeMode('simple_select', { featureIds: [mergedId] }); } catch (e) {}   // programmatic select fires no selectionchange — set the stage bookkeeping here (a stale _skipArmOnce made the NEXT click behave unpredictably)
       pushUndo(
         async function () { await removeDrawnFeature(mergedId); for (var k = 0; k < origs.length; k++) await addDrawnFeature(origs[k].drawId, origs[k].geom, origs[k].lyr, origs[k].props); },
         async function () { for (var k = 0; k < origs.length; k++) await removeDrawnFeature(origs[k].drawId); await addDrawnFeature(mergedId, mergedGeom, lid, mprops); },
@@ -2807,7 +2966,7 @@
         showToast('Select or create a new layer');
         return;
       }
-      try { await addItem('layer', geomLayerName(f.geometry.type), null); } catch (e) { console.warn('auto-create layer failed', e); }
+      try { await addItem('layer', geomLayerName(f.geometry.type), null); } catch (e) { console.warn('auto-create layer failed', e); }   // addItem activates quietly — adding a FEATURE never pops the style panel
       lid = activeLayerDbId();
       node = activeLayerId ? findNodeById(layers, activeLayerId) : null;
       // the new layer must be usable AND of this type — never fall through to add to the previously-active (wrong) layer
@@ -2830,6 +2989,9 @@
       featureMeta[f.id] = { label: '', notes: '', start: '', end: '' };
       featureLayer[f.id] = lid;
       _geomSnap[f.id] = JSON.parse(JSON.stringify(f.geometry));
+      // the create-selection opened the panel BEFORE this insert resolved featureLayer — re-show it now
+      // that the layer is known, so the info-panel preview renders too (panel+editor, not editor-only)
+      if (selectedDrawId === f.id) showFeaturePanel(f.id);
       try { if (draw) { var fp = featureProps(node); Object.keys(fp).forEach(function (k) { draw.setFeatureProperty(f.id, k, fp[k]); }); } } catch (e) {}  // stamp the layer's full style so the new feature matches
       (function (drawId, geom, lyr, col) {
         pushUndo(function () { return removeDrawnFeature(drawId); },
@@ -2848,6 +3010,8 @@
       var upatch = {}; upatch[EBu.geomCol] = saveGeom;
       try { await EBu.db.from(EBu.table).update(upatch).eq(EBu.idCol, fid); } catch (err) { console.warn('feature update failed', err); }
       _geomSnap[f.id] = newGeom;
+      var lnU = featureLayer[f.id] ? nodeByLayerDbId(featureLayer[f.id]) : null;   // map labels anchor to the geometry — re-anchor after a move (debounced)
+      if (lnU && lnU.labels) { clearTimeout(_lblLiveTimer); _lblLiveTimer = setTimeout(function () { try { applyLabelLayers(lnU); } catch (err2) {} }, 400); }
       if (oldGeom) (function (drawId, oldG, newG) {
         pushUndo(function () { return setDrawnGeom(drawId, oldG); }, function () { return setDrawnGeom(drawId, newG); }, 'move feature');
       })(f.id, oldGeom, newGeom);
@@ -2882,6 +3046,10 @@
       try { var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gjList[gi].did); var cn = cq.count || 0; if (cn > 0 && cn <= MAX_DRAW) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } } catch (e) {}
     }
     hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
+    // the engine adds its layers on style.load, which can land AFTER the hide above ran (getLayer misses →
+    // nothing hidden → drawn features double-render and the engine's click/panel systems stay live) — re-hide once settled
+    try { if (beforeMap) beforeMap.once('idle', hideDrawnEngineLayers); } catch (e) {}
+    try { if (typeof afterMap !== 'undefined' && afterMap) afterMap.once('idle', hideDrawnEngineLayers); } catch (e) {}
     if (smallIds.length) { try { if (window._msDismissDrawHint) window._msDismissDrawHint(); if (window._msDismissSearchHint) window._msDismissSearchHint(); } catch (e) {} }   // map already has drawn features — retire the onboarding nudges
     wireEngineEditClicks(); try { if (beforeMap) beforeMap.once('idle', wireEngineEditClicks); } catch (e) {}   // BEFORE the early-return below, so tileset-only / large-layer-only projects still get click→edit
     if (!smallIds.length) { try { draw.set({ type: 'FeatureCollection', features: [] }); } catch (e) {} return; }
@@ -3022,8 +3190,10 @@
   }
 
   // ── feature panel: click a drawn feature → edit its label/notes ─────────────
-  // click a feature → HIGHLIGHT it (armed); click it again → real selection (geometry editing + panel).
-  // Programmatic selections (paste, merge, click-to-edit) skip the arming via _skipArmOnce.
+  // TWO-STAGE clicks (2026-07-08 spec): stage 1 = ONE click opens everything you READ (highlight, bubble,
+  // info panel, feature editor) but the geometry stays locked; stage 2 = a second click on the same feature
+  // unlocks geometry editing. The armed set doubles as the stage-1 marker and the shift/ctrl multi-select set.
+  // _skipArmOnce = only for a JUST-DRAWN feature (its create-selection goes straight to stage 2).
   var _armedSet = [], _editingDraw = null, _skipArmOnce = false;
   function ensureArmedHl() {
     [beforeMap, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
@@ -3061,10 +3231,10 @@
     if (row) row.scrollIntoView({ block: 'nearest' });   // explicit click (not hover) — bringing the row into view is wanted here
     fillAttrPreview(fids[fids.length - 1]);
   }
-  // ── click model on the map (mirrors the attribute table + GIS selection): ──
-  //   plain click            → HIGHLIGHT that feature (selection of one; nothing editable)
-  //   shift/ctrl click       → ADD to / REMOVE from the highlight set (multi-select; still nothing editable)
-  //   plain click on a highlighted feature → NOW its geometry is editable (+ feature panel)
+  // ── click model on the map (two-stage; modifier = GIS-style multi-select): ──
+  //   plain click            → stage 1: HIGHLIGHT + bubble stays open + info panel + feature editor (geometry locked)
+  //   plain click on the highlighted feature → stage 2: geometry becomes editable (panel/bubble stay)
+  //   shift/ctrl click       → ADD to / REMOVE from the highlight set (multi-select; nothing editable, no panel)
   //   click empty ground     → clear everything
   // The deselects/selects are DEFERRED one tick: mapbox-draw's click pipeline finishes after this
   // handler and re-applies its own selection — synchronous changes here get clobbered.
@@ -3073,7 +3243,7 @@
   function armedIdsToRows() { syncAttrRowsFromMap(_armedSet.map(function (i3) { return { id: i3 }; })); }
   function onSelectionChange(e) {
     if (!e.features || !e.features.length) { _skipArmOnce = false; _editingDraw = null; _armedSet = []; setArmedHl(null); hideFeaturePanel(); syncAttrRowsFromMap([]); return; }
-    if (_skipArmOnce) {   // programmatic (paste/merge/click-to-edit/new draw): behave classically
+    if (_skipArmOnce) {   // a JUST-DRAWN feature: skip stage 1 — it stays selected (stage 2) with the panel open
       var f0 = e.features[0];
       _skipArmOnce = false; _editingDraw = String(f0.id); _armedSet = []; setArmedHl(null);
       showFeaturePanel(f0.id); syncAttrRowsFromMap(e.features);
@@ -3092,21 +3262,31 @@
         updateArmedHl(); armedIdsToRows();
         return;
       }
-      // SECOND plain click on a highlighted feature → edit THAT one
+      // stage 2: plain click on the already-highlighted feature → geometry becomes editable
       _editingDraw = id; _armedSet = [];
       setArmedHl(null);
       deferDrawSel([id]);
-      showFeaturePanel(id);
+      showFeaturePanel(id);   // idempotent — also restores the panel when entering from a multi-select set
       syncAttrRowsFromMap([{ id: id }]);
       return;
     }
     // clicked an un-highlighted feature
-    if (mod) { if (_editingDraw) _armedSet.push(_editingDraw); _armedSet.push(id); }   // leaving edit mode via modifier keeps that feature highlighted
-    else _armedSet = [id];
-    _editingDraw = null;
+    if (mod) {   // modifier-click GATHERS highlights (multi-select set, nothing editable)
+      if (_editingDraw) _armedSet.push(_editingDraw);   // leaving edit mode via modifier keeps that feature highlighted
+      _armedSet.push(id);
+      _editingDraw = null;
+      deferDrawSel([]);
+      updateArmedHl(); armedIdsToRows();
+      hideFeaturePanel();
+      return;
+    }
+    // stage 1: plain click → highlight + panel + editor open; geometry stays LOCKED (the deferred
+    // deselect undoes draw's own selection after its click pipeline finishes, so nothing is draggable)
+    _editingDraw = null; _armedSet = [id];
     deferDrawSel([]);
-    updateArmedHl(); armedIdsToRows();
-    hideFeaturePanel();
+    updateArmedHl();
+    showFeaturePanel(id);
+    syncAttrRowsFromMap([{ id: id }]);
   }
   function injectFeaturePanel() {
     if (document.getElementById('editor-feature-panel')) return;
@@ -3144,7 +3324,11 @@
       '<button id="efp-done" style="margin-top:10px;width:100%;padding:7px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;font-weight:600;cursor:pointer;font-size:12px;display:none;">✓ Done editing</button>';
       // #10: "Delete feature" button removed — delete via the draw trash button or the keyboard (Delete/Backspace).
     document.body.appendChild(p);
-    document.getElementById('efp-close').addEventListener('click', function () { if (draw) draw.changeMode('simple_select'); hideFeaturePanel(); });
+    document.getElementById('efp-close').addEventListener('click', function () {   // ✕ = full deselect: also reset the click-stage bookkeeping, or the NEXT click on this feature would skip stage 1
+      if (draw) try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {}
+      _editingDraw = null; _armedSet = []; setArmedHl(null);
+      hideFeaturePanel();
+    });
     document.getElementById('efp-pageid').addEventListener('input', function () { onFeatureField('pageid', this.value); });
     document.getElementById('efp-done').addEventListener('click', function () { var n = _engineEditNode[selectedDrawId]; if (n) finishEngineEdit(n, featureToDb[selectedDrawId]); });
     document.getElementById('efp-label').addEventListener('input', function () { onFeatureField('label', this.value); });
@@ -3181,6 +3365,7 @@
     document.getElementById('efp-image-status').textContent = '';
     updateImagePreview(meta.image_url || '');
     var lnode = featureLayer[drawId] ? nodeByLayerDbId(featureLayer[drawId]) : null;   // Page ID + encyclopedia preview only when the layer links to an encyclopedia
+    if (!lnode && activeLayerId) lnode = findNodeById(layers, activeLayerId);   // a JUST-DRAWN feature: its DB insert hasn't resolved featureLayer yet — the active layer is where it's going
     var hasEnc = !!(lnode && lnode.panel && lnode.panel.encyclopediaBase);
     var pmode = (lnode && lnode.panel) ? (lnode.panel.mode || (hasEnc ? 'drupal' : 'notes')) : null;
     document.getElementById('efp-page-row').style.display = (pmode === 'drupal' || pmode === 'both') ? 'block' : 'none';
@@ -3307,6 +3492,10 @@
     meta[field] = value;
     var _ln = featureLayer[selectedDrawId] ? nodeByLayerDbId(featureLayer[selectedDrawId]) : null;   // live-refresh the notes preview as you type label/notes
     if (_ln && _ln.panel && _ln.panel.mode === 'notes' && document.getElementById('infoPanel-' + _ln.id)) showNotesPreview(_ln, { label: meta.label, notes: meta.notes, image_url: meta.image_url });
+    if (_refreshOpenPill) _refreshOpenPill(selectedDrawId);   // the open click-bubble tracks the label in realtime
+    if (field === 'label' && _ln && _ln.labels && (_ln.labels.field || 'label') === 'label') {   // map text labels track it too (debounced label-layer rebuild — no refresh needed)
+      clearTimeout(_lblLiveTimer); _lblLiveTimer = setTimeout(function () { try { applyLabelLayers(_ln); } catch (e) {} }, 400);
+    }
     clearTimeout(_featTimer);
     _featTimer = setTimeout(function () { saveFeatureMeta(selectedDrawId); }, 600);
   }
@@ -3448,8 +3637,9 @@
         var bd = document.getElementById('elp-lbl-bold'); if (bd) bd.checked = lbc.bold !== false;
         setv('elp-lbl-size', lbc.sizeUniform != null ? lbc.sizeUniform : 10);
         setv('elp-lbl-density', 60 - (lbc.density != null ? lbc.density : 10));
-        var vz = document.getElementById('elp-lbl-varyzoom'); if (vz) vz.checked = lbc.varyZoom === true;
-        var zr = document.getElementById('elp-lbl-zoomsizes'); if (zr) zr.style.display = (lbc.varyZoom === true) ? 'block' : 'none';
+        // vary-by-zoom is the DEFAULT for labels (2026-07-08): unset → checked; an explicit saved false (uniform) is respected
+        var vz = document.getElementById('elp-lbl-varyzoom'); if (vz) vz.checked = lbc.varyZoom !== false;
+        var zr = document.getElementById('elp-lbl-zoomsizes'); if (zr) zr.style.display = (lbc.varyZoom !== false) ? 'block' : 'none';
         var sz5 = (lbc.size && lbc.size.length === 3) ? lbc.size : [10, 13, 17];
         setv('elp-lbl-s6', sz5[0]); setv('elp-lbl-s11', sz5[1]); setv('elp-lbl-s16', sz5[2]);
       }
@@ -3575,7 +3765,7 @@
       haloWidth: parseFloat(v2('elp-lbl-halow', 2)),
       bold: boldEl ? !!boldEl.checked : true,
       sizeUniform: parseFloat(v2('elp-lbl-size', 10)),
-      varyZoom: varyEl ? !!varyEl.checked : false,
+      varyZoom: varyEl ? !!varyEl.checked : true,   // default = size by zoom (uniform stays available via the checkbox)
       density: 60 - parseFloat(v2('elp-lbl-density', 50)),   // slider right = "more" = tiny collision margin
       size: [parseFloat(v2('elp-lbl-s6', 10)), parseFloat(v2('elp-lbl-s11', 13)), parseFloat(v2('elp-lbl-s16', 17))]
     } : null;
@@ -4611,6 +4801,11 @@
       if (field === 'label') m.label = v || ''; else if (field === 'description') m.notes = v || '';
       else if (field === 'start_date') m.start = v || ''; else if (field === 'end_date') m.end = v || '';
       if (selectedDrawId === did) showFeaturePanel(did);
+      if (field === 'label') {   // label edited from the table → open bubble + map labels track it live too
+        if (_refreshOpenPill) _refreshOpenPill(did);
+        var nd = _attrSlug ? findNodeById(layers, _attrSlug) : null;
+        if (nd && nd.labels && (nd.labels.field || 'label') === 'label') try { applyLabelLayers(nd); } catch (e) {}
+      }
     }
   }
   var _styleSession = null, _styleBefore = null;   // capture the pre-edit style once per edit session (debounced edits → one undo)
