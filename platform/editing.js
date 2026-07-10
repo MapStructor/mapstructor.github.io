@@ -1469,12 +1469,6 @@
       '<input id="esp-name" type="text" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
       '<button id="esp-setview" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;">Set current view as default</button>' +
       '<div id="esp-viewinfo" style="font-size:10px;color:#888888;margin-top:4px;"></div>' +
-      '<label style="display:block;font-size:11px;color:#555555;margin:12px 0 2px;border-top:1px solid #eee;padding-top:8px;">Sharing</label>' +
-      '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-bottom:6px;"><input id="esp-public" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Public &mdash; anyone with the link can view</label>' +
-      '<button id="esp-copylink" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;">Copy view link</button>' +
-      '<div id="esp-share-msg" style="font-size:10px;color:#888888;margin-top:4px;word-break:break-all;"></div>' +
-      '<button id="esp-publish" style="width:100%;margin-top:8px;padding:8px;border:none;border-radius:4px;background:#2d7a2d;color:#fff;font-weight:700;cursor:pointer;font-size:12px;">Publish current state</button>' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">The public <b>View</b> shows the last <b>published</b> version (edits autosave but stay private until you publish). <a id="esp-preview" href="#" target="_blank" rel="noopener">Preview live edits &#8599;</a></div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin:10px 0 2px;">Timeline range</label>' +
       '<div style="display:flex;gap:6px;align-items:center;">' +
         '<input id="esp-tl-start" type="date" style="width:50%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
@@ -1501,10 +1495,7 @@
     document.getElementById('esp-feat-header').addEventListener('change', onFeatureHeader);
     document.getElementById('esp-logo-file').addEventListener('change', onLogoFile);
     document.getElementById('esp-logo-link').addEventListener('change', onLogoLink);
-    document.getElementById('esp-public').addEventListener('change', onSharePublic);
-    document.getElementById('esp-copylink').addEventListener('click', onCopyViewLink);
-    document.getElementById('esp-publish').addEventListener('click', onPublish);
-    document.getElementById('esp-preview').addEventListener('click', function () { this.href = location.href.split('#')[0].split('?')[0].replace(/editor\.html$/, 'index.html') + '?id=' + projectId + '&preview=1'; });
+    // Sharing (who can see the map) moved to its own 🔗 Share panel in the top bar — see platform/share.js.
   }
   // ── Copy map (Google-My-Maps-style): clone the WHOLE project — sections, groups, layers (new rows, so
   //    edits never touch the original), project_layers links, and every feature — into a new private map
@@ -1580,19 +1571,6 @@
       if (hb) { hb.textContent = 'Published ✓'; setTimeout(function () { hb.textContent = 'Publish'; hb.disabled = false; }, 2500); }
     } catch (e) { console.warn('publish failed', e); setStatus('Publish failed'); if (hb) { hb.textContent = 'Publish'; hb.disabled = false; } }
   }
-  async function onSharePublic() {
-    var pub = document.getElementById('esp-public').checked;
-    setStatus('Saving…');
-    try { var r = await db.from('projects').update({ is_public: pub }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus(pub ? 'Map is public' : 'Map is private'); }
-    catch (e) { setStatus('Save failed'); }
-  }
-  function onCopyViewLink() {
-    var url = location.href.split('#')[0].split('?')[0].replace(/editor\.html$/, 'index.html') + '?id=' + projectId;
-    var msg = document.getElementById('esp-share-msg');
-    function show() { if (msg) msg.textContent = url; }
-    try { navigator.clipboard.writeText(url).then(function () { if (msg) msg.textContent = 'Copied: ' + url; }, show); }
-    catch (e) { show(); }
-  }
   // Re-init the bottom timeline slider + rulers to a [startYear, endYear] range (the engine reads a static
   // const at load, so we update the live jQuery-UI slider + ruler labels + globals instead).
   function applyTimelineRange(startDate, endDate) {
@@ -1629,7 +1607,7 @@
     injectSettingsPanel();
     var p = document.getElementById('editor-settings-panel');
     if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
-    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config, is_public').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-public').checked = !!r.data.is_public; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); } } catch (e) {}
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); } } catch (e) {}
     p.style.display = 'block';
   }
   async function saveMapName(name) {
@@ -2062,6 +2040,20 @@
       left.appendChild(el);   // the bar's CSS normalizes size/padding for every item
     });
     src.remove();
+    // 🔗 Share sits LEFT of Settings: WHO can see the map (private / link / public) lives here now, not in
+    // Settings — visibility is a deliberate act, separate from publishing (which picks WHAT they see).
+    if (!document.getElementById('editor-share-btn') && window.MapShare) {
+      var shb = document.createElement('button');
+      shb.id = 'editor-share-btn'; shb.textContent = '🔗 Share'; shb.title = 'Who can see this map — private, anyone with the link, or public';
+      var stb = document.getElementById('editor-settings');
+      if (stb && stb.parentNode === left) left.insertBefore(shb, stb); else left.appendChild(shb);
+      shb.addEventListener('click', function () {
+        MapShare.open({
+          db: db, projectId: projectId,
+          viewUrl: location.href.split('#')[0].split('?')[0].replace(/editor\.html$/, 'index.html') + '?id=' + projectId
+        });
+      });
+    }
     if (!document.getElementById('editor-guide-btn')) {   // Guide lives next to Settings (editor-only chrome, built here so the shared page markup stays viewer-identical)
       var gb = document.createElement('button');
       gb.id = 'editor-guide-btn'; gb.textContent = '📖 Guide'; gb.title = 'How to build a map — every panel and button explained';
@@ -2227,7 +2219,7 @@
           h('Setting the scene') +
           '<p>In the <b>MAPS</b> section, pick each side\'s basemap — this is the heart of the swipe comparison. <b>+ Map</b> adds basemaps from a style URL; <b>+ Button</b> makes a zoom shortcut from the current view. In <b>⚙ Settings</b>, set the map\'s name, its <b>default view</b>, and the <b>timeline range</b>; features with dates then come and go as the slider moves (blank dates = always visible).</p>' +
           h('Publishing & sharing') +
-          '<p>Edits <b>autosave privately</b>. <b>Publish</b> pushes the current state to the public <b>View</b> page; <b>Preview</b> shows your unpublished edits. <b>⧉ Copy</b> clones any map as a new private one. Anonymous maps live only at their URL — <b>save to an account</b> (top right) so yours can\'t be lost, and toggle <b>Public</b> in Settings to share the link.</p>' +
+          '<p>Edits <b>autosave privately</b>. <b>Publish</b> pushes the current state to the public <b>View</b> page; <b>Preview</b> shows your unpublished edits. <b>⧉ Copy</b> clones any map as a new private one. Anonymous maps live only at their URL — <b>save to an account</b> (top right) so yours can\'t be lost, and use <b>&#128279; Share</b> (top bar) to choose who can see it: private, anyone with the link, or public.</p>' +
           h('Power tools') +
           '<p><b>Undo/redo</b> cover drawing, edits, and deletes. <b>Measure</b> reads out distance or area as you draw. <b>Split</b> cuts a shape along a drawn line; <b>Merge</b> joins several of the same type. The <b>attribute table</b> edits features in bulk (click a row to select, again to edit; ★ marks a working set). The <b>search box</b> flies to any place; <b>Zoom to Layers</b> fits everything you\'ve made.</p>';
   }
@@ -2297,8 +2289,8 @@
       '#header-text-value{cursor:text;}' +
       '#header-text-value:hover{outline:1px dashed #ccc;outline-offset:3px;border-radius:3px;}' +
       '#header-text-value:focus{outline:2px solid #7c5cbf;outline-offset:3px;border-radius:3px;}' +
-      '#editor-settings{padding:4px 12px;height:28px;border:1px solid #bbb;border-radius:6px;background:#fff;color:#444;font-size:13px;font-weight:600;cursor:pointer;vertical-align:middle;white-space:nowrap;}' +
-      '#editor-settings:hover{background:#f2f2f2;}' +
+      '#editor-settings,#editor-share-btn{padding:4px 12px;height:28px;border:1px solid #bbb;border-radius:6px;background:#fff;color:#444;font-size:13px;font-weight:600;cursor:pointer;vertical-align:middle;white-space:nowrap;font-family:"Source Sans Pro",Arial,sans-serif;}' +
+      '#editor-settings:hover,#editor-share-btn:hover{background:#f2f2f2;}' +
       '#editor-guide-btn{padding:4px 12px;height:28px;border:1px solid #bbb;border-radius:6px;background:#fff;color:#444;font-size:13px;font-weight:600;cursor:pointer;vertical-align:middle;white-space:nowrap;}' +
       '#editor-guide-btn:hover{background:#f2f2f2;}' +
       '#editor-map-tools button{width:30px;height:30px;border:none;border-radius:0;background:#fff;color:#222222;cursor:pointer;font-size:13px;line-height:1;padding:0;}' +

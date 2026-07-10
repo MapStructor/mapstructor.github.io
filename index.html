@@ -76,6 +76,24 @@
       letter-spacing: -0.04em;
       line-height: 1;
       margin-bottom: clamp(10px, 2vw, 18px);
+      position: relative;   /* anchors the out-of-flow beta pill */
+    }
+
+    /* the classic superscript beta pill — position:absolute takes it OUT of the centering math, so
+       "MapStructor" sits exactly where it did without the pill and the pill rides its shoulder */
+    .beta-tag {
+      position: absolute;
+      margin-left: 10px;
+      margin-top: 4px;
+      font-size: clamp(11px, 1.6vw, 15px);
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #7c5cbf;
+      background: #efeaf8;
+      border: 1px solid #d9cff1;
+      border-radius: 20px;
+      padding: 3px 10px;
+      white-space: nowrap;
     }
 
     .hero-sub {
@@ -288,7 +306,7 @@
 
   <div class="hero">
     <img class="hero-logo" src="images/nittygrittymapping_logo.png" alt="MapStructor logo">
-    <div class="hero-title">MapStructor</div>
+    <div class="hero-title">MapStructor <span class="beta-tag">very beta</span></div>
     <p class="hero-sub" data-edit="home-tagline">Create and explore maps</p>
     <button id="btn-create-map" class="btn-hero">Create a Map</button>
     <span class="free-tag" id="free-tag" title="Why it's free" style="display:inline-block;margin-left:12px;background:#e6f6ea;color:#2d7a2d;font-weight:700;font-size:13px;padding:4px 12px;border-radius:20px;vertical-align:middle;cursor:pointer;">Free</span>
@@ -432,7 +450,7 @@
 
       var { data, error } = await db
         .from('projects')
-        .insert({ name: 'Untitled Map', user_id: u && u.id, is_public: false })   // scope to creator (was null → every account saw every map); private by default
+        .insert({ name: 'Untitled Map', user_id: u && u.id, is_public: false, raw_config: { visibility: 'private' } })   // scope to creator; truly private by default (Share panel can open it up)
         .select('id')
         .single();
 

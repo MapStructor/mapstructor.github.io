@@ -64,6 +64,7 @@
   <script src="platform/topbar.js"></script>
   <script src="platform/pricing.js"></script>
   <script src="platform/sanitize.js?v=20260709"></script>
+  <script src="platform/share.js?v=20260709b"></script>
 </head>
 <body>
   <nav>
@@ -193,7 +194,7 @@
       function fmtDate(d) { try { return d ? new Date(d).toLocaleDateString() : ''; } catch (e) { return ''; } }
 
       async function loadMaps() {
-        var res = await db.from('projects').select('id,name,updated_at,is_public').eq('user_id', user.id).order('updated_at', { ascending: false });   // only THIS user's maps (RLS is still permissive — tighten at Step 25)
+        var res = await db.from('projects').select('id,name,updated_at,is_public,visibility:raw_config->>visibility').eq('user_id', user.id).order('updated_at', { ascending: false });   // only THIS user's maps (RLS is still permissive — tighten at Step 25)
         if (res.error) { listEl.innerHTML = '<p class="msg err">Could not load your maps.</p>'; return; }
         render(res.data || []);
       }
@@ -201,19 +202,24 @@
         if (!maps.length) { listEl.innerHTML = '<p class="sub">No maps yet — create your first one below.</p>'; return; }
         listEl.innerHTML = '';
         maps.forEach(function (m) {
+          // effective visibility mirrors MapShare: explicit value wins; older maps = the behavior they had
+          var vis = (m.visibility === 'private' || m.visibility === 'link' || m.visibility === 'public') ? m.visibility : (m.is_public ? 'public' : 'link');
+          var visLabel = vis === 'public' ? 'public' : vis === 'link' ? 'anyone with link' : 'private';
           var row = document.createElement('div'); row.className = 'map-row';
+          // the one-click public/private pill was TOO easy to flip by accident — it's a read-only chip now;
+          // changing visibility is a deliberate act inside the Share panel
           row.innerHTML = '<span class="map-name">' + esc(m.name || 'Untitled Map') + '</span>'
-            + '<button class="pill' + (m.is_public ? ' pub' : '') + '" data-act="vis" title="Click to toggle visibility">' + (m.is_public ? 'public' : 'private') + '</button>'
+            + '<span class="pill' + (vis === 'public' ? ' pub' : '') + '" style="cursor:default;">' + visLabel + '</span>'
             + '<span class="map-meta">' + fmtDate(m.updated_at) + '</span>'
             + '<div class="row-actions">'
             + '<button class="btn" data-act="open">Open</button>'
+            + '<button class="btn btn-light" data-act="share">Share</button>'
             + '<button class="btn btn-light" data-act="rename">Rename</button>'
             + '<button class="btn btn-danger" data-act="delete">Delete</button>'
             + '</div>';
           row.querySelector('[data-act=open]').onclick = function () { location.href = 'map/editor.html?id=' + m.id; };
-          row.querySelector('[data-act=vis]').onclick = async function () {   // Step 17: private/public toggle (enforcement needs RLS — Step 25)
-            var r = await db.from('projects').update({ is_public: !m.is_public }).eq('id', m.id);
-            if (!r.error) loadMaps();
+          row.querySelector('[data-act=share]').onclick = function () {
+            if (window.MapShare) MapShare.open({ db: db, projectId: m.id, viewUrl: new URL('map/index.html?id=' + m.id, location.href).href, onChange: loadMaps });
           };
           row.querySelector('[data-act=rename]').onclick = async function () {
             var name = prompt('Rename map:', m.name || 'Untitled Map'); if (name == null) return;
@@ -306,7 +312,7 @@
       // ---- New map ----
       document.getElementById('btn-new-map').addEventListener('click', async function () {
         this.disabled = true; this.textContent = 'Creating…';
-        var r = await db.from('projects').insert({ name: 'Untitled Map', user_id: user.id, is_public: false }).select('id').single();
+        var r = await db.from('projects').insert({ name: 'Untitled Map', user_id: user.id, is_public: false, raw_config: { visibility: 'private' } }).select('id').single();
         if (r.data) location.href = 'map/editor.html?id=' + r.data.id;
         else { this.disabled = false; this.textContent = '+ Create a map'; }
       });

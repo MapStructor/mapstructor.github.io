@@ -92,8 +92,41 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     document.body.appendChild(d);
   }
 
+  // 'private' maps are for the OWNER only — visibility says WHO may see the map at all; publishing says
+  // WHICH saved state they see. Resolved from the LIVE project row (never the snapshot, so flipping a map
+  // private takes effect immediately). Maps from before the Share panel have no visibility key and resolve
+  // to link/public (their actual old behavior); NEW maps are created private. Client-side gate until RLS.
+  function showPrivateBlock(ownerId) {
+    var d = document.createElement("div");
+    d.id = "ms-private-block";
+    d.style.cssText = "position:fixed;inset:0;z-index:100000;background:#faf9fd;display:flex;align-items:center;justify-content:center;font-family:'Source Sans Pro',Arial,sans-serif;";
+    d.innerHTML = "<div style=\"text-align:center;max-width:360px;padding:30px;\">" +
+      "<div style=\"font-size:42px;\">🔒</div>" +
+      "<h2 style=\"margin:10px 0 6px;color:#1e1b2e;\">This map is private</h2>" +
+      "<p style=\"color:#6b6680;font-size:14px;margin:0 0 16px;\">Only its owner can view it. If this is your map, log in.</p>" +
+      "<button id=\"ms-private-login\" style=\"padding:9px 18px;border:none;border-radius:8px;background:#7c5cbf;color:#fff;font-weight:700;cursor:pointer;font-size:14px;\">Log in</button></div>";
+    document.body.appendChild(d);
+    var b = document.getElementById("ms-private-login");
+    if (b) b.addEventListener("click", function () { try { MapAuth.openAuthModal("login"); } catch (e) {} });
+    try { if (window.MapAuth && MapAuth.onChange) MapAuth.onChange(async function () { var u = await MapAuth.currentUser(); if (u && ownerId && u.id === ownerId) location.reload(); }); } catch (e) {}
+  }
+
   try {
     var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    // ── visibility gate (viewer only — the editor page has its own ownership story) ──
+    if (!/editor\.html/i.test(location.pathname)) {
+      try {
+        var vg = await db.from("projects").select("user_id, is_public, raw_config").eq("id", platformProjectId).maybeSingle();
+        var vrow = vg && vg.data;
+        if (vrow) {
+          var vis = (vrow.raw_config && vrow.raw_config.visibility) || (vrow.is_public ? "public" : "link");
+          if (vis === "private") {
+            var u0 = null; try { u0 = window.MapAuth ? await MapAuth.currentUser() : null; } catch (e0) {}
+            if (!(u0 && vrow.user_id && u0.id === vrow.user_id)) { showPrivateBlock(vrow.user_id); return; }
+          }
+        }
+      } catch (eGate) {}
+    }
     // The public viewer shows the PUBLISHED snapshot (project_snapshots, label='published') ONLY; the editor and
     // ?preview always load the LIVE working state. If nothing has been published yet, the viewer must NOT leak
     // unpublished edits — it boots an empty map at the project's view and shows a "not published" notice.
