@@ -2424,6 +2424,27 @@
     document.getElementById('editor-settings').addEventListener('click', openSettingsPanel);
     var pubBtn = document.getElementById('editor-publish-btn'); if (pubBtn) pubBtn.addEventListener('click', onPublish);
     var copyBtn = document.getElementById('editor-copy-btn'); if (copyBtn) copyBtn.addEventListener('click', copyMapToMyAccount);
+    // ── Editor swipe start position (EDITOR ONLY — the viewer keeps the plugin's centered default) ──
+    // The swipe handle opens 1/10th in from the RIGHT edge: ~90% of the screen is the LEFT (editable)
+    // map, with only a sliver of the right/mirror side — first of the "make right-side non-editability
+    // obvious" experiments. ✎ ADJUST HERE: fraction measured from the LEFT — 0 = far left (all mirror),
+    // 0.5 = center, 0.90 = a tenth from the right, 1 = far right (all editable map).
+    var EDITOR_SWIPE_START_FRACTION = 0.93;
+    (function placeEditorSwipe() {
+      var tries = 0;
+      var iv = setInterval(function () {
+        try {
+          var cmp = window.map;   // mapinit.js keeps the mapbox-gl-compare instance in the `map` global
+          var cont = document.getElementById('comparison-container');
+          if (cmp && typeof cmp.setSlider === 'function' && cont && cont.offsetWidth) {
+            cmp.setSlider(Math.round(cont.offsetWidth * EDITOR_SWIPE_START_FRACTION));
+            clearInterval(iv);
+            return;
+          }
+        } catch (e) {}
+        if (++tries > 50) clearInterval(iv);   // compare never showed (single-map deploys) — give up quietly
+      }, 200);
+    })();
     setTimeout(checkStorage, 2500);   // storage-quota state (warn banner / hard-stop) once the session is ready
     makeHeaderTitleEditable();   // click the map title in the header to rename it
     try { window.infoPanelDefaultHandle = function () {}; } catch (e) {}   // suspend "click map → toggle sidebar" (use the sidebar button instead)
