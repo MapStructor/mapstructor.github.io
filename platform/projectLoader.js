@@ -198,9 +198,33 @@ window.msApplyHeaderFeature = function (visible, projectName) {
 
   // deferred: off-by-default drawn layers fetch their features AFTER the visible map is up (fast first
   // paint); they're hidden, so filling their sources late is invisible — but toggling them on just works.
+  function deferredMaps() { return [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null]; }
   setTimeout(function () {
-    try { ConfigLoader.hydrateDeferredFeatures(db, layers, [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null]); } catch (e) {}
-  }, 2500);
+    try { ConfigLoader.hydrateDeferredFeatures(db, layers, deferredMaps()); } catch (e) {}
+  }, 1000);
+  // Toggling a still-deferred layer ON fetches ITS rows immediately (priority) instead of waiting for the
+  // background sweep — small layers used to sit invisible behind the sweep's megabytes of polygon data,
+  // so the checkbox felt dead. The row dims while its data is in flight. Editor page excluded: editing.js
+  // hydrates per-layer into MapboxDraw itself (its small drawn layers' engine copies stay hidden there).
+  if (!/editor\.html/i.test(location.pathname)) document.addEventListener("change", function (e) {
+    try {
+      var cb = e.target;
+      if (!cb || cb.type !== "checkbox" || !cb.checked || !cb.closest("#studioMenu")) return;
+      var flat = [];
+      (function w(a) { (a || []).forEach(function (n) { flat.push(n); if (n.children) w(n.children); }); })(layers);
+      var node = null;
+      for (var i = 0; i < flat.length; i++) if (flat[i].id === cb.id) { node = flat[i]; break; }
+      if (!node) return;
+      var todo = node._deferred ? [node] : [];
+      // a group/section checkbox cascades to children via prop('checked') — no change events fire for them
+      (function kids(n) { (n.children || []).forEach(function (c) { if (c._deferred) todo.push(c); kids(c); }); })(node);
+      todo.forEach(function (n) {
+        var row = (n === node) ? cb.closest(".layer-list-row") : null;
+        if (row) { row.style.transition = "opacity .2s"; row.style.opacity = "0.55"; }
+        ConfigLoader.hydrateDeferredLayer(db, n, deferredMaps()).then(function () { if (row) row.style.opacity = ""; }, function () { if (row) row.style.opacity = ""; });
+      });
+    } catch (e2) {}
+  });
 
   // ── Guarantee the drawn layers land on BOTH swipe maps ──
   // setupMapSwitching() (mapinit.js) setStyle()s each side to its basemap right after registering the

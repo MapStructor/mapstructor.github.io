@@ -380,6 +380,8 @@
       overlay.classList.add('open');
     }
 
+    window.openProjectModal = openModal;   // homeCards.js re-renders the grid and reuses this modal
+
     function closeModal() {
       overlay.classList.remove('open');
       // restore the shared modal shell (the Free pop-up hides #modal-links while it shows) — null-guarded
@@ -464,6 +466,7 @@
     })();
   </script>
 
+  <script src="platform/homeCards.js?v=20260709"></script>
   <script src="platform/pageEditor.js"></script>
 </body>
 </html>

@@ -16,6 +16,8 @@
     h1 { font-size: 28px; margin: 4px 0 2px; }
     .handle { color: var(--p); font-weight: 700; }
     .bio { color: #4a4560; font-size: 15px; margin: 6px 0 26px; }
+    .about { color: #3a3550; font-size: 15px; line-height: 1.6; margin: 0 0 28px; max-width: 66ch; }
+    .about a { color: var(--p); }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
     .card { border: 1px solid #eae6f3; border-radius: 12px; overflow: hidden; background: #fff; text-decoration: none; color: inherit; transition: transform .1s, box-shadow .1s; }
     .card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(124,92,191,.16); }
@@ -29,12 +31,14 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="platform/auth.js"></script>
   <script src="platform/topbar.js"></script>
+  <script src="platform/sanitize.js?v=20260709"></script>
 </head>
 <body>
   <nav><a class="brand" href="index.html">MapStructor</a></nav>
   <main>
     <h1 id="title">Loading…</h1>
     <p class="bio" id="bio"></p>
+    <div class="about" id="about" style="display:none;"></div>
     <div class="grid" id="maps"></div>
     <div id="status"></div>
   </main>
@@ -54,6 +58,17 @@
       titleEl.innerHTML = (prof.display_name ? esc(prof.display_name) + ' ' : '') + '<span class="handle">@' + esc(prof.username) + '</span>';
       if (prof.bio) bioEl.textContent = prof.bio; else bioEl.style.display = 'none';
       document.title = '@' + prof.username + ' — MapStructor';
+
+      // "About you" rich text (dashboard-authored). Its OWN query so a missing column (setup SQL not run
+      // yet) can't break the whole profile render; always sanitized — this is other-user HTML.
+      try {
+        var ph = await db.from('profiles').select('profile_html').eq('id', prof.id).maybeSingle();
+        if (ph.data && ph.data.profile_html && window.MSSanitize) {
+          var ab = document.getElementById('about');
+          ab.innerHTML = MSSanitize(ph.data.profile_html);
+          if (ab.textContent.trim() || ab.querySelector('img')) ab.style.display = 'block';
+        }
+      } catch (e) {}
 
       var ps = await db.from('projects').select('id,name,updated_at').eq('user_id', prof.id).eq('is_public', true).order('updated_at', { ascending: false });
       var maps = (ps.data) || [];

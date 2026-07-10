@@ -2458,6 +2458,8 @@
   var featureMeta = {};   // mapbox-draw feature id → { label, notes }
   var featureLayer = {};  // mapbox-draw feature id → layer db id (for show/hide)
   var featureCache = {};  // mapbox-draw feature id → cached GeoJSON while hidden
+  var _hydratedLayers = {};   // layer db id → true once its feature rows have been fetched this session
+  var _hydrateOne = null;     // set by loadFeatures (closes over its row-mapper): fetch ONE layer's rows now + add to draw if its checkbox is on
   var _suppressFeatureDelete = false;  // set during a hide-toggle so onDrawDelete skips the DB
   var selectedDrawId = null;
   var _featTimer = null, _lblLiveTimer = null;
@@ -3158,9 +3160,12 @@
     // via the engine like a tileset — MapboxDraw can't hold tens of thousands of features (it freezes).
     _drawLayerSlugs = {};
     var smallIds = [];
-    for (var gi = 0; gi < gjList.length; gi++) {
-      try { var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gjList[gi].did); var cn = cq.count || 0; if (cn > 0 && cn <= MAX_DRAW) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } } catch (e) {}
-    }
+    // one COUNT per layer, but in PARALLEL — awaiting them one-by-one stalled boot ~N×roundtrip (20+
+    // drawn layers = several seconds before any feature data even started downloading)
+    var counts = await Promise.all(gjList.map(function (gj2) {
+      return db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gj2.did).then(function (cq) { return (cq && cq.count) || 0; }, function () { return 0; });
+    }));
+    counts.forEach(function (cn, gi) { if (cn > 0 && cn <= MAX_DRAW) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } });
     hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
     // the engine adds its layers on style.load, which can land AFTER the hide above ran (getLayer misses →
     // nothing hidden → drawn features double-render and the engine's click/panel systems stay live) — re-hide once settled
@@ -3222,6 +3227,31 @@
       _geomSnap[did] = { type: row.geom.type, coordinates: row.geom.coordinates };
       return { did: did, fo: fo, hidden: !layerOnNow(cbNode) };
     }
+    // toggling ON a layer whose rows haven't arrived yet fetches THEM first (priority) — assigned BEFORE
+    // the awaited fetches below so a toggle seconds after page load is already covered. quiet = background
+    // sweep (skips the "Loading features…" status churn of many parallel hydrations).
+    var _hydrating = {};
+    _hydrateOne = async function (lid6, quiet) {
+      var n6 = nodeByLayerDbId(lid6);
+      if (n6 && !_drawLayerSlugs[n6.id]) return;   // large layers render via the ENGINE — never pull their rows into MapboxDraw
+      if (_hydratedLayers[lid6]) { addCachedLayerToDraw(lid6); rebuildLabelsFor([lid6]); return; }
+      if (_hydrating[lid6]) return;
+      _hydrating[lid6] = true;
+      if (!quiet) setStatus('Loading features…');
+      try {
+        var ok6 = true;
+        for (var f6 = 0; f6 < 200000; f6 += 1000) {
+          var r6 = await db.from('features').select(FEAT_SEL).eq('layer_id', lid6).order('feature_id').range(f6, f6 + 999);
+          if (r6.error) { ok6 = false; break; }   // a failed page (transient 500) must NOT mark the layer hydrated-but-empty — the sweep retry / next toggle refetches
+          if (!r6.data || !r6.data.length) break;
+          r6.data.forEach(function (row) { var m6 = mapRow(row); if (m6) featureCache[m6.did] = m6.fo; });
+          if (r6.data.length < 1000) break;
+        }
+        if (ok6) { _hydratedLayers[lid6] = true; addCachedLayerToDraw(lid6); rebuildLabelsFor([lid6]); }
+        if (!quiet) setStatus(ok6 ? '' : 'Load failed');
+      } catch (e) { console.warn('editing: layer hydrate failed', e); if (!quiet) setStatus('Load failed'); }
+      _hydrating[lid6] = false;
+    };
     try {
       var feats = [];
       if (onIds.length) {
@@ -3237,17 +3267,51 @@
       // labels ride ABOVE everything — MapboxDraw's fills and the right mirror are added after the
       // engine's label layers, so put labels back on top after every rebuild
       if (typeof msRaiseLabelLayers === 'function') { msRaiseLabelLayers(beforeMap, layers); msRaiseLabelLayers(typeof afterMap !== 'undefined' ? afterMap : null, layers); }
+      onIds.forEach(function (lid3) { _hydratedLayers[lid3] = true; });
+      // the engine's boot label layers were built from the CONFIG feature snapshot, which only contains
+      // ON-by-default layers' features — rebuild labels for loaded labeled layers from the LIVE data
+      rebuildLabelsFor(onIds);
     } catch (e) { console.warn('editing: load features failed', e); }
-    if (offIds.length) setTimeout(async function () {   // hidden layers hydrate after the visible map is up
-      try {
-        for (var from2 = 0; from2 < 200000; from2 += 1000) {
-          var res2 = await db.from('features').select(FEAT_SEL).in('layer_id', offIds).order('feature_id').range(from2, from2 + 999);
-          if (res2.error || !res2.data || !res2.data.length) break;
-          res2.data.forEach(function (row) { var m = mapRow(row); if (m) featureCache[m.did] = m.fo; });
-          if (res2.data.length < 1000) break;
-        }
-      } catch (e) {}
-    }, 1200);
+    // ── late feature arrival (the "toggle a layer on and nothing appears" fixes) ──
+    function addCachedLayerToDraw(lid4) {   // put a hydrated layer's cached features into draw (if its checkbox is on now)
+      var node4 = nodeByLayerDbId(lid4);
+      if (!node4 || !layerOnNow(node4) || !draw) return;
+      Object.keys(featureLayer).forEach(function (did4) {
+        if (featureLayer[did4] !== lid4) return;
+        try { if (!draw.get(did4) && featureCache[did4]) draw.add(featureCache[did4]); } catch (e) {}
+      });
+      syncMirrorRight();
+    }
+    function rebuildLabelsFor(lids5) {
+      (lids5 || []).forEach(function (lid5) {
+        var n5 = nodeByLayerDbId(lid5);
+        if (!(n5 && n5.labels && n5.labels.field && _drawLayerSlugs[n5.id])) return;
+        try { applyLabelLayers(n5); } catch (e) {}
+        var vis5 = layerOnNow(n5) ? 'visible' : 'none';   // applyLabelLayers adds 'visible' — re-apply the checkbox state
+        [[beforeMap, 'left'], [typeof afterMap !== 'undefined' ? afterMap : null, 'right']].forEach(function (pr5) {
+          var m5 = pr5[0]; if (!m5) return;
+          try { if (m5.getLayer(n5.id + '-label-' + pr5[1])) m5.setLayoutProperty(n5.id + '-label-' + pr5[1], 'visibility', vis5); } catch (e) {}
+        });
+      });
+    }
+    // hidden layers hydrate right after the visible ones — smallest first, a FEW at a time (20+ concurrent
+    // queries drew Supabase 500s), each landing in draw/labels the moment it arrives. The old single bulk
+    // query (all off layers, sequential 1000-row pages, applied only when 100% done, on a 1.2s timer) held
+    // a 7-point layer hostage to megabytes of zoning polygons — toggling it looked like nothing happened.
+    if (offIds.length) (function () {
+      var cntById = {}; gjList.forEach(function (g3, i3) { cntById[g3.did] = counts[i3] || 0; });
+      var order = offIds.slice().sort(function (a, b) { return (cntById[a] || 0) - (cntById[b] || 0); });
+      async function pool7(list) {
+        var q7 = list.slice();
+        async function w7() { for (var lid7 = q7.shift(); lid7; lid7 = q7.shift()) await _hydrateOne(lid7, true); }
+        var ws7 = []; for (var i7 = 0; i7 < Math.min(3, q7.length); i7++) ws7.push(w7());
+        await Promise.all(ws7);
+      }
+      pool7(order).then(function () {
+        var missed = order.filter(function (lid8) { return !_hydratedLayers[lid8]; });
+        if (missed.length) return pool7(missed);   // failures stayed un-hydrated — one retry pass
+      });
+    })();
   }
   // The engine (P0) renders geojson-supabase layers as real GeoJSON layers; in the
   // EDITOR those same features live in MapboxDraw, so hide the engine's copy (both maps).
@@ -3657,6 +3721,11 @@
       setTimeout(function () { _suppressFeatureDelete = false; }, 0);
     } else {
       ids.forEach(function (drawId) { try { if (!draw.get(drawId) && featureCache[drawId]) draw.add(featureCache[drawId]); } catch (e) {} });
+      // OFF-by-default layers hydrate in the background — if this layer's rows haven't arrived yet, fetch
+      // them NOW (and rebuild its labels from live data); otherwise features/labels only showed after a
+      // second off/on toggle once the background fetch happened to finish. Small layers only: a LARGE
+      // layer's checkbox is the engine's business (refreshLayers) — hydrating it would dump 10k+ rows into draw.
+      if (dbId && _drawLayerSlugs[slug] && typeof _hydrateOne === 'function') _hydrateOne(dbId);
     }
   }
 

@@ -61,29 +61,47 @@ var ConfigLoader = (function () {
 
   // Off-by-default drawn layers boot with EMPTY sources (marked _deferred) so the visible map paints fast;
   // call this after boot to fetch their features and fill the live sources (they're hidden — no flash).
+  // PER-LAYER: each layer fetches its own rows and fills its sources the moment THEY arrive — the old
+  // single bulk query (all deferred layers, sequential pages, applied only when 100% done) made a 7-point
+  // layer wait behind megabytes of zoning polygons, so toggling it on looked like nothing happened.
+  async function hydrateDeferredLayer(db, n, maps) {
+    if (!n || !n._deferred || !n._layerDbId || n._hydrating) return false;
+    n._hydrating = true;
+    var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url, custom_fields";
+    var rows = [];
+    try {
+      for (var off = 0; ; off += 1000) {
+        var r = await db.from("features").select(sel).eq("layer_id", n._layerDbId).order("feature_id").range(off, off + 999);
+        if (r.error) { n._hydrating = false; return false; }   // stays _deferred → the next toggle retries
+        rows = rows.concat(r.data || []);
+        if (!r.data || r.data.length < 1000) break;
+      }
+    } catch (e) { n._hydrating = false; return false; }
+    var fc = { type: "FeatureCollection", features: rows.map(featureToGeo) };
+    if (n.source && n.source.type === "geojson") n.source.data = fc;   // style switches re-add with the data
+    n._deferred = false; n._hydrating = false;
+    (maps || []).forEach(function (m) {
+      if (!m) return;
+      ["-left", "-right"].forEach(function (sfx) { try { var s = m.getSource(n.id + sfx); if (s) s.setData(fc); } catch (e) {} });
+    });
+    return true;
+  }
   async function hydrateDeferredFeatures(db, layersArr, maps) {
     var flat = [];
     (function w(a) { (a || []).forEach(function (n) { flat.push(n); if (n.children) w(n.children); }); })(layersArr || []);
     var targets = flat.filter(function (n) { return n._deferred && n._layerDbId; });
     if (!targets.length) return 0;
-    var ids = targets.map(function (n) { return n._layerDbId; });
-    var byLayer = {};
-    var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url, custom_fields";
-    for (var off = 0; ; off += 1000) {
-      var r = await db.from("features").select(sel).in("layer_id", ids).order("feature_id").range(off, off + 999);
-      if (r.error || !r.data || !r.data.length) break;
-      r.data.forEach(function (row) { (byLayer[row.layer_id] = byLayer[row.layer_id] || []).push(row); });
-      if (r.data.length < 1000) break;
+    // a FEW at a time — 20+ concurrent heavy queries drew HTTP 500s from Supabase (measured); failures
+    // keep _deferred and get one retry pass. A toggle-priority hydrate runs unpooled alongside, fine.
+    async function pool(list) {
+      var q = list.slice();
+      async function worker() { for (var n = q.shift(); n; n = q.shift()) await hydrateDeferredLayer(db, n, maps); }
+      var ws = []; for (var i = 0; i < Math.min(3, q.length); i++) ws.push(worker());
+      await Promise.all(ws);
     }
-    targets.forEach(function (n) {
-      var fc = { type: "FeatureCollection", features: (byLayer[n._layerDbId] || []).map(featureToGeo) };
-      if (n.source && n.source.type === "geojson") n.source.data = fc;   // style switches re-add with the data
-      n._deferred = false;
-      (maps || []).forEach(function (m) {
-        if (!m) return;
-        ["-left", "-right"].forEach(function (sfx) { try { var s = m.getSource(n.id + sfx); if (s) s.setData(fc); } catch (e) {} });
-      });
-    });
+    await pool(targets);
+    var failed = targets.filter(function (n) { return n._deferred; });
+    if (failed.length) await pool(failed);
     return targets.length;
   }
 
@@ -297,5 +315,6 @@ var ConfigLoader = (function () {
     fetchProjectBundle: fetchProjectBundle,
     loadProjectConfig: loadProjectConfig,
     hydrateDeferredFeatures: hydrateDeferredFeatures,
+    hydrateDeferredLayer: hydrateDeferredLayer,
   };
 })();

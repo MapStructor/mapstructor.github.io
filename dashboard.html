@@ -35,11 +35,35 @@
     .card-box { border: 1px solid #eae6f3; border-radius: 12px; padding: 18px; background: #fff; margin-bottom: 14px; }
     .danger-box { border-color: #e9c4c0; }
     #anon-note { background: #fff7e6; border: 1px solid #f0dca8; border-radius: 10px; padding: 12px 14px; font-size: 14px; margin-bottom: 20px; }
+    /* ── Pricing table (same look as services-pricing-preview.html) ── */
+    .ptable { border: 1px solid #e9e4f3; border-radius: 16px; overflow: hidden; background: #fff; box-shadow: 0 6px 30px rgba(124,92,191,.07); }
+    .prow { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px; padding: 14px 20px; border-top: 1px solid #f0ecf8; transition: background .12s; }
+    .prow:first-child { border-top: none; }
+    .prow:not(.phead):hover { background: #faf8fe; }
+    .phead { background: #faf9fd; padding: 10px 20px; }
+    .phead div { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #9a93ad; }
+    .pstore { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+    .pprice { font-size: 18px; font-weight: 800; white-space: nowrap; }
+    .pprice span { font-size: 13px; font-weight: 600; color: #9a93ad; margin-left: 1px; }
+    .pprice a { color: var(--p); font-size: 14px; font-weight: 700; text-decoration: none; }
+    .pprice a:hover { text-decoration: underline; }
+    .pbadge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; letter-spacing: .02em; }
+    .pbadge.free { background: #e6f6ea; color: #2d7a2d; }
+    .pbadge.pop { background: var(--p); color: #fff; }
+    .prow.hot { background: #f6f2fe; }
+    .prow.hot:hover { background: #f1ebfd; }
+    .pnote { font-size: 13px; color: #9a93ad; margin: 12px 2px 0; }
+    /* ── tiny rich-text editors (public profile / private notes) ── */
+    .rt-toolbar { display: flex; gap: 4px; margin-bottom: 6px; }
+    .rt-toolbar button { min-width: 30px; height: 26px; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; font-size: 12px; }
+    .rt-editor { min-height: 90px; border: 1px solid #cdc6e0; border-radius: 8px; padding: 10px 12px; font-size: 14px; line-height: 1.55; background: #fff; }
+    .rt-editor:focus { outline: 2px solid #d9cff1; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="platform/auth.js"></script>
   <script src="platform/topbar.js"></script>
   <script src="platform/pricing.js"></script>
+  <script src="platform/sanitize.js?v=20260709"></script>
 </head>
 <body>
   <nav>
@@ -71,6 +95,38 @@
       </div>
     </section>
 
+    <!-- Storage price sheet (same table as services-pricing-preview.html) + an AI placeholder.
+         Both are data-edit regions: the site owner can reword/reprice them in place (pageEditor),
+         and every user sees the saved version. NOTE: the upgrade buttons above still sell the
+         pricing.js/Stripe tiers — this table is the displayed price sheet. -->
+    <section id="pricing-section">
+      <div data-edit="dashboard-storage-pricing">
+        <h2>Storage pricing</h2>
+        <p class="sub">Building maps and adding features is always free. You only pay for <b>storage</b> — and only if you need a lot of it.</p>
+        <div class="ptable">
+          <div class="prow phead"><div>Storage</div><div>Price</div></div>
+          <div class="prow"><div class="pstore">500&nbsp;MB <span class="pbadge free">Free</span></div><div class="pprice">$0</div></div>
+          <div class="prow"><div class="pstore">20&nbsp;GB</div><div class="pprice">$1<span>/mo</span></div></div>
+          <div class="prow"><div class="pstore">50&nbsp;GB</div><div class="pprice">$2<span>/mo</span></div></div>
+          <div class="prow hot"><div class="pstore">100&nbsp;GB <span class="pbadge pop">Popular</span></div><div class="pprice">$4<span>/mo</span></div></div>
+          <div class="prow"><div class="pstore">250&nbsp;GB</div><div class="pprice">$8<span>/mo</span></div></div>
+          <div class="prow"><div class="pstore">500&nbsp;GB</div><div class="pprice">$15<span>/mo</span></div></div>
+          <div class="prow"><div class="pstore">1&nbsp;TB</div><div class="pprice">$25<span>/mo</span></div></div>
+          <div class="prow"><div class="pstore">2&nbsp;TB</div><div class="pprice">$45<span>/mo</span></div></div>
+          <div class="prow"><div class="pstore">2&nbsp;TB+</div><div class="pprice"><a href="mailto:hello@mapstructor.com">Contact us</a></div></div>
+        </div>
+        <p class="pnote">Prices are monthly. Cancel anytime — your maps stay viewable, you just can't add more once you're full.</p>
+      </div>
+      <div data-edit="dashboard-ai-pricing" style="margin-top:26px;">
+        <h2>AI</h2>
+        <p class="sub">AI-assisted mapping is coming. Pricing to be announced.</p>
+        <div class="ptable">
+          <div class="prow phead"><div>AI</div><div>Price</div></div>
+          <div class="prow"><div class="pstore">AI features <span class="pbadge free">Coming soon</span></div><div class="pprice"><a href="mailto:hello@mapstructor.com">Get notified</a></div></div>
+        </div>
+      </div>
+    </section>
+
     <section id="profile-section">
       <h2>Your public profile</h2>
       <div class="card-box">
@@ -79,6 +135,20 @@
         <button class="btn btn-light" id="btn-username">Save</button>
         <span class="msg" id="username-msg"></span>
         <div id="profile-link" style="margin-top:10px;font-size:13px;"></div>
+      </div>
+      <div class="card-box">
+        <div style="font-weight:600;margin-bottom:4px;">About you <span style="font-weight:400;color:#9a93ad;font-size:12px;">— public</span></div>
+        <p class="sub" style="margin:0 0 10px;">Shown to anyone on your profile page — a short intro, links, whatever you like.</p>
+        <div class="rt-toolbar" id="about-toolbar"></div>
+        <div class="rt-editor" id="about-editor" contenteditable="true"></div>
+        <div style="margin-top:10px;"><button class="btn btn-light" id="btn-about">Save</button><span class="msg" id="about-msg"></span></div>
+      </div>
+      <div class="card-box">
+        <div style="font-weight:600;margin-bottom:4px;">Private notes <span style="font-weight:400;color:#9a93ad;font-size:12px;">— only you can see these</span></div>
+        <p class="sub" style="margin:0 0 10px;">Plans, sources, to-dos — never shown to anyone else.</p>
+        <div class="rt-toolbar" id="notes-toolbar"></div>
+        <div class="rt-editor" id="notes-editor" contenteditable="true"></div>
+        <div style="margin-top:10px;"><button class="btn btn-light" id="btn-notes">Save</button><span class="msg" id="notes-msg"></span></div>
       </div>
     </section>
 
@@ -259,6 +329,49 @@
         unameMsg.textContent = 'Saved.'; unameMsg.className = 'msg ok'; showProfileLink(u);
       });
       loadProfile();
+
+      // ---- About you (public) + Private notes — tiny rich-text editors ----
+      // Public text lives on profiles.profile_html (rendered, sanitized, on u.html); private notes live in
+      // their OWN table (user_notes) so row-level security keeps them owner-only — a column on the publicly
+      // readable profiles row would leak. One-time SQL: mapstructor_docs/profile-notes-setup.sql.
+      function buildRtToolbar(barId, ed) {
+        var bar = document.getElementById(barId); if (!bar) return;
+        [['B', 'bold', 'font-weight:700'], ['I', 'italic', 'font-style:italic'], ['• List', 'insertUnorderedList', ''], ['Link', '__link', '']].forEach(function (spec) {
+          var b = document.createElement('button'); b.type = 'button'; b.textContent = spec[0]; b.style.cssText = spec[2];
+          b.onmousedown = function (e) { e.preventDefault(); };   // keep the selection in the editor
+          b.onclick = function () {
+            ed.focus();
+            if (spec[1] === '__link') { var url = window.prompt('Link URL:'); if (url) document.execCommand('createLink', false, url); return; }
+            document.execCommand(spec[1], false, null);
+          };
+          bar.appendChild(b);
+        });
+      }
+      var aboutEd = document.getElementById('about-editor'), notesEd = document.getElementById('notes-editor');
+      buildRtToolbar('about-toolbar', aboutEd); buildRtToolbar('notes-toolbar', notesEd);
+      function rtErr(msgEl, err) {
+        var m = (err && err.message) || 'Save failed';
+        if (/relation|does not exist|schema cache|column/i.test(m)) m += ' — run mapstructor_docs/profile-notes-setup.sql once.';
+        msgEl.textContent = m; msgEl.className = 'msg err';
+      }
+      (async function loadRt() {
+        try { var pa = await db.from('profiles').select('profile_html').eq('id', user.id).maybeSingle(); if (pa.data && pa.data.profile_html) aboutEd.innerHTML = MSSanitize(pa.data.profile_html); } catch (e) {}
+        try { var pn = await db.from('user_notes').select('html').eq('user_id', user.id).maybeSingle(); if (pn.data && pn.data.html) notesEd.innerHTML = MSSanitize(pn.data.html); } catch (e) {}
+      })();
+      document.getElementById('btn-about').addEventListener('click', async function () {
+        var msg = document.getElementById('about-msg'); this.disabled = true; msg.textContent = '…'; msg.className = 'msg';
+        var r = await db.from('profiles').upsert({ id: user.id, profile_html: aboutEd.innerHTML });
+        this.disabled = false;
+        if (r.error) { rtErr(msg, r.error); return; }
+        msg.textContent = 'Saved — it’s on your public page.'; msg.className = 'msg ok';
+      });
+      document.getElementById('btn-notes').addEventListener('click', async function () {
+        var msg = document.getElementById('notes-msg'); this.disabled = true; msg.textContent = '…'; msg.className = 'msg';
+        var r = await db.from('user_notes').upsert({ user_id: user.id, html: notesEd.innerHTML });
+        this.disabled = false;
+        if (r.error) { rtErr(msg, r.error); return; }
+        msg.textContent = 'Saved.'; msg.className = 'msg ok';
+      });
 
       // ---- Change password ----
       var pwBtn = document.getElementById('btn-pw'), pwMsg = document.getElementById('pw-msg');
