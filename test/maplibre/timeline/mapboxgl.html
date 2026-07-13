@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>AHM — Mapbox GL minimal (A/B twin)</title>
+  <!-- BARE-MINIMUM page, A/B TWIN of maplibre.html (2026-07-11). The two files are IDENTICAL except
+       this head block's renderer scripts + the token lines Mapbox GL requires — same worker tiles,
+       same layer, same slider, same legacy filter, zero adapters. Drag both; any feel difference is
+       the RENDERER, nothing else. Uses the exact prod version (v3.1.2). -->
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
+  <script src="../../../map/project/lists/restrictedToken.js"></script>
+  <script src="../../../map/project/secrets/mapbox-token.js" onerror="void(0)"></script>
+  <script>
+    var GL = mapboxgl, PAGE_TAG = "Mapbox GL v3.1.2";
+    mapboxgl.accessToken = (typeof mapboxToken !== "undefined") ? mapboxToken : restrictedToken;
+  </script>
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #map { position: absolute; inset: 0; bottom: 56px; }
+    #bar { position: absolute; left: 0; right: 0; bottom: 0; height: 56px; background: #1a1a1a;
+           color: #fff; display: flex; align-items: center; gap: 16px; padding: 0 20px; box-sizing: border-box;
+           font: 14px Arial, sans-serif; }
+    #year { font-size: 18px; font-weight: bold; min-width: 54px; }
+    #slider { flex: 1; }
+    #tag { position: fixed; left: 8px; bottom: 66px; z-index: 9; background: #7a3016; color: #fff;
+           font: 700 11px/1 Arial; padding: 5px 9px; border-radius: 12px; opacity: .85; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="tag"></div>
+  <div id="bar">
+    <span id="year">1938</span>
+    <input id="slider" type="range" min="1850" max="2026" value="1938" step="1" />
+  </div>
+  <script>
+    document.getElementById("tag").textContent = PAGE_TAG + " — buildings + slider";
+    // Same tiles BOTH renderers can eat: the live Cloudflare worker serving buildings.pmtiles as z/x/y
+    // (pmtiles:// direct returns once the A/B question is settled — mapbox-gl has no addProtocol).
+    var TILES = "https://ames-tiles.mapstructor.workers.dev/buildings/{z}/{x}/{y}.pbf";
+
+    var map = new GL.Map({
+      container: "map",
+      style: "https://tiles.openfreemap.org/styles/liberty",
+      center: [-93.63661, 42.03112],   // Ames
+      zoom: 13.6
+    });
+    map.addControl(new GL.NavigationControl(), "bottom-right");
+
+    // Production AHM's exact filter shape — legacy syntax, DayStart/DayEnd ymd ints.
+    function dateFilter(year) {
+      var d = year * 10000 + 101;
+      return ["all", ["<=", "DayStart", d], [">=", "DayEnd", d]];
+    }
+
+    map.on("load", function () {
+      map.addSource("buildings", { type: "vector", tiles: [TILES], minzoom: 10, maxzoom: 16 });
+      map.addLayer({
+        id: "buildings-fill",
+        type: "fill",
+        source: "buildings",
+        "source-layer": "buildings",
+        filter: dateFilter(1938),
+        paint: {
+          "fill-color": "#ffb255",
+          "fill-opacity": 0.8,
+          "fill-outline-color": "#cc7700"
+        }
+      });
+    });
+
+    var slider = document.getElementById("slider");
+    var yearEl = document.getElementById("year");
+    slider.addEventListener("input", function () {
+      yearEl.textContent = this.value;
+      map.setFilter("buildings-fill", dateFilter(+this.value));
+    });
+  </script>
+</body>
+</html>

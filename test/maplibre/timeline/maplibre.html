@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>AHM — MapLibre minimal (A/B twin)</title>
+  <!-- BARE-MINIMUM page, A/B TWIN of mapboxgl.html (2026-07-11). The two files are IDENTICAL except
+       this head block's renderer scripts — same worker tiles, same layer, same slider, same legacy
+       filter, zero adapters. Drag both; any feel difference is the RENDERER, nothing else. -->
+  <script>
+    // ?mode=state — MapLibre's own documented time-slider idiom (v5 "global state": the style reads ONE
+    // shared value, the slider updates just that value; official MapLibre example does filtering this way).
+    // Needs v5, so the script version follows the mode. DEFAULT stays v4.7.1 + plain setFilter (the twin).
+    var MODE = new URLSearchParams(location.search).get("mode") === "state" ? "state" : "filter";
+    var MLV = MODE === "state" ? "5" : "4.7.1";
+    document.write('<script src="https://unpkg.com/maplibre-gl@' + MLV + '/dist/maplibre-gl.js"><\/script>');
+    document.write('<link href="https://unpkg.com/maplibre-gl@' + MLV + '/dist/maplibre-gl.css" rel="stylesheet" />');
+  </script>
+  <script>var GL = maplibregl, PAGE_TAG = "MapLibre v" + MLV + (MODE === "state" ? " · GLOBAL-STATE" : "");</script>
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #map { position: absolute; inset: 0; bottom: 56px; }
+    #bar { position: absolute; left: 0; right: 0; bottom: 0; height: 56px; background: #1a1a1a;
+           color: #fff; display: flex; align-items: center; gap: 16px; padding: 0 20px; box-sizing: border-box;
+           font: 14px Arial, sans-serif; }
+    #year { font-size: 18px; font-weight: bold; min-width: 54px; }
+    #slider { flex: 1; }
+    #tag { position: fixed; left: 8px; bottom: 66px; z-index: 9; background: #154360; color: #fff;
+           font: 700 11px/1 Arial; padding: 5px 9px; border-radius: 12px; opacity: .85; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="tag"></div>
+  <div id="bar">
+    <span id="year">1938</span>
+    <input id="slider" type="range" min="1850" max="2026" value="1938" step="1" />
+  </div>
+  <script>
+    // Same tiles BOTH renderers can eat: the live Cloudflare worker serving buildings.pmtiles as z/x/y
+    // (pmtiles:// direct returns once the A/B question is settled — mapbox-gl has no addProtocol).
+    var TILES = "https://ames-tiles.mapstructor.workers.dev/buildings/{z}/{x}/{y}.pbf";
+
+    // ?basemap=raster — swaps liberty (heavy ~200-layer vector style) for USGS aerial imagery (one cheap
+    // raster layer, like prod's satellite default). Isolates whether the drag lag is basemap rendering
+    // cost or the buildings layer itself. Default stays liberty so the mapbox twin comparison holds.
+    var USE_RASTER = new URLSearchParams(location.search).get("basemap") === "raster";
+    var RASTER_STYLE = {
+      version: 8,
+      sources: { usgs: { type: "raster",
+        tiles: ["https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}"],
+        tileSize: 256, maxzoom: 19, attribution: "Imagery courtesy of the U.S. Geological Survey" } },
+      layers: [{ id: "usgs-imagery", type: "raster", source: "usgs" }]
+    };
+    document.getElementById("tag").textContent = PAGE_TAG + (USE_RASTER ? " — RASTER basemap" : " — liberty basemap") + " + slider";
+
+    var map = new GL.Map({
+      container: "map",
+      style: USE_RASTER ? RASTER_STYLE : "https://tiles.openfreemap.org/styles/liberty",
+      center: [-93.63661, 42.03112],   // Ames
+      zoom: 13.6
+    });
+    map.addControl(new GL.NavigationControl(), "bottom-right");
+
+    // Production AHM's exact filter shape — legacy syntax, DayStart/DayEnd ymd ints.
+    function dateFilter(year) {
+      var d = year * 10000 + 101;
+      return ["all", ["<=", "DayStart", d], [">=", "DayEnd", d]];
+    }
+    // GLOBAL-STATE mode: visibility comes from a paint expression reading ONE shared value; the slider
+    // updates only that value (setGlobalStateProperty) — no filter rebuild, no per-call expression parse.
+    // Null-safe (raw expressions ERROR on missing props → null color → dead tile): undated stays hidden,
+    // exactly like the production filter's semantics.
+    function num(prop, fallback) { return ["to-number", ["coalesce", ["get", prop], fallback]]; }
+    function stateInRange() {
+      var d = ["coalesce", ["global-state", "date"], 19380101];
+      return ["all", ["<=", num("DayStart", 99999999), d], [">=", num("DayEnd", -1), d]];
+    }
+
+    map.on("load", function () {
+      map.addSource("buildings", { type: "vector", tiles: [TILES], minzoom: 10, maxzoom: 16 });
+      var layer = {
+        id: "buildings-fill",
+        type: "fill",
+        source: "buildings",
+        "source-layer": "buildings",
+        paint: {
+          "fill-color": "#ffb255",
+          "fill-opacity": 0.8,
+          "fill-outline-color": "#cc7700"
+        }
+      };
+      if (MODE === "state") {
+        layer.paint["fill-opacity"] = ["case", stateInRange(), 0.8, 0];
+        layer.paint["fill-outline-color"] = ["case", stateInRange(), "#cc7700", "rgba(0,0,0,0)"];
+      } else {
+        layer.filter = dateFilter(1938);
+      }
+      map.addLayer(layer);
+    });
+
+    var slider = document.getElementById("slider");
+    var yearEl = document.getElementById("year");
+    slider.addEventListener("input", function () {
+      yearEl.textContent = this.value;
+      if (MODE === "state") map.setGlobalStateProperty("date", +this.value * 10000 + 101);
+      else map.setFilter("buildings-fill", dateFilter(+this.value));
+    });
+  </script>
+</body>
+</html>
