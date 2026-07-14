@@ -982,7 +982,7 @@
     var bar = addFormEl();   // #2: buttons stay visible
     bar.innerHTML =
       '<input id="editor-name" type="text" placeholder="tileset name…" />' +
-      '<input id="editor-ts-url" type="text" placeholder="pmtiles://…  or  https://…/{z}/{x}/{y}.pbf  or  TileJSON URL" />' +
+      '<input id="editor-ts-url" type="text" placeholder="https://…/{z}/{x}/{y}.pbf  or  TileJSON URL" />' +
       '<input id="editor-ts-sl" type="text" list="editor-ts-sl-list" placeholder="source layer (e.g. buildings)" /><datalist id="editor-ts-sl-list"></datalist>' +
       '<div id="editor-ts-sl-status" style="font-size:11px;color:#888888;margin:-3px 0 6px;min-height:13px;"></div>' +
       '<select id="editor-ts-type"><option value="fill">Polygon (fill)</option><option value="line">Line</option><option value="circle">Point (circle)</option></select>' +
