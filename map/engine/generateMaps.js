@@ -83,14 +83,19 @@ function mapstructorZoomButton(idx) {
     return;
   }
   if (b.target === 'Layers') {
-    var bb = mapstructorLayersBounds();
-    [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
-      if (!m) return;
-      try {
-        if (bb) m.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 60, maxZoom: 16, bearing: 0 });
-        else if (typeof mapConfig !== 'undefined') m.flyTo({ center: mapConfig.center, zoom: mapConfig.zoom, bearing: 0 });   // nothing drawn/visible yet → the default area
-      } catch (e) {}
-    });
+    (function attempt(n) {
+      var bb = mapstructorLayersBounds();
+      // sources are still loading for the first seconds after boot (tilejson bounds, deferred
+      // features) — retry briefly before falling back to the default view
+      if (!bb && n < 15) { setTimeout(function () { attempt(n + 1); }, 300); return; }
+      [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
+        if (!m) return;
+        try {
+          if (bb) m.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 60, maxZoom: 16, bearing: 0 });
+          else if (typeof mapConfig !== 'undefined') m.flyTo({ center: mapConfig.center, zoom: mapConfig.zoom, bearing: 0 });   // nothing drawn/visible yet → the default area
+        } catch (e) {}
+      });
+    })(0);
     return;
   }
   if (b.target && typeof zoomtobounds === 'function') zoomtobounds(b.target);

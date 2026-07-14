@@ -14,7 +14,8 @@ function layerRowButtons(layerData, zoomName, isLeaf) {
   const hasInfo = typeof window !== "undefined" && window.modal_content_html && window.modal_content_html[infoKey];
   const infoBtn = hasInfo ? `<i class="fa fa-info-circle layer-info trigger-popup" id="${infoKey}" title="Layer Info"></i>` : "";
   const zn = String(zoomName == null ? "" : zoomName).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const zoomBtn = `<i class="fa fa-crosshairs zoom-to-layer" onclick="zoomToLayer('${zn}')" title="Zoom to Layer"></i>`;
+  // zoomBtn === false (raw_config.zoomBtn, per layer/group) hides the row's ⌖ — default is shown
+  const zoomBtn = layerData.zoomBtn === false ? "" : `<i class="fa fa-crosshairs zoom-to-layer" onclick="zoomToLayer('${zn}')" title="Zoom to Layer"></i>`;
   const tableBtn = (isLeaf && typeof window !== "undefined" && window.__msEditorAttr)
     ? `<i class="fa fa-table attr-table-btn" title="Attribute table"></i>` : "";
   return `<div class="layer-buttons-block"><div class="layer-buttons-list">${infoBtn}${zoomBtn}${tableBtn}</div></div>`;

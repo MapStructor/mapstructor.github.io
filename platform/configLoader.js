@@ -171,23 +171,48 @@ var ConfigLoader = (function () {
       if (row.enabled_by_default === false && (!features || !features.length)) leaf._deferred = true;
       if (leaf.type == null) leaf.type = "circle";
       if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
-      if (leaf.highlight == null) leaf.highlight = defaultHighlightPaint(leaf.type, leaf.iconColor || "#3bb2d0");   // drawn features get a hover/click highlight (both swipe sides; toggle via #11)
     }
 
-    // Mapbox fill-outline-color is always 1px; to allow a real (thicker) outline, render a
-    // polygon's boundary as a separate line layer — for DRAWN and TILESET fills alike (the engine
-    // shares the fill's source, adding source-layer for vector tilesets). Drawn fills always get it
-    // (default width 2); a tileset fill gets it when it has an outline color, defaulting to width 1
-    // so it's visually identical to today's 1px fill-outline (no surprise change) but now widenable.
-    // Skipped when the outline was split into its own standalone layer (raw.outlineSplit).
+    // A fill's border renders as a separate line layer at every width EXCEPT exactly 1 — width 1 is
+    // mapbox's native fill-outline (identical to plain mapboxgl); anything else (the 0.5 DEFAULT,
+    // thicker values, by-column expressions, per-feature ms_thickness) needs the line layer, and
+    // then it OWNS the outline (the native one goes transparent so widths read exactly). Applies to
+    // DRAWN and TILESET fills alike (the engine shares the fill's source, adding source-layer for
+    // vector tilesets); tilesets without an outline color stay outline-less. Skipped when the
+    // outline was split into its own standalone layer (raw.outlineSplit).
     if (leaf.type === "fill" && leaf.paint && !raw.outlineSplit &&
         (row.source_type === "geojson-supabase" || leaf.paint["fill-outline-color"])) {
-      leaf.stroke = {
-        "line-color": leaf.paint["fill-outline-color"] || leaf.iconColor || "#3bb2d0",
-        "line-width": (leaf.paint && leaf.paint["line-width"]) || (row.source_type === "geojson-supabase" ? 2 : 1),
-        // a stored line-opacity of 0 = "outline hidden" (the show-outline toggle)
-        "line-opacity": leaf.paint["line-opacity"] != null ? leaf.paint["line-opacity"] : 1
-      };
+      var ow = leaf.paint["line-width"];
+      var effW = ow != null ? ow : 0.5;   // fills default to a 0.5 border
+      var perFeatW = row.source_type === "geojson-supabase" &&
+        (features || []).some(function (f) { return f && f.custom_fields && f.custom_fields.ms_thickness != null; });
+      var oc = leaf.paint["fill-outline-color"] || leaf.iconColor || "#3bb2d0";
+      if ((typeof effW !== "number" || effW !== 1) || perFeatW) {
+        leaf.stroke = {
+          "line-color": oc,
+          "line-width": effW,
+          // a stored line-opacity of 0 = "outline hidden" (the show-outline toggle)
+          "line-opacity": leaf.paint["line-opacity"] != null ? leaf.paint["line-opacity"] : 1
+        };
+        leaf.paint = Object.assign({}, leaf.paint, { "fill-outline-color": "rgba(0,0,0,0)" });
+      } else if (leaf.paint["line-opacity"] === 0) {
+        leaf.paint = Object.assign({}, leaf.paint, { "fill-outline-color": "rgba(0,0,0,0)" });   // outline toggled off — hide the native one too
+      } else if (row.source_type === "geojson-supabase" && !leaf.paint["fill-outline-color"]) {
+        leaf.paint = Object.assign({}, leaf.paint, { "fill-outline-color": oc });   // drawn fill at exactly width 1 with no stored color — native outline in the layer colour
+      }
+    }
+
+    // Every styleable leaf gets a hover/click highlight by default, so "Highlight on hover" is
+    // always available (feature-state needs feature ids in the tiles; without them it's inert).
+    // TILESET FILLS hover INLINE — highlight = the marker `true`, and the engine (addLayers
+    // hoverInlinePaint) dims the fill's OWN opacity to 0.5 on hover/selected, the AHM building
+    // effect (a same-colour overlay is invisible on an opaque fill). Lines, circles and drawn
+    // fills keep the overlay twin (visible there). row.hover → leaf.hoverHighlight gates the
+    // behavior (#11); a stored hover_paint (above) still wins.
+    if (leaf.highlight == null) {
+      if (leaf.type === "fill" && row.source_type !== "geojson-supabase") leaf.highlight = true;
+      else if (leaf.type === "fill" || leaf.type === "line" || leaf.type === "circle")
+        leaf.highlight = defaultHighlightPaint(leaf.type, leaf.iconColor || "#3bb2d0");
     }
 
     var hasEncyclopedia = row.content_base_url != null;
@@ -316,5 +341,6 @@ var ConfigLoader = (function () {
     loadProjectConfig: loadProjectConfig,
     hydrateDeferredFeatures: hydrateDeferredFeatures,
     hydrateDeferredLayer: hydrateDeferredLayer,
+    defaultHighlightPaint: defaultHighlightPaint,   // editor reuses it for layers added in-session (same default as a reload)
   };
 })();

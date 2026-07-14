@@ -167,6 +167,34 @@ window.msApplyHeaderFeature = function (visible, projectName) {
       return b;
     }));
     if (raw.mapboxUsername) siteConfig.mapboxUsername = raw.mapboxUsername;
+    // Timeline range (raw_config.timeline {start, end|"today"}): the EDITOR applies it via editing.js
+    // (applyTimelineRange), but the VIEWER never did — every published map showed the engine's default
+    // years. Same math as the editor, retried until the engine's slider exists.
+    if (raw.timeline && raw.timeline.start && raw.timeline.end) {
+      (function () {
+        var tl = raw.timeline;
+        function applyTL() {
+          try {
+            var $ = window.$, m = window.moment; if (!$ || !m || !$("#slider").length) return false;
+            var s = m(tl.start).unix(), e = (tl.end === "today") ? m().unix() : m(tl.end).unix();
+            if (!s || !e || e <= s) return false;
+            var mid = Math.round((s + e) / 2), step = (e - s) / 10;
+            try { window.sliderStart = s; window.sliderEnd = e; window.sliderMiddle = mid; } catch (x) {}
+            $("#slider").slider("option", { min: s, max: e, value: mid });
+            $("#ruler-date1").text(m.unix(s + step).format("YYYY"));
+            $("#ruler-date2").text(m.unix(s + step * 3).format("YYYY"));
+            $("#ruler-date3").text(m.unix(mid).format("YYYY"));
+            $("#ruler-date4").text(m.unix(s + step * 7).format("YYYY"));
+            $("#ruler-date5").text(m.unix(s + step * 9).format("YYYY"));
+            $("#date").text(m.unix(mid).format("DD MMM YYYY"));
+            if (typeof changeDate === "function") changeDate(mid);
+            return true;
+          } catch (err) { return false; }
+        }
+        var tries = 0;
+        var iv = setInterval(function () { if (applyTL() || ++tries > 25) clearInterval(iv); }, 400);
+      })();
+    }
     // Layer/group ℹ popups + the About modal, saved by the editor's in-place popup editing. The engine only
     // opens a modal when modal_header_text[id] is set — the editor loads these in loadProjectChrome(), but the
     // viewer never did, so saved info modals showed NOTHING in view. Load them here.

@@ -49,12 +49,20 @@ function styleColumnStroke(layer) {
   if (s["line-width"] != null && typeof s["line-width"] !== "object") s["line-width"] = msNumCol("ms_thickness", s["line-width"]);
   return s;
 }
+// A fill whose `highlight` is the marker `true` hovers INLINE: the fill's OWN opacity drops to 0.5
+// on hover/selected (the AHM building-dim). An overlay twin in the layer's own colour is invisible
+// on an opaque fill — same colour painted over itself — so opaque tileset fills use this instead.
+function hoverInlinePaint(layer, p) {
+  if (!p || layer.type !== "fill" || layer.highlight !== true || typeof p["fill-opacity"] !== "number") return p;
+  const on = ["any", ["boolean", ["feature-state", "hover"], false], ["boolean", ["feature-state", "selected"], false]];
+  return { ...p, "fill-opacity": ["case", on, 0.5, p["fill-opacity"]] };
+}
 function addLayersToMap(map, side, date) {
   flatLayers(layers).forEach(layer => {
     // off-by-default layers (and their stroke/highlight companions) are ADDED hidden — no visible-then-hidden load flash
     const initVis = layer.checked === false ? "none" : "visible";
-    addMapLayer(map, { ...layer, paint: styleColumnPaint(layer), id: layer.id + "-" + side }, date);
-    if (layer.highlight) {
+    addMapLayer(map, { ...layer, paint: hoverInlinePaint(layer, styleColumnPaint(layer)), id: layer.id + "-" + side }, date);
+    if (layer.highlight && layer.highlight !== true) {   // `true` = inline hover (above), no overlay layer
       const hl = { ...layer, paint: highlightSelectablePaint(layer.highlight), source: layer.id + "-" + side };
       hl.layout = { ...(hl.layout || {}), visibility: initVis };
       addMapLayer(map, { ...hl, id: layer.id + "-highlighted-" + side }, date);

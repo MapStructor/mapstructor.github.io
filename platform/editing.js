@@ -148,6 +148,10 @@
     var node = { id: id, label: name, type: type, source: { type: 'vector', url: url }, paint: tilesetDefaultPaint(type, color),
       containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: TILESET_ICON[type] || 'square', iconColor: color, isSolid: true, checked: true, toggleElement: id };
     if (sourceLayer) node['source-layer'] = sourceLayer;
+    // same default hover/click highlight a reload would synthesize (configLoader): tileset FILLS
+    // hover inline (marker `true` — the fill itself dims via addLayers.hoverInlinePaint); lines and
+    // circles get the overlay twin — so it works the moment the tileset is added
+    try { node.highlight = (type === 'fill') ? true : ((window.ConfigLoader && ConfigLoader.defaultHighlightPaint) ? ConfigLoader.defaultHighlightPaint(type, color) : null); } catch (e) {}
     return node;
   }
   // A tileset/vector layer renders via the engine's map layers (not MapboxDraw), so it's styled by
@@ -518,6 +522,7 @@
     if (idsReady) { try { await idsReady; } catch (e) {} }
     if (!loaded) { setStatus('Still loading — try again'); return; }
     var node = makeTilesetNode(name, url, sourceLayer, type, nextColor());
+    var _wireNew = function () { try { if (typeof window.wireLayerInteraction === 'function') window.wireLayerInteraction(node); } catch (e) {} };   // hover/highlight events for the just-added layer (boot wiring already ran)
     var sort = nextSort++;
     setStatus('Saving…');
     try {
@@ -532,6 +537,7 @@
       rerender();
       renderTilesetOnMap(node);
       wireEngineEditClicks();
+      _wireNew();
       if (typeof refreshLayers === 'function') refreshLayers();  // sync visibility to the new checkbox
       setActiveLayer(node.id);   // open its style panel (color/opacity/outline/width + Split for fills)
       setStatus('Saved');
@@ -539,24 +545,56 @@
   }
   // Mirror addLayersToMap for a single node: add <id>-left / <id>-right on both maps via the
   // engine's addMapLayer (same call the viewer uses), filtered by the current timeline date.
+  // A fill's outline renders as a separate line layer at every width EXCEPT exactly 1 — width 1 is
+  // mapbox's own native fill-outline (identical to plain mapboxgl); anything else (thinner 0.5
+  // DEFAULT, thicker 2+, or a by-column expression) needs the line layer to express it. When the
+  // companion exists it OWNS the outline, so the fill's own outline goes transparent (widths read
+  // exactly, not width+1).
+  var FILL_BORDER_DEFAULT = 0.5;
+  function fillStrokeWanted(paint) {
+    if (!paint || !paint['fill-outline-color']) return false;
+    var w = paint['line-width'] != null ? paint['line-width'] : FILL_BORDER_DEFAULT;
+    return typeof w !== 'number' || w !== 1;
+  }
+  function fillEffectivePaint(paint) {   // the fill layer's own paint, with the outline blanked when a companion (or "outline off") covers it
+    if (!paint) return paint;
+    var hideNative = fillStrokeWanted(paint) || paint['line-opacity'] === 0;
+    return hideNative ? Object.assign({}, paint, { 'fill-outline-color': 'rgba(0,0,0,0)' }) : paint;
+  }
+  function editorCurrentDate() {   // the timeline's date as YYYYMMDD, for addMapLayer's filter
+    try { var d = (window.moment && window.$) ? moment($('#date').text()).format('YYYYMMDD') : ''; return /^\d{8}$/.test(d) ? parseInt(d, 10) : undefined; } catch (e) { return undefined; }
+  }
   function renderTilesetOnMap(node) {
     if (typeof addMapLayer !== 'function') return;
-    var date;
-    try { var d = (window.moment && window.$) ? moment($('#date').text()).format('YYYYMMDD') : ''; date = /^\d{8}$/.test(d) ? parseInt(d, 10) : undefined; } catch (e) { date = undefined; }
+    var date = editorCurrentDate();
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
       var side = pair[0], map = pair[1]; if (!map) return;
       var id = node.id + '-' + side;
-      try { if (!map.getLayer(id)) addMapLayer(map, Object.assign({}, node, { id: id }), date); }
+      try {
+        if (!map.getLayer(id)) {
+          var ep = (node.type === 'fill') ? fillEffectivePaint(node.paint) : node.paint;
+          if (node.type === 'fill' && typeof hoverInlinePaint === 'function') ep = hoverInlinePaint(node, ep);   // inline hover-dim, same as the engine at load
+          addMapLayer(map, Object.assign({}, node, { id: id, paint: ep }), date);
+        }
+      }
       catch (e) { console.warn('editing: tileset render failed', e); }
-      // a fill tileset's outline renders as a real line layer (sharing the fill's source) so it can
-      // exceed Mapbox's 1px fill-outline cap — mirrors the engine's stroke block, with source-layer.
-      if (node.type === 'fill' && node.paint && node.paint['fill-outline-color']) {
+      // a fill tileset's THICKER-than-native outline renders as a real line layer (sharing the
+      // fill's source) so it can exceed Mapbox's 1px fill-outline cap; width 1 stays native.
+      if (node.type === 'fill' && fillStrokeWanted(node.paint)) {
         var sid = node.id + '-stroke-' + side;
         if (!map.getLayer(sid)) {
-          var sc = { id: sid, type: 'line', source: id, paint: { 'line-color': node.paint['fill-outline-color'], 'line-width': node.paint['line-width'] || 1, 'line-opacity': node.paint['line-opacity'] != null ? node.paint['line-opacity'] : 1 }, layout: { 'line-cap': 'round', 'line-join': 'round' } };
+          var sc = { id: sid, type: 'line', source: id, paint: { 'line-color': node.paint['fill-outline-color'], 'line-width': node.paint['line-width'] != null ? node.paint['line-width'] : FILL_BORDER_DEFAULT, 'line-opacity': node.paint['line-opacity'] != null ? node.paint['line-opacity'] : 1 }, layout: { 'line-cap': 'round', 'line-join': 'round' } };
           if (node['source-layer']) sc['source-layer'] = node['source-layer'];
           try { addMapLayer(map, sc, date); } catch (e) { console.warn('editing: tileset stroke failed', e); }
         }
+      }
+      // hover/click highlight companion — mirrors the engine's addLayersToMap block, so a tileset
+      // added IN-SESSION highlights like it will after a reload (`true` = inline hover, no overlay)
+      if (node.highlight && node.highlight !== true && !map.getLayer(node.id + '-highlighted-' + side)) {
+        var hp = (typeof highlightSelectablePaint === 'function') ? highlightSelectablePaint(node.highlight) : node.highlight;
+        var hc = { id: node.id + '-highlighted-' + side, type: node.type, source: id, paint: hp };
+        if (node['source-layer']) hc['source-layer'] = node['source-layer'];
+        try { addMapLayer(map, hc, date); } catch (e) {}
       }
     });
   }
@@ -586,6 +624,7 @@
     if (typeof layers === 'undefined' || !draw) return;
     if (!_panelClickPatched && typeof window.handlePanelClick === 'function') {   // editor: editable layers own their clicks (edit), so the engine's encyclopedia panel-click must not ALSO fire — the page shows via the feature panel instead
       _panelClickPatched = true; var _origHPC = window.handlePanelClick;
+      window._msOrigHandlePanelClick = _origHPC;   // enterEngineEdit falls back to this for display-only features (their click must still open the viewer's panel)
       window.handlePanelClick = function (layer, event) {
         // ALSO suppress for small drawn layers (their features live in MapboxDraw): if the engine copy is
         // ever visible/clickable (e.g. it rendered after hideDrawnEngineLayers ran), the engine's panel
@@ -630,15 +669,26 @@
           });
           if (!found) return;
           var node = findNodeById(layers, found[0].layer.id.replace(/-(left|right)$/, ''));
-          if (node) onEngineFeatureClick(node, { features: found });
+          if (node) onEngineFeatureClick(node, { features: found, lngLat: e.lngLat });
         });
       });
     }
   }
   function onEngineFeatureClick(node, e) {
     if (!e.features || !e.features.length) return;
-    var fid = e.features[0].id; if (fid == null) return;   // tile features carry the db id (Tippecanoe --use-attribute-for-id=id)
-    enterEngineEdit(node, fid);
+    var fid = e.features[0].id; if (fid == null) { engineViewerPanel(node, e); return; }   // no tile id → can't edit, but the click still shows the viewer's panel
+    enterEngineEdit(node, fid, e);
+  }
+  // Editor = viewer + tools: when a clicked feature can't be pulled into edit (its data isn't in the
+  // edit backend — e.g. a pure Mapbox tileset), the click must still do what the VIEWER does: open the
+  // layer's encyclopedia/notes panel. The engine's own click handler is suppressed for engine-editable
+  // layers (patched above), so call the ORIGINAL directly.
+  function engineViewerPanel(node, e) {
+    try {
+      if (node && node.panel && typeof window._msOrigHandlePanelClick === 'function' && e && e.features && e.features.length) {
+        window._msOrigHandlePanelClick(node, e);
+      }
+    } catch (err) {}
   }
   // ── Edit-backend adapter (Phase 2a): which DB + table a layer's feature edits read/write, keyed off
   //    source_type. Drawn (geojson-supabase) AND every tileset that hasn't declared its own backend
@@ -659,19 +709,19 @@
     return { db: client, table: eb.table, idCol: eb.id_col || 'feature_id', layerCol: eb.layer_col || 'layer_id', geomCol: eb.geom_col || 'geom' };
   }
 
-  async function enterEngineEdit(node, fid) {
+  async function enterEngineEdit(node, fid, clickEvt) {
     var drawId = 'db-' + fid;
     if (draw && draw.get(drawId)) {   // already pulled into draw (re-click via the edited overlay) → stage 1 unless mid-geometry-edit
       if (_editingDraw !== drawId) { _editingDraw = null; _armedSet = [drawId]; try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {} updateArmedHl(); }
       showFeaturePanel(drawId); return;
     }
     var lyrId = (typeof slugToLayerDbId !== 'undefined') ? slugToLayerDbId[node.id] : null;
-    if (!lyrId) return;   // this layer's data isn't in our `features` table → not editable here
+    if (!lyrId) { engineViewerPanel(node, clickEvt); return; }   // this layer's data isn't in our `features` table → not editable, but still show the panel
     // Scope to THIS layer's id. feature_id alone is GLOBAL, so a tile id can collide with an unrelated
     // migrated feature on another layer and "edit" (and hide) the wrong thing — the vanishing-feature bug.
     var EB = getEditBackend(node);   // Phase 2a: read from this layer's edit backend (platform `features` unless the tileset declared its own)
     var res; try { res = await EB.db.from(EB.table).select(EB.idCol + ', ' + EB.layerCol + ', ' + EB.geomCol + ', label, description, start_date, end_date, content_id').eq(EB.idCol, fid).eq(EB.layerCol, lyrId).single(); } catch (e) { res = { error: e }; }
-    if (res.error || !res.data || !res.data[EB.geomCol]) return;   // not a feature of this layer → ignore the click, don't filter/hide it
+    if (res.error || !res.data || !res.data[EB.geomCol]) { engineViewerPanel(node, clickEvt); return; }   // display-only feature (not in the edit backend) → no edit, but the viewer's panel still opens
     var row = res.data, rowGeom = row[EB.geomCol], origGeom = { type: rowGeom.type, coordinates: rowGeom.coordinates };
     if (origGeom.type === 'MultiPolygon') { _engineWasMulti[drawId] = true; _engineOrigMulti[drawId] = origGeom; }
     var geom = toDrawPolygon(origGeom);   // mapbox-gl-draw needs a Polygon
@@ -1398,7 +1448,7 @@
       document.addEventListener('click', function (e) {   // any ℹ / info trigger → open the popup + make it editable in place
         var t = e.target && e.target.closest && e.target.closest('.trigger-popup'); if (!t) return;
         var pid, title;
-        if (t.id === 'info' || t.id === 'about-info') { pid = 'about'; title = 'About'; }
+        if (t.id === 'info' || t.id === 'about-info' || t.id === 'about') { pid = 'about'; title = 'About'; }   // 'about' = the header ABOUT button (engine headerButtons render it with that id)
         else {   // a layer/group info button — derive a stable id from the row's node (the rendered id may be empty)
           var row = t.closest('.layer-list-row'); if (!row) return;
           var cb = row.querySelector('input[type="checkbox"]'); var nodeId = cb ? cb.id : '';
@@ -1414,6 +1464,20 @@
         }, 70);
       }, true);
     }
+    // Closing the modal ENDS the edit session — otherwise _editPopupId/contenteditable linger and the
+    // next popup that opens WITHOUT going through the click handler above gets edited under the OLD
+    // target (the About-text-saved-to-a-layer bug).
+    var oCb = document.getElementById('o');
+    if (oCb && !oCb.__msEditReset) {
+      oCb.__msEditReset = true;
+      oCb.addEventListener('change', function () {
+        if (this.checked) return;
+        if (_editPopupId) { try { savePopupEdit(); } catch (e) {} }   // flush — closing inside the 600ms debounce must not drop the last keystrokes
+        _editPopupId = null;
+        var c = document.querySelector('div.modal-content'); if (c) c.removeAttribute('contenteditable');
+        var tl = document.getElementById('editor-modal-tools'); if (tl) tl.classList.remove('on');
+      });
+    }
     return true;
   }
   function openPopupForEdit(pid, title, html) {   // open the engine modal for editing — idempotent (skips if the engine already opened it, e.g. About)
@@ -1428,20 +1492,26 @@
     _editPopupId = popupId; content.setAttribute('contenteditable', 'true'); tools.classList.add('on');
   }
   async function savePopupEdit() {
-    var content = document.querySelector('div.modal-content'); if (!content || !_editPopupId) return;
+    // SNAPSHOT the target + html now — the close handler nulls _editPopupId and this function
+    // awaits mid-flight, so reading the global later could save under the wrong (or no) key
+    var content = document.querySelector('div.modal-content'); var pid = _editPopupId;
+    if (!content || !pid) return;
     var html = content.innerHTML; setStatus('Saving…');
     try {
       var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {};
-      if (_editPopupId === 'about') { rc.about = html; setModalAbout(html); }
+      if (pid === 'about') { rc.about = html; setModalAbout(html); }
       else {
-        var title = ''; try { title = (document.querySelector('div.modal-header h1').textContent || '').trim(); } catch (x) {}
-        rc.popups = rc.popups || {}; rc.popups[_editPopupId] = { title: title, html: html };
-        try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; window.modal_content_html[_editPopupId] = html; window.modal_header_text[_editPopupId] = title || 'Info'; } catch (x2) {}
+        var nodeId = pid.replace(/-info$/, ''); var node = findNodeById(layers, nodeId);
+        // a layer/group popup is titled by its ROW LABEL — the modal header can be stale (it once
+        // trapped "About" here permanently), so it's only the fallback when no node matches
+        var title = (node && node.label) || '';
+        if (!title) { try { title = (document.querySelector('div.modal-header h1').textContent || '').trim(); } catch (x) {} }
+        rc.popups = rc.popups || {}; rc.popups[pid] = { title: title, html: html };
+        try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; window.modal_content_html[pid] = html; window.modal_header_text[pid] = title || 'Info'; if (_editPopupId === pid) window.$('div.modal-header h1').text(title || 'Info'); } catch (x2) {}
         // persist info_id on the layer/group row so the rendered info button carries this id (viewer + on reload)
-        var nodeId = _editPopupId.replace(/-info$/, ''); var node = findNodeById(layers, nodeId);
         if (node) {
-          if (node.type === 'group' && node._dbId) { await db.from('layer_groups').update({ info_id: _editPopupId }).eq('id', node._dbId); }
-          else if (node.type !== 'group' && node.type !== 'section' && slugToLayerDbId[nodeId]) { await db.from('layers').update({ info_id: _editPopupId }).eq('id', slugToLayerDbId[nodeId]); }
+          if (node.type === 'group' && node._dbId) { await db.from('layer_groups').update({ info_id: pid }).eq('id', node._dbId); }
+          else if (node.type !== 'group' && node.type !== 'section' && slugToLayerDbId[nodeId]) { await db.from('layers').update({ info_id: pid }).eq('id', slugToLayerDbId[nodeId]); }
         }
       }
       var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message);
@@ -2489,14 +2559,15 @@
   var OUTLINE_FILL = ['coalesce', ['get', 'user_outline'], COLOR];   // polygon outline → defaults to fill color
   var OUTLINE_PT = ['coalesce', ['get', 'user_outline'], '#000'];    // point stroke → defaults to black
   var OUTLINE_OPACITY = ['coalesce', ['get', 'user_strokeopacity'], 1];   // polygon outline opacity, INDEPENDENT of fill — so fill→0 leaves the lines
-  var STROKE_WIDTH = ['coalesce', ['get', 'user_strokewidth'], 2];        // polygon outline / line width, per-feature so width edits preview live
+  var STROKE_WIDTH = ['coalesce', ['get', 'user_strokewidth'], 2];        // LINE width, per-feature so width edits preview live
+  var POLY_STROKE_WIDTH = ['coalesce', ['get', 'user_strokewidth'], 0.5];   // polygon outline width — 0.5 default (thinner than mapbox's native 1px)
   var POINT_STROKE_WIDTH = ['coalesce', ['get', 'user_strokewidth'], 1.5]; // circle outline width — NOT 1px-capped like fill-outline, no separate layer needed
   var RADIUS_BASE = ['coalesce', ['get', 'user_radius'], 6];               // the radius slider sets the ZOOMED-IN size; farther out points shrink like real markers
   var RADIUS = ['interpolate', ['linear'], ['zoom'], 6, ['max', 2, ['*', 0.35, RADIUS_BASE]], 11, ['*', 0.65, RADIUS_BASE], 16, RADIUS_BASE];
   var DRAW_STYLES = [
     { id: 'gl-draw-polygon-fill-inactive', type: 'fill', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], paint: { 'fill-color': COLOR, 'fill-outline-color': OUTLINE_FILL, 'fill-opacity': FILL_OPACITY } },
     { id: 'gl-draw-polygon-fill-active', type: 'fill', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.55 } },
-    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': OUTLINE_FILL, 'line-width': STROKE_WIDTH, 'line-opacity': OUTLINE_OPACITY } },
+    { id: 'gl-draw-polygon-stroke-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': OUTLINE_FILL, 'line-width': POLY_STROKE_WIDTH, 'line-opacity': OUTLINE_OPACITY } },
     { id: 'gl-draw-polygon-stroke-active', type: 'line', filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
     { id: 'gl-draw-line-inactive', type: 'line', filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': COLOR, 'line-width': STROKE_WIDTH, 'line-opacity': STROKE_OPACITY } },
     { id: 'gl-draw-line-active', type: 'line', filter: ['all', ['==', '$type', 'LineString'], ['==', 'active', 'true']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fbb03b', 'line-dasharray': [0.2, 2], 'line-width': 2 } },
@@ -3358,13 +3429,14 @@
       var C  = ['coalesce', ['get', 'color'], '#3bb2d0'];                       // mirrors DRAW_STYLES COLOR (user_* → plain props)
       var OF = ['coalesce', ['get', 'outline'], C];                            // OUTLINE_FILL: polygon outline → fill colour
       var OP = ['coalesce', ['get', 'opacity'], 1];                            // STROKE_OPACITY: line/point opacity, default 1
-      var SW = ['coalesce', ['get', 'strokewidth'], 2];                        // STROKE_WIDTH
+      var SW = ['coalesce', ['get', 'strokewidth'], 2];                        // STROKE_WIDTH (lines)
+      var PSW = ['coalesce', ['get', 'strokewidth'], 0.5];                     // POLY_STROKE_WIDTH (polygon outlines — 0.5 default)
       afterMap.addSource(MIRROR_SRC, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       afterMap.addLayer({ id: MIRROR_SRC + '-fill', type: 'fill', source: MIRROR_SRC, filter: ['==', '$type', 'Polygon'],
         paint: { 'fill-color': C, 'fill-outline-color': OF, 'fill-opacity': ['coalesce', ['get', 'opacity'], 0.35] } });
       afterMap.addLayer({ id: MIRROR_SRC + '-poly-stroke', type: 'line', source: MIRROR_SRC, filter: ['==', '$type', 'Polygon'],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': OF, 'line-width': SW, 'line-opacity': ['coalesce', ['get', 'strokeopacity'], 1] } });
+        paint: { 'line-color': OF, 'line-width': PSW, 'line-opacity': ['coalesce', ['get', 'strokeopacity'], 1] } });
       afterMap.addLayer({ id: MIRROR_SRC + '-line', type: 'line', source: MIRROR_SRC, filter: ['==', '$type', 'LineString'],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-color': C, 'line-width': SW, 'line-opacity': OP } });
@@ -3761,7 +3833,9 @@
   }
   function buildLayerPaint(type, color, op, outline, outlineVis, width, radius) {
     var w = width != null ? width : 2;
-    if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': outline || color, 'fill-opacity': op != null ? op : 0.35, 'line-opacity': outlineVis != null ? outlineVis : 1, 'line-width': w };
+    // fills default their border width to 0.5 (thinner than mapbox's native 1px fill-outline —
+    // the stroke companion renders it; exactly 1 = native, anything else = companion)
+    if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': outline || color, 'fill-opacity': op != null ? op : 0.35, 'line-opacity': outlineVis != null ? outlineVis : 1, 'line-width': width != null ? width : 0.5 };
     if (type === 'line') return { 'line-color': color, 'line-width': w, 'line-opacity': op != null ? op : 1 };
     return { 'circle-color': color, 'circle-radius': radius != null ? radius : 6, 'circle-stroke-width': width != null ? width : 1.5, 'circle-stroke-color': outline || '#ffffff', 'circle-opacity': op != null ? op : 1 };
   }
@@ -3781,6 +3855,16 @@
     rowC.style.display = multi ? 'none' : 'block';
     strip.style.display = multi ? 'flex' : 'none';
   }
+  // The bubble "Label field" (and the map-labels column pick, where supported) share one column list.
+  function fillLabelFieldSelect(node, sortedKeys) {
+    var lf = document.getElementById('elp-labelfield');
+    if (!lf) return;
+    var want = (node._uiLabel != null) ? node._uiLabel : (node.prop || 'label');
+    lf.innerHTML = '<option value="label">label (the feature\'s own Label)</option>';
+    sortedKeys.forEach(function (k) { if (k === 'label') return; var o2 = document.createElement('option'); o2.value = k; o2.textContent = k; lf.appendChild(o2); });
+    if (want !== 'label' && sortedKeys.indexOf(want) < 0) { var oc = document.createElement('option'); oc.value = want; oc.textContent = want; lf.appendChild(oc); }   // keep a saved value that isn't a known column
+    lf.value = want;
+  }
   async function populateColorBy(node) {
     var row = document.getElementById('elp-colorby-row'), sel = document.getElementById('elp-colorby'), info = document.getElementById('elp-colorby-info');
     if (!row || !sel) return;
@@ -3788,7 +3872,23 @@
     var isDrawn = node && node.source_type === 'geojson-supabase';
     row.style.display = isDrawn ? 'block' : 'none';
     ['elp-opacityby-row', 'elp-thickby-row'].forEach(function (rid) { var r2 = document.getElementById(rid); if (r2) r2.style.display = isDrawn ? 'block' : 'none'; });   // the by-column selects live NEXT TO their sliders now (paired groups)
-    if (!isDrawn) return;
+    if (!isDrawn) {
+      // TILESETS: the columns live in the tiles — union the property keys of the loaded features so
+      // the bubble "Label field" dropdown offers them (it used to stay empty for tilesets).
+      if (node && isTilesetNode(node)) {
+        var tkeys = {};
+        [['left', (typeof beforeMap !== 'undefined' ? beforeMap : null)], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+          var m = pair[1]; if (!m) return;
+          try {
+            var fs2 = m.querySourceFeatures(node.id + '-' + pair[0], node['source-layer'] ? { sourceLayer: node['source-layer'] } : undefined) || [];
+            for (var i = 0; i < fs2.length && i < 400; i++) Object.keys(fs2[i].properties || {}).forEach(function (k) { tkeys[k] = 1; });
+          } catch (e) {}
+        });
+        fillLabelFieldSelect(node, Object.keys(tkeys).sort());
+        var mlRow2 = document.getElementById('elp-maplabels-row'); if (mlRow2) mlRow2.style.display = 'none';   // map labels are geojson-only for now (labels.js) — also clears a stale 'block' from a previously-selected drawn layer
+      }
+      return;
+    }
     var lid = slugToLayerDbId[node.id];
     sel.innerHTML = '<option value="">Single color</option>';
     info.textContent = '';
@@ -3843,14 +3943,7 @@
         setv('elp-lbl-s6', sz5[0]); setv('elp-lbl-s11', sz5[1]); setv('elp-lbl-s16', sz5[2]);
       }
       // the Label-field dropdown gets the same columns ("label" = the feature's own Label field)
-      var lf = document.getElementById('elp-labelfield');
-      if (lf) {
-        var want = (node._uiLabel != null) ? node._uiLabel : (node.prop || 'label');
-        lf.innerHTML = '<option value="label">label (the feature\'s own Label)</option>';
-        sortedKeys.forEach(function (k) { var o2 = document.createElement('option'); o2.value = k; o2.textContent = k; lf.appendChild(o2); });
-        if (want !== 'label' && sortedKeys.indexOf(want) < 0) { var oc = document.createElement('option'); oc.value = want; oc.textContent = want; lf.appendChild(oc); }   // keep a saved value that isn't a known column (e.g. tileset "nid")
-        lf.value = want;
-      }
+      fillLabelFieldSelect(node, sortedKeys);
     } catch (e) {}
   }
   async function onColorBy(prop) {
@@ -4266,6 +4359,7 @@
       '<button id="elp-setzoom" class="ms-btn">◎ Set zoom to current view</button>' +
       '<button id="elp-zoomextent" class="ms-btn" style="margin-top:6px;">⤢ Zoom to features’ extent</button>' +
       '<div id="elp-zoom-info" class="ms-note" style="font-size:11px;margin-top:4px;text-align:center;">Zoom target: not set</div>' +
+      '<label class="ms-check" style="display:block;margin-top:8px;"><input id="elp-zoombtn" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Zoom button (&#8982;) on the layer row</label>' +
       '</div>' +
       // ── SOURCE (tilesets only) ──
       '<div id="elp-src-row" class="' + SECTOP + '" style="display:none;">' +
@@ -4326,6 +4420,7 @@
     document.getElementById('elp-info').addEventListener('click', onLayerInfoEdit);
     document.getElementById('elp-setzoom').addEventListener('click', function () { if (activeLayerId) onSetZoom(activeLayerId); });   // set-zoom moved here from the layer row
     document.getElementById('elp-zoomextent').addEventListener('click', onZoomExtent);
+    document.getElementById('elp-zoombtn').addEventListener('change', function () { onZoomBtnToggle(this.checked); });
     document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
     document.getElementById('elp-nidprop').addEventListener('change', function () { onNidProp(this.value); });
     document.getElementById('elp-panel-mode').addEventListener('change', function () { onPanelMode(this.value); });
@@ -4481,7 +4576,7 @@
     if (node.outlineOf) { splitBtn.textContent = 'Merge into polygon'; splitBtn.style.display = 'block'; }
     else if (fillStroke) { splitBtn.textContent = node.outlineSplit ? 'Merge outline back in' : 'Split outline into its own layer'; splitBtn.style.display = 'block'; }
     else { splitBtn.style.display = 'none'; }
-    var width = paintWidth(node.paint); if (width == null) width = (node.type === 'circle') ? 1.5 : 2;
+    var width = paintWidth(node.paint); if (width == null) width = (node.type === 'circle') ? 1.5 : (node.type === 'fill' ? 0.5 : 2);   // fills: 0.5 border default
     document.getElementById('elp-width').value = width;
     document.getElementById('elp-width-val').textContent = width;
     document.getElementById('elp-width-label').textContent = (node.type === 'line') ? 'Width' : 'Outline width';
@@ -4516,6 +4611,7 @@
     document.getElementById('elp-hover').checked = (node._uiHover != null) ? node._uiHover : !!node.popupStyle;
     document.getElementById('elp-click').checked = (node._uiClick != null) ? node._uiClick : !!node.click;
     document.getElementById('elp-hl').checked = node.hoverHighlight !== false;
+    document.getElementById('elp-zoombtn').checked = node.zoomBtn !== false;   // per-row ⌖ toggle — default on
     document.getElementById('elp-hl-label').style.display = node.highlight ? 'block' : 'none';   // hover-highlight toggle only where a highlight exists
     (function () {   // label-field is a SELECT now — make sure the saved value exists as an option before setting it
       var lf = document.getElementById('elp-labelfield');
@@ -5028,6 +5124,31 @@
     try { beforeMap.fitBounds(b, { padding: 60, bearing: 0, maxZoom: 17 }); } catch (e) {}
     try { if (typeof afterMap !== 'undefined' && afterMap) afterMap.fitBounds(b, { padding: 60, bearing: 0, maxZoom: 17 }); } catch (e) {}
   }
+  // Per-row ⌖ zoom button on/off (default ON) — a real setting: node.zoomBtn === false hides it
+  // (generateLayers gates on it), persisted as raw_config.zoomBtn on the layer or group row.
+  async function onZoomBtnToggle(on) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node || node.type === 'section') return;
+    if (on) delete node.zoomBtn; else node.zoomBtn = false;
+    rerender();
+    setStatus('Saving…');
+    try {
+      if (node.type === 'group') {
+        if (!node._dbId) throw new Error('no group id');
+        var cg = await db.from('layer_groups').select('raw_config').eq('id', node._dbId).single();
+        var rg = (cg.data && cg.data.raw_config) || {};
+        if (on) delete rg.zoomBtn; else rg.zoomBtn = false;
+        var r1 = await db.from('layer_groups').update({ raw_config: rg }).eq('id', node._dbId); if (r1.error) throw new Error(r1.error.message);
+      } else {
+        var lid2 = slugToLayerDbId[node.id]; if (!lid2) throw new Error('no layer id');
+        var cl = await db.from('layers').select('raw_config').eq('id', lid2).single();
+        var rl = (cl.data && cl.data.raw_config) || {};
+        if (on) delete rl.zoomBtn; else rl.zoomBtn = false;
+        var r2 = await db.from('layers').update({ raw_config: rl }).eq('id', lid2); if (r2.error) throw new Error(r2.error.message);
+      }
+      setStatus('Saved');
+    } catch (e) { console.warn('editing: zoom-button toggle save failed', e); setStatus('Save failed'); }
+  }
   function zoomToAttrSelected() {
     if (!_attrSel.length || typeof beforeMap === 'undefined' || !beforeMap) return;
     var geoms = _attrSel.map(function (fid) { var r = findAttrRow(fid); return r && r.geom; }).filter(Boolean);
@@ -5152,12 +5273,28 @@
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
         var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0]; var ml = m.getLayer(id); if (!ml) return;
         Object.keys(tp).forEach(function (k) { if (k.indexOf(ml.type + '-') === 0) { try { m.setPaintProperty(id, k, tp[k]); } catch (e) {} } });
-        // a fill tileset's outline is a separate line layer — repaint its color/width/opacity too
-        var sid = node.id + '-stroke-' + pair[0];
-        if (m.getLayer(sid)) {
-          if (tp['fill-outline-color'] != null) { try { m.setPaintProperty(sid, 'line-color', tp['fill-outline-color']); } catch (e) {} }
-          if (tp['line-width'] != null) { try { m.setPaintProperty(sid, 'line-width', tp['line-width']); } catch (e) {} }
-          if (tp['line-opacity'] != null) { try { m.setPaintProperty(sid, 'line-opacity', tp['line-opacity']); } catch (e) {} }
+        if (ml.type === 'fill') {
+          // outline lifecycle, LIVE: width ≤ 1 → native fill-outline only; width > 1 → a stroke line
+          // layer owns the outline (native blanked) — created/removed here so the preview always
+          // matches what the viewer renders from this same paint.
+          var sid = node.id + '-stroke-' + pair[0];
+          var wantStroke = fillStrokeWanted(tp);
+          try { m.setPaintProperty(id, 'fill-outline-color', (wantStroke || tp['line-opacity'] === 0) ? 'rgba(0,0,0,0)' : (tp['fill-outline-color'] || node.iconColor || '#3bb2d0')); } catch (e) {}
+          if (wantStroke && !m.getLayer(sid)) {
+            var sc2 = { id: sid, type: 'line', source: node.id + '-' + pair[0], paint: {}, layout: { 'line-cap': 'round', 'line-join': 'round' } };
+            if (node['source-layer']) sc2['source-layer'] = node['source-layer'];
+            try { addMapLayer(m, sc2, editorCurrentDate()); } catch (e) {}
+          }
+          if (!wantStroke && m.getLayer(sid)) { try { m.removeLayer(sid); } catch (e) {} }
+          // inline hover-dim survives live opacity edits: re-wrap the plain number the generic loop just set
+          if (node.highlight === true && typeof tp['fill-opacity'] === 'number' && typeof hoverInlinePaint === 'function') {
+            try { m.setPaintProperty(id, 'fill-opacity', hoverInlinePaint(node, { 'fill-opacity': tp['fill-opacity'] })['fill-opacity']); } catch (e) {}
+          }
+          if (m.getLayer(sid)) {
+            if (tp['fill-outline-color'] != null) { try { m.setPaintProperty(sid, 'line-color', tp['fill-outline-color']); } catch (e) {} }
+            try { m.setPaintProperty(sid, 'line-width', tp['line-width'] != null ? tp['line-width'] : FILL_BORDER_DEFAULT); } catch (e) {}
+            if (tp['line-opacity'] != null) { try { m.setPaintProperty(sid, 'line-opacity', tp['line-opacity']); } catch (e) {} }
+          }
         }
       });
     } else if (draw) {
