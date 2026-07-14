@@ -16,6 +16,20 @@ var ruler_step = (sliderEnd - sliderStart) / 10,
   date_ruler4 = sliderStart + ruler_step * 7,
   date_ruler5 = sliderStart + ruler_step * 9;
 
+// Coalesce slider filtering to one changeDate per animation frame. jQuery UI's `slide` fires on
+// every mousemove, and each changeDate re-runs setFilter across all layers — flooding it makes heavier
+// sources (PMTiles / worker vector tiles) visibly lag and "catch up" after you stop dragging. Only the
+// LATEST value is applied per frame, so a fast drag no longer backs up a queue of stale filter passes.
+var _sliderRAF = null, _sliderPendingVal = null;
+function scheduleChangeDate(v) {
+  _sliderPendingVal = v;
+  if (_sliderRAF) return;
+  _sliderRAF = (window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); })(function () {
+    _sliderRAF = null;
+    if (typeof changeDate === "function") changeDate(_sliderPendingVal);
+  });
+}
+
 function simple_tooltip(target_items, name) {
   $(target_items).each(function (i) {
     $("body").append(
@@ -113,10 +127,10 @@ if (jQuery.browser.msie)
         timeline_pointer_flag = false;
       }
 
-     
-       changeDate(ui.value);
+
+       scheduleChangeDate(ui.value);   // coalesced to one filter pass per frame (see scheduleChangeDate)
        $("#date").text(moment.unix(ui.value).format("DD MMM YYYY"));
-      
+
     },
     create: function (event, ui) {
       var tooltip = $('<div class="ui-slider-tooltip" />')
@@ -130,7 +144,7 @@ if (jQuery.browser.msie)
         })
         .text(moment.unix(sliderMiddle).format("MM/DD/YYYY"));
     },
-    change: function (event, ui) {},
+    change: function (event, ui) { if (ui && ui.value != null && typeof changeDate === "function") changeDate(ui.value); },   // lock in the exact value on release (the last coalesced frame may lag the final position)
   });
   $("#date").text(
     moment.unix($("#slider").slider("values", 0)).format("DD MMM YYYY")

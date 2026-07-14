@@ -145,7 +145,11 @@
   }
   function makeTilesetNode(name, url, sourceLayer, type, color) {
     var id = uid();
-    var node = { id: id, label: name, type: type, source: { type: 'vector', url: url }, paint: tilesetDefaultPaint(type, color),
+    // mirrors onApplySource's detection: mapbox:// is a single style url; anything else (worker /
+    // PMTiles {z}/{x}/{y} endpoints) is a tiles-array source, saved as source_type 'vector-tiles-url'
+    var isMapbox = url.indexOf('mapbox://') === 0;
+    var source = isMapbox ? { type: 'vector', url: url } : { type: 'vector', tiles: [url] };
+    var node = { id: id, label: name, type: type, source: source, paint: tilesetDefaultPaint(type, color),
       containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: TILESET_ICON[type] || 'square', iconColor: color, isSolid: true, checked: true, toggleElement: id };
     if (sourceLayer) node['source-layer'] = sourceLayer;
     // same default hover/click highlight a reload would synthesize (configLoader): tileset FILLS
@@ -950,7 +954,7 @@
     var bar = addFormEl();   // #2: buttons stay visible
     bar.innerHTML =
       '<input id="editor-name" type="text" placeholder="tileset name…" />' +
-      '<input id="editor-ts-url" type="text" placeholder="mapbox://username.tilesetid" />' +
+      '<input id="editor-ts-url" type="text" placeholder="mapbox://username.tilesetid  or  https://…/{z}/{x}/{y}.pbf" />' +
       '<input id="editor-ts-sl" type="text" list="editor-ts-sl-list" placeholder="source layer (e.g. buildings)" /><datalist id="editor-ts-sl-list"></datalist>' +
       '<div id="editor-ts-sl-status" style="font-size:11px;color:#888888;margin:-3px 0 6px;min-height:13px;"></div>' +
       '<select id="editor-ts-type"><option value="fill">Polygon (fill)</option><option value="line">Line</option><option value="circle">Point (circle)</option></select>' +

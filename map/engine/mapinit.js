@@ -131,6 +131,12 @@ function layerExtent(node) {
       try {
         const s = (typeof beforeMap !== "undefined" && beforeMap && beforeMap.getSource) ? beforeMap.getSource(n.id + "-left") : null;
         if (s && s.bounds) grow(s.bounds[0], s.bounds[1], s.bounds[2], s.bounds[3]);
+        else if (typeof beforeMap !== "undefined" && beforeMap && beforeMap.querySourceFeatures) {
+          // worker / PMTiles {z}/{x}/{y} sources have no tilejson bounds — fall back to the extent of
+          // the currently-loaded features (all that's queryable client-side without a tilejson)
+          const opts = n["source-layer"] ? { sourceLayer: n["source-layer"] } : {};
+          beforeMap.querySourceFeatures(n.id + "-left", opts).forEach(f => coords(f.geometry, (lng, lat) => grow(lng, lat, lng, lat)));
+        }
       } catch (e) {}
     }
   })(node);
