@@ -25,9 +25,31 @@
   var idsReady = null;
   var _dragId = null;
 
+  // ── Admin-only Mapbox token + Mapbox tileset (per the multi-library / no-charge principle) ──────────
+  // MapLibre is the tokenless standard; Mapbox is an OPTION. On the hosted site only the ADMIN may add
+  // token-requiring (mapbox://) sources. The token lives in localStorage ONLY — never the DB (RLS isn't
+  // locked down; a stored token would be world-readable). It applies to mapboxgl.accessToken at load +
+  // on save, and rides into downloads via the existing token capture (download.js).
+  var MB_TOKEN_KEY = 'ms-mapbox-token';
+  var MS_ADMINS = ['nittyjee@gmail.com'];   // same client owner-gate as pageEditor / homeCards / admin.html
+  var _isAdmin = false;
+  function getStoredMapboxToken() { try { return localStorage.getItem(MB_TOKEN_KEY) || ''; } catch (e) { return ''; } }
+  function applyStoredMapboxToken() { var t = getStoredMapboxToken(); if (t && window.mapboxgl) { try { mapboxgl.accessToken = t; } catch (e) {} } }
+
   // ── Sign in (for saving), then load the project's db ids ────────────────────
   function start() {
     if (!db) return;
+    applyStoredMapboxToken();
+    if (window.MapAuth) {   // resolve admin status → reveal the admin-only add buttons once known (and on auth change)
+      var _resolveAdmin = function () {
+        try { MapAuth.currentUser().then(function (u) {
+          var was = _isAdmin;
+          _isAdmin = !!(u && u.email && MS_ADMINS.indexOf(u.email) !== -1);
+          if (_isAdmin !== was && document.getElementById('editor-add-bar')) showButtons();
+        }).catch(function () {}); } catch (e) {}
+      };
+      _resolveAdmin(); try { MapAuth.onChange(_resolveAdmin); } catch (e) {}
+    }
     idsReady = (async function () {
       try {
         var s = await db.auth.getSession();
@@ -828,9 +850,15 @@
       '<button data-type="export">⬇ Export</button></div>' +
       '<div class="erow">' +
       '<button data-type="group">+ Group</button>' +
-      '<button data-type="section">+ Section</button></div></div>' +
+      '<button data-type="section">+ Section</button></div>' +
+      // admin-only: Mapbox needs a token, so it's gated to the owner on the hosted site (the multi-library
+      // / no-charge principle). Regular users only get the tokenless + Tileset above.
+      (_isAdmin ? '<div class="erow" id="editor-admin-add" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">' +
+        '<button data-type="mbtoken" title="Enter your Mapbox access token (admin only, stored in this browser)">🔑 Mapbox token</button>' +
+        '<button data-type="mbtileset" title="Add a Mapbox tileset (admin only — uses your token)">+ Mapbox tileset</button></div>' : '') +
+      '</div>' +
       '<div id="editor-add-form"></div>';
-    bar.querySelectorAll('#editor-add-buttons button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else showForm(t); }); });
+    bar.querySelectorAll('#editor-add-buttons button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
   }
   function markAddActive(type) {   // highlight which add-action's form is open (or none)
     var btns = document.querySelectorAll('#editor-add-buttons button');
@@ -954,7 +982,7 @@
     var bar = addFormEl();   // #2: buttons stay visible
     bar.innerHTML =
       '<input id="editor-name" type="text" placeholder="tileset name…" />' +
-      '<input id="editor-ts-url" type="text" placeholder="mapbox://username.tilesetid  or  https://…/{z}/{x}/{y}.pbf" />' +
+      '<input id="editor-ts-url" type="text" placeholder="pmtiles://…  or  https://…/{z}/{x}/{y}.pbf  or  TileJSON URL" />' +
       '<input id="editor-ts-sl" type="text" list="editor-ts-sl-list" placeholder="source layer (e.g. buildings)" /><datalist id="editor-ts-sl-list"></datalist>' +
       '<div id="editor-ts-sl-status" style="font-size:11px;color:#888888;margin:-3px 0 6px;min-height:13px;"></div>' +
       '<select id="editor-ts-type"><option value="fill">Polygon (fill)</option><option value="line">Line</option><option value="circle">Point (circle)</option></select>' +
@@ -962,9 +990,20 @@
       '<div class="erow"><button id="editor-ok">Add tileset</button><button id="editor-cancel">Cancel</button></div>';
     document.getElementById('editor-name').focus();
     var urlInput = document.getElementById('editor-ts-url');
-    urlInput.addEventListener('change', function () { detectSourceLayers(urlInput.value.trim()); });   // paste URL + tab/click away → list its layers
+    // +Tileset is the TOKENLESS path (PMTiles / XYZ / TileJSON). A mapbox:// URL needs an access token,
+    // so it's rejected here with an explanation (Mapbox tilesets get their own admin-only button).
+    urlInput.addEventListener('change', function () {
+      var v = urlInput.value.trim();
+      if (isMapboxUrl(v)) { showTilesetMapboxBlock(); return; }
+      detectSourceLayers(v);
+    });
     document.getElementById('editor-ok').addEventListener('click', commitTileset);
     document.getElementById('editor-cancel').addEventListener('click', closeAddForm);
+  }
+  function isMapboxUrl(url) { return /^mapbox:\/\//i.test(url || ''); }
+  function showTilesetMapboxBlock() {
+    var s = document.getElementById('editor-ts-sl-status');
+    if (s) { s.innerHTML = "Mapbox tilesets (mapbox://…) can’t be added here — this button is for <b>tokenless</b> tilesets (PMTiles, XYZ, TileJSON). Mapbox tilesets need an access token."; s.style.color = '#b4453a'; }
   }
   function mapboxTilesetId(url) { return (url && url.indexOf('mapbox://') === 0) ? url.slice(9) : null; }
   // Read a mapbox:// tileset's vector layers from its TileJSON and offer them as autocomplete,
@@ -973,7 +1012,7 @@
     var status = document.getElementById('editor-ts-sl-status'), list = document.getElementById('editor-ts-sl-list');
     if (!status || !list) return;
     var id = mapboxTilesetId(url);
-    if (!id) { status.textContent = url ? 'Auto-detect needs a mapbox:// URL — type the source layer' : ''; list.innerHTML = ''; return; }
+    if (!id) { status.textContent = url ? 'Type the source layer (e.g. buildings)' : ''; status.style.color = '#888888'; list.innerHTML = ''; return; }
     var token = (window.mapboxgl && mapboxgl.accessToken) || '';
     status.textContent = 'Reading tileset…'; list.innerHTML = '';
     try {
@@ -992,7 +1031,75 @@
     var url = (document.getElementById('editor-ts-url').value || '').trim();
     var sl = (document.getElementById('editor-ts-sl').value || '').trim();
     var type = document.getElementById('editor-ts-type').value || 'fill';
+    if (isMapboxUrl(url)) { showTilesetMapboxBlock(); setStatus('Mapbox tilesets aren’t supported here — use the Mapbox tileset button'); return; }
     if (!name || !url || !sl) { setStatus('Name, tileset URL + source layer required'); return; }
+    var sel = document.getElementById('editor-parent');
+    var parent = (sel && sel.value) ? findNodeById(layers, sel.value) : null;
+    showButtons();
+    addTileset(name, url, sl, type, parent);
+  }
+
+  // ── admin-only: Mapbox token (localStorage) + Mapbox tileset (mapbox:// via that token) ──────────────
+  function showMapboxTokenForm() {
+    var bar = addFormEl();
+    var cur = getStoredMapboxToken();
+    bar.innerHTML =
+      '<div style="font-size:11px;color:#555;margin-bottom:6px;line-height:1.5;">Your Mapbox <b>public</b> token (pk.…). Stored only in this browser — never uploaded. Used to add Mapbox tilesets and render them here and in your downloads.</div>' +
+      '<input id="editor-mbtoken" type="text" placeholder="pk.eyJ…" value="' + String(cur).replace(/"/g, '&quot;') + '" />' +
+      '<div id="editor-mbtoken-status" style="font-size:11px;margin:-3px 0 6px;min-height:13px;color:' + (cur ? '#2d7a2d' : '#888') + ';">' + (cur ? 'Token set ✓' : 'No token set') + '</div>' +
+      '<div class="erow"><button id="editor-mbtoken-save">Save</button><button id="editor-mbtoken-clear">Clear</button><button id="editor-cancel">Close</button></div>';
+    document.getElementById('editor-mbtoken').focus();
+    document.getElementById('editor-mbtoken-save').addEventListener('click', saveMapboxToken);
+    document.getElementById('editor-mbtoken-clear').addEventListener('click', clearMapboxToken);
+    document.getElementById('editor-cancel').addEventListener('click', closeAddForm);
+  }
+  function saveMapboxToken() {
+    var v = (document.getElementById('editor-mbtoken').value || '').trim();
+    var s = document.getElementById('editor-mbtoken-status');
+    function warn(msg) { if (s) { s.innerHTML = msg; s.style.color = '#b4453a'; } }
+    if (!v) { warn('Enter a token, or Clear to remove.'); return; }
+    if (/^sk\./i.test(v)) { warn('That’s a <b>secret</b> token (sk.…) — never use it in a browser. Use a <b>public</b> pk. token, URL-restricted to your domains.'); return; }
+    if (!/^pk\./i.test(v)) { warn('A Mapbox public token starts with <b>pk.</b> — check the value.'); return; }
+    try { localStorage.setItem(MB_TOKEN_KEY, v); } catch (e) {}
+    try { if (window.mapboxgl) mapboxgl.accessToken = v; } catch (e) {}
+    if (s) { s.textContent = 'Saved ✓ — Mapbox tilesets will use this token.'; s.style.color = '#2d7a2d'; }
+  }
+  function clearMapboxToken() {
+    try { localStorage.removeItem(MB_TOKEN_KEY); } catch (e) {}
+    // revert to the committed site token so the basemaps keep rendering
+    try { if (window.mapboxgl) mapboxgl.accessToken = (typeof mapboxToken !== 'undefined' ? mapboxToken : (typeof restrictedToken !== 'undefined' ? restrictedToken : mapboxgl.accessToken)); } catch (e) {}
+    var i = document.getElementById('editor-mbtoken'); if (i) i.value = '';
+    var s = document.getElementById('editor-mbtoken-status'); if (s) { s.textContent = 'Cleared — using the site’s default token.'; s.style.color = '#888'; }
+  }
+  function showMapboxTilesetForm() {
+    var bar = addFormEl();
+    var hasTok = !!(getStoredMapboxToken() || (window.mapboxgl && mapboxgl.accessToken));
+    bar.innerHTML =
+      '<input id="editor-name" type="text" placeholder="tileset name…" />' +
+      '<input id="editor-ts-url" type="text" placeholder="mapbox://username.tilesetid" />' +
+      '<input id="editor-ts-sl" type="text" list="editor-ts-sl-list" placeholder="source layer (e.g. buildings)" /><datalist id="editor-ts-sl-list"></datalist>' +
+      '<div id="editor-ts-sl-status" style="font-size:11px;margin:-3px 0 6px;min-height:13px;color:' + (hasTok ? '#888' : '#b4453a') + ';">' + (hasTok ? '' : 'Set your Mapbox token first (🔑 button).') + '</div>' +
+      '<select id="editor-ts-type"><option value="fill">Polygon (fill)</option><option value="line">Line</option><option value="circle">Point (circle)</option></select>' +
+      '<select id="editor-parent">' + parentOptions() + '</select>' +
+      '<div class="erow"><button id="editor-ok">Add Mapbox tileset</button><button id="editor-cancel">Cancel</button></div>';
+    document.getElementById('editor-name').focus();
+    var urlInput = document.getElementById('editor-ts-url');
+    urlInput.addEventListener('change', function () { detectSourceLayers(urlInput.value.trim()); });   // mapbox:// → read its source layers
+    document.getElementById('editor-ok').addEventListener('click', commitMapboxTileset);
+    document.getElementById('editor-cancel').addEventListener('click', closeAddForm);
+  }
+  function commitMapboxTileset() {
+    var name = (document.getElementById('editor-name').value || '').trim();
+    var url = (document.getElementById('editor-ts-url').value || '').trim();
+    var sl = (document.getElementById('editor-ts-sl').value || '').trim();
+    var type = document.getElementById('editor-ts-type').value || 'fill';
+    var s = document.getElementById('editor-ts-sl-status');
+    function warn(msg) { if (s) { s.innerHTML = msg; s.style.color = '#b4453a'; } }
+    if (!isMapboxUrl(url)) { warn('This button is for mapbox:// tilesets. For PMTiles / XYZ use <b>+ Tileset</b>.'); return; }
+    var tok = getStoredMapboxToken() || (window.mapboxgl && mapboxgl.accessToken) || '';
+    if (!tok) { warn('No Mapbox token — set one with the 🔑 button first.'); return; }
+    if (!name || !sl) { setStatus('Name, tileset URL + source layer required'); return; }
+    try { if (window.mapboxgl) mapboxgl.accessToken = tok; } catch (e) {}   // render the mapbox source with the admin token
     var sel = document.getElementById('editor-parent');
     var parent = (sel && sel.value) ? findNodeById(layers, sel.value) : null;
     showButtons();
