@@ -2037,9 +2037,15 @@
   var _sessionBasemap = {};   // ltoggle/rtoggle → the style id chosen THIS session (radios are session-only)
   function onMapRadio(idx, rad) {   // SESSION-ONLY basemap switch — the per-side DEFAULT is set explicitly in the Edit-map panel
     _sessionBasemap[rad.name] = rad.value;
-    var user = (typeof siteConfig !== 'undefined' && siteConfig && siteConfig.mapboxUsername) ? siteConfig.mapboxUsername : 'mapbox';
     var map = (rad.name === 'ltoggle') ? beforeMap : afterMap;
-    try { if (map && rad.value) map.setStyle('mapbox://styles/' + user + '/' + rad.value); } catch (e) {}
+    if (!map || !rad.value) return;
+    // use the engine's basemapStyle() so FREE basemaps (styleUrl: inline/URL) switch correctly —
+    // hardcoding mapbox://styles/<user>/<id> whited out free basemaps (7/15). Fall back to that only
+    // if the engine helper isn't present. Defer off mid-load (never setStyle while loading).
+    var user = (typeof siteConfig !== 'undefined' && siteConfig && siteConfig.mapboxUsername) ? siteConfig.mapboxUsername : 'mapbox';
+    var style = (typeof basemapStyle === 'function') ? basemapStyle(rad.value) : ('mapbox://styles/' + user + '/' + rad.value);
+    function go() { try { map.setStyle(style); } catch (e) {} }
+    if (map.isStyleLoaded && map.isStyleLoaded()) go(); else map.once('style.load', go);
   }
   function restoreSessionRadios() {   // after a re-render (which draws radios from the DEFAULTS), put the SESSION selection back
     ['ltoggle', 'rtoggle'].forEach(function (nm) {
