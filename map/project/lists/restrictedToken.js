@@ -1,4 +1,6 @@
-/* Public fallback token, committed deliberately (same pattern and token as the
-   AHM site). The real dev token lives in ../secrets/mapbox-token.js, which is
-   gitignored — deployed pages 404 on it and fall back to this one. */
-const restrictedToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
+/* No committed Mapbox token (7/15). Public maps render tokenless — free basemaps (Esri /
+   OpenFreeMap) + PMTiles, and projectLoader empties mapboxgl.accessToken for token-free maps,
+   so nothing here can bill anyone. A Mapbox-based map supplies its token another way: the admin
+   token (localStorage, editor only) or a token bundled into a download. AHM's own site (separate
+   repo) keeps its own token. */
+const restrictedToken = "";

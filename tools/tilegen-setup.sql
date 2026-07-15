@@ -3,19 +3,25 @@
 -- write their generated .pmtiles archives; anonymous visitors can only read.
 --
 -- Path convention: tiles/{projectId}/{layerId}.pmtiles  (written by platform/tilegen.js)
+--
+-- RE-RUNNABLE: each policy is dropped first, so running this again (e.g. after a partial run
+-- that errored with "policy ... already exists") applies cleanly with no error.
 
 -- signed-in users may upload new archives
+drop policy if exists "tilegen upload" on storage.objects;
 create policy "tilegen upload"
 on storage.objects for insert to authenticated
 with check (bucket_id = 'tiles');
 
 -- and replace existing ones (regeneration at publish uses upsert)
+drop policy if exists "tilegen update" on storage.objects;
 create policy "tilegen update"
 on storage.objects for update to authenticated
 using (bucket_id = 'tiles')
 with check (bucket_id = 'tiles');
 
 -- optional cleanup path (delete a layer → its archive may be removed)
+drop policy if exists "tilegen delete" on storage.objects;
 create policy "tilegen delete"
 on storage.objects for delete to authenticated
 using (bucket_id = 'tiles');
