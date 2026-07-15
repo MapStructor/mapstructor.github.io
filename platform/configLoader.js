@@ -355,7 +355,7 @@ var ConfigLoader = (function () {
   function freeBasemapDefaults() {
     return [
       {
-        id: "free-satellite", name: "Satellite", lChecked: true, rChecked: false,
+        id: "free-satellite", name: "Satellite", lChecked: false, rChecked: true,   // default RIGHT (streets left / satellite right)
         styleUrl: {
           version: 8,
           name: "Satellite (Esri)",
@@ -366,7 +366,7 @@ var ConfigLoader = (function () {
           layers: [{ id: "esri-satellite", type: "raster", source: "esri" }]
         }
       },
-      { id: "free-streets", name: "Streets", lChecked: false, rChecked: true,
+      { id: "free-streets", name: "Streets", lChecked: true, rChecked: false,
         styleUrl: "https://tiles.openfreemap.org/styles/liberty" }
     ];
   }
