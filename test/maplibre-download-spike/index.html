@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SPIKE — MapLibre-variant download stack</title>
+  <!-- ISOLATED SPIKE (2026-07-14) — does NOT touch /map. Proves the exact stack the MapLibre-variant
+       DOWNLOAD will ship, using the engine's own call patterns:
+         1. window.mapboxgl = maplibregl shim → engine code runs unchanged (Map/Compare/Popup/Nav)
+         2. mapbox-gl-compare@0.4.0 (the pinned plugin) attached to MapLibre maps
+         3. addProtocol("mapbox") → engine's hardcoded mapbox://styles/... URLs serve FREE styles
+            (satellite → Esri World Imagery raster, everything else → OpenFreeMap liberty)
+         4. addProtocol("pmtiles") + a RELATIVE local archive (data/buildings.pmtiles) — the embed
+         5. legacy-syntax date filter, feature-state hover wrap, symbol labels (Noto Sans), fitBounds
+       Serve via platform/serve-map.py (python http.server ignores Range; pmtiles needs 206s). -->
+  <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/pmtiles@3/dist/pmtiles.js"></script>
+  <script>window.mapboxgl = maplibregl;   /* the shim — MUST run before mapbox-gl-compare loads */</script>
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css" type="text/css" />
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #comparison-container { position: absolute; inset: 0; }
+    #before, #after { position: absolute; inset: 0; }
+    #tag { position: fixed; left: 8px; bottom: 8px; z-index: 9; background: #154360; color: #fff;
+           font: 700 12px/1.4 Arial; padding: 7px 11px; border-radius: 8px; opacity: .9; max-width: 360px; }
+    #tag b { color: #ffd166; }
+  </style>
+</head>
+<body>
+  <div id="comparison-container">
+    <div id="before"></div>
+    <div id="after"></div>
+  </div>
+  <div id="tag">maplibre-gl <b>v5</b> shimmed as <b>mapboxgl</b> + mapbox-gl-compare v0.4.0<br/>
+    mapbox://styles/* → free styles (Esri satellite / OpenFreeMap streets)<br/>
+    buildings: <b>LOCAL RELATIVE</b> pmtiles — <span id="src-state">loading…</span></div>
+  <script>
+    // ── the two injected pieces the zip's index.html will carry ─────────────────────────────
+
+    // (a) local archives: relative URL, resolved against this page by the pmtiles protocol
+    var protocol = new pmtiles.Protocol();
+    maplibregl.addProtocol("pmtiles", protocol.tile.bind(protocol));
+
+    // (b) the engine hardcodes mapbox://styles/<user>/<id> (mapinit boot + setupMapSwitching) —
+    // serve FREE equivalents through the protocol layer so the engine never needs an edit.
+    var ESRI_SATELLITE_STYLE = {
+      version: 8,
+      name: "Satellite (Esri)",
+      glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+      sources: { esri: { type: "raster",
+        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+        tileSize: 256, maxzoom: 19,
+        attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community" } },
+      layers: [{ id: "esri-satellite", type: "raster", source: "esri" }]
+    };
+    var LIBERTY_URL = "https://tiles.openfreemap.org/styles/liberty";
+    maplibregl.addProtocol("mapbox", function (params) {
+      var m = params.url.match(/^mapbox:\/\/styles\/[^\/]+\/([^\/?]+)/);
+      if (!m) return Promise.reject(new Error("standalone map: unsupported mapbox:// url " + params.url));
+      if (/satellite/i.test(m[1])) return Promise.resolve({ data: ESRI_SATELLITE_STYLE });
+      return fetch(LIBERTY_URL).then(function (r) { return r.json(); }).then(function (j) { return { data: j }; });
+    });
+
+    // ── from here down: the ENGINE's own patterns, verbatim shapes ───────────────────────────
+    var center = [-93.63661, 42.03112], zoom = 15;
+    var beforeMap = new mapboxgl.Map({ container: "before", style: "mapbox://styles/mapbox/satellite-v9",
+      center: center, zoom: zoom, hash: true, attributionControl: true, projection: "mercator" });
+    var afterMap = new mapboxgl.Map({ container: "after", style: "mapbox://styles/nittyjee/some-streets-style",
+      center: center, zoom: zoom, hash: true, attributionControl: true, projection: "mercator" });
+    var map = new mapboxgl.Compare(beforeMap, afterMap, "#comparison-container", {});
+    beforeMap.addControl(new mapboxgl.NavigationControl(), "bottom-left");
+    afterMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
+
+    window.__spike = { errors: [], styleLoads: [] };
+    beforeMap.on("error", function (e) { window.__spike.errors.push("before: " + (e && e.error && e.error.message)); });
+    afterMap.on("error", function (e) { window.__spike.errors.push("after: " + (e && e.error && e.error.message)); });
+
+    var DATE = 19380916;   // 16 Sep 1938 — AHM's boot date; legacy filter syntax, exactly what addMapLayer emits
+    function addBuildings(m, side) {
+      m.addSource("buildings-" + side, { type: "vector", url: "pmtiles://data/buildings.pmtiles" });
+      m.addLayer({
+        id: "buildings-fill-" + side, type: "fill", source: "buildings-" + side, "source-layer": "buildings",
+        filter: ["all", ["<=", "DayStart", DATE], [">=", "DayEnd", DATE]],
+        paint: {
+          // the engine's hoverInlinePaint wrap — feature-state case over the stored opacity
+          "fill-opacity": ["case", ["any", ["boolean", ["feature-state", "hover"], false],
+                                            ["boolean", ["feature-state", "selected"], false]], 0.5, 0.85],
+          "fill-color": "#ff8a3d", "fill-outline-color": "#a04e00"
+        }
+      });
+      m.addLayer({
+        id: "buildings-label-" + side, type: "symbol", source: "buildings-" + side, "source-layer": "buildings",
+        layout: { "text-field": ["coalesce", ["get", "label"], ["to-string", ["get", "nid"]]],
+                  "text-font": ["Noto Sans Bold"], "text-size": 11, "text-allow-overlap": true },
+        paint: { "text-color": "#ffffff", "text-halo-color": "#000000", "text-halo-width": 1.2 }
+      });
+    }
+    beforeMap.on("style.load", function () { addBuildings(beforeMap, "left"); window.__spike.styleLoads.push("left"); });
+    afterMap.on("style.load", function () { addBuildings(afterMap, "right"); window.__spike.styleLoads.push("right"); });
+
+    var checkT = setInterval(function () {
+      try {
+        var n = beforeMap.queryRenderedFeatures({ layers: ["buildings-fill-left"] }).length;
+        if (n > 0) { document.getElementById("src-state").textContent = "rendering (" + n + " feats)"; clearInterval(checkT); }
+      } catch (e) {}
+    }, 800);
+  </script>
+</body>
+</html>

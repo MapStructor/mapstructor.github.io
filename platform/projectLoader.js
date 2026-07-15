@@ -153,7 +153,10 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     if (project.basemap_style != null) mapConfig.style = project.basemap_style;
     if (project.center_lng != null) mapConfig.center = [project.center_lng, project.center_lat];
     if (project.zoom != null) mapConfig.zoom = project.zoom;
+    // basemaps: a map's own saved set wins; maps that never customized them get the FREE defaults
+    // (Esri satellite / OpenFreeMap streets — no token, no billing) instead of the static Mapbox pair
     if (raw.baseMaps) replaceArray(baseMaps, raw.baseMaps);
+    else if (window.ConfigLoader && ConfigLoader.freeBasemapDefaults) replaceArray(baseMaps, ConfigLoader.freeBasemapDefaults());
     if (raw.mapSections) replaceArray(mapSections, raw.mapSections);
     if (raw.boundsList) replaceObject(boundsList, raw.boundsList);
     if (raw.zoomButtons) replaceArray(zoomButtons, raw.zoomButtons.map(function (b) {
@@ -252,6 +255,52 @@ window.msApplyHeaderFeature = function (visible, projectName) {
   } catch (e) {
     console.warn("Platform project load failed — booting the static config:", e);
   }
+
+  // ── token policy (the no-charge guardrail): a project with NO mapbox:// layer sources and
+  // free (styleUrl) basemaps never opens a billable Mapbox session — empty the token BEFORE
+  // the maps are constructed (mapbox-gl decides billing at Map() time). Mapbox-based projects
+  // (and the static AHM config, which never reaches this loader) keep the token untouched.
+  try {
+    (function () {
+      var needsMapbox = false;
+      (function walk(a) { (a || []).forEach(function (n) {
+        if (n.children) { walk(n.children); return; }
+        var u = (n.source && (n.source.url || (n.source.tiles && n.source.tiles[0]))) || "";
+        if (String(u).indexOf("mapbox://") === 0) needsMapbox = true;
+      }); })(layers);
+      baseMaps.forEach(function (b) { if (!b.styleUrl) needsMapbox = true; });
+      if (typeof mapConfig.style === "string" && mapConfig.style.indexOf("mapbox://") === 0) {
+        // legacy rows keep a mapbox initial style even when the basemap set is free — resolve
+        // it to the checked free basemap; only a genuinely mapbox map keeps needing the token
+        var lb = baseMaps.filter(function (b) { return b.lChecked && b.styleUrl; })[0];
+        if (lb) mapConfig.style = lb.styleUrl; else needsMapbox = true;
+      }
+      if (!needsMapbox && window.mapboxgl) mapboxgl.accessToken = "";
+    })();
+  } catch (eTok) {}
+
+  // ── pmt service worker: serves auto-converted layers' tiles ("pmt/<pid>/<lid>/{z}/{x}/{y}.pbf")
+  // straight from their .pmtiles archives in storage — no server anywhere. Registered only when
+  // the map actually has such a layer; boot waits briefly so the first tile requests are caught.
+  try {
+    var msNeedsPmtSw = (function chk(a) {
+      return (a || []).some(function (n) {
+        if (n.children) return chk(n.children);
+        var t = n.source && n.source.tiles && n.source.tiles[0];
+        return !!(t && /\/pmt\//.test(String(t)));
+      });
+    })(layers);
+    if (msNeedsPmtSw && "serviceWorker" in navigator) {
+      var swReady = navigator.serviceWorker.register("pmt-sw.js").then(function () {
+        return navigator.serviceWorker.ready;
+      }).then(function () {
+        // a just-installed worker doesn't control this page yet (first visit) — claim() in the
+        // worker + a short settle beat cover it without a reload
+        return new Promise(function (res) { setTimeout(res, 150); });
+      });
+      await Promise.race([swReady, new Promise(function (res) { setTimeout(res, 3000); })]);
+    }
+  } catch (eSw) {}
 
   generateLayersPanel();
   generateBaseMapsPanel();

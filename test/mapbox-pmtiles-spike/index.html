@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SPIKE — mapbox-gl-js native PMTiles + draw + compare compatibility</title>
+  <!-- ISOLATED SPIKE (2026-07-14) — does NOT touch /map or /map/editor.html. Question: can a NEWER
+       mapbox-gl-js (native PMTiles support, no addProtocol, no pmtiles:// prefix — just a plain
+       .pmtiles https URL as a vector source) coexist with the SAME pinned mapbox-gl-draw (v1.4.3)
+       and mapbox-gl-compare (v0.4.0) the live engine uses? If yes: a "mapbox-branch" project can mix
+       mapbox:// tilesets + pmtiles data on ONE canvas, no adapter, no blocked API. -->
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.26.0/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.26.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css" type="text/css" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css" type="text/css" />
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #comparison-container { position: absolute; inset: 0; }
+    #before, #after { position: absolute; inset: 0; }
+    #tag { position: fixed; left: 8px; bottom: 8px; z-index: 9; background: #154360; color: #fff;
+           font: 700 12px/1.4 Arial; padding: 7px 11px; border-radius: 8px; opacity: .9; max-width: 340px; }
+    #tag b { color: #ffd166; }
+  </style>
+</head>
+<body>
+  <div id="comparison-container">
+    <div id="before"></div>
+    <div id="after"></div>
+  </div>
+  <div id="tag">mapbox-gl-js <b>v3.26.0</b> — native PMTiles (plain https url, no protocol) +
+    mapbox-gl-draw v1.4.3 + mapbox-gl-compare v0.4.0<br/>Buildings source: <span id="src-state">loading…</span></div>
+  <script>
+    mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
+
+    // the SAME R2-hosted file the earlier MapLibre spike proved live — but as a PLAIN https url,
+    // NOT prefixed "pmtiles://" (that prefix is MapLibre's addProtocol convention; Mapbox's native
+    // reader detects the .pmtiles extension on a normal url and range-reads it itself).
+    var PMTILES_URL = "https://pub-411b8477c87c4a26b335ecde4062e140.r2.dev/buildings.pmtiles";
+
+    // satellite (raster) vs streets — same pairing AHM itself uses, so the swipe actually shows something
+    var center = [-93.63661, 42.03112], zoom = 15;
+    var beforeMap = new mapboxgl.Map({ container: "before", style: "mapbox://styles/mapbox/satellite-v9", center: center, zoom: zoom, projection: "mercator" });
+    var afterMap  = new mapboxgl.Map({ container: "after",  style: "mapbox://styles/mapbox/streets-v12",   center: center, zoom: zoom, projection: "mercator" });
+    // "before" is the map mapbox-gl-compare CLIPS to the left portion of the divider — top/bottom-RIGHT
+    // controls land in the clipped-out zone and never show. Keep before's controls on the left.
+    beforeMap.addControl(new mapboxgl.NavigationControl(), "bottom-left");
+    afterMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
+    var compare = new mapboxgl.Compare(beforeMap, afterMap, "#comparison-container", {});
+
+    function addBuildings(map, side) {
+      map.addSource("buildings-" + side, { type: "vector", url: PMTILES_URL });
+      map.addLayer({
+        id: "buildings-fill-" + side, type: "fill", source: "buildings-" + side, "source-layer": "buildings",
+        paint: { "fill-color": "#ff8a3d", "fill-opacity": 0.75, "fill-outline-color": "#a04e00" }
+      });
+    }
+
+    var draw = new MapboxDraw({
+      displayControlsDefault: false,
+      controls: { point: true, line_string: true, polygon: true, trash: true },
+    });
+    beforeMap.addControl(draw, "top-left");   // same clipping reason — top-right is invisible on "before"
+
+    window.__spike = { drawEvents: [], errors: [] };
+    beforeMap.on("error", function (e) { window.__spike.errors.push("before: " + (e && e.error && e.error.message)); });
+    afterMap.on("error",  function (e) { window.__spike.errors.push("after: "  + (e && e.error && e.error.message)); });
+    beforeMap.on("draw.create", function (e) { window.__spike.drawEvents.push("create"); });
+    beforeMap.on("draw.update", function (e) { window.__spike.drawEvents.push("update"); });
+
+    var loaded = 0;
+    function onStyleLoad(map, side) {
+      addBuildings(map, side);
+      loaded++;
+      if (loaded === 2) {
+        setTimeout(function () {
+          var c = 0;
+          try { c = beforeMap.queryRenderedFeatures({ layers: ["buildings-fill-left"] }).length; } catch (e) {}
+          document.getElementById("src-state").textContent = "rendering (" + (window.__spike.errors.length ? "ERRORS" : "ok") + ")";
+        }, 1500);
+      }
+    }
+    beforeMap.on("style.load", function () { onStyleLoad(beforeMap, "left"); });
+    afterMap.on("style.load",  function () { onStyleLoad(afterMap,  "right"); });
+  </script>
+</body>
+</html>

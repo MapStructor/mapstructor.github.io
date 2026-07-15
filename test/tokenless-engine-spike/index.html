@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SPIKE — tokenless engine stack (mapbox-gl v3.1.2, EMPTY token, free basemaps)</title>
+  <!-- ISOLATED SPIKE (2026-07-14) — does NOT touch /map. Gates the "public users never bill anyone"
+       change: the CURRENT pinned mapbox-gl v3.1.2 with an EMPTY accessToken, free basemap styles
+       (Esri World Imagery raster + OpenFreeMap liberty vector), and the engine's real plugin set:
+       mapbox-gl-compare swipe, mapbox-gl-draw, legacy-filter timeline, popups, feature-state hover.
+       If this passes, tokenless projects can run on the site's existing renderer — no billing,
+       no engine migration. -->
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css" type="text/css" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css" type="text/css" />
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #comparison-container { position: absolute; inset: 0; }
+    #before, #after { position: absolute; inset: 0; }
+    #tag { position: fixed; left: 8px; bottom: 8px; z-index: 9; background: #154360; color: #fff;
+           font: 700 12px/1.4 Arial; padding: 7px 11px; border-radius: 8px; opacity: .9; max-width: 360px; }
+    #tag b { color: #ffd166; }
+  </style>
+</head>
+<body>
+  <div id="comparison-container">
+    <div id="before"></div>
+    <div id="after"></div>
+  </div>
+  <div id="tag">mapbox-gl <b>v3.1.2</b> — <b>EMPTY token</b> + free basemaps<br/>
+    Esri satellite / OpenFreeMap liberty + compare + draw + timeline patterns</div>
+  <script>
+    mapboxgl.accessToken = "";   // ← the whole point
+
+    var ESRI_SATELLITE = {
+      version: 8,
+      name: "Satellite (Esri)",
+      glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+      sources: { esri: { type: "raster", tileSize: 256, maxzoom: 19,
+        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+        attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community" } },
+      layers: [{ id: "esri-satellite", type: "raster", source: "esri" }]
+    };
+
+    var center = [-93.63661, 42.03112], zoom = 15;
+    var beforeMap = new mapboxgl.Map({ container: "before", style: ESRI_SATELLITE,
+      center: center, zoom: zoom, hash: false, attributionControl: true, projection: "mercator" });
+    var afterMap = new mapboxgl.Map({ container: "after", style: "https://tiles.openfreemap.org/styles/liberty",
+      center: center, zoom: zoom, hash: false, attributionControl: true, projection: "mercator" });
+    var map = new mapboxgl.Compare(beforeMap, afterMap, "#comparison-container", {});
+    beforeMap.addControl(new mapboxgl.NavigationControl(), "bottom-left");
+    afterMap.addControl(new mapboxgl.NavigationControl(), "bottom-right");
+
+    var draw = new MapboxDraw({ displayControlsDefault: false, controls: { point: true, line_string: true, polygon: true, trash: true } });
+    beforeMap.addControl(draw, "top-left");
+
+    window.__spike = { errors: [], tokenEvents: 0, styleLoads: [], drawEvents: [] };
+    function errFilter(e) {
+      var msg = String(e && e.error && e.error.message || "");
+      if (/valid Mapbox access token/i.test(msg)) { window.__spike.tokenEvents++; return; }
+      window.__spike.errors.push(msg);
+    }
+    beforeMap.on("error", errFilter);
+    afterMap.on("error", errFilter);
+    beforeMap.on("draw.create", function () { window.__spike.drawEvents.push("create"); });
+
+    // a small time-filtered data layer (the engine's own shapes: geojson + legacy filter + hover wrap)
+    var DATE = 19380916;
+    function fc(n) {
+      var f = [];
+      for (var i = 0; i < n; i++) {
+        var lng = -93.6366 + (i % 40) * 0.0008, lat = 42.0311 + Math.floor(i / 40) * 0.0006;
+        f.push({ type: "Feature", id: i, properties: { DayStart: 19000101 + (i % 80) * 10000, DayEnd: 20300101, label: "f" + i },
+                 geometry: { type: "Polygon", coordinates: [[[lng, lat], [lng + 0.0004, lat], [lng + 0.0004, lat + 0.0003], [lng, lat + 0.0003], [lng, lat]]] } });
+      }
+      return { type: "FeatureCollection", features: f };
+    }
+    function addData(m, side) {
+      m.addSource("d-" + side, { type: "geojson", data: fc(400) });
+      m.addLayer({ id: "d-fill-" + side, type: "fill", source: "d-" + side,
+        filter: ["all", ["<=", "DayStart", DATE], [">=", "DayEnd", DATE]],
+        paint: { "fill-color": "#ff8a3d",
+          "fill-opacity": ["case", ["any", ["boolean", ["feature-state", "hover"], false], ["boolean", ["feature-state", "selected"], false]], 0.5, 0.85] } });
+    }
+    beforeMap.on("style.load", function () { addData(beforeMap, "left"); window.__spike.styleLoads.push("left"); });
+    afterMap.on("style.load", function () { addData(afterMap, "right"); window.__spike.styleLoads.push("right"); });
+  </script>
+</body>
+</html>

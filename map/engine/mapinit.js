@@ -82,14 +82,16 @@ function initMaps() {
 	});
 	
 	
-	// Error Handling
-    beforeMap.on("error", function (e) {
+	// Error Handling — tokenless maps (free basemaps, empty accessToken) fire a benign
+	// "valid Mapbox access token required" event by design; only that exact case is skipped,
+	// and only while the token really is empty. Everything else still logs.
+    function msMapError(e) {
+      var msg = String((e && e.error && e.error.message) || "");
+      if (!mapboxgl.accessToken && /valid Mapbox access token/i.test(msg)) return;
       if (e && e.error !== "Error") console.log(e);
-    });
-
-    afterMap.on("error", function (e) {
-      if (e && e.error !== "Error") console.log(e);
-    });
+    }
+    beforeMap.on("error", msMapError);
+    afterMap.on("error", msMapError);
 
 	setupMapSwitching();
 }

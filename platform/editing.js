@@ -1372,7 +1372,7 @@
     var bnds = computeImportBounds(fc);
     if (bnds && (Math.abs(bnds[0][0]) > 180 || Math.abs(bnds[1][0]) > 180 || Math.abs(bnds[0][1]) > 90 || Math.abs(bnds[1][1]) > 90)) throw new Error('coordinates look projected, not lng/lat — re-export as WGS84 / EPSG:4326');
     var total = kinds.reduce(function (n, k) { return n + groups[k].length; }, 0);
-    if (total > 3000 && !window.confirm('Import ' + total + ' features? Large imports may be slow to edit.')) { importStatus('Cancelled'); return; }
+    if (total > 3000 && !window.confirm('Import ' + total + ' features? Large layers auto-convert to tiles for fast viewing; editing that many features may still be slow.')) { importStatus('Cancelled'); return; }
     var TYPE_LABEL = { circle: 'points', line: 'lines', fill: 'polygons' };
     var sId = null, gId = null;
     if (parent && parent.type === 'group') { gId = parent._dbId; var ps = findParent(layers, parent); if (ps && ps.type === 'section') sId = ps._dbId; }
@@ -1398,9 +1398,46 @@
       if (made.length) setActiveLayer(made[0].id);
       showButtons();
       setStatus('Imported ' + total + ' feature' + (total !== 1 ? 's' : ''));
+      // auto-convert: layers past the tile thresholds become PMTiles now (no-lag viewing from the
+      // NEXT load + for every visitor; this session keeps its live geojson). Fire-and-await so the
+      // status line reflects real progress; a failure leaves the layer working as plain geojson.
+      try {
+        var bigOnes = made.filter(function (n) {
+          var feats = groups[n.type] || [];   // import groups are keyed by the same kinds as node.type (circle/line/fill)
+          return feats.length > (n.type === 'circle' ? 2000 : 500);
+        });
+        if (bigOnes.length) {
+          await loadScript('../platform/tilegen.js');
+          for (var bi = 0; bi < bigOnes.length; bi++) {
+            var bn = bigOnes[bi];
+            var lid2 = slugToLayerDbId[bn.id];
+            if (!lid2 || !window.MSTileGen) continue;
+            importStatus('Auto-converting "' + (bn.label || 'layer') + '" to tiles…');
+            // read the rows back so tile feature ids = features.feature_id (the editor's tile↔DB key)
+            var feats2 = [], from2 = 0;
+            for (;;) {
+              var fr2 = await db.from('features').select('feature_id, geom, label, description, start_date, end_date, custom_fields').eq('layer_id', lid2).order('feature_id').range(from2, from2 + 999);
+              if (fr2.error || !fr2.data || !fr2.data.length) break;
+              fr2.data.forEach(function (f) {
+                var props = { label: f.label, description: f.description };
+                if (f.start_date) props.start_date = f.start_date;
+                if (f.end_date) props.end_date = f.end_date;
+                Object.keys(f.custom_fields || {}).forEach(function (k) { props[k] = f.custom_fields[k]; });
+                feats2.push({ type: 'Feature', id: f.feature_id, properties: props, geometry: f.geom });
+              });
+              if (fr2.data.length < 1000) break;
+              from2 += 1000;
+            }
+            if (!feats2.length) continue;
+            await MSTileGen.convertLayer(db, projectId, lid2, feats2, { name: bn.label, geomKind: bn.type, status: importStatus });
+            importStatus('"' + (bn.label || 'layer') + '" now renders from tiles (from the next load).');
+          }
+        }
+      } catch (eConv) { console.warn('auto-convert skipped', eConv); importStatus('Imported — tile conversion skipped (' + (eConv && eConv.message) + ')'); }
       return made;
     } catch (e) { console.warn('editing: import persist failed', e); importStatus('Import failed: ' + e.message); return []; }
   }
+  window._msImportFC = importFeatureCollection;   // programmatic import seam (harness + future API)
   async function batchInsertFeatures(layerId, feats) {
     var BATCH = 500;
     for (var i = 0; i < feats.length; i += BATCH) {
@@ -1744,6 +1781,13 @@
     if (hb) { hb.disabled = true; hb.textContent = 'Publishing…'; }
     setStatus('Publishing…');
     try {
+      // "sew up" tiles first: converted layers regenerate from their CURRENT features, so the
+      // published snapshot always ships fresh tiles (edits since the last generate are folded in)
+      try {
+        await loadScript('../platform/tilegen.js');
+        if (window.MSTileGen) await MSTileGen.sewUpProject(db, projectId, setStatus);
+      } catch (eTiles) { console.warn('tile sew-up skipped', eTiles); }
+      setStatus('Publishing…');
       var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);   // snapshot the current live config
       await db.from('project_snapshots').delete().eq('project_id', projectId).eq('label', 'published');   // one published snapshot per project
       var r = await db.from('project_snapshots').insert({ project_id: projectId, label: 'published', state: bundle });
@@ -2467,6 +2511,10 @@
       '#editor-search-box .mapboxgl-ctrl-geocoder{position:static;box-shadow:none;border-radius:0;background:none;border-left:1px solid #ececec;width:220px;max-width:220px;min-width:0;}' +
       '#editor-search-box .mapboxgl-ctrl-geocoder--input{height:30px;padding:5px 8px 5px 32px;font-size:13px;}' +
       '#editor-search-box .mapboxgl-ctrl-geocoder--icon-search{top:6px;left:8px;width:18px;height:18px;}' +
+      // the Photon search control (.ms-search) fitted into the same pill: flush input, divider on the left
+      '#editor-search-box .ms-search{margin:0;border-left:1px solid #ececec;}' +
+      '#editor-search-box .ms-search input{box-shadow:none;border-radius:0 7px 7px 0;height:30px;width:220px;padding:5px 10px;box-sizing:border-box;}' +
+      '#editor-search-box .ms-search-list{top:32px;}' +
       '#header-text-value{cursor:text;}' +
       '#header-text-value:hover{outline:1px dashed #ccc;outline-offset:3px;border-radius:3px;}' +
       '#header-text-value:focus{outline:2px solid #7c5cbf;outline-offset:3px;border-radius:3px;}' +
@@ -2540,7 +2588,8 @@
         if (src) Array.prototype.slice.call(src.children).forEach(function (el) {
           var isDraw = el.querySelector && el.querySelector('.mapbox-gl-draw_ctrl-draw-btn');
           var isGeo = el.querySelector && el.querySelector('.mapboxgl-ctrl-geolocate');
-          var isSearch = el.classList && el.classList.contains('mapboxgl-ctrl-geocoder');
+          // search = the Photon control (.ms-search, 7/14) — the old Mapbox geocoder class kept for safety
+          var isSearch = el.classList && (el.classList.contains('ms-search') || el.classList.contains('mapboxgl-ctrl-geocoder'));
           if (isDraw) {   // reorder Point → Polygon → Line, split Delete into its own slightly-separated box
             el.id = 'editor-draw-main';   // the 3 drawing tools get the sharp stand-out shadow ring
             var pt = el.querySelector('.mapbox-gl-draw_point'), pg = el.querySelector('.mapbox-gl-draw_polygon'),
@@ -2558,7 +2607,7 @@
           }
         });
         positionToolDock();
-        var done = toolDock.querySelector('.mapbox-gl-draw_ctrl-draw-btn') && toolDock.querySelector('.mapboxgl-ctrl-geolocate') && toolDock.querySelector('.mapboxgl-ctrl-geocoder');
+        var done = toolDock.querySelector('.mapbox-gl-draw_ctrl-draw-btn') && toolDock.querySelector('.mapboxgl-ctrl-geolocate') && (toolDock.querySelector('.ms-search') || toolDock.querySelector('.mapboxgl-ctrl-geocoder'));
         if (done || ++_dockTries > 60) { revealDock(); clearInterval(_dockIv); }   // reveal only once fully docked (or give up after ~24s and show whatever's there)
       } catch (e) { if (++_dockTries > 60) { revealDock(); clearInterval(_dockIv); } }
     }, 400);

@@ -65,6 +65,7 @@
   <script src="platform/pricing.js"></script>
   <script src="platform/sanitize.js?v=20260709"></script>
   <script src="platform/share.js?v=20260709b"></script>
+  <script src="platform/configLoader.js?v=20260714e"></script>   <!-- freeBasemapDefaults for New-map stamping -->
 </head>
 <body>
   <nav>
@@ -312,7 +313,12 @@
       // ---- New map ----
       document.getElementById('btn-new-map').addEventListener('click', async function () {
         this.disabled = true; this.textContent = 'Creating…';
-        var r = await db.from('projects').insert({ name: 'Untitled Map', user_id: user.id, is_public: false, raw_config: { visibility: 'private' } }).select('id').single();
+        // new maps are born TOKENLESS: free basemaps (Esri satellite / OpenFreeMap streets) stamped
+        // explicitly, so nothing about a fresh map can ever bill anyone (projectLoader also falls
+        // back to these when baseMaps is missing — this makes it visible in the saved config too)
+        var freeBm = null; try { freeBm = window.ConfigLoader && ConfigLoader.freeBasemapDefaults ? ConfigLoader.freeBasemapDefaults() : null; } catch (e) {}
+        var rcNew = { visibility: 'private' }; if (freeBm) rcNew.baseMaps = freeBm;
+        var r = await db.from('projects').insert({ name: 'Untitled Map', user_id: user.id, is_public: false, raw_config: rcNew }).select('id').single();
         if (r.data) location.href = 'map/editor.html?id=' + r.data.id;
         else { this.disabled = false; this.textContent = '+ Create a map'; }
       });

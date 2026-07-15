@@ -17,9 +17,16 @@
    Everything is serialized from the page's RUNTIME state, so what you see is exactly what you get —
    viewer = the published snapshot, editor = the live working state.
 
-   v1 scope: the zip runs the same renderer the site runs (mapbox-gl; needs its token file — see C4 in
-   mapstructor_docs/todo.md). Tiled layers stream from their existing URLs; local pmtiles arrive with the
-   MapLibre flip. CDN libraries stay CDN until C3 vendors them. */
+   TWO VARIANTS, decided by the map's own layers (either/or, 7/14):
+     mapbox   — any mapbox:// layer source present. The zip runs mapbox-gl (pinned engine version),
+                carries the token file, and streams every layer from its existing URL. Unchanged v1.
+     maplibre — no mapbox:// sources. The zip runs MapLibre (vendored, free, NO token anywhere);
+                worker/pmtiles layers can be EMBEDDED as .pmtiles files (offline data); the engine's
+                hardcoded mapbox://styles/* basemaps are served free equivalents through a protocol
+                handler (satellite → Esri World Imagery, everything else → OpenFreeMap liberty).
+                Proven in test/maplibre-download-spike (engine.css alias block, Noto fonts, ranges).
+   Both variants ship serve-map.py (python's stock http.server ignores Range headers, which .pmtiles
+   reads require). Remaining CDN libraries stay CDN until C3 vendors them. */
 
 (function () {
   "use strict";
@@ -30,6 +37,21 @@
   var SUPABASE_URL = "https://eqpxlwbjqiwfjlsuapvu.supabase.co";
   var SUPABASE_KEY = "sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD";
   var JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+
+  // MapLibre-variant pieces (pinned; vendored INTO the zip at build time)
+  var MAPLIBRE_JS = "https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js";
+  var MAPLIBRE_CSS = "https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css";
+  var PMTILES_JS = "https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js";
+  var COMPARE_JS = "https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js";
+  var COMPARE_CSS = "https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css";
+
+  // tiles-worker hosts whose backing .pmtiles archive is publicly fetchable — these layers can be
+  // EMBEDDED (the archive file rides in the zip). A layer may also carry an explicit `pmtiles`
+  // archive URL on its node (raw_config passthrough) — that always wins.
+  var WORKER_ARCHIVES = [
+    { match: /^https:\/\/ames-tiles\.mapstructor\.workers\.dev\/([^\/]+)\//,
+      archive: function (m) { return "https://pub-411b8477c87c4a26b335ecde4062e140.r2.dev/" + m[1] + ".pmtiles"; } }
+  ];
 
   // engine files byte-copied into the zip. google-analytics.js and handle-mobile-devices.js are
   // deliberately absent (GA is stripped; the mobile redirect targets a page the zip doesn't have).
@@ -84,6 +106,16 @@
   function openDialog() {
     ensureCss();
     var old = document.getElementById("msdl-overlay"); if (old) old.remove();
+
+    var variant = detectVariant();
+    var archCount = variant === "maplibre" ? Object.keys(collectArchives()).length : 0;
+    var embedRow = variant === "maplibre" && archCount > 0
+      ? "<label class=\"msdl-row\"><input type=\"checkbox\" id=\"msdl-embed\" checked> Embed map data in the folder (.pmtiles — the data itself works offline and from any host)</label>"
+      : "";
+    var variantNote = variant === "maplibre"
+      ? "This map uses no Mapbox layers, so the copy runs on <b>MapLibre</b> (free — no Mapbox token is included anywhere). Basemaps become free equivalents: satellite &rarr; Esri World Imagery, others &rarr; OpenFreeMap streets."
+      : "This map contains <b>Mapbox layers</b>, so the copy runs on Mapbox GL with the token file inside the zip — a URL-restricted token must allow the domain the copy runs on (for local runs: <b>http://localhost</b>). Offline data embedding is available for maps without Mapbox layers.";
+
     var ov = document.createElement("div"); ov.id = "msdl-overlay";
     ov.innerHTML = "<div id=\"msdl-panel\">" +
       "<button id=\"msdl-close\" title=\"Close\">&times;</button>" +
@@ -91,9 +123,10 @@
       "<p class=\"msdl-sub\">A self-contained, static copy of this map — a folder you can open on any computer or upload to any web host. It depends on nothing from MapStructor and never updates.</p>" +
       "<label class=\"msdl-row\"><input type=\"checkbox\" id=\"msdl-rawdata\" checked> Include raw data (layer exports in <b>other_data/</b>)</label>" +
       "<div class=\"msdl-row\">Data format: <select id=\"msdl-format\"><option value=\"geojson\" selected>GeoJSON</option></select><span style=\"color:#9a93ad;font-size:11px;\">(more formats later)</span></div>" +
+      embedRow +
       "<button id=\"msdl-build\">Build ZIP</button>" +
       "<div id=\"msdl-status\"></div>" +
-      "<div id=\"msdl-note\">Run <b>start-map.bat</b> inside the unzipped folder (needs Python), or upload the folder to any static host and open <b>map/index.html</b>. Layers served from Mapbox use the token file inside the zip — a URL-restricted token must allow the domain the copy runs on (for local runs: <b>http://localhost</b>).</div>" +
+      "<div id=\"msdl-note\">Run <b>start-map.bat</b> inside the unzipped folder (needs Python), or upload the folder to any static host and open <b>map/index.html</b>. " + variantNote + "</div>" +
       "</div>";
     document.body.appendChild(ov);
     function close() { ov.remove(); }
@@ -102,9 +135,12 @@
     document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); } });
     ov.querySelector("#msdl-build").addEventListener("click", function () {
       var btn = this; btn.disabled = true;
+      var embedEl = ov.querySelector("#msdl-embed");
       buildZip({
         rawData: !!ov.querySelector("#msdl-rawdata").checked,
-        format: ov.querySelector("#msdl-format").value
+        format: ov.querySelector("#msdl-format").value,
+        variant: variant,
+        embed: !!(embedEl && embedEl.checked)
       }).then(function () {
         btn.disabled = false; setStatus("Done — check your downloads folder.", "#2d7a2d");
       }, function (e) {
@@ -148,6 +184,40 @@
   // ARE visible to this script as bare identifiers (one shared global scope). Undeclared → fallback.
   function grab(fn, fallback) { try { var v = fn(); return v == null ? fallback : v; } catch (e) { return fallback; } }
 
+  /* ── variant detection (either/or, decided by the map's own layers) ─────── */
+
+  function walkLeaves(fn) {
+    (function w(a) { (a || []).forEach(function (n) { if (n.children) { w(n.children); return; } fn(n); }); })(grab(function () { return layers; }, []));
+  }
+
+  // any mapbox:// LAYER source → the copy must run Mapbox GL (mapbox variant); none → MapLibre.
+  // Basemap styles don't count: the maplibre variant serves them free equivalents.
+  function detectVariant() {
+    var mapbox = false;
+    walkLeaves(function (n) {
+      var u = (n.source && (n.source.url || (n.source.tiles && n.source.tiles[0]))) || "";
+      if (String(u).indexOf("mapbox://") === 0) mapbox = true;
+    });
+    return mapbox ? "mapbox" : "maplibre";
+  }
+
+  function archiveFor(n) {
+    if (n.pmtiles) return { name: (n.id || "data"), url: n.pmtiles };
+    var u = (n.source && n.source.tiles && n.source.tiles[0]) || "";
+    for (var i = 0; i < WORKER_ARCHIVES.length; i++) {
+      var m = String(u).match(WORKER_ARCHIVES[i].match);
+      if (m) return { name: m[1], url: WORKER_ARCHIVES[i].archive(m) };
+    }
+    return null;
+  }
+
+  // node.id → {name,url} for every layer whose archive we can fetch (names dedup to one file each)
+  function collectArchives() {
+    var by = {};
+    walkLeaves(function (n) { var a = archiveFor(n); if (a) by[n.id] = a; });
+    return by;
+  }
+
   function projectName() {
     var el = document.getElementById("header-text-value");
     var t = el && el.textContent ? el.textContent.trim() : "";
@@ -174,10 +244,20 @@
       "const headerButtons = " + js(grab(function () { return headerButtons; }, [])) + ";\n";
   }
 
-  function genLayersList() {
+  function genLayersList(embedById) {
+    var data = cleanValue(grab(function () { return layers; }, []), new WeakSet()) || [];
+    // embedded layers: the zip carries the archive itself — point the source at the local file
+    // (relative pmtiles:// URL, resolved against map/index.html by the injected protocol handler)
+    if (embedById) (function w(a) {
+      (a || []).forEach(function (n) {
+        if (n.children) { w(n.children); return; }
+        var em = embedById[n.id];
+        if (em) n.source = { type: "vector", url: "pmtiles://data/" + em.name + ".pmtiles" };
+      });
+    })(data);
     return "/* generated by MapStructor — the map's live config, frozen. panel.render functions are\n" +
       "   reattached from ../renderRegistry.js (see its appendix); everything else is data. */\n" +
-      "const layers = " + js(grab(function () { return layers; }, [])) + ";\n";
+      "const layers = " + JSON.stringify(data, null, 2) + ";\n";
   }
 
   function genMapData() {
@@ -217,7 +297,11 @@
 
   function genTestProject() { return "var useTestProject = false;\nvar testProjectPath = \"test_project\";\n"; }
 
-  function genRestrictedToken() {
+  function genRestrictedToken(variant) {
+    if (variant === "maplibre") {
+      return "/* MapLibre copy — nothing here talks to Mapbox, so NO token is included. */\n" +
+        "const restrictedToken = \"\";\n";
+    }
     var t = grab(function () { return restrictedToken; }, (window.mapboxgl && mapboxgl.accessToken) || "");
     return "/* Mapbox public (pk.) token this map renders with. If it is URL-restricted, the copy only\n" +
       "   works on allowed domains — for local runs add http://localhost to the token's URL\n" +
@@ -227,8 +311,70 @@
 
   /* ── index.html → standalone transform ──────────────────────────────────── */
 
-  function transformIndexHtml(src) {
+  // MapLibre ≥3 dropped the mapboxgl-* class aliases; engine.css styles popups/controls by the
+  // old names. Duplicate every selector containing .mapboxgl- with a .maplibregl- twin.
+  function aliasMaplibreCss(css) {
+    return css.replace(/([^{}]+)\{/g, function (full, sel) {
+      if (sel.indexOf(".mapboxgl-") === -1 || sel.trim().charAt(0) === "@") return full;
+      return sel + ", " + sel.trim().replace(/\.mapboxgl-/g, ".maplibregl-") + "{";
+    });
+  }
+
+  // injected into the maplibre-variant index.html: local pmtiles archives + free basemap styles.
+  // The engine hardcodes mapbox://styles/<user>/<id> (mapinit + setupMapSwitching) — the "mapbox"
+  // protocol serves free equivalents so the engine never needs an edit.
+  function genProtocolScript() {
+    return "    <script>\n" +
+      "      /* MapStructor standalone (MapLibre): local .pmtiles + free basemaps.\n" +
+      "         satellite styles → Esri World Imagery; everything else → OpenFreeMap liberty. */\n" +
+      "      (function () {\n" +
+      "        var p = new pmtiles.Protocol();\n" +
+      "        maplibregl.addProtocol(\"pmtiles\", p.tile.bind(p));\n" +
+      "        var ESRI = { version: 8, name: \"Satellite (Esri)\",\n" +
+      "          glyphs: \"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf\",\n" +
+      "          sources: { esri: { type: \"raster\", tileSize: 256, maxzoom: 19,\n" +
+      "            tiles: [\"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}\"],\n" +
+      "            attribution: \"Esri, Maxar, Earthstar Geographics, and the GIS User Community\" } },\n" +
+      "          layers: [{ id: \"esri-satellite\", type: \"raster\", source: \"esri\" }] };\n" +
+      "        maplibregl.addProtocol(\"mapbox\", function (params) {\n" +
+      "          var m = params.url.match(/^mapbox:\\/\\/styles\\/[^\\/]+\\/([^\\/?]+)/);\n" +
+      "          if (!m) return Promise.reject(new Error(\"standalone: unsupported mapbox url \" + params.url));\n" +
+      "          if (/satellite/i.test(m[1])) return Promise.resolve({ data: ESRI });\n" +
+      "          return fetch(\"https://tiles.openfreemap.org/styles/liberty\").then(function (r) { return r.json(); }).then(function (j) { return { data: j }; });\n" +
+      "        });\n" +
+      "      })();\n" +
+      "    </script>";
+  }
+
+  function transformIndexHtml(src, variant) {
     var html = src;
+
+    if (variant === "maplibre") {
+      // engine library swap: vendored MapLibre (+ pmtiles) with the shim BEFORE mapbox-gl-compare
+      // loads (the plugin attaches Compare to whatever window.mapboxgl is at that moment)
+      html = html.replace(/<script src="https:\/\/api\.mapbox\.com\/mapbox-gl-js\/v[\d.]+\/mapbox-gl\.js"><\/script>/,
+        "<script src=\"vendor/maplibre-gl.js\"></script>\n" +
+        "    <script src=\"vendor/pmtiles.js\"></script>\n" +
+        "    <script>window.mapboxgl = maplibregl; /* standalone copy runs the engine on MapLibre */</script>\n" +
+        genProtocolScript());
+      // ([^>]|\n)*? keeps each match inside ONE tag — it can't cross a previous tag's closing >
+      html = html.replace(/<link(?:[^>]|\n)*?mapbox-gl-js\/v[\d.]+\/mapbox-gl\.css(?:[^>]|\n)*?\/>/,
+        "<link href=\"vendor/maplibre-gl.css\" rel=\"stylesheet\" />");
+      // draw is an editor tool — the viewer never instantiates it; drop the includes entirely
+      html = html.replace(/^[ \t]*<script src="https:\/\/api\.mapbox\.com\/mapbox-gl-js\/plugins\/mapbox-gl-draw\/[^"]*"><\/script>.*$\n?/m, "");
+      html = html.replace(/<link(?:[^>]|\n)*?mapbox-gl-draw(?:[^>]|\n)*?\/>\n?/, "");
+      // compare rides in the zip too — the copy makes NO requests to api.mapbox.com at all
+      html = html.replace(/<script src="https:\/\/api\.mapbox\.com\/mapbox-gl-js\/plugins\/mapbox-gl-compare\/[^"]*"><\/script>/,
+        "<script src=\"vendor/mapbox-gl-compare.js\"></script>");
+      html = html.replace(/<link(?:[^>]|\n)*?mapbox-gl-compare(?:[^>]|\n)*?\/>/,
+        "<link rel=\"stylesheet\" href=\"vendor/mapbox-gl-compare.css\" type=\"text/css\" />");
+      // no token file ships in this variant — drop the optional secrets include (it would 404)
+      html = html.replace(/^[ \t]*document\.write\('<script src="' \+ _project \+ '\/secrets\/mapbox-token\.js"><\\\/script>'\);.*$\n?/m, "");
+    }
+
+    // the zip carries no PWA manifest or icon set — drop those head links (both variants)
+    html = html.replace(/^[ \t]*<link rel="manifest"[^>]*\/>\s*$\n?/m, "");
+    html = html.replace(/^[ \t]*<link rel="apple-touch-icon"[^>]*\/>\s*$\n?/gm, "");
 
     // platform scripts: renderRegistry + labels become local project/ copies; the rest (auth, topbar,
     // loaders, init, search, share, pricing, download itself, editing) simply don't exist standalone
@@ -368,7 +514,8 @@
       "echo Serving this folder at http://localhost:8801 — keep this window open while using the map.",
       "echo If the browser opened before the server was ready, just refresh the page.",
       "echo If it says the address is in use, another server owns port 8801 — edit this file to another port.",
-      "%PY% -m http.server 8801",
+      "rem serve-map.py supports byte-range requests (embedded .pmtiles data needs them)",
+      "if exist serve-map.py (%PY% serve-map.py 8801) else (%PY% -m http.server 8801)",
       ""
     ].join("\r\n");
   }
@@ -425,11 +572,37 @@
 
     var zip = new JSZipLib();
     var name = projectName();
+    var variant = opts.variant || detectVariant();
+    var embedById = (variant === "maplibre" && opts.embed) ? collectArchives() : null;
 
-    // 1. engine byte-copies
+    // 1. engine byte-copies (maplibre: engine.css gains the .maplibregl- selector aliases)
     setStatus("Copying the engine…");
     for (var i = 0; i < ENGINE_FILES.length; i++) {
-      zip.file("map/" + ENGINE_FILES[i], await fetchBin(ENGINE_FILES[i]));
+      if (variant === "maplibre" && ENGINE_FILES[i] === "engine/engine.css") {
+        zip.file("map/" + ENGINE_FILES[i], aliasMaplibreCss(await fetchText(ENGINE_FILES[i])));
+      } else {
+        zip.file("map/" + ENGINE_FILES[i], await fetchBin(ENGINE_FILES[i]));
+      }
+    }
+
+    // 1b. maplibre variant: the renderer itself rides in the zip (free + version-frozen)
+    if (variant === "maplibre") {
+      setStatus("Vendoring MapLibre…");
+      zip.file("map/vendor/maplibre-gl.js", await fetchBin(MAPLIBRE_JS));
+      zip.file("map/vendor/maplibre-gl.css", await fetchBin(MAPLIBRE_CSS));
+      zip.file("map/vendor/pmtiles.js", await fetchBin(PMTILES_JS));
+      zip.file("map/vendor/mapbox-gl-compare.js", await fetchBin(COMPARE_JS));
+      zip.file("map/vendor/mapbox-gl-compare.css", await fetchBin(COMPARE_CSS));
+    }
+
+    // 1c. embedded data — the .pmtiles archives themselves (dedup: many layers, one archive)
+    if (embedById) {
+      var archives = {};
+      Object.keys(embedById).forEach(function (id) { archives[embedById[id].name] = embedById[id].url; });
+      for (var an in archives) {
+        setStatus("Embedding map data (" + an + ".pmtiles)…");
+        zip.file("map/data/" + an + ".pmtiles", await fetchBin(archives[an]));
+      }
     }
 
     // 2. platform pieces that ride INSIDE the project folder
@@ -451,7 +624,14 @@
       "  if (typeof layers !== \"undefined\") attach(layers);\n" +
       "})();\n";
     zip.file("map/project/renderRegistry.js", rr);
-    zip.file("map/project/labels.js", await fetchText("../platform/labels.js"));
+    var labelsTxt = await fetchText("../platform/labels.js");
+    if (variant === "maplibre") {
+      // free-style glyph servers carry Noto Sans, not Mapbox's DIN Pro
+      labelsTxt = labelsTxt
+        .replace("'DIN Pro Bold', 'Arial Unicode MS Bold'", "'Noto Sans Bold'")
+        .replace("'DIN Pro Regular', 'Arial Unicode MS Regular'", "'Noto Sans Regular'");
+    }
+    zip.file("map/project/labels.js", labelsTxt);
 
     // 3. generated lists — the live config, frozen
     setStatus("Writing the project config…");
@@ -460,14 +640,15 @@
     zip.file("map/project/lists/disclaimer.js", genDisclaimer());
     zip.file("map/project/lists/features.js", genFeatures());
     zip.file("map/project/lists/sliderDates.js", genSliderDates());
-    zip.file("map/project/lists/layersList.js", genLayersList());
+    zip.file("map/project/lists/layersList.js", genLayersList(embedById));
     zip.file("map/project/lists/modalinfo.js", genModalInfo());
     zip.file("map/project/lists/bounds.js", genBounds());
     zip.file("map/project/lists/mapData.js", genMapData());
-    zip.file("map/project/lists/restrictedToken.js", genRestrictedToken());
-    // the page may be running on a token beyond the committed fallback (dev secrets / owner token) —
-    // carry it, or the copy renders nothing the fallback token isn't allowed to serve
-    try {
+    zip.file("map/project/lists/restrictedToken.js", genRestrictedToken(variant));
+    // mapbox variant only: the page may be running on a token beyond the committed fallback
+    // (dev secrets / owner token) — carry it, or the copy renders nothing the fallback token
+    // isn't allowed to serve. The maplibre variant ships NO token anywhere, on principle.
+    if (variant !== "maplibre") try {
       var eff = (window.mapboxgl && mapboxgl.accessToken) || "";
       if (eff && eff !== grab(function () { return restrictedToken; }, "")) {
         zip.file("map/project/secrets/mapbox-token.js",
@@ -498,7 +679,7 @@
 
     // 5. the transformed viewer shell
     setStatus("Writing index.html…");
-    var html = transformIndexHtml(await fetchText("index.html"));
+    var html = transformIndexHtml(await fetchText("index.html"), variant);
     html = html.replace(/href="\.\.\/images\/nittygrittymapping_logo\.png"/, "href=\"" + faviconHref + "\"");
     html = html.replace(/src="\.\.\/images\/nittygrittymapping_logo\.png"/, "src=\"" + logoImgSrc + "\"");
     zip.file("map/index.html", html);
@@ -517,8 +698,9 @@
       });
     }
 
-    // 7. the launcher
+    // 7. the launcher + its server (python's stock http.server ignores Range — .pmtiles needs 206s)
     zip.file("start-map.bat", genStartBat());
+    zip.file("serve-map.py", await fetchText("../platform/serve-map.py"));
 
     setStatus("Zipping…");
     var blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });

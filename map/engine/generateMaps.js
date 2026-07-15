@@ -105,6 +105,19 @@ function mapstructorZoomButton(idx) {
 // platform/projectLoader.js calls generateBaseMapsPanel() once it arrives.
 if (typeof platformProjectId === 'undefined' || !platformProjectId) generateBaseMapsPanel();
 
+// A basemap entry may carry `styleUrl` — a full style: an https URL or an inline style object
+// (free basemaps: Esri satellite / OpenFreeMap). Entries without one keep the classic
+// mapbox://styles/<user>/<id> construction (Mapbox basemaps, token required).
+function basemapStyle(id) {
+  try {
+    var maps = (typeof baseMaps !== "undefined" && baseMaps) ? baseMaps : [];
+    for (var i = 0; i < maps.length; i++) {
+      if (maps[i].id === id && maps[i].styleUrl) return maps[i].styleUrl;
+    }
+  } catch (e) {}
+  return "mapbox://styles/" + siteConfig.mapboxUsername + "/" + id;
+}
+
 // Called from mapinit.js after maps are initialized
 function setupMapSwitching() {
   var rightInputs = document.getElementsByName("rtoggle");
@@ -112,12 +125,12 @@ function setupMapSwitching() {
 
   function switchRightLayer(layer) {
     var id = (typeof layer.className === "undefined") ? layer.target.className : layer.className;
-    afterMap.setStyle("mapbox://styles/" + siteConfig.mapboxUsername + "/" + id);
+    afterMap.setStyle(basemapStyle(id));
   }
 
   function switchLeftLayer(layer) {
     var id = (typeof layer.className === "undefined") ? layer.target.className : layer.className;
-    beforeMap.setStyle("mapbox://styles/" + siteConfig.mapboxUsername + "/" + id);
+    beforeMap.setStyle(basemapStyle(id));
   }
 
   for (var i = 0; i < rightInputs.length; i++) {

@@ -141,7 +141,13 @@ var ConfigLoader = (function () {
     if (row.type != null) leaf.type = row.type;
 
     if (row.source_type === "vector-tiles-url") {
-      leaf.source = { type: "vector", tiles: [row.source_url] };
+      var tUrl = row.source_url;
+      // auto-converted layers store a SITE-RELATIVE tile route ("pmt/…/{z}/{x}/{y}.pbf" — portable
+      // across localhost/prod; served by the pmt service worker). mapbox-gl needs absolute templates.
+      if (tUrl && !/^https?:\/\//i.test(tUrl)) {
+        tUrl = location.origin + location.pathname.replace(/[^/]*$/, "") + tUrl;
+      }
+      leaf.source = { type: "vector", tiles: [tUrl] };
       if (row.source_minzoom != null) leaf.source.minzoom = row.source_minzoom;
       if (row.source_maxzoom != null) leaf.source.maxzoom = row.source_maxzoom;
     } else if (row.source_url != null) {
@@ -334,6 +340,29 @@ var ConfigLoader = (function () {
     return synthesize(bundle, registry);
   }
 
+  // FREE default basemaps — no token, no metered service, anywhere (the north-star guardrail).
+  // Satellite = Esri World Imagery (inline style object); Streets = OpenFreeMap liberty (hosted).
+  // `styleUrl` is the engine's basemap override (generateMaps basemapStyle()); entries without
+  // one keep the classic mapbox://styles/<user>/<id> construction and need a token.
+  function freeBasemapDefaults() {
+    return [
+      {
+        id: "free-satellite", name: "Satellite", lChecked: true, rChecked: false,
+        styleUrl: {
+          version: 8,
+          name: "Satellite (Esri)",
+          glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+          sources: { esri: { type: "raster", tileSize: 256, maxzoom: 19,
+            tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+            attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community" } },
+          layers: [{ id: "esri-satellite", type: "raster", source: "esri" }]
+        }
+      },
+      { id: "free-streets", name: "Streets", lChecked: false, rChecked: true,
+        styleUrl: "https://tiles.openfreemap.org/styles/liberty" }
+    ];
+  }
+
   return {
     leafFromRow: leafFromRow,
     synthesize: synthesize,
@@ -342,5 +371,6 @@ var ConfigLoader = (function () {
     hydrateDeferredFeatures: hydrateDeferredFeatures,
     hydrateDeferredLayer: hydrateDeferredLayer,
     defaultHighlightPaint: defaultHighlightPaint,   // editor reuses it for layers added in-session (same default as a reload)
+    freeBasemapDefaults: freeBasemapDefaults,
   };
 })();
