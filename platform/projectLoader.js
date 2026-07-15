@@ -256,27 +256,17 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     console.warn("Platform project load failed — booting the static config:", e);
   }
 
-  // ── token policy (the no-charge guardrail): a project with NO mapbox:// layer sources and
-  // free (styleUrl) basemaps never opens a billable Mapbox session — empty the token BEFORE
-  // the maps are constructed (mapbox-gl decides billing at Map() time). Mapbox-based projects
-  // (and the static AHM config, which never reaches this loader) keep the token untouched.
+  // ── basemap style resolution. NOTE (7/15): mapbox-gl-js v3 will NOT paint ANY tiles — even free
+  // non-Mapbox basemaps — without a valid access token (it downloads them but renders blank white).
+  // So we must NOT empty the token here (doing so whited out every free-basemap map). The token
+  // stays as mapinit set it (restrictedToken / admin token). We DO still steer a legacy mapbox://
+  // initial style to the checked FREE basemap, so free-basemap maps use free tiles (less Mapbox
+  // usage) while keeping the token present for the license/paint. Real zero-token = MapLibre (B-track).
   try {
-    (function () {
-      var needsMapbox = false;
-      (function walk(a) { (a || []).forEach(function (n) {
-        if (n.children) { walk(n.children); return; }
-        var u = (n.source && (n.source.url || (n.source.tiles && n.source.tiles[0]))) || "";
-        if (String(u).indexOf("mapbox://") === 0) needsMapbox = true;
-      }); })(layers);
-      baseMaps.forEach(function (b) { if (!b.styleUrl) needsMapbox = true; });
-      if (typeof mapConfig.style === "string" && mapConfig.style.indexOf("mapbox://") === 0) {
-        // legacy rows keep a mapbox initial style even when the basemap set is free — resolve
-        // it to the checked free basemap; only a genuinely mapbox map keeps needing the token
-        var lb = baseMaps.filter(function (b) { return b.lChecked && b.styleUrl; })[0];
-        if (lb) mapConfig.style = lb.styleUrl; else needsMapbox = true;
-      }
-      if (!needsMapbox && window.mapboxgl) mapboxgl.accessToken = "";
-    })();
+    if (typeof mapConfig.style === "string" && mapConfig.style.indexOf("mapbox://") === 0) {
+      var lb = baseMaps.filter(function (b) { return b.lChecked && b.styleUrl; })[0];
+      if (lb) mapConfig.style = lb.styleUrl;
+    }
   } catch (eTok) {}
 
   // ── pmt service worker: serves auto-converted layers' tiles ("pmt/<pid>/<lid>/{z}/{x}/{y}.pbf")
