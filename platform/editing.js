@@ -3535,7 +3535,7 @@
     function rebuildLabelsFor(lids5) {
       (lids5 || []).forEach(function (lid5) {
         var n5 = nodeByLayerDbId(lid5);
-        if (!(n5 && n5.labels && n5.labels.field && _drawLayerSlugs[n5.id])) return;
+        if (!(n5 && n5.labels && n5.labels.field)) return;   // large engine-rendered layers rebuild too — labelFeaturesFor reads the live engine source for them
         try { applyLabelLayers(n5); } catch (e) {}
         var vis5 = layerOnNow(n5) ? 'visible' : 'none';   // applyLabelLayers adds 'visible' — re-apply the checkbox state
         [[beforeMap, 'left'], [typeof afterMap !== 'undefined' ? afterMap : null, 'right']].forEach(function (pr5) {
@@ -4187,6 +4187,9 @@
       out.push({ type: 'Feature', geometry: g, properties: props });
     });
     if (!out.length) { try { out = (node.source && node.source.data && node.source.data.features) || []; } catch (e) {} }
+    // last resort: the engine's LIVE source (large engine-rendered layers never enter _geomSnap, and
+    // node.source.data is empty until deferred hydration lands) — whatever the map is drawing, label it
+    if (!out.length) { try { var es = beforeMap.getSource(node.id + '-left'); var ed = es && es.serialize && es.serialize().data; out = (ed && ed.features) || []; } catch (e) {} }
     return out;
   }
   function applyLabelLayers(node) {
@@ -4199,7 +4202,7 @@
       if (!node.labels || !node.labels.field) return;
       var proxy = { id: node.id, type: node.type, labels: node.labels,
         source: { type: 'geojson', data: { type: 'FeatureCollection', features: labelFeaturesFor(node) } } };
-      var ll = msLabelLayerFor(proxy, side, 'visible');
+      var ll = msLabelLayerFor(proxy, side, 'visible', m);   // m → fonts the style's glyph server actually has
       if (!ll) return;
       try {
         if (ll.sourceId && !m.getSource(ll.sourceId)) m.addSource(ll.sourceId, ll.source);
@@ -4235,6 +4238,14 @@
       var r2 = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
       if (r2.error) throw new Error(r2.error.message);
       applyLabelLayers(node);
+      // checkbox ticked BEFORE any feature data arrived (deferred/unhydrated layer) → the label layer
+      // just built over ZERO anchors and looks dead. Priority-fetch this layer now and re-anchor when
+      // it lands — the old behavior forced the user to toggle off/on or reload the page.
+      if (node.labels && !labelFeaturesFor(node).length) {
+        if (_drawLayerSlugs[node.id] && typeof _hydrateOne === 'function') _hydrateOne(lid);   // small layer: hydration completion already calls rebuildLabelsFor
+        else if (node._deferred && typeof ConfigLoader !== 'undefined' && ConfigLoader.hydrateDeferredLayer)
+          ConfigLoader.hydrateDeferredLayer(db, node, [beforeMap, typeof afterMap !== 'undefined' ? afterMap : null]).then(function () { try { applyLabelLayers(node); } catch (e2) {} });
+      }
       setStatus('Saved');
     } catch (e) { console.warn('map labels failed', e); setStatus('Save failed'); }
   }

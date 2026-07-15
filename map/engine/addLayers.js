@@ -78,7 +78,7 @@ function addLayersToMap(map, side, date) {
     // per-layer map labels (raw_config.labels = {field}) — polygons/points get an anchor source
     // (pole of inaccessibility via labels.js), lines label along the path from the shared source
     if (layer.labels && typeof msLabelLayerFor === "function") {
-      const ll = msLabelLayerFor(layer, side, initVis);
+      const ll = msLabelLayerFor(layer, side, initVis, map);   // map → fonts the style's glyph server actually has
       if (ll) {
         try {
           if (ll.sourceId && !map.getSource(ll.sourceId)) map.addSource(ll.sourceId, ll.source);

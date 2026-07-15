@@ -83,6 +83,14 @@ var ConfigLoader = (function () {
     (maps || []).forEach(function (m) {
       if (!m) return;
       ["-left", "-right"].forEach(function (sfx) { try { var s = m.getSource(n.id + sfx); if (s) s.setData(fc); } catch (e) {} });
+      // the label ANCHOR source (polygon/point labels) was built from the empty boot data — refill it
+      // too, or a deferred labeled layer shows features with no labels until a full reload (line labels
+      // share the main source above, so they're already covered)
+      if (n.labels && n.labels.field && typeof msBuildLabelAnchors === "function") {
+        ["-labels-left", "-labels-right"].forEach(function (sfx) {
+          try { var s = m.getSource(n.id + sfx); if (s) s.setData(msBuildLabelAnchors(fc.features, n.labels.field)); } catch (e) {}
+        });
+      }
     });
     return true;
   }

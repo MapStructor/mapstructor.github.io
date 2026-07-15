@@ -9,6 +9,16 @@
   var TEXT_SIZE = ['interpolate', ['linear'], ['zoom'], 6, 10, 10, 12, 14, 15, 16, 17];
   var FONTS_BOLD = ['DIN Pro Bold', 'Arial Unicode MS Bold'];
   var FONTS_REG = ['DIN Pro Regular', 'Arial Unicode MS Regular'];
+  // fonts must exist on the STYLE's glyph server or Mapbox GL silently draws NO text (the request
+  // 404s — the "labels never show" bug). Mapbox styles serve DIN Pro; the free basemaps (Esri
+  // satellite / OpenFreeMap liberty) point glyphs at tiles.openfreemap.org, which only hosts Noto Sans.
+  function fontsFor(map, bold) {
+    var glyphs = '';
+    try { glyphs = (map.getStyle() && map.getStyle().glyphs) || ''; } catch (e) {}
+    if (glyphs && glyphs.indexOf('mapbox.com') === -1 && glyphs.indexOf('mapbox://') === -1)
+      return bold ? ['Noto Sans Bold'] : ['Noto Sans Regular'];
+    return bold ? FONTS_BOLD : FONTS_REG;   // no map / no glyphs info → Mapbox default (known good)
+  }
 
   // ── pole of inaccessibility (compact port of Mapbox's polylabel) ──
   // the visual center of a polygon: the interior point farthest from every edge —
@@ -103,7 +113,7 @@
   //   default sizing is UNIFORM (sizeUniform px at every zoom, default 14) — edits respond instantly;
   //   varyZoom:true switches to the size=[far,mid,close] ramp at z6/z11/z16.
   //   density = text-padding: the collision margin around each label — bigger margin, fewer labels drawn.
-  function msLabelLayerFor(layer, side, initVis) {
+  function msLabelLayerFor(layer, side, initVis, map) {   // map (optional) picks glyph-server-safe fonts
     if (!layer || !layer.labels || !layer.labels.field) return null;
     if (!(layer.source && layer.source.type === 'geojson')) return null;   // geojson (drawn/imported) layers only for now
     var cfg = layer.labels;
@@ -124,7 +134,7 @@
     var base = {
       id: id, type: 'symbol',
       layout: {
-        'text-font': cfg.bold === false ? FONTS_REG : FONTS_BOLD, 'text-allow-overlap': false,
+        'text-font': map ? fontsFor(map, cfg.bold !== false) : (cfg.bold === false ? FONTS_REG : FONTS_BOLD), 'text-allow-overlap': false,
         'text-padding': cfg.density != null ? +cfg.density : 10, visibility: initVis || 'visible'
       },
       paint: {
