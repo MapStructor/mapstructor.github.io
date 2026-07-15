@@ -121,9 +121,25 @@
     // sizeFor(wrap): builds text-size with the per-feature override applied by `wrap` at each value.
     // A zoom curve must be the OUTERMOST expression, so in vary mode the interpolate stays on top
     // and the override sits inside each stop.
+    // stops: cfg.sizeStops = [[zoom,px],…] (any count, editor-managed 7/15); legacy cfg.size =
+    // [far,mid,close] maps to fixed z6/z11/z16. Sorted + deduped — interpolate needs ascending zooms.
+    function sizeStopsOf() {
+      var raw = (cfg.sizeStops && cfg.sizeStops.length) ? cfg.sizeStops
+        : (cfg.size && cfg.size.length === 3) ? [[6, cfg.size[0]], [11, cfg.size[1]], [16, cfg.size[2]]] : null;
+      if (!raw) return null;
+      var st = raw.map(function (s) { return [+s[0], +s[1]]; }).filter(function (s) { return !isNaN(s[0]) && s[1] > 0; })
+        .sort(function (a, b) { return a[0] - b[0]; });
+      var out = [];
+      st.forEach(function (s) { if (out.length && out[out.length - 1][0] === s[0]) out[out.length - 1] = s; else out.push(s); });
+      return out.length ? out : null;
+    }
     function sizeFor(wrap) {
-      if (cfg.varyZoom === true && cfg.size && cfg.size.length === 3) {
-        return ['interpolate', ['linear'], ['zoom'], 6, wrap(+cfg.size[0] || 10), 11, wrap(+cfg.size[1] || 13), 16, wrap(+cfg.size[2] || 17)];
+      var st = cfg.varyZoom === true ? sizeStopsOf() : null;
+      if (st && st.length === 1) return wrap(st[0][1]);   // a single stop = constant size (interpolate needs ≥2)
+      if (st) {
+        var e = ['interpolate', ['linear'], ['zoom']];
+        st.forEach(function (s) { e.push(s[0], wrap(s[1])); });
+        return e;
       }
       return wrap(cfg.sizeUniform != null && +cfg.sizeUniform > 0 ? +cfg.sizeUniform : 10);
     }

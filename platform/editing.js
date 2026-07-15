@@ -1676,33 +1676,65 @@
     openPopupForEdit(pid, hdr, html);
     enableModalEdit(pid);
   }
+  // Map-settings styles: SAME look/hierarchy as the layer panel (.ms-* in ensureEditorUiCss) but a
+  // parallel .mss-* class set — deliberately NOT shared, so either panel can restyle without breaking the other.
+  function ensureSettingsUiCss() {
+    if (document.getElementById('ms-settings-ui-css')) return;
+    var s = document.createElement('style');
+    s.id = 'ms-settings-ui-css';
+    s.textContent =
+      '.mss-sec{font-size:25px;font-weight:800;letter-spacing:.07em;color:#7c5cbf;margin:0 0 8px;text-transform:uppercase;border-bottom:2px solid #ede9f7;padding-bottom:4px;text-align:center;}' +
+      '.mss-sectop{margin-top:16px;padding:10px 12px 12px;border:3px solid #e5e0f3;border-radius:10px;background:#fbfaff;box-shadow:0px 0px 3px 4px rgba(124,92,191,0.09);}' +
+      '.mss-lbl{display:block;font-size:11px;color:#555555;margin-bottom:2px;}' +
+      '.mss-check{display:block;cursor:pointer;font-size:12px;color:#555555;}' +
+      '.mss-in{width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +
+      '.mss-btn{width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;}' +
+      '.mss-btn:hover{background:#e8e8e8;}' +
+      '.mss-note{font-size:10px;color:#888888;margin-top:3px;}' +
+      '#esp-close:hover{background:#e9e5f5;border-color:#c9c2e2;color:#3d3857;}';
+    document.head.appendChild(s);
+  }
   function injectSettingsPanel() {
     if (document.getElementById('editor-settings-panel')) return;
+    ensureSettingsUiCss();
     var p = document.createElement('div');
     p.id = 'editor-settings-panel';
-    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1001;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    // container matches the layer panel: light shell, sticky white header, scrolling card body
+    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;max-height:calc(100vh - 240px);overflow-y:auto;overflow-x:hidden;background:#f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:0 3px 14px rgba(0,0,0,0.2);padding:0;font-size:13px;z-index:1001;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    var MSEC = function (t) { return '<div class="mss-sec">' + t + '</div>'; };
     p.innerHTML =
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b>Map settings</b><span id="esp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
-      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Map name</label>' +
-      '<input id="esp-name" type="text" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
-      '<button id="esp-setview" style="width:100%;padding:7px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;">Set current view as default</button>' +
-      '<div id="esp-viewinfo" style="font-size:10px;color:#888888;margin-top:4px;"></div>' +
-      '<label style="display:block;font-size:11px;color:#555555;margin:10px 0 2px;">Timeline range</label>' +
-      '<div style="display:flex;gap:6px;align-items:center;">' +
-        '<input id="esp-tl-start" type="date" style="width:50%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-        '<span style="color:#888888;font-size:12px;">to</span>' +
-        '<input id="esp-tl-end" type="date" style="width:50%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
+      '<div style="position:sticky;top:0;z-index:5;padding:10px 12px;background:#ffffff;border-bottom:1px solid #e2e0ea;border-radius:8px 8px 0 0;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><b style="font-size:14px;">Map settings</b>' +
+        '<button id="esp-close" title="Close this panel" style="flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;padding:3px 9px 3px 7px;border:1px solid #d7d3e4;border-radius:6px;background:#f4f2fa;color:#544f6e;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;line-height:1;"><span style="font-size:15px;line-height:1;">&times;</span> Close</button></div>' +
       '</div>' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">Start/end of the bottom timeline slider — type a date or pick one (down to the day).</div>' +
-      '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;margin-top:5px;"><input id="esp-tl-today" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />End at today (updates each visit)</label>' +
-      '<label style="display:block;font-size:11px;color:#555555;margin:12px 0 2px;border-top:1px solid #eee;padding-top:8px;">Header logo</label>' +
-      '<input id="esp-logo-file" type="file" accept="image/*" style="width:100%;box-sizing:border-box;font-size:11px;margin-bottom:8px;" />' +
-      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Logo link (URL)</label>' +
-      '<input id="esp-logo-link" type="text" placeholder="https://…" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
-      '<label style="display:block;font-size:11px;color:#555555;margin:12px 0 2px;border-top:1px solid #eee;padding-top:8px;">Features</label>' +
-      '<label style="cursor:pointer;font-size:12px;color:#555555;display:block;"><input id="esp-feat-header" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show header (logo &amp; title bar)</label>' +
-      '<div style="font-size:10px;color:#888888;margin-top:2px;">Off: the logo, map name and About link move to the top of the sidebar.</div>' +
-      '<div style="font-size:10px;color:#888888;margin-top:12px;border-top:1px solid #eee;padding-top:8px;">To edit the <b>About</b> text, click the <b>ABOUT</b> button (header) or the sidebar <b>About</b> link and edit the popup directly.</div>';
+      '<div style="padding:12px;">' +
+      // map name at the very top, bold — same idiom as the layer panel's name field
+      '<input id="esp-name" type="text" placeholder="Map name" title="Rename this map" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:6px 8px;border:1px solid #bbbbbb;border-radius:4px;font-size:15px;font-weight:600;" />' +
+      '<button id="esp-setview" class="mss-btn">Set current view as default</button>' +
+      '<div id="esp-viewinfo" class="mss-note"></div>' +
+      // ── TIMELINE ──
+      '<div class="mss-sectop">' +
+        MSEC('Timeline') +
+        // stacked full-width date fields — side-by-side + "to" clipped the calendar icons in this narrow card
+        '<label class="mss-lbl">Timeline range — start</label>' +
+        '<input id="esp-tl-start" type="date" class="mss-in" />' +
+        '<label class="mss-lbl" style="margin-top:6px;">End</label>' +
+        '<input id="esp-tl-end" type="date" class="mss-in" />' +
+        '<div class="mss-note">Start/end of the bottom timeline slider — type a date or pick one (down to the day).</div>' +
+        '<label class="mss-check" style="margin-top:6px;"><input id="esp-tl-today" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />End at today (updates each visit)</label>' +
+      '</div>' +
+      // ── HEADER ──
+      '<div class="mss-sectop">' +
+        MSEC('Header') +
+        '<label class="mss-check"><input id="esp-feat-header" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show header (logo &amp; title bar)</label>' +
+        '<div class="mss-note">Off: the logo, map name and About link move to the top of the sidebar.</div>' +
+        '<label class="mss-lbl" style="margin-top:8px;">Header logo</label>' +
+        '<input id="esp-logo-file" type="file" accept="image/*" style="width:100%;box-sizing:border-box;font-size:11px;" />' +
+        '<label class="mss-lbl" style="margin-top:8px;">Logo link (URL)</label>' +
+        '<input id="esp-logo-link" type="text" placeholder="https://…" class="mss-in" />' +
+      '</div>' +
+      '<div class="mss-note" style="margin-top:12px;">To edit the <b>About</b> text, click the <b>ABOUT</b> button (header) or the sidebar <b>About</b> link and edit the popup directly.</div>' +
+      '</div>';
     document.body.appendChild(p);
     document.getElementById('esp-close').addEventListener('click', function () { p.style.display = 'none'; });
     document.getElementById('esp-name').addEventListener('change', onSettingsName);
@@ -4052,6 +4084,7 @@
         });
         fillLabelFieldSelect(node, Object.keys(tkeys).sort());
         var mlRow2 = document.getElementById('elp-maplabels-row'); if (mlRow2) mlRow2.style.display = 'none';   // map labels are geojson-only for now (labels.js) — also clears a stale 'block' from a previously-selected drawn layer
+        var mlHelp2 = document.getElementById('elp-lbl-help'); if (mlHelp2) mlHelp2.style.display = 'none';
       }
       return;
     }
@@ -4085,6 +4118,7 @@
           mlSel = document.getElementById('elp-maplabels-field'), mlFieldRow = document.getElementById('elp-maplabels-field-row');
       if (mlRow && mlOn && mlSel) {
         mlRow.style.display = 'block';
+        var mlHelp = document.getElementById('elp-lbl-help'); if (mlHelp) mlHelp.style.display = 'block';
         mlSel.innerHTML = '<option value="label">label (the feature\'s own Label)</option>';
         sortedKeys.forEach(function (k) { var o4 = document.createElement('option'); o4.value = k; o4.textContent = k; mlSel.appendChild(o4); });
         var lb = node.labels;
@@ -4100,13 +4134,13 @@
         setv('elp-lbl-halow', lbc.haloWidth != null ? lbc.haloWidth : 2);
         var hv = document.getElementById('elp-lbl-halow-val'); if (hv) hv.textContent = lbc.haloWidth != null ? lbc.haloWidth : 2;
         var bd = document.getElementById('elp-lbl-bold'); if (bd) bd.checked = lbc.bold !== false;
-        setv('elp-lbl-size', lbc.sizeUniform != null ? lbc.sizeUniform : 10);
         setv('elp-lbl-density', 60 - (lbc.density != null ? lbc.density : 10));
-        // vary-by-zoom is the DEFAULT for labels (2026-07-08): unset → checked; an explicit saved false (uniform) is respected
-        var vz = document.getElementById('elp-lbl-varyzoom'); if (vz) vz.checked = lbc.varyZoom !== false;
-        var zr = document.getElementById('elp-lbl-zoomsizes'); if (zr) zr.style.display = (lbc.varyZoom !== false) ? 'block' : 'none';
-        var sz5 = (lbc.size && lbc.size.length === 3) ? lbc.size : [10, 13, 17];
-        setv('elp-lbl-s6', sz5[0]); setv('elp-lbl-s11', sz5[1]); setv('elp-lbl-s16', sz5[2]);
+        // size is ALWAYS the zoom ramp now (uniform mode + its checkbox removed 7/15): saved
+        // sizeStops → legacy size triple (fixed z6/11/16) → a legacy uniform size as a flat one-stop → defaults
+        renderLblStops((lbc.sizeStops && lbc.sizeStops.length) ? lbc.sizeStops
+          : (lbc.size && lbc.size.length === 3) ? [[6, lbc.size[0]], [11, lbc.size[1]], [16, lbc.size[2]]]
+          : (lbc.varyZoom === false && lbc.sizeUniform > 0) ? [[11, lbc.sizeUniform]]
+          : [[6, 10], [11, 13], [16, 17]]);
       }
       // the Label-field dropdown gets the same columns ("label" = the feature's own Label field)
       fillLabelFieldSelect(node, sortedKeys);
@@ -4210,6 +4244,114 @@
       } catch (e) { console.warn('label apply failed', e); }
     });
   }
+  // ── zoom-size stops UI: one row per stop (zoom → px). ⌖ zooms the map TO that level so you can
+  //    SEE the size you're tuning; "+ Add zoom level" captures the CURRENT zoom (go where it looks
+  //    wrong, add a stop, fix it there). Stops persist as labels.sizeStops (labels.js) ──
+  function readLblStops() {
+    var out = [], box = document.getElementById('elp-lbl-zoomsizes'); if (!box) return out;
+    box.querySelectorAll('.elp-stop-row').forEach(function (r) {
+      var z = parseFloat(r.querySelector('.elp-stop-z').value), s = parseFloat(r.querySelector('.elp-stop-s').value);
+      if (!isNaN(z) && !isNaN(s) && s > 0) out.push([Math.max(0, Math.min(24, z)), s]);
+    });
+    out.sort(function (a, b) { return a[0] - b[0]; });
+    return out;
+  }
+  function lblSizeAt(stops, z) {   // linear read of the ramp — a new stop lands ON the curve, not off it
+    if (!stops.length) return 13;
+    if (z <= stops[0][0]) return stops[0][1];
+    for (var i = 1; i < stops.length; i++) if (z <= stops[i][0]) {
+      var a = stops[i - 1], b = stops[i];
+      return Math.round(a[1] + (b[1] - a[1]) * ((z - a[0]) / (b[0] - a[0] || 1)));
+    }
+    return stops[stops.length - 1][1];
+  }
+  function renderLblStops(stops) {
+    var box = document.getElementById('elp-lbl-zoomsizes'); if (!box) return;
+    box.innerHTML = '';
+    var head = document.createElement('div');
+    head.style.cssText = 'display:flex;gap:6px;font-size:9px;color:#888888;';
+    head.innerHTML = '<span style="width:26px;"></span><span style="flex:1;text-align:center;">zoom</span><span style="flex:1;text-align:center;">size (px)</span><span style="width:18px;"></span>';
+    box.appendChild(head);
+    (stops || []).forEach(function (st) {
+      var row = document.createElement('div');
+      row.className = 'elp-stop-row';
+      row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-top:3px;';
+      row.innerHTML =
+        '<button type="button" class="elp-stop-go" title="Zoom the map to this level" style="width:26px;height:26px;border:none;border-radius:4px;background:#2b7de0;color:#ffffff;cursor:pointer;font-size:17px;font-weight:700;padding:0;line-height:24px;">⌖</button>' +
+        '<input type="number" class="elp-stop-z ms-in" min="0" max="24" step="0.5" style="flex:1;padding:4px;" />' +
+        '<input type="number" class="elp-stop-s ms-in" min="1" max="60" style="flex:1;padding:4px;" />' +
+        '<button type="button" class="elp-stop-del" title="Remove this zoom level" style="width:18px;height:24px;border:none;background:none;color:#aa4444;cursor:pointer;font-size:13px;padding:0;">×</button>';
+      row.querySelector('.elp-stop-z').value = st[0];
+      row.querySelector('.elp-stop-s').value = st[1];
+      row.querySelector('.elp-stop-go').addEventListener('click', function () {
+        var z = parseFloat(row.querySelector('.elp-stop-z').value);
+        if (!isNaN(z)) try { beforeMap.easeTo({ zoom: z, duration: 500 }); } catch (e) {}   // compare plugin keeps the right side in sync
+      });
+      row.querySelector('.elp-stop-del').addEventListener('click', function () {
+        if (box.querySelectorAll('.elp-stop-row').length <= 1) return;   // keep at least one stop (single stop = constant size)
+        row.remove(); onMapLabelsChange();
+      });
+      box.appendChild(row);
+    });
+    var add = document.createElement('button');
+    add.type = 'button'; add.id = 'elp-stop-add';
+    add.textContent = '+ Add zoom level (at current zoom)';
+    add.title = 'Adds a stop at the zoom you are looking at, pre-sized to match the current ramp';
+    add.style.cssText = 'margin-top:4px;width:100%;padding:4px 0;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;font-size:11px;';
+    add.addEventListener('click', function () {
+      var st2 = readLblStops(), z2 = 12;
+      try { z2 = Math.round(beforeMap.getZoom() * 2) / 2; } catch (e) {}
+      st2.push([z2, lblSizeAt(st2, z2)]);
+      st2.sort(function (a, b) { return a[0] - b[0]; });
+      renderLblStops(st2); onMapLabelsChange();
+    });
+    box.appendChild(add);
+  }
+  // ── "Labels are hard" how-to modal (same chrome family as the Guide panel) ──
+  function openLabelsHelp() {
+    var ov = document.getElementById('elp-lblhelp-overlay');
+    if (!ov) {
+      var css = document.createElement('style');
+      css.textContent =
+        '#elp-lblhelp-overlay{position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:4000;display:none;}' +
+        '#elp-lblhelp-panel{position:absolute;top:8vh;left:50%;transform:translateX(-50%);width:520px;max-width:93vw;max-height:80vh;display:flex;flex-direction:column;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;color:#2a2a33;overflow:hidden;}' +
+        '#elp-lblhelp-head{display:flex;justify-content:space-between;align-items:center;padding:14px 22px 11px;border-bottom:1px solid #ece9f4;background:linear-gradient(180deg,#faf9fd,#fff);}' +
+        '#elp-lblhelp-head b{font-size:16px;color:#1e1b2e;}' +
+        '#elp-lblhelp-head small{display:block;font-weight:400;font-size:12px;color:#8a86a0;margin-top:1px;}' +
+        '#elp-lblhelp-close{cursor:pointer;color:#a09cb5;font-size:22px;line-height:1;padding:2px 6px;border-radius:6px;}' +
+        '#elp-lblhelp-close:hover{background:#f1eef9;color:#544f6e;}' +
+        '#elp-lblhelp-body{overflow-y:auto;padding:4px 22px 22px;font-size:13px;line-height:1.55;}' +
+        '#elp-lblhelp-body h4{margin:16px 0 4px;font-size:13.5px;color:#1e1b2e;}' +
+        '#elp-lblhelp-body p{margin:5px 0;}' +
+        '#elp-lblhelp-body b{color:#1e1b2e;}';
+      document.head.appendChild(css);
+      ov = document.createElement('div');
+      ov.id = 'elp-lblhelp-overlay';
+      ov.innerHTML =
+        '<div id="elp-lblhelp-panel">' +
+          '<div id="elp-lblhelp-head"><div><b>🎓 Labels are hard</b><small>The most difficult thing in web mapping — here\'s how to win</small></div><span id="elp-lblhelp-close">&times;</span></div>' +
+          '<div id="elp-lblhelp-body">' +
+            '<p>Labels live in a world of <b>collisions</b>: every label competes for space with every other label at every zoom. The map only draws the ones that fit — so labels appearing and disappearing as you zoom is <i>normal</i>, and the controls below are how you steer it.</p>' +
+            '<h4>Where the text comes from</h4>' +
+            '<p><b>Labels show this column</b> picks the field. Features with an <b>empty</b> value never get a label (and never show "null"). A per-feature <b>ms_labelsize</b> column (set it in the attribute table) overrides the size for just that feature.</p>' +
+            '<h4>Size — a zoom ramp</h4>' +
+            '<p>Each row under <b>Size by zoom</b> is a <b>zoom level → size</b> stop and the map blends smoothly between them. Want one fixed size everywhere? Delete down to a single stop.</p>' +
+            '<p>Click <b>⌖</b> on a row to fly the map to exactly that zoom — see it, then change it. <b>+ Add zoom level</b> inserts a stop at the zoom you\'re currently looking at, pre-sized to match the ramp (so adding never jolts the sizes — it just gives you a handle to tune that zoom).</p>' +
+            '<h4>Readability</h4>' +
+            '<p><b>Halo</b> is the outline that keeps text legible over busy imagery — white halo on dark text works almost everywhere. <b>Bold</b> helps small sizes survive satellite backgrounds.</p>' +
+            '<h4>Too many / too few labels</h4>' +
+            '<p><b>Label density</b> is collision breathing-room: slide toward <i>more</i> and labels pack tighter; toward <i>fewer</i> and only the ones with room draw. If a label you need is missing, zoom in a touch or raise density.</p>' +
+            '<h4>Placement (automatic)</h4>' +
+            '<p>Polygons label at their <b>visual center</b> (guaranteed inside, even donut shapes), lines run <b>along the path</b>, points sit just <b>below the marker</b>. Fonts are picked per basemap automatically, so labels render on free basemaps and Mapbox styles alike.</p>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(ov);
+      ov.querySelector('#elp-lblhelp-close').addEventListener('click', function () { ov.style.display = 'none'; });
+      ov.addEventListener('click', function (e) { if (e.target === ov) ov.style.display = 'none'; });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') ov.style.display = 'none'; });
+    }
+    ov.style.display = 'block';
+  }
   async function onMapLabelsChange() {
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
@@ -4218,17 +4360,16 @@
     var fieldRow = document.getElementById('elp-maplabels-field-row');
     if (fieldRow) fieldRow.style.display = on && on.checked ? 'block' : 'none';
     function v2(id2, dflt) { var el = document.getElementById(id2); return el && el.value !== '' ? el.value : dflt; }
-    var boldEl = document.getElementById('elp-lbl-bold'), varyEl = document.getElementById('elp-lbl-varyzoom');
+    var boldEl = document.getElementById('elp-lbl-bold');
     node.labels = (on && on.checked) ? {
       field: (fs && fs.value) || 'label',
       color: v2('elp-lbl-color', '#000000'),
       halo: v2('elp-lbl-halo', '#ffffff'),
       haloWidth: parseFloat(v2('elp-lbl-halow', 2)),
       bold: boldEl ? !!boldEl.checked : true,
-      sizeUniform: parseFloat(v2('elp-lbl-size', 10)),
-      varyZoom: varyEl ? !!varyEl.checked : true,   // default = size by zoom (uniform stays available via the checkbox)
+      varyZoom: true,   // uniform mode removed 7/15 — size is always the stops ramp (a single stop = constant)
       density: 60 - parseFloat(v2('elp-lbl-density', 50)),   // slider right = "more" = tiny collision margin
-      size: [parseFloat(v2('elp-lbl-s6', 10)), parseFloat(v2('elp-lbl-s11', 13)), parseFloat(v2('elp-lbl-s16', 17))]
+      sizeStops: (function (st) { return st.length ? st : [[6, 10], [11, 13], [16, 17]]; })(readLblStops())   // editable zoom→size stops (legacy size:[3] still read by labels.js)
     } : null;
     setStatus('Saving…');
     try {
@@ -4391,6 +4532,7 @@
       '.ms-lbl{display:block;font-size:11px;color:#555555;margin-bottom:2px;}' +           // small field label above a control
       '.ms-check{display:block;cursor:pointer;font-size:12px;color:#555555;}' +            // checkbox + text row
       '.ms-in{width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +  // text input / number / select
+      'select.ms-in{padding-right:20px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;}' +  // long option text must STOP at the dropdown arrow, not run under it
       '.ms-range{width:100%;box-sizing:border-box;}' +                                     // slider
       '.ms-color{width:100%;box-sizing:border-box;padding:1px;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;}' +   // color swatch (height set inline — it varies)
       '.ms-btn{width:100%;padding:6px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;color:#222222;cursor:pointer;font-size:12px;}' +   // secondary/action button
@@ -4441,6 +4583,7 @@
       '<div id="elp-labels-sec" class="' + SECTOP + '">' +
       SEC('Labels') +
       '<label id="elp-maplabels-row" class="ms-check" style="display:none;"><input id="elp-maplabels-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Map labels</label>' +
+      '<a id="elp-lbl-help" href="#" style="display:none;font-size:10.5px;color:#7c5cbf;text-decoration:none;margin:10px 0;">🎓 Labels are hard — how they work</a>' +
       '<div id="elp-maplabels-field-row" style="display:none;margin-top:4px;">' +
         '<label class="ms-lbl">Labels show this column</label>' +
         '<select id="elp-maplabels-field" class="ms-in"></select>' +
@@ -4451,17 +4594,11 @@
           '<input id="elp-lbl-halo" type="color" value="#ffffff" class="ms-color" style="height:24px;padding:0;" /></div>' +
         '</div>' +
         '<label class="ms-check" style="margin:6px 0 0;"><input id="elp-lbl-bold" type="checkbox" checked style="vertical-align:middle;margin:0 5px 0 0;" />Bold</label>' +
-        '<div style="display:flex;gap:8px;align-items:flex-end;margin-top:6px;">' +
-          '<div style="flex:1;"><label class="ms-lbl">Label size (px)</label>' +
-          '<input id="elp-lbl-size" type="number" min="6" max="48" value="10" class="ms-in" style="padding:4px;" /></div>' +
-          '<label class="ms-check" style="font-size:11px;flex:1;padding-bottom:5px;"><input id="elp-lbl-varyzoom" type="checkbox" style="vertical-align:middle;margin:0 4px 0 0;" />Vary size by zoom</label>' +
-        '</div>' +
-        '<div id="elp-lbl-zoomsizes" style="display:none;margin-top:4px;">' +
-        '<div style="display:flex;gap:6px;">' +
-          '<div style="flex:1;"><input id="elp-lbl-s6" type="number" min="6" max="40" value="10" class="ms-in" style="padding:4px;" /><div style="font-size:9px;color:#888888;text-align:center;">far (z6)</div></div>' +
-          '<div style="flex:1;"><input id="elp-lbl-s11" type="number" min="6" max="40" value="13" class="ms-in" style="padding:4px;" /><div style="font-size:9px;color:#888888;text-align:center;">mid (z11)</div></div>' +
-          '<div style="flex:1;"><input id="elp-lbl-s16" type="number" min="6" max="40" value="17" class="ms-in" style="padding:4px;" /><div style="font-size:9px;color:#888888;text-align:center;">close (z16)</div></div>' +
-        '</div></div>' +
+        // zoom-size stops render dynamically (renderLblStops): a row per stop with a ⌖ jump-to-zoom
+        // button, plus "+ Add zoom level". ALWAYS the ramp — the uniform-size input and the
+        // vary-by-zoom checkbox were removed 7/15 (a single stop covers the constant case)
+        '<label class="ms-lbl" style="margin-top:8px;">Size by zoom</label>' +
+        '<div id="elp-lbl-zoomsizes" style="margin-top:2px;"></div>' +
         '<label class="ms-lbl" style="margin-top:6px;">Halo width <span id="elp-lbl-halow-val">2</span></label>' +
         '<input id="elp-lbl-halow" type="range" min="0" max="4" step="0.5" value="2" class="ms-range" />' +
         '<label class="ms-lbl" style="margin-top:6px;">Label density</label>' +
@@ -4577,11 +4714,9 @@
     document.getElementById('elp-thickby').addEventListener('change', function () { onStyleNumBy('thickness', this.value); });
     document.getElementById('elp-maplabels-on').addEventListener('change', onMapLabelsChange);
     document.getElementById('elp-maplabels-field').addEventListener('change', onMapLabelsChange);
-    ['elp-lbl-color', 'elp-lbl-halo', 'elp-lbl-bold', 'elp-lbl-size', 'elp-lbl-density', 'elp-lbl-s6', 'elp-lbl-s11', 'elp-lbl-s16'].forEach(function (id2) { document.getElementById(id2).addEventListener('change', onMapLabelsChange); });
-    document.getElementById('elp-lbl-varyzoom').addEventListener('change', function () {
-      var zr = document.getElementById('elp-lbl-zoomsizes'); if (zr) zr.style.display = this.checked ? 'block' : 'none';
-      onMapLabelsChange();
-    });
+    ['elp-lbl-color', 'elp-lbl-halo', 'elp-lbl-bold', 'elp-lbl-density'].forEach(function (id2) { document.getElementById(id2).addEventListener('change', onMapLabelsChange); });
+    document.getElementById('elp-lbl-zoomsizes').addEventListener('change', onMapLabelsChange);   // delegated: stop rows are dynamic (renderLblStops)
+    document.getElementById('elp-lbl-help').addEventListener('click', function (e) { e.preventDefault(); openLabelsHelp(); });
     document.getElementById('elp-lbl-halow').addEventListener('input', function () { var v = document.getElementById('elp-lbl-halow-val'); if (v) v.textContent = this.value; });
     document.getElementById('elp-lbl-halow').addEventListener('change', onMapLabelsChange);
     document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
