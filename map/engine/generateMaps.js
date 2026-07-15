@@ -123,23 +123,28 @@ function setupMapSwitching() {
   var rightInputs = document.getElementsByName("rtoggle");
   var leftInputs = document.getElementsByName("ltoggle");
 
-  function switchRightLayer(layer) {
-    var id = (typeof layer.className === "undefined") ? layer.target.className : layer.className;
-    afterMap.setStyle(basemapStyle(id));
+  // Apply a basemap to a map. NEVER setStyle while the initial style is still loading: free basemaps
+  // (inline raster / vector URL) can't be "diffed" against the current style, so a mid-load setStyle
+  // makes mapbox-gl "rebuild from scratch" and can leave the map blank (the boot flash-then-white bug,
+  // 7/15). Defer to style.load; on a fully-loaded map (a real radio click) it applies immediately.
+  function applyStyle(map, id) {
+    var style = basemapStyle(id);
+    function go() { try { map.setStyle(style); } catch (e) {} }
+    if (map && map.isStyleLoaded && map.isStyleLoaded()) go();
+    else if (map) map.once("style.load", go);
   }
+  function idOf(layer) { return (typeof layer.className === "undefined") ? layer.target.className : layer.className; }
+  function switchRightLayer(layer) { applyStyle(afterMap, idOf(layer)); }
+  function switchLeftLayer(layer) { applyStyle(beforeMap, idOf(layer)); }
 
-  function switchLeftLayer(layer) {
-    var id = (typeof layer.className === "undefined") ? layer.target.className : layer.className;
-    beforeMap.setStyle(basemapStyle(id));
-  }
-
+  // Boot: both maps start on mapConfig.style. Only switch a side whose checked basemap DIFFERS from
+  // that (so the left side, already correct, isn't needlessly rebuilt), and always after style.load.
   for (var i = 0; i < rightInputs.length; i++) {
-    if (rightInputs[i].checked) switchRightLayer(rightInputs[i]);
+    if (rightInputs[i].checked && basemapStyle(rightInputs[i].value) !== mapConfig.style) switchRightLayer(rightInputs[i]);
     rightInputs[i].onchange = switchRightLayer;
   }
-
-  for (var i = 0; i < leftInputs.length; i++) {
-    if (leftInputs[i].checked) switchLeftLayer(leftInputs[i]);
-    leftInputs[i].onchange = switchLeftLayer;
+  for (var j = 0; j < leftInputs.length; j++) {
+    if (leftInputs[j].checked && basemapStyle(leftInputs[j].value) !== mapConfig.style) switchLeftLayer(leftInputs[j]);
+    leftInputs[j].onchange = switchLeftLayer;
   }
 }
