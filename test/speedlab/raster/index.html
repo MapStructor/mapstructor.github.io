@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speed Lab — Raster time-encoding</title>
+<style>
+  :root { --bg:#14121d; --card:#1e1b2b; --ink:#e8e5f2; --dim:#9d97b5; --accent:#8f7ae0; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--ink); font:15px/1.55 'Segoe UI',system-ui,sans-serif; padding:28px 22px 60px; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  h1 { font-size:24px; } h1 a { color:var(--dim); text-decoration:none; font-size:14px; }
+  .sub { color:var(--dim); margin:6px 0 18px; max-width:820px; }
+  .stage { background:#0d0b14; border:1px solid #2c2840; border-radius:14px; padding:14px; }
+  canvas { width:100%; display:block; border-radius:8px; background:#0d0b14; }
+  .bar { display:flex; align-items:center; gap:14px; margin-top:12px; flex-wrap:wrap; }
+  .year { font-size:30px; font-weight:700; color:var(--accent); min-width:110px; font-variant-numeric:tabular-nums; }
+  input[type=range] { flex:1; min-width:240px; accent-color:var(--accent); height:26px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:8px 18px; font-weight:600; cursor:pointer; }
+  .meters { display:flex; gap:14px; margin-top:16px; flex-wrap:wrap; }
+  .m { background:var(--card); border:1px solid #2c2840; border-radius:10px; padding:12px 18px; min-width:150px; }
+  .m b { display:block; font-size:22px; font-variant-numeric:tabular-nums; }
+  .m span { color:var(--dim); font-size:12.5px; }
+  .note { color:var(--dim); font-size:13.5px; margin-top:18px; max-width:860px; }
+  .note em { color:var(--ink); font-style:normal; font-weight:600; }
+  #err { color:#ff7d7d; margin-top:10px; display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Raster time-encoding <a href="../">&larr; speed lab</a></h1>
+  <p class="sub">Every US railroad (78,843 lines) was rasterized <em>once</em> — each pixel's value = the year that track appeared.
+  The slider below changes <b>one number on the GPU</b>. No features, no tiles, no filters, no re-uploads: per-tick work &asymp; 0, at any data size, on any hardware.</p>
+
+  <div class="stage">
+    <canvas id="c"></canvas>
+    <div class="bar">
+      <div class="year" id="yr">1826</div>
+      <input type="range" id="slider" min="1820" max="2030" step="0.25" value="1826">
+      <button id="play">▶ Play 1826 → 1926</button>
+    </div>
+  </div>
+
+  <div class="meters">
+    <div class="m"><b id="mUpd">0.00 ms</b><span>GPU update per tick (uniform + redraw)</span></div>
+    <div class="m"><b id="mCnt">0</b><span>slider ticks handled</span></div>
+    <div class="m"><b id="mPx">–</b><span>pixels evaluated per tick (all on GPU)</span></div>
+  </div>
+
+  <p class="note"><em>What to compare it against:</em> the vector timeline at this same US-level view costs ~75&nbsp;ms per tick on a fast laptop —
+  the CPU rebuilds and re-ships every visible vertex to the GPU each time. Here the ship happened once, at bake time.
+  Track drawn <em>this year</em> flashes red (each grayscale value “turns on” at its number), then settles into the network color.
+  Next step: this raster sits under the real vector tileset, responds during the drag, and hands off on release.</p>
+  <div id="err"></div>
+</div>
+
+<script src="railroads_years.data.js"></script>
+<script>
+(function () {
+  var META = null, gl, prog, uYear, texW = 0, texH = 0;
+  var cv = document.getElementById('c');
+  var slider = document.getElementById('slider');
+  var yrEl = document.getElementById('yr');
+  var mUpd = document.getElementById('mUpd'), mCnt = document.getElementById('mCnt'), mPx = document.getElementById('mPx');
+  var ticks = 0, emaMs = 0;
+
+  function fail(msg) { var e = document.getElementById('err'); e.style.display = 'block'; e.textContent = msg; }
+
+  var VS = 'attribute vec2 p;varying vec2 v;void main(){v=vec2(p.x*.5+.5,.5-p.y*.5);gl_Position=vec4(p,0.,1.);}';
+  // year decoded from the red channel: year = base + r*255. Alpha 0 = no track ever.
+  var FS = [
+    'precision mediump float;varying vec2 v;uniform sampler2D t;uniform float uYear;uniform float uBase;',
+    'void main(){',
+    '  vec4 s=texture2D(t,v);',
+    '  if(s.a<0.5) discard;',
+    '  float year=uBase+s.r*255.0;',
+    '  if(year>uYear) discard;',
+    '  float age=uYear-year;',
+    '  if(age<1.0){ gl_FragColor=vec4(1.0,0.23,0.19,1.0); return; }',          // turns red on its number
+    '  float f=clamp(age/50.0,0.0,1.0);',
+    '  gl_FragColor=vec4(mix(vec3(0.78,0.65,1.0),vec3(0.42,0.32,0.62),f),1.0);', // fresh lilac → settled purple
+    '}'
+  ].join('\n');
+
+  function sh(type, src) { var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+
+  function draw(year) {
+    var t0 = performance.now();
+    gl.uniform1f(uYear, year);
+    gl.clear(gl.COLOR_BUFFER_BIT);   // defined dark background every frame (an opaque buffer also sidesteps alpha-compositing quirks)
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.finish();   // honest timing: wait for the GPU so the meter reflects real work
+    var ms = performance.now() - t0;
+    emaMs = emaMs ? emaMs * 0.9 + ms * 0.1 : ms;
+    ticks++;
+    mUpd.textContent = emaMs.toFixed(2) + ' ms';
+    mCnt.textContent = ticks.toLocaleString('en-US');
+  }
+
+  function onSlide() {
+    var y = parseFloat(slider.value);
+    yrEl.textContent = String(Math.floor(y));
+    draw(y);
+  }
+
+  var playing = false;
+  document.getElementById('play').onclick = function () {
+    if (playing) { playing = false; this.textContent = '▶ Play 1826 → 1926'; return; }
+    playing = true; this.textContent = '⏸ Stop';
+    var btn = this, y = 1826, last = performance.now();
+    (function step(now) {
+      if (!playing) return;
+      y += (now - last) / 1000 * 8;   // 8 years per second
+      last = now;
+      if (y >= 1926) { y = 1926; playing = false; btn.textContent = '▶ Play 1826 → 1926'; }
+      slider.value = y; onSlide();
+      if (playing) requestAnimationFrame(step);
+    })(last);
+  };
+
+  function start(meta, src) {
+    META = meta;
+    var img = new Image();
+    img.onload = function () {
+      texW = img.width; texH = img.height;
+      cv.width = texW; cv.height = texH;
+      gl = cv.getContext('webgl', { alpha: false, preserveDrawingBuffer: true });   // opaque + readable (screenshots, probes)
+      if (!gl) return fail('WebGL unavailable in this browser.');
+      gl.clearColor(0.051, 0.043, 0.078, 1.0);   // #0d0b14 — the stage color
+      prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+      gl.linkProgram(prog); gl.useProgram(prog);
+      var buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+      var loc = gl.getAttribLocation(prog, 'p');
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      var tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);   // the ONE upload, ever
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);          // exact year values — no blending
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      uYear = gl.getUniformLocation(prog, 'uYear');
+      gl.uniform1f(gl.getUniformLocation(prog, 'uBase'), META.yearBase);
+      gl.viewport(0, 0, texW, texH);
+      mPx.textContent = (texW * texH).toLocaleString('en-US');
+      slider.addEventListener('input', onSlide);
+      onSlide();
+    };
+    img.onerror = function () { fail('raster image failed to load — re-run the bake script (mapdiag/bake_raster.js).'); };
+    img.src = src;
+  }
+  // The baked PNG + meta ride along embedded (railroads_years.data.js) so a plain file://
+  // double-click works — file: blocks both fetch() AND file-loaded images as WebGL textures,
+  // but data: URIs are exempt. Served over http, the loose files remain the fallback.
+  if (window.RAIL_META && window.RAIL_PNG) start(window.RAIL_META, window.RAIL_PNG);
+  else fetch('railroads_years.json').then(function (r) { return r.json(); }).then(function (m) { start(m, 'railroads_years.png'); }).catch(function () { fail('railroads_years.json missing — run the bake script (mapdiag/bake_raster.js).'); });
+})();
+</script>
+</body>
+</html>

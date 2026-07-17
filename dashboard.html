@@ -239,7 +239,7 @@
 
       // ---- Storage usage ----
       // Precise tracking (profiles.storage_used_bytes / an RPC) needs a one-time SQL migration — see
-      // mapstructor_docs/pricing-setup.sql. Until then this estimates from the user's feature data.
+      // mapstructor_docs/sql/pricing-setup.sql. Until then this estimates from the user's feature data.
       async function estimateStorage() {
         try {
           var ls = await db.from('layers').select('id').eq('user_id', user.id);

@@ -1,0 +1,45 @@
+# Remote "deep re-tile" tier: real tippecanoe on a free GitHub runner.
+# The browser tiler (platform/tilegen.js) remains the instant default; run this manually
+# (Actions tab → Retile with tippecanoe → Run workflow) for big datasets that deserve
+# tippecanoe's per-zoom feature dropping/coalescing. No paid server anywhere.
+#
+# ONE-TIME SETUP: repo secret SUPABASE_SERVICE_KEY (same secret storage-alert.yml uses).
+
+name: Retile with tippecanoe
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "Project id (uuid)"
+        required: true
+      layer_id:
+        description: "Layer id (uuid)"
+        required: true
+      max_zoom:
+        description: "Max zoom (empty = tippecanoe decides via -zg)"
+        required: false
+        default: ""
+
+jobs:
+  retile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build tippecanoe (felt fork)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q build-essential libsqlite3-dev zlib1g-dev
+          git clone --depth 1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe
+          make -C /tmp/tippecanoe -j"$(nproc)"
+          sudo make -C /tmp/tippecanoe install
+          tippecanoe --version
+
+      - name: Fetch features, tile, upload, re-point layer
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          LAYER_ID: ${{ inputs.layer_id }}
+          MAX_ZOOM: ${{ inputs.max_zoom }}
+        run: node scripts/retile-tippecanoe.mjs

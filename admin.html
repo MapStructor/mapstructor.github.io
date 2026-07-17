@@ -54,7 +54,7 @@
 
     <h2>Plans</h2>
     <div class="cards" id="tiers"></div>
-    <div class="note" id="tiers-note" style="display:none;">Plan breakdown + exact storage appear after you run <b>pricing-setup.sql</b>.</div>
+    <div class="note" id="tiers-note" style="display:none;">Plan breakdown + exact storage appear after you run <b>mapstructor_docs/sql/pricing-setup.sql</b>.</div>
 
     <h2>Recent maps</h2>
     <table><thead><tr><th data-sort="name" data-label="Name">Name</th><th data-sort="owner" data-label="Owner">Owner</th><th data-sort="email" data-label="Email">Email</th><th data-sort="is_public" data-label="Visibility">Visibility</th><th data-sort="created_at" data-label="Created">Created</th><th data-sort="updated_at" data-label="Updated">Updated</th></tr></thead><tbody id="recent"></tbody></table>
@@ -121,7 +121,23 @@
         if (ownersLbl) ownersLbl.textContent = 'Registered map owners (+' + (ownerIds.length - regOwners.length) + ' anonymous)';
 
         // total storage (needs the admin RPC from pricing-setup.sql)
-        try { var ts = await db.rpc('mapstructor_total_storage'); if (!ts.error && typeof ts.data === 'number') document.getElementById('s-storage').textContent = P.fmtBytes(ts.data); else document.getElementById('s-storage').textContent = '—'; }
+        try {
+          var ts = await db.rpc('mapstructor_total_storage');
+          if (!ts.error && typeof ts.data === 'number') {
+            document.getElementById('s-storage').textContent = P.fmtBytes(ts.data);
+            // free-infra alert (7/15): the platform itself rides Supabase's FREE plan (500 MB database).
+            // Warn the admin early — at 30% — so an infra upgrade happens long before users feel it.
+            var FREE_DB_BYTES = 500 * 1024 * 1024;
+            var frac = ts.data / FREE_DB_BYTES;
+            if (frac >= 0.3) {
+              var al = document.createElement('div');
+              al.style.cssText = 'margin:10px 0;padding:9px 12px;border-radius:8px;font-size:13px;color:#fff;background:' + (frac >= 0.8 ? '#b4453a' : '#d98a00') + ';';
+              al.innerHTML = '<b>Platform storage at ' + Math.round(frac * 100) + '%</b> of the Supabase free plan (' + P.fmtBytes(ts.data) + ' / ' + P.fmtBytes(FREE_DB_BYTES) + '). Plan the infra upgrade before it fills.';
+              var host = document.getElementById('s-storage').closest('#main') || document.getElementById('main');
+              host.insertBefore(al, host.firstChild.nextSibling);
+            }
+          } else document.getElementById('s-storage').textContent = '—';
+        }
         catch (e) { document.getElementById('s-storage').textContent = '—'; }
 
         // datasets: every layer with its project, owner, feature count and size — sortable, biggest first

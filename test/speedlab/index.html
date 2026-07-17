@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MapStructor Speed Lab</title>
+<style>
+  :root { --bg:#14121d; --card:#1e1b2b; --ink:#e8e5f2; --dim:#9d97b5; --accent:#8f7ae0; --live:#3ec97e; --plan:#7a7590; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--ink); font:16px/1.6 'Segoe UI',system-ui,sans-serif; padding:48px 24px; }
+  .wrap { max-width:880px; margin:0 auto; }
+  h1 { font-size:34px; letter-spacing:.5px; }
+  h1 span { color:var(--accent); }
+  .sub { color:var(--dim); margin:10px 0 36px; max-width:640px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:18px; }
+  a.card { display:block; background:var(--card); border:1px solid #2c2840; border-radius:14px; padding:22px; text-decoration:none; color:var(--ink); transition:transform .15s, border-color .15s; }
+  a.card:hover { transform:translateY(-3px); border-color:var(--accent); }
+  a.card.plan { pointer-events:none; opacity:.55; }
+  .card h2 { font-size:18px; margin-bottom:6px; }
+  .card p { color:var(--dim); font-size:14px; }
+  .chip { display:inline-block; font-size:11px; font-weight:700; letter-spacing:1px; padding:2px 10px; border-radius:99px; margin-bottom:12px; text-transform:uppercase; }
+  .chip.live { background:rgba(62,201,126,.15); color:var(--live); }
+  .chip.plan { background:rgba(122,117,144,.15); color:var(--plan); }
+  .foot { color:var(--dim); font-size:13px; margin-top:40px; border-top:1px solid #2c2840; padding-top:16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>MapStructor <span>Speed Lab</span></h1>
+  <p class="sub">Isolated experiments for the machine that makes maps feel fast. Each module changes one part of the machine —
+  tiling, encoding, scheduling, hardware — and puts a meter on what your eyes actually get.</p>
+
+  <div class="grid">
+    <a class="card" href="raster/">
+      <span class="chip live">Live</span>
+      <h2>Raster time-encoding</h2>
+      <p>The year of every railroad is baked into pixel values once. Scrubbing changes ONE number on the GPU — visibility at any date, instantly, at any data size.</p>
+    </a>
+    <a class="card" href="hybrid/">
+      <span class="chip live">Live</span>
+      <h2>Raster + vector, simultaneously</h2>
+      <p>Both on one map, one slider: the raster (purple) answers instantly while the real vector tileset (orange) filters the current product way. Any orange trailing purple is the lag, made visible.</p>
+    </a>
+    <a class="card plan" href="#">
+      <span class="chip plan">Planned</span>
+      <h2>Tiler playground</h2>
+      <p>Tweak each part of the tiling algorithm — simplification, sub-pixel drop, per-zoom budget — isolate a single zoom level, regenerate, and eyeball the result immediately.</p>
+    </a>
+    <a class="card plan" href="#">
+      <span class="chip plan">Planned</span>
+      <h2>Scrub strategy shoot-out</h2>
+      <p>setFilter vs paint-expression vs GPU uniform vs raster, on the same dataset, same viewport, with live ms/frame and fps meters.</p>
+    </a>
+    <a class="card plan" href="#">
+      <span class="chip plan">Planned</span>
+      <h2>Hardware simulator</h2>
+      <p>Synthetic CPU load, device-pixel-ratio spoofing and slow-network tiles — see the map the way a mid-range laptop or phone sees it.</p>
+    </a>
+  </div>
+
+  <p class="foot">Serve locally (e.g. <code>python -m http.server 8000</code> at the repo root) and open <code>/test/speedlab/</code>. Nothing here ships to the product until it wins on the meters.</p>
+</div>
+</body>
+</html>

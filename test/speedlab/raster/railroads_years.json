@@ -1,0 +1,17 @@
+{
+  "bounds": [
+    -125.5,
+    24.2,
+    -66.5,
+    49.8
+  ],
+  "projection": "webmercator",
+  "yearBase": 1799,
+  "width": 2048,
+  "height": 1133,
+  "features": 78843,
+  "minYear": 1830,
+  "maxYear": 1972,
+  "inkedPixels": 164429,
+  "bakedAt": "2026-07-16"
+}

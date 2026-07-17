@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speed Lab — Raster + vector, simultaneously</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css">
+<style>
+  :root { --bg:#14121d; --card:#1e1b2b; --ink:#e8e5f2; --dim:#9d97b5; --accent:#8f7ae0; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--ink); font:15px/1.55 'Segoe UI',system-ui,sans-serif; padding:24px 22px 50px; }
+  .wrap { max-width:1200px; margin:0 auto; }
+  h1 { font-size:22px; } h1 a { color:var(--dim); text-decoration:none; font-size:14px; }
+  .sub { color:var(--dim); margin:6px 0 14px; max-width:900px; }
+  .sub b.r { color:#c9a8ff; } .sub b.v { color:#ff9d2e; }
+  .stage { position:relative; background:#0d0b14; border:1px solid #2c2840; border-radius:14px; overflow:hidden; height:62vh; min-height:420px; }
+  #map { position:absolute; inset:0; }
+  /* explicit 100% size is LOAD-BEARING: without it an absolutely-positioned canvas displays at its
+     intrinsic BUFFER size (clientWidth × devicePixelRatio) — at Windows 150% scaling the raster
+     rendered 1.5× too large, anchored top-left (the 7/16 offset bug) */
+  #overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .bar { display:flex; align-items:center; gap:14px; margin-top:12px; flex-wrap:wrap; }
+  .year { font-size:28px; font-weight:700; color:var(--accent); min-width:100px; font-variant-numeric:tabular-nums; }
+  input[type=range] { flex:1; min-width:240px; accent-color:var(--accent); height:26px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:8px 18px; font-weight:600; cursor:pointer; }
+  .meters { display:flex; gap:14px; margin-top:14px; flex-wrap:wrap; }
+  .m { background:var(--card); border:1px solid #2c2840; border-radius:10px; padding:11px 16px; min-width:170px; }
+  .m b { display:block; font-size:20px; font-variant-numeric:tabular-nums; }
+  .m span { color:var(--dim); font-size:12.5px; }
+  .m.r b { color:#c9a8ff; } .m.v b { color:#ff9d2e; }
+  .note { color:var(--dim); font-size:13.5px; margin-top:14px; max-width:940px; }
+  #err { color:#ff7d7d; margin-top:10px; display:none; }
+  .maplibregl-ctrl-attrib { background:rgba(20,18,29,.6)!important; color:#777; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Raster + vector, simultaneously <a href="../">&larr; speed lab</a></h1>
+  <p class="sub"><b class="r">Purple/red = the raster</b> (year baked into pixels; per tick = one GPU number).
+  <b class="v">Orange = the real vector tileset</b> (the 8.7&nbsp;MB skinny archive the editor uses, filtered per tick with <code>setFilter</code> — the product's current mechanism).
+  One slider drives both on the same map. Drag fast: any orange trailing behind the purple <em>is</em> the vector pipeline's lag, made visible.</p>
+
+  <div class="stage">
+    <div id="map"></div>
+    <canvas id="overlay"></canvas>
+  </div>
+  <div class="bar">
+    <div class="year" id="yr">1826</div>
+    <input type="range" id="slider" min="1826" max="1975" step="0.25" value="1826">
+    <select id="basemap" style="background:#1e1b2b;color:#e8e5f2;border:1px solid #2c2840;border-radius:8px;padding:8px 10px;font:inherit">
+      <option value="none">No basemap</option>
+      <option value="light">Light basemap</option>
+      <option value="streets">Streets basemap</option>
+    </select>
+    <button id="play">▶ Play 1826 → 1926</button>
+  </div>
+
+  <div class="meters">
+    <div class="m r"><b id="mR">0.00 ms</b><span>raster tick (uniform + redraw, GPU-complete)</span></div>
+    <div class="m v"><b id="mV">0.00 ms</b><span>vector setFilter call (main thread only)</span></div>
+    <div class="m"><b id="mNote">+ async</b><span>vector tile re-processing continues AFTER the call — the visible catch-up</span></div>
+  </div>
+
+  <p class="note">Pan/zoom freely — the raster is pinned to its geography (baked at ~z5 detail, so it blurs when you zoom close; that's expected — the plan is raster answering during the drag at low zooms, vectors owning rest &amp; close-up).</p>
+  <div id="err"></div>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@3/dist/pmtiles.js"></script>
+<script src="../raster/railroads_years.data.js"></script>
+<script>
+(function () {
+  // ?v= per page-load: Publish regenerates the archive, and pmtiles caches directories per URL —
+  // a fresh URL each session guarantees fresh directories (reload the page after any Publish)
+  var ARCHIVE = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co/storage/v1/object/public/tiles/f914d5e6-7aad-477d-8613-5bd4aac350d5/fd0d755e-ceb3-41e7-99c7-f19922f96cd3.pmtiles?v=' + Date.now();
+  function fail(m) { var e = document.getElementById('err'); e.style.display = 'block'; e.textContent = m; }
+  if (!window.RAIL_META || !window.RAIL_PNG) { fail('raster data missing — bake first (mapdiag/bake_raster.js)'); return; }
+
+  /* ── the map + the real vector tileset (orange, setFilter per tick) ─────── */
+  var protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol('pmtiles', protocol.tile);
+  var map = new maplibregl.Map({
+    container: 'map',
+    style: { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0d0b14' } }] },
+    center: [-98.73, 41.67], zoom: 3.45, dragRotate: false, pitchWithRotate: false, attributionControl: false
+  });
+  map.touchZoomRotate && map.touchZoomRotate.disableRotation();
+  function addRail() {
+    if (map.getSource('rail')) return;
+    map.addSource('rail', { type: 'vector', url: 'pmtiles://' + ARCHIVE });
+    map.addLayer({
+      id: 'rail-lines', type: 'line', source: 'rail', 'source-layer': 'features',
+      paint: { 'line-color': '#ff9d2e', 'line-width': 1.1, 'line-opacity': 0.95 }
+    });
+    applyVector(parseFloat(slider.value));
+  }
+  map.on('load', addRail);
+  map.on('error', function (e) { if (e && e.error) fail('map: ' + e.error.message); });
+
+  // basemap picker — free/tokenless styles (OpenFreeMap); rail layer re-added after every style swap
+  var BASES = {
+    none: { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0d0b14' } }] },
+    light: 'https://tiles.openfreemap.org/styles/positron',
+    streets: 'https://tiles.openfreemap.org/styles/liberty'
+  };
+  document.getElementById('basemap').addEventListener('change', function () {
+    map.setStyle(BASES[this.value]);
+    map.once('style.load', addRail);
+  });
+
+  function dayOf(year) { return Math.floor(year) * 10000 + 701; }   // mid-year: track from year N shows during N
+  var mV = document.getElementById('mV'), emaV = 0;
+  function applyVector(year) {
+    if (!map.getLayer('rail-lines')) return;
+    var d = dayOf(year), t0 = performance.now();
+    map.setFilter('rail-lines', ['all', ['<=', ['get', 'DayStart'], d], ['>=', ['get', 'DayEnd'], d]]);
+    var ms = performance.now() - t0;
+    emaV = emaV ? emaV * 0.9 + ms * 0.1 : ms;
+    mV.textContent = emaV.toFixed(2) + ' ms';
+  }
+
+  /* ── the raster overlay (purple/red, one uniform per tick) ──────────────── */
+  var cv = document.getElementById('overlay'), gl, uYear, uP0, uP1, curYear = 1826;
+  var B = RAIL_META.bounds;   // [lon0, lat0, lon1, lat1]
+  var VS = 'attribute vec2 q;uniform vec2 p0,p1;varying vec2 v;void main(){v=q;vec2 px=mix(p0,p1,q);gl_Position=vec4(px.x*2.-1.,1.-px.y*2.,0.,1.);}';
+  var FS = [
+    'precision mediump float;varying vec2 v;uniform sampler2D t;uniform float uYear,uBase;',
+    'void main(){vec4 s=texture2D(t,v);if(s.a<0.5)discard;float y=uBase+s.r*255.0;if(y>uYear)discard;',
+    'float age=uYear-y;if(age<1.0){gl_FragColor=vec4(1.0,0.23,0.19,1.0);return;}',
+    'float f=clamp(age/50.0,0.0,1.0);gl_FragColor=vec4(mix(vec3(0.86,0.72,1.0),vec3(0.55,0.42,0.80),f),1.0);}'
+  ].join('');
+  function sh(ty, src) { var s = gl.createShader(ty); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+  var mR = document.getElementById('mR'), emaR = 0;
+
+  var img = new Image();
+  img.onload = function () {
+    gl = cv.getContext('webgl', { alpha: true, preserveDrawingBuffer: true });
+    if (!gl) return fail('WebGL unavailable');
+    var pr = gl.createProgram();
+    gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS));
+    gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(pr); gl.useProgram(pr);
+    var buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+    var loc = gl.getAttribLocation(pr, 'q');
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    var tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    uYear = gl.getUniformLocation(pr, 'uYear');
+    uP0 = gl.getUniformLocation(pr, 'p0'); uP1 = gl.getUniformLocation(pr, 'p1');
+    gl.uniform1f(gl.getUniformLocation(pr, 'uBase'), RAIL_META.yearBase);
+    gl.clearColor(0, 0, 0, 0);
+    resize(); drawRaster(curYear, false);
+  };
+  img.onerror = function () { fail('raster texture failed to load'); };
+  img.src = RAIL_PNG;
+
+  function resize() {
+    var el = document.getElementById('map'), dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(el.clientWidth * dpr); cv.height = Math.round(el.clientHeight * dpr);
+    if (gl) gl.viewport(0, 0, cv.width, cv.height);
+  }
+  window.addEventListener('resize', function () { resize(); drawRaster(curYear, false); });
+
+  // pin the quad to geography: NW/SE corners projected to screen fractions each draw.
+  // Both the PNG bake and the map are linear in mercator, so corners align the whole interior.
+  function drawRaster(year, timed) {
+    if (!gl) return;
+    var el = document.getElementById('map');
+    var nw = map.project([B[0], B[3]]), se = map.project([B[2], B[1]]);
+    var t0 = timed ? performance.now() : 0;
+    gl.uniform2f(uP0, nw.x / el.clientWidth, nw.y / el.clientHeight);
+    gl.uniform2f(uP1, se.x / el.clientWidth, se.y / el.clientHeight);
+    gl.uniform1f(uYear, year);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    if (timed) {
+      gl.finish();
+      var ms = performance.now() - t0;
+      emaR = emaR ? emaR * 0.9 + ms * 0.1 : ms;
+      mR.textContent = emaR.toFixed(2) + ' ms';
+    }
+  }
+  map.on('render', function () { drawRaster(curYear, false); });   // stay glued through pan/zoom
+
+  /* ── one slider drives both ─────────────────────────────────────────────── */
+  var slider = document.getElementById('slider'), yrEl = document.getElementById('yr');
+  function onSlide() {
+    curYear = parseFloat(slider.value);
+    yrEl.textContent = String(Math.floor(curYear));
+    drawRaster(curYear, true);       // instant path first
+    applyVector(curYear);            // then the product path — watch it chase
+  }
+  slider.addEventListener('input', onSlide);
+
+  var playing = false;
+  document.getElementById('play').onclick = function () {
+    if (playing) { playing = false; this.textContent = '▶ Play 1826 → 1926'; return; }
+    playing = true; this.textContent = '⏸ Stop';
+    var btn = this, y = 1826, last = performance.now();
+    (function step(now) {
+      if (!playing) return;
+      y += (now - last) / 1000 * 8; last = now;
+      if (y >= 1926) { y = 1926; playing = false; btn.textContent = '▶ Play 1826 → 1926'; }
+      slider.value = y; onSlide();
+      if (playing) requestAnimationFrame(step);
+    })(last);
+  };
+})();
+</script>
+</body>
+</html>

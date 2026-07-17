@@ -77,11 +77,21 @@ async function gunzip(buf) {
   return new Uint8Array(await resp.arrayBuffer());
 }
 
-var archives = {};   // url → { header:{…}, root:[entries], leaves:{ "off,len": [entries] } }
+// url → { header:{…}, root:[entries], leaves:{ "off,len": [entries] }, etag, checkedAt }
+// STALENESS (7/16): regenerating an archive (publish sew-up, date re-bakes) changes every byte
+// offset — a cached directory over the new file serves garbage and the layer goes BLANK. So:
+// range reads bypass the HTTP cache (no mixed-version bytes), every read carries the archive's
+// ETag and a mismatch drops the cache + retries, and cached archives re-validate via HEAD at
+// most once a minute.
+var archives = {};
 
-async function rangeRead(url, offset, length) {
-  var r = await fetch(url, { headers: { Range: "bytes=" + offset + "-" + (offset + length - 1) } });
+var _lastRangeEtag = null;   // etag of the most recent range response (captured for openArchive)
+async function rangeRead(url, offset, length, expectEtag) {
+  var r = await fetch(url, { headers: { Range: "bytes=" + offset + "-" + (offset + length - 1) }, cache: "no-store" });
   if (!(r.status === 206 || r.status === 200)) throw new Error("range read " + r.status);
+  var tag = r.headers.get("etag");
+  _lastRangeEtag = tag || _lastRangeEtag;
+  if (expectEtag && tag && tag !== expectEtag) throw new Error("archive-changed");
   var buf = new Uint8Array(await r.arrayBuffer());
   // a 200 (no range support) returns the whole object — slice what was asked for
   if (r.status === 200 && buf.length > length) buf = buf.slice(offset, offset + length);
@@ -91,8 +101,20 @@ async function rangeRead(url, offset, length) {
 function u64(dv, off) { return dv.getUint32(off, true) + dv.getUint32(off + 4, true) * 4294967296; }
 
 async function openArchive(url) {
-  if (archives[url]) return archives[url];
+  var cached = archives[url];
+  if (cached) {
+    if (Date.now() - cached.checkedAt > 60000) {   // re-validate at most once a minute
+      cached.checkedAt = Date.now();
+      try {
+        var hr = await fetch(url, { method: "HEAD", cache: "no-store" });
+        var tag = hr.headers.get("etag");
+        if (tag && cached.etag && tag !== cached.etag) { delete archives[url]; cached = null; }
+      } catch (e) {}
+    }
+    if (cached) return cached;
+  }
   var head = await rangeRead(url, 0, 16384);
+  var headEtag = _lastRangeEtag;
   if (!(head[0] === 0x50 && head[1] === 0x4d && head[7] === 3)) throw new Error("not a PMTiles v3 archive");
   var dv = new DataView(head.buffer, head.byteOffset);
   var h = {
@@ -102,13 +124,13 @@ async function openArchive(url) {
     internalGz: head[97] === 2, tileGz: head[98] === 2
   };
   var rootRaw = head.slice(h.rootOff, h.rootOff + h.rootLen);
-  if (rootRaw.length < h.rootLen) rootRaw = await rangeRead(url, h.rootOff, h.rootLen);
+  if (rootRaw.length < h.rootLen) rootRaw = await rangeRead(url, h.rootOff, h.rootLen, headEtag);
   var root = parseDirectory(h.internalGz ? await gunzip(rootRaw) : rootRaw);
-  archives[url] = { header: h, root: root, leaves: {} };
+  archives[url] = { header: h, root: root, leaves: {}, etag: headEtag, checkedAt: Date.now() };
   return archives[url];
 }
 
-async function serveTile(pid, lid, z, x, y) {
+async function serveTile(pid, lid, z, x, y, retried) {
   var url = SUPABASE_URL + "/storage/v1/object/public/" + BUCKET + "/" + pid + "/" + lid + ".pmtiles";
   try {
     var a = await openArchive(url);
@@ -118,19 +140,22 @@ async function serveTile(pid, lid, z, x, y) {
       var hit = findEntry(entries, tid);
       if (!hit) return new Response("", { status: 204 });
       if (hit.tile) {
-        var bytes = await rangeRead(url, a.header.dataOff + hit.tile.offset, hit.tile.length);
+        var bytes = await rangeRead(url, a.header.dataOff + hit.tile.offset, hit.tile.length, a.etag);
         if (a.header.tileGz) bytes = await gunzip(bytes);   // synthetic responses aren't content-decoded by the browser — serve raw
         return new Response(bytes, { headers: { "Content-Type": "application/x-protobuf", "Cache-Control": "public, max-age=300" } });
       }
       var key = hit.leaf.offset + "," + hit.leaf.length;
       if (!a.leaves[key]) {
-        var raw = await rangeRead(url, a.header.leafOff + hit.leaf.offset, hit.leaf.length);
+        var raw = await rangeRead(url, a.header.leafOff + hit.leaf.offset, hit.leaf.length, a.etag);
         a.leaves[key] = parseDirectory(a.header.internalGz ? await gunzip(raw) : raw);
       }
       entries = a.leaves[key];
     }
     return new Response("", { status: 204 });
   } catch (err) {
+    // archive regenerated mid-session (etag mismatch) or a decode straddled versions — drop the
+    // cached directories and retry ONCE against the fresh file
+    if (!retried) { delete archives[url]; return serveTile(pid, lid, z, x, y, true); }
     return new Response(String(err), { status: 502 });
   }
 }

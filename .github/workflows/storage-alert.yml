@@ -1,0 +1,45 @@
+# Platform storage alert (7/15): daily check of total MapStructor data vs the Supabase FREE plan
+# (500 MB database). At ≥30% it opens (or updates) a GitHub issue — GitHub then EMAILS the repo
+# owner natively, no mail provider needed. The on-site twin is the admin modal in platform/auth.js.
+#
+# ONE-TIME SETUP: repo → Settings → Secrets and variables → Actions → New repository secret
+#   name:  SUPABASE_SERVICE_KEY
+#   value: the service-role key (secrets/supabase.md — never commit it)
+name: storage-alert
+on:
+  schedule:
+    - cron: "0 13 * * *"   # daily, 13:00 UTC (~8am US Central)
+  workflow_dispatch: {}     # manual test run
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check storage and alert
+        env:
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$SB_KEY" ]; then echo "SUPABASE_SERVICE_KEY secret not set — skipping"; exit 0; fi
+          BYTES=$(curl -s -X POST "https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/rpc/mapstructor_total_storage" \
+            -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" -H "Content-Type: application/json" -d '{}')
+          echo "total bytes: $BYTES"
+          case "$BYTES" in ''|*[!0-9]*) echo "RPC did not return a number — skipping"; exit 0;; esac
+          LIMIT=$((500 * 1024 * 1024))
+          PCT=$((BYTES * 100 / LIMIT))
+          echo "usage: ${PCT}% of the Supabase free plan"
+          if [ "$PCT" -lt 30 ]; then echo "below 30% — all good"; exit 0; fi
+          MB=$((BYTES / 1024 / 1024))
+          TITLE="⚠ Platform storage at ${PCT}% of the Supabase free plan"
+          BODY="MapStructor total data: **${MB} MB / 500 MB** (${PCT}%). Plan the infra upgrade before it fills — imports and edits stop for everyone at 100%. (Automated daily check: .github/workflows/storage-alert.yml)"
+          # one open alert issue at a time — update its title/body as the % climbs, reopen if closed while still over
+          EXISTING=$(gh issue list --repo "$GH_REPO" --state open --search "Platform storage at in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          else
+            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          fi

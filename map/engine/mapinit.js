@@ -196,6 +196,55 @@ function changeDate(unixDate) {
   
  } //end function changeDate
 
+// ── FAST SCRUB (7/16): while the slider is being DRAGGED, date-visibility runs through PAINT
+// (opacity case-expressions). setFilter forces the worker to re-process every visible tile per
+// tick — the scrub lag on big tilesets; paint updates skip re-layout entirely. On release the
+// slider calls endDatePaint() (restores the stored paint) + changeDate() (the real setFilter),
+// so at rest hit-testing, clicks and hovers behave exactly as before. NOTE: this changes no
+// loading — tiles always contain every feature; only WHERE the hide happens moves (GPU paint
+// stage instead of worker re-layout).
+var _dpBase = {};   // "<layerId>|<paintKey>" → the layer's own paint value, saved at first wrap
+var _DP_KEYS = { fill: ["fill-opacity"], line: ["line-opacity"], circle: ["circle-opacity", "circle-stroke-opacity"] };
+function _dpTargets() {
+  var t = [];
+  flatLayers(layers).forEach(function (layer) {
+    var kind = _DP_KEYS[layer.type] ? layer.type : null;
+    if (kind) {
+      t.push([beforeMap, layer.id + "-left", kind], [afterMap, layer.id + "-right", kind]);
+      t.push([beforeMap, layer.id + "-highlighted-left", kind], [afterMap, layer.id + "-highlighted-right", kind]);
+    }
+    t.push([beforeMap, layer.id + "-stroke-left", "line"], [afterMap, layer.id + "-stroke-right", "line"]);
+  });
+  return t;
+}
+function paintDate(unixDate) {
+  var day = parseInt(moment.unix(unixDate).format("YYYYMMDD"));
+  var ok = ["all", ["<=", ["coalesce", ["get", "DayStart"], 0], day], [">=", ["coalesce", ["get", "DayEnd"], 99999999], day]];
+  _dpTargets().forEach(function (tg) {
+    var m = tg[0], id = tg[1];
+    if (!m || !m.getLayer(id)) return;
+    _DP_KEYS[tg[2]].forEach(function (key) {
+      var ck = id + "|" + key;
+      if (!(ck in _dpBase)) {
+        var base = m.getPaintProperty(id, key);
+        _dpBase[ck] = base == null ? 1 : base;
+      }
+      // layers whose base opacity is a top-level zoom curve can't nest inside `case` — the throw
+      // is caught and that layer simply stays unfiltered until release (changeDate corrects it)
+      try { m.setPaintProperty(id, key, ["case", ok, _dpBase[ck], 0]); } catch (e) {}
+    });
+  });
+}
+function endDatePaint() {
+  Object.keys(_dpBase).forEach(function (ck) {
+    var i = ck.lastIndexOf("|"), id = ck.slice(0, i), key = ck.slice(i + 1);
+    [beforeMap, afterMap].forEach(function (m) {
+      try { if (m && m.getLayer(id)) m.setPaintProperty(id, key, _dpBase[ck]); } catch (e) {}
+    });
+  });
+  _dpBase = {};
+}
+
 /////////////////////////////
 //   ZOOM LABELS
 /////////////////////////////

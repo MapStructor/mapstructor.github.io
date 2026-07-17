@@ -94,4 +94,43 @@
   function openAuthModal(mode) { ensureAuthModal(); var ov = document.getElementById('mapauth-overlay'); ov._setMode(mode || 'login'); ov.classList.add('open'); setTimeout(function () { var e = document.getElementById('mapauth-email'); if (e) e.focus(); }, 50); }
 
   window.MapAuth = { db: db, currentUser: currentUser, isReal: isReal, signUp: signUp, signIn: signIn, signOut: signOut, onChange: onChange, openAuthModal: openAuthModal };
+
+  // ── Admin infra alert (7/15): the platform rides Supabase's FREE plan (500 MB database). When
+  // total platform data crosses 30%, the ADMIN gets a prominent on-open notice with an Okay button.
+  // Okay snoozes it until usage climbs into the NEXT 10% band (40%, 50%, …) or 7 days pass.
+  // The email arm is .github/workflows/storage-alert.yml (daily check → GitHub issue → email).
+  // Lives in auth.js because every page loads it — the alert follows the admin anywhere on the site.
+  (function () {
+    var ADMIN_EMAILS = ['nittyjee@gmail.com'];   // same client owner-gate as admin.html / editing.js
+    var FREE_DB_BYTES = 500 * 1024 * 1024, THRESHOLD = 0.30, ACK_KEY = 'ms-infra-alert-ack';
+    function fmtMB(b) { return (b / (1024 * 1024)).toFixed(0) + ' MB'; }
+    async function check() {
+      try {
+        var u = await currentUser();
+        if (!u || !u.email || ADMIN_EMAILS.indexOf(u.email) === -1) return;
+        var seam = (location.search.match(/[?&]infratest=(\d+)/) || [])[1];   // test seam (same idiom as ?storagefull=1)
+        var r = seam ? { data: FREE_DB_BYTES * (+seam / 100) } : await db.rpc('mapstructor_total_storage');
+        if (r.error || typeof r.data !== 'number') return;
+        var frac = r.data / FREE_DB_BYTES;
+        if (frac < THRESHOLD) return;
+        var band = Math.floor(frac * 10) * 10;   // 30, 40, 50, … — each new band re-alerts
+        try { var ack = JSON.parse(localStorage.getItem(ACK_KEY) || 'null'); if (ack && ack.band >= band && (Date.now() - ack.t) < 7 * 864e5) return; } catch (e) {}
+        var ov = document.createElement('div');
+        ov.style.cssText = 'position:fixed;inset:0;background:rgba(20,18,30,0.55);z-index:6000;display:flex;align-items:center;justify-content:center;font-family:Source Sans Pro,Arial,sans-serif;';
+        ov.innerHTML =
+          '<div style="width:430px;max-width:92vw;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.45);padding:22px 26px;color:#2a2a33;">' +
+            '<div style="font-size:19px;font-weight:800;color:' + (frac >= 0.8 ? '#b4453a' : '#c47c00') + ';">⚠ Platform storage at ' + Math.round(frac * 100) + '%</div>' +
+            '<p style="margin:10px 0 4px;font-size:14px;line-height:1.5;">MapStructor\'s Supabase free plan holds <b>' + fmtMB(FREE_DB_BYTES) + '</b> of data; the platform is using <b>' + fmtMB(r.data) + '</b>. Plan the infra upgrade before it fills — imports and edits stop working for everyone at 100%.</p>' +
+            '<button id="ms-infra-ok" style="margin-top:14px;width:100%;padding:9px 0;border:none;border-radius:8px;background:#7c5cbf;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">Okay</button>' +
+          '</div>';
+        document.body.appendChild(ov);
+        ov.querySelector('#ms-infra-ok').addEventListener('click', function () {
+          try { localStorage.setItem(ACK_KEY, JSON.stringify({ band: band, t: Date.now() })); } catch (e) {}
+          ov.remove();
+        });
+      } catch (e) {}
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(check, 1200); });
+    else setTimeout(check, 1200);
+  })();
 })();

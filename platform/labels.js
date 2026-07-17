@@ -115,7 +115,12 @@
   //   density = text-padding: the collision margin around each label — bigger margin, fewer labels drawn.
   function msLabelLayerFor(layer, side, initVis, map) {   // map (optional) picks glyph-server-safe fonts
     if (!layer || !layer.labels || !layer.labels.field) return null;
-    if (!(layer.source && layer.source.type === 'geojson')) return null;   // geojson (drawn/imported) layers only for now
+    var srcType = layer.source && layer.source.type;
+    // geojson (drawn/imported) layers, PLUS tileset LINE layers (7/16): line labels ride the
+    // vector source directly (symbol-placement: line) — no anchors needed. The label field must
+    // be baked into the tiles (tilegen does: `label` always + the configured column at Publish).
+    // Tileset points/polygons still need geojson anchors — not yet.
+    if (!(srcType === 'geojson' || (srcType === 'vector' && layer.type === 'line'))) return null;
     var cfg = layer.labels;
     var field = cfg.field;
     // sizeFor(wrap): builds text-size with the per-feature override applied by `wrap` at each value.
@@ -165,7 +170,14 @@
     }
     if (layer.type === 'line') {
       base.source = layer.id + '-' + side;                    // shared source; text follows the line
+      if (srcType === 'vector') base['source-layer'] = layer['source-layer'] || 'features';   // tileset lines
       base.layout['symbol-placement'] = 'line';
+      // fragmented data (e.g. railway segments) fits labels rarely — tolerate curvature, try
+      // anchors far more often, and keep collision margins slim (measured 7/16: defaults left
+      // 0–8 labels per screen at every zoom on the railways)
+      base.layout['text-max-angle'] = 80;
+      base.layout['symbol-spacing'] = 120;
+      if (cfg.density == null) base.layout['text-padding'] = 2;   // line labels: slim default margin (the density control still overrides)
       base.layout['text-field'] = ['to-string', ['coalesce', ['get', field], '']];
       // per-feature ms_labelsize (numeric or numeric string) overrides the layer size
       var g2 = ['get', 'ms_labelsize'];

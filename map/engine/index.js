@@ -16,17 +16,18 @@ var ruler_step = (sliderEnd - sliderStart) / 10,
   date_ruler4 = sliderStart + ruler_step * 7,
   date_ruler5 = sliderStart + ruler_step * 9;
 
-// Coalesce slider filtering to one changeDate per animation frame. jQuery UI's `slide` fires on
-// every mousemove, and each changeDate re-runs setFilter across all layers — flooding it makes heavier
-// sources (PMTiles / worker vector tiles) visibly lag and "catch up" after you stop dragging. Only the
-// LATEST value is applied per frame, so a fast drag no longer backs up a queue of stale filter passes.
+// Coalesce slider updates to ONE per animation frame — jQuery UI's `slide` fires on every
+// mousemove; only the LATEST value is applied per frame. While DRAGGING the update is
+// paintDate() (opacity case-expression — no tile re-layout, stays fluid on 30MB tilesets);
+// the real setFilter runs once on release via the slider's `change` handler (see below).
 var _sliderRAF = null, _sliderPendingVal = null;
 function scheduleChangeDate(v) {
   _sliderPendingVal = v;
   if (_sliderRAF) return;
   _sliderRAF = (window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); })(function () {
     _sliderRAF = null;
-    if (typeof changeDate === "function") changeDate(_sliderPendingVal);
+    if (typeof paintDate === "function") paintDate(_sliderPendingVal);
+    else if (typeof changeDate === "function") changeDate(_sliderPendingVal);
   });
 }
 
@@ -144,7 +145,10 @@ if (jQuery.browser.msie)
         })
         .text(moment.unix(sliderMiddle).format("MM/DD/YYYY"));
     },
-    change: function (event, ui) { if (ui && ui.value != null && typeof changeDate === "function") changeDate(ui.value); },   // lock in the exact value on release (the last coalesced frame may lag the final position)
+    change: function (event, ui) {   // release: restore the layers' own paint, then apply the REAL filter at the final value
+      if (typeof endDatePaint === "function") try { endDatePaint(); } catch (e) {}
+      if (ui && ui.value != null && typeof changeDate === "function") changeDate(ui.value);
+    },
   });
   $("#date").text(
     moment.unix($("#slider").slider("values", 0)).format("DD MMM YYYY")

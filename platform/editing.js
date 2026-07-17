@@ -690,7 +690,10 @@
             var lids = [];
             (function walk(arr) { (arr || []).forEach(function (n) { if (isEngineEditable(n) && mm.getLayer(n.id + '-' + sd)) lids.push(n.id + '-' + sd); if (n.children) walk(n.children); }); })(layers);
             if (!lids.length) return;
-            var fs; try { fs = mm.queryRenderedFeatures(e.point, { layers: lids }); } catch (err) { return; }
+            // 6px grab corridor (user 7/16: thin lines are brutal to click exactly) — the box
+            // returns candidates ordered by render order; nearest-enough beats pixel-perfect
+            var bx = 6, fs;
+            try { fs = mm.queryRenderedFeatures([[e.point.x - bx, e.point.y - bx], [e.point.x + bx, e.point.y + bx]], { layers: lids }); } catch (err) { return; }
             if (fs && fs.length) found = fs;
           });
           if (!found) return;
@@ -1123,11 +1126,11 @@
     bar.innerHTML =
       '<div style="font-size:11px;color:#555555;margin-bottom:5px;">Import a file → a new editable layer.<br>GeoJSON · KML · Shapefile (.zip)</div>' +
       '<input id="editor-import-file" type="file" accept=".geojson,.json,.kml,.zip" style="width:100%;box-sizing:border-box;margin-bottom:6px;font-size:12px;" />' +
-      '<div style="font-size:11px;color:#555555;margin:8px 0 3px;border-top:1px solid #e8e8e8;padding-top:6px;">&hellip;or from a URL — ArcGIS/ESRI service, Hub page, or .geojson<br><span style="color:#999999;font-size:10px;">(URL imports are capped at 20,000 features per layer for now)</span></div>' +
+      '<div style="font-size:11px;color:#555555;margin:8px 0 3px;border-top:1px solid #e8e8e8;padding-top:6px;">&hellip;or from a URL — ArcGIS/ESRI service, Hub page, or .geojson<br><span style="color:#999999;font-size:10px;">(any size — large layers auto-convert to tiles for fast rendering)</span></div>' +
       '<input id="editor-import-url" type="text" placeholder="https://…/MapServer · hub.arcgis.com/maps/… · ….geojson" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
       '<select id="editor-import-svc-layer" style="display:none;width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"></select>' +
       '<select id="editor-parent">' + parentOptions() + '</select>' +
-      '<div id="editor-import-status" style="font-size:11px;color:#888888;margin:2px 0 6px;min-height:13px;"></div>' +
+      '<div id="editor-import-status" style="font-size:13.5px;font-weight:700;color:#5b458f;margin:4px 0 8px;min-height:16px;white-space:normal;word-break:break-word;"></div>' +
       '<div class="erow"><button id="editor-import-url-go">Import from URL</button><button id="editor-cancel">Cancel</button></div>';
     var fileInput = document.getElementById('editor-import-file');
     fileInput.addEventListener('change', function () {
@@ -1260,14 +1263,17 @@
   async function importArcgisLayer(url, parent) {   // one service sublayer → import + carry its symbology
     var lmeta = null, name = null;
     try { lmeta = await (await fetch(url + '?f=json')).json(); if (lmeta && lmeta.name) name = lmeta.name; } catch (e) {}
-    var feats = [];
+    var feats = [], dlBytes = 0;
     for (var off = 0; ; off += 1000) {
-      importStatus('Fetching ' + (name || 'features') + '… ' + feats.length);
-      var page = await (await fetch(url + '/query?where=1%3D1&outFields=*&outSR=4326&f=geojson&resultOffset=' + off + '&resultRecordCount=1000')).json();
+      importStatus('Fetching ' + (name || 'features') + '… ' + nfmt(feats.length) + (dlBytes ? ' (' + (dlBytes / 1048576).toFixed(1) + ' MB)' : ''));
+      var resp = await fetch(url + '/query?where=1%3D1&outFields=*&outSR=4326&f=geojson&resultOffset=' + off + '&resultRecordCount=1000');
+      var pageText = await resp.text(); dlBytes += pageText.length;   // downloaded size — users should always see how big things are
+      var page = JSON.parse(pageText);
       if (page.error) throw new Error(page.error.message || 'ArcGIS query failed');
       feats = feats.concat(page.features || []);
       if (!page.features || page.features.length < 1000) break;
-      if (feats.length >= 20000) throw new Error('service too large (20k+ features) — filter it first');
+      // no size cap (7/15): the cap predated auto-convert — big layers now become PMTiles for
+      // rendering, so any service size flows through (tier storage quotas still gate non-admins)
     }
     if (!feats.length) throw new Error('no features in ' + (name || url));
     var renderer = lmeta && lmeta.drawingInfo && lmeta.drawingInfo.renderer;
@@ -1315,7 +1321,7 @@
             var lyr = sel._svcLayers[li];
             importStatus('Layer ' + (li + 1) + '/' + sel._svcLayers.length + ': ' + lyr.name);
             try { await importArcgisLayer(sel._svcUrl + '/' + lyr.id, grp); ok++; }
-            catch (le) { console.warn('sublayer import failed', lyr.name, le); failed.push(lyr.name); }
+            catch (le) { console.warn('sublayer import failed', lyr.name, le); failed.push(lyr.name + (le && le.message ? ' (' + le.message + ')' : '')); }   // surface WHY — "failed: <name>" alone hid the 20k-cap reason
           }
           setStatus('Imported ' + ok + '/' + sel._svcLayers.length + ' layers into "' + svcName + '"' + (failed.length ? ' — failed: ' + failed.join(', ') : ''));
           sel.style.display = 'none';
@@ -1334,6 +1340,16 @@
       sel.style.display = 'none';
     } catch (e) { console.warn('editing: url import failed', e); importStatus('Import failed: ' + (e && e.message)); }
   }
+  function nfmt(n) { try { return Number(n).toLocaleString('en-US'); } catch (e) { return String(n); } }   // 12345 → "12,345" everywhere counts show
+  // Progress lives in the EXISTING import-status line (user 7/15: "nothing separate — make what's
+  // there more prominent"; the floating banner is gone). msProgress stays as the one entry point
+  // for long-running work (dates apply, publish sew-up) and simply feeds that same line.
+  function msProgress(m) { importStatus(m); }
+  // full layer name on hover — rows ellipsize (below); the browser tooltip carries the rest
+  document.addEventListener('mouseover', function (e) {
+    var lb = e.target && e.target.closest && e.target.closest('#layers-panel-content .layer-list-row label');
+    if (lb && !lb.title) lb.title = (lb.textContent || '').trim();
+  });
   function importStatus(m) { var s = document.getElementById('editor-import-status'); if (s) s.textContent = m; else setStatus(m); }
   // Route a file by extension → a GeoJSON FeatureCollection → import it.
   async function handleImportFile(file, parent) {
@@ -1407,7 +1423,7 @@
           return feats.length > (n.type === 'circle' ? 2000 : 500);
         });
         if (bigOnes.length) {
-          await loadScript('../platform/tilegen.js');
+          await loadScript('../platform/tilegen.js?v=' + Date.now());   // ALWAYS fresh — a cached old tiler re-runs the 891k-tile mistake
           for (var bi = 0; bi < bigOnes.length; bi++) {
             var bn = bigOnes[bi];
             var lid2 = slugToLayerDbId[bn.id];
@@ -1416,13 +1432,17 @@
             // read the rows back so tile feature ids = features.feature_id (the editor's tile↔DB key)
             var feats2 = [], from2 = 0;
             for (;;) {
-              var fr2 = await db.from('features').select('feature_id, geom, label, description, start_date, end_date, custom_fields').eq('layer_id', lid2).order('feature_id').range(from2, from2 + 999);
+              var fr2 = await db.from('features').select('feature_id, geom, start_date, end_date, label').eq('layer_id', lid2).order('feature_id').range(from2, from2 + 999);
               if (fr2.error || !fr2.data || !fr2.data.length) break;
               fr2.data.forEach(function (f) {
-                var props = { label: f.label, description: f.description };
-                if (f.start_date) props.start_date = f.start_date;
-                if (f.end_date) props.end_date = f.end_date;
-                Object.keys(f.custom_fields || {}).forEach(function (k) { props[k] = f.custom_fields[k]; });
+                // SKINNY TILES (7/16): id + timeline days (+ label, for map labels on tileset
+                // lines) — other attributes are fetched by id on click; the days must stay baked
+                // (the slider filter reads them inside the tile)
+                var props = {
+                  DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, '') || 0 : 0,
+                  DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, '') || 99999999 : 99999999
+                };
+                if (f.label != null && f.label !== '') props.label = f.label;
                 feats2.push({ type: 'Feature', id: f.feature_id, properties: props, geometry: f.geom });
               });
               if (fr2.data.length < 1000) break;
@@ -1441,6 +1461,7 @@
   async function batchInsertFeatures(layerId, feats) {
     var BATCH = 500;
     for (var i = 0; i < feats.length; i += BATCH) {
+      if (feats.length > BATCH) importStatus('Saving features… ' + nfmt(Math.min(i + BATCH, feats.length)) + '/' + nfmt(feats.length));   // uncapped imports can be 100k+ rows — show progress, not silence
       var rows = feats.slice(i, i + BATCH).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null, custom_fields: importCustomFields(f.properties) }; });
       var r = await db.from('features').insert(rows);
       if (r.error) throw new Error('feature insert: ' + r.error.message);
@@ -1816,8 +1837,8 @@
       // "sew up" tiles first: converted layers regenerate from their CURRENT features, so the
       // published snapshot always ships fresh tiles (edits since the last generate are folded in)
       try {
-        await loadScript('../platform/tilegen.js');
-        if (window.MSTileGen) await MSTileGen.sewUpProject(db, projectId, setStatus);
+        await loadScript('../platform/tilegen.js?v=' + Date.now());   // ALWAYS fresh — a cached old tiler re-runs the 891k-tile mistake
+        if (window.MSTileGen) await MSTileGen.sewUpProject(db, projectId, function (m) { setStatus(m); msProgress(m); });   // publish regeneration shows in the prominent sidebar line too
       } catch (eTiles) { console.warn('tile sew-up skipped', eTiles); }
       setStatus('Publishing…');
       var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);   // snapshot the current live config
@@ -2373,7 +2394,7 @@
       guideSetEditing(false);
       setStatus('Guide saved');
     } catch (e) {
-      window.alert('Guide save failed: ' + e.message + (/relation|does not exist|schema cache/i.test(e.message) ? '\n\n(The site_content table isn\'t created yet — run mapstructor_docs/site-content-setup.sql.)' : ''));
+      window.alert('Guide save failed: ' + e.message + (/relation|does not exist|schema cache/i.test(e.message) ? '\n\n(The site_content table isn\'t created yet — run mapstructor_docs/sql/site-content-setup.sql.)' : ''));
     }
     if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
   }
@@ -3306,6 +3327,10 @@
       var P = window.MapStructorPricing; if (!P) return;
       var u = await db.auth.getUser(); var uid = u && u.data && u.data.user && u.data.user.id;
       if (!uid) { if (_storageTries++ < 10) setTimeout(checkStorage, 1500); return; }   // session not ready yet — retry
+      // the ADMIN account is quota-exempt (for now) — no banner, no gate; the platform-wide
+      // free-infra alert lives on admin.html instead (30% of the Supabase free plan)
+      var uEmail = u.data.user.email || '';
+      if (MS_ADMINS.indexOf(uEmail) > -1) { _storageOver = false; _storageInfo = null; _storageLast = Date.now(); updateStorageBanner(); return; }
       var tierKey = 'free';
       try { var pr = await db.from('profiles').select('subscription_tier').eq('id', uid).maybeSingle(); if (pr.data && pr.data.subscription_tier) tierKey = pr.data.subscription_tier; } catch (e) {}
       var used = 0;
@@ -4082,9 +4107,17 @@
             for (var i = 0; i < fs2.length && i < 400; i++) Object.keys(fs2[i].properties || {}).forEach(function (k) { tkeys[k] = 1; });
           } catch (e) {}
         });
-        fillLabelFieldSelect(node, Object.keys(tkeys).sort());
-        var mlRow2 = document.getElementById('elp-maplabels-row'); if (mlRow2) mlRow2.style.display = 'none';   // map labels are geojson-only for now (labels.js) — also clears a stale 'block' from a previously-selected drawn layer
-        var mlHelp2 = document.getElementById('elp-lbl-help'); if (mlHelp2) mlHelp2.style.display = 'none';
+        var tcols = Object.keys(tkeys).sort();
+        fillLabelFieldSelect(node, tcols);
+        // map labels now work on TILESET LINE layers too (labels.js rides the vector source, 7/16).
+        // Skinny tiles carry `label` + the configured column (baked at Publish) — offer whatever
+        // the tiles actually contain, minus the timeline plumbing. Points/polygons: still hidden.
+        if (node.type === 'line') {
+          fillMapLabelControls(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
+        } else {
+          var mlRow2 = document.getElementById('elp-maplabels-row'); if (mlRow2) mlRow2.style.display = 'none';   // also clears a stale 'block' from a previously-selected drawn layer
+          var mlHelp2 = document.getElementById('elp-lbl-help'); if (mlHelp2) mlHelp2.style.display = 'none';
+        }
       }
       return;
     }
@@ -4113,38 +4146,41 @@
         var inf2 = document.getElementById(spec[0] + '-info');
         if (inf2) inf2.textContent = savedProp ? ('Per-feature ' + spec[3] + ' from ' + savedProp + ' (slider = fallback).') : '';
       });
-      // map-labels controls: checkbox + column pick (same columns, "label" first)
-      var mlRow = document.getElementById('elp-maplabels-row'), mlOn = document.getElementById('elp-maplabels-on'),
-          mlSel = document.getElementById('elp-maplabels-field'), mlFieldRow = document.getElementById('elp-maplabels-field-row');
-      if (mlRow && mlOn && mlSel) {
-        mlRow.style.display = 'block';
-        var mlHelp = document.getElementById('elp-lbl-help'); if (mlHelp) mlHelp.style.display = 'block';
-        mlSel.innerHTML = '<option value="label">label (the feature\'s own Label)</option>';
-        sortedKeys.forEach(function (k) { var o4 = document.createElement('option'); o4.value = k; o4.textContent = k; mlSel.appendChild(o4); });
-        var lb = node.labels;
-        mlOn.checked = !!(lb && lb.field);
-        if (lb && lb.field) { if (sortedKeys.indexOf(lb.field) < 0 && lb.field !== 'label') { var o5 = document.createElement('option'); o5.value = lb.field; o5.textContent = lb.field; mlSel.appendChild(o5); } mlSel.value = lb.field; }
-        else mlSel.value = 'label';
-        if (mlFieldRow) mlFieldRow.style.display = mlOn.checked ? 'block' : 'none';
-        // styling controls reflect the saved config (or the defaults)
-        var lbc = lb || {};
-        function setv(id6, val) { var el6 = document.getElementById(id6); if (el6) el6.value = val; }
-        setv('elp-lbl-color', lbc.color || '#000000');
-        setv('elp-lbl-halo', lbc.halo || '#ffffff');
-        setv('elp-lbl-halow', lbc.haloWidth != null ? lbc.haloWidth : 2);
-        var hv = document.getElementById('elp-lbl-halow-val'); if (hv) hv.textContent = lbc.haloWidth != null ? lbc.haloWidth : 2;
-        var bd = document.getElementById('elp-lbl-bold'); if (bd) bd.checked = lbc.bold !== false;
-        setv('elp-lbl-density', 60 - (lbc.density != null ? lbc.density : 10));
-        // size is ALWAYS the zoom ramp now (uniform mode + its checkbox removed 7/15): saved
-        // sizeStops → legacy size triple (fixed z6/11/16) → a legacy uniform size as a flat one-stop → defaults
-        renderLblStops((lbc.sizeStops && lbc.sizeStops.length) ? lbc.sizeStops
-          : (lbc.size && lbc.size.length === 3) ? [[6, lbc.size[0]], [11, lbc.size[1]], [16, lbc.size[2]]]
-          : (lbc.varyZoom === false && lbc.sizeUniform > 0) ? [[11, lbc.sizeUniform]]
-          : [[6, 10], [11, 13], [16, 17]]);
-      }
+      fillMapLabelControls(node, sortedKeys);
       // the Label-field dropdown gets the same columns ("label" = the feature's own Label field)
       fillLabelFieldSelect(node, sortedKeys);
     } catch (e) {}
+  }
+  // map-labels controls: checkbox + column pick (same columns, "label" first) — shared by the
+  // geojson path AND tileset LINE layers (labels on tileset lines, 7/16)
+  function fillMapLabelControls(node, sortedKeys) {
+    var mlRow = document.getElementById('elp-maplabels-row'), mlOn = document.getElementById('elp-maplabels-on'),
+        mlSel = document.getElementById('elp-maplabels-field'), mlFieldRow = document.getElementById('elp-maplabels-field-row');
+    if (!(mlRow && mlOn && mlSel)) return;
+    mlRow.style.display = 'block';
+    var mlHelp = document.getElementById('elp-lbl-help'); if (mlHelp) mlHelp.style.display = 'block';
+    mlSel.innerHTML = '<option value="label">label (the feature\'s own Label)</option>';
+    sortedKeys.forEach(function (k) { var o4 = document.createElement('option'); o4.value = k; o4.textContent = k; mlSel.appendChild(o4); });
+    var lb = node.labels;
+    mlOn.checked = !!(lb && lb.field);
+    if (lb && lb.field) { if (sortedKeys.indexOf(lb.field) < 0 && lb.field !== 'label') { var o5 = document.createElement('option'); o5.value = lb.field; o5.textContent = lb.field; mlSel.appendChild(o5); } mlSel.value = lb.field; }
+    else mlSel.value = 'label';
+    if (mlFieldRow) mlFieldRow.style.display = mlOn.checked ? 'block' : 'none';
+    // styling controls reflect the saved config (or the defaults)
+    var lbc = lb || {};
+    function setv(id6, val) { var el6 = document.getElementById(id6); if (el6) el6.value = val; }
+    setv('elp-lbl-color', lbc.color || '#000000');
+    setv('elp-lbl-halo', lbc.halo || '#ffffff');
+    setv('elp-lbl-halow', lbc.haloWidth != null ? lbc.haloWidth : 2);
+    var hv = document.getElementById('elp-lbl-halow-val'); if (hv) hv.textContent = lbc.haloWidth != null ? lbc.haloWidth : 2;
+    var bd = document.getElementById('elp-lbl-bold'); if (bd) bd.checked = lbc.bold !== false;
+    setv('elp-lbl-density', 60 - (lbc.density != null ? lbc.density : 10));
+    // size is ALWAYS the zoom ramp now (uniform mode + its checkbox removed 7/15): saved
+    // sizeStops → legacy size triple (fixed z6/11/16) → a legacy uniform size as a flat one-stop → defaults
+    renderLblStops((lbc.sizeStops && lbc.sizeStops.length) ? lbc.sizeStops
+      : (lbc.size && lbc.size.length === 3) ? [[6, lbc.size[0]], [11, lbc.size[1]], [16, lbc.size[2]]]
+      : (lbc.varyZoom === false && lbc.sizeUniform > 0) ? [[11, lbc.sizeUniform]]
+      : [[6, 10], [11, 13], [16, 17]]);
   }
   async function onColorBy(prop) {
     if (!activeLayerId) return;
@@ -4390,6 +4426,111 @@
       setStatus('Saved');
     } catch (e) { console.warn('map labels failed', e); setStatus('Save failed'); }
   }
+  // ── Timeline dates (7/15): column → Start/End mapping. See the elp-dates-sec template block. ──
+  function parseLooseDate(v, isEnd) {   // "1877" → 1877-01-01 / 1877-12-31; ISO passes; anything Date can read → ISO; junk/0 → null
+    if (v == null) return null;
+    v = String(v).trim();
+    if (!v || v === '0' || /^(none|null|n\/a)$/i.test(v)) return null;
+    if (/^\d{3,4}$/.test(v)) { var y = ('0000' + v).slice(-4); return isEnd ? y + '-12-31' : y + '-01-01'; }
+    if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+    var d = new Date(v);
+    return isNaN(d) ? null : d.toISOString().slice(0, 10);
+  }
+  var _dateSecGen = 0;
+  async function fillDateSection(node) {   // populate the column picks from a 60-row sample; reveal only for layers with DB rows
+    var sec = document.getElementById('elp-dates-sec'); if (!sec) return;
+    sec.style.display = 'none';
+    var gen = ++_dateSecGen;
+    var lid = node && slugToLayerDbId[node.id];
+    if (!lid && idsReady) { try { await idsReady; } catch (e) {} lid = node && slugToLayerDbId[node.id]; }   // early click during a heavy boot — ids may still be resolving
+    if (!lid || gen !== _dateSecGen) return;
+    try {
+      var r = await db.from('features').select('custom_fields').eq('layer_id', lid).limit(60);
+      if (gen !== _dateSecGen || r.error || !r.data || !r.data.length) return;   // stale pick / no rows → stay hidden
+      var keys = [];
+      r.data.forEach(function (row) { var cf = row.custom_fields; if (cf && typeof cf === 'object') Object.keys(cf).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); }); });
+      keys = orderAttrKeys(keys, 40);
+      ['elp-date-start-col', 'elp-date-end-col'].forEach(function (id2) {
+        var sel = document.getElementById(id2); if (!sel) return;
+        sel.innerHTML = '<option value="">— don\'t change —</option><option value="__fixed">⏱ One fixed date for all…</option>' +
+          keys.map(function (k) { return '<option value="c:' + attrEsc(k) + '">' + attrEsc(k) + '</option>'; }).join('');
+      });
+      ['elp-date-start-fixed', 'elp-date-end-fixed'].forEach(function (id2) { var el2 = document.getElementById(id2); if (el2) el2.style.display = 'none'; });
+      sec.style.display = '';
+    } catch (e) {}
+  }
+  async function onApplyDates() {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    function pick(colId, fixId) {
+      var sel = document.getElementById(colId), v = sel ? sel.value : '';
+      if (v === '__fixed') { var f = document.getElementById(fixId); return (f && f.value) ? { fixed: f.value } : null; }
+      if (v && v.slice(0, 2) === 'c:') return { col: v.slice(2) };
+      return null;
+    }
+    var start = pick('elp-date-start-col', 'elp-date-start-fixed'), end = pick('elp-date-end-col', 'elp-date-end-fixed');
+    if (!start && !end) { setStatus('Pick a column (or fixed date) first'); return; }
+    var btn = document.getElementById('elp-dates-apply'); if (btn) btn.disabled = true;
+    try {
+      // pull every row's ids + current dates + fields (paged), with visible progress
+      var rows = [], from9 = 0;
+      for (;;) {
+        msProgress('Reading features… ' + nfmt(rows.length));
+        var r9 = await db.from('features').select('feature_id, start_date, end_date, custom_fields').eq('layer_id', lid).order('feature_id').range(from9, from9 + 999);
+        if (r9.error) throw new Error(r9.error.message);
+        Array.prototype.push.apply(rows, r9.data || []);
+        if (!r9.data || r9.data.length < 1000) break;
+        from9 += 1000;
+      }
+      if (!rows.length) { msProgress(''); setStatus('No features'); return; }
+      // "there is data in the column — replace?" (kept simple: one confirm covering the fields being written)
+      var clobber = [];
+      if (start) { var ns = rows.filter(function (r) { return r.start_date != null; }).length; if (ns) clobber.push(nfmt(ns) + ' features already have a Start date'); }
+      if (end) { var ne = rows.filter(function (r) { return r.end_date != null; }).length; if (ne) clobber.push(nfmt(ne) + ' features already have an End date'); }
+      if (clobber.length && !window.confirm('There is data in the date column' + (clobber.length > 1 ? 's' : '') + ' (' + clobber.join('; ') + '). Are you sure you want to replace it?')) { msProgress(''); setStatus('Cancelled'); return; }
+      // compute, then GROUP rows by their computed (start,end) pair — `features` is a VIEW, so
+      // upsert/ON CONFLICT can't work through it ("no unique or exclusion constraint", 7/15).
+      // Year data repeats heavily (~dozens of distinct values for 78k rows), so grouped UPDATEs
+      // with .in(feature_id, …) need only a handful of requests.
+      var upserts = [], parsed = 0, blank = 0, groups9 = {};
+      rows.forEach(function (r) {
+        var sv, ev, touched = false;
+        if (start) { sv = start.fixed != null ? start.fixed : parseLooseDate(r.custom_fields && r.custom_fields[start.col], false); touched = true; if (sv) parsed++; else blank++; }
+        if (end) { ev = end.fixed != null ? end.fixed : parseLooseDate(r.custom_fields && r.custom_fields[end.col], true); touched = true; if (ev) parsed++; else blank++; }
+        if (!touched) return;
+        var key9 = (start ? String(sv) : '·') + '|' + (end ? String(ev) : '·');
+        (groups9[key9] = groups9[key9] || { s: sv, e: ev, ids: [] }).ids.push(r.feature_id);
+        upserts.push(1);
+      });
+      var doneN = 0, keys9 = Object.keys(groups9);
+      for (var g9 = 0; g9 < keys9.length; g9++) {
+        var grp = groups9[keys9[g9]];
+        var patch9 = {};
+        if (start) patch9.start_date = grp.s != null ? grp.s : null;
+        if (end) patch9.end_date = grp.e != null ? grp.e : null;
+        for (var c9 = 0; c9 < grp.ids.length; c9 += 400) {
+          var w9 = await db.from('features').update(patch9).in('feature_id', grp.ids.slice(c9, c9 + 400));
+          if (w9.error) throw new Error(w9.error.message);
+          doneN += Math.min(400, grp.ids.length - c9);
+          msProgress('Setting dates… ' + nfmt(doneN) + '/' + nfmt(upserts.length) + ' (' + nfmt(keys9.length) + ' distinct values)');
+        }
+      }
+      // rebuild `upserts` shape for the sync-below (feature_id → values)
+      upserts = [];
+      keys9.forEach(function (k9) { var grp2 = groups9[k9]; grp2.ids.forEach(function (fid2) { var u2 = { feature_id: fid2 }; if (start) u2.start_date = grp2.s != null ? grp2.s : null; if (end) u2.end_date = grp2.e != null ? grp2.e : null; upserts.push(u2); }); });
+      // keep open copies in sync: the attribute table (if on this layer) + draw-side meta
+      if (_attrSlug === activeLayerId && _attrRows.length) {
+        var byId9 = {}; upserts.forEach(function (u) { byId9[String(u.feature_id)] = u; });
+        _attrRows.forEach(function (r) { var u = byId9[String(r.feature_id)]; if (!u) return; if ('start_date' in u) r.start_date = u.start_date; if ('end_date' in u) r.end_date = u.end_date; });
+        try { renderAttrBody(); } catch (e2) {}
+      }
+      msProgress('Dates set on ' + nfmt(upserts.length) + ' features' + (blank ? ' (' + nfmt(blank) + ' had no readable date — left empty)' : '') + '.');
+      setStatus('Dates applied');
+      if (node.source_type === 'vector-tiles-url' || (node.source && node.source.type !== 'geojson')) setTimeout(function () { msProgress('Tiled layer: hit Publish to bake the new dates into its tiles.'); }, 2500);
+    } catch (e) { console.warn('apply dates failed', e); msProgress(''); setStatus('Dates failed: ' + e.message); }
+    finally { if (btn) btn.disabled = false; }
+  }
   // ── Opacity / Thickness by data column: the column's numeric value drives that feature's opacity or
   //    width/radius directly (like hex color columns for colour-by). Guarded expressions — to-number(null)
   //    is 0 and would zero every feature without a value.
@@ -4540,6 +4681,9 @@
       '.ms-btn-danger{width:100%;padding:6px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;font-size:12px;}' +   // destructive button
       '.ms-note{font-size:10px;color:#888888;margin-top:3px;}' +                           // gray hint text
       '.ms-note-accent{font-size:10px;color:#7a5cc2;margin-top:2px;}' +                     // purple hint text
+      // layer names STOP at the row buttons — no wrap, no running under the icons (full name = hover tooltip)
+      '#layers-panel-content .layer-list-row{white-space:nowrap;}' +
+      '#layers-panel-content .layer-list-row label{display:inline-block;max-width:calc(100% - 92px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;}' +
       '#elp-close:hover{background:#e9e5f5;border-color:#c9c2e2;color:#3d3857;}';           // sticky-header Close button hover';
     document.head.appendChild(s);
   }
@@ -4560,7 +4704,8 @@
       '</div>' +
       '<div id="elp-body" style="padding:12px;">' +
       // name field at the very top — the same rename as double-clicking the row (works for layers, groups and sections)
-      '<input id="elp-name" type="text" placeholder="Name" title="Rename this item" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:6px 8px;border:1px solid #bbbbbb;border-radius:4px;font-size:15px;font-weight:600;" />' +
+      '<input id="elp-name" type="text" placeholder="Name" title="Rename this item" style="width:100%;box-sizing:border-box;margin-bottom:4px;padding:6px 8px;border:1px solid #bbbbbb;border-radius:4px;font-size:15px;font-weight:600;" />' +
+      '<div id="elp-kind" class="ms-note-accent" style="display:none;margin:0 0 8px;font-size:11px;"></div>' +   // what IS this layer — tileset vs drawn/imported
       // ── on-by-default + delete live AT THE TOP (below the title), no section heading — 7/8 layout pass ──
       '<div id="elp-defaults-row">' +
         '<label id="elp-default-vis-label" class="ms-check" style="margin-bottom:3px;"><input id="elp-default-vis" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />On by default</label>' +
@@ -4606,6 +4751,20 @@
         '<div style="display:flex;justify-content:space-between;font-size:9px;color:#888888;"><span>fewer</span><span>more</span></div>' +
         '<div class="ms-note">Polygons label at their visual center; lines along the path. Density = breathing room per label — fewer means only labels with room draw.</div>' +
       '</div>' +
+      '</div>' +
+      // ── TIMELINE DATES (7/15): map a data column (or one fixed date) into every feature's
+      //    Start/End — the fields the bottom timeline slider filters on. Shown when the layer has
+      //    DB rows (drawn/imported AND converted-tileset layers); columns come from a row sample.
+      '<div id="elp-dates-sec" class="' + SECTOP + '" style="display:none;">' +
+      SEC('Timeline dates') +
+      '<label class="ms-lbl">Start date from</label>' +
+      '<select id="elp-date-start-col" class="ms-in"><option value="">— don\'t change —</option><option value="__fixed">⏱ One fixed date for all…</option></select>' +
+      '<input id="elp-date-start-fixed" type="date" class="ms-in" style="display:none;margin-top:3px;" />' +
+      '<label class="ms-lbl" style="margin-top:6px;">End date from</label>' +
+      '<select id="elp-date-end-col" class="ms-in"><option value="">— don\'t change —</option><option value="__fixed">⏱ One fixed date for all…</option></select>' +
+      '<input id="elp-date-end-fixed" type="date" class="ms-in" style="display:none;margin-top:3px;" />' +
+      '<button id="elp-dates-apply" class="ms-btn" style="margin-top:8px;">Apply to all features</button>' +
+      '<div class="ms-note">Fills each feature\'s <b>Start/End</b> (what the timeline slider filters on) from a data column — or one fixed date for every feature. Years like "1877" become 1877-01-01 for starts and 1877-12-31 for ends.</div>' +
       '</div>' +
       // ── POPUPS & INFO ──
       '<div id="elp-interact-row" class="' + SECTOP + '">' +
@@ -4717,6 +4876,11 @@
     ['elp-lbl-color', 'elp-lbl-halo', 'elp-lbl-bold', 'elp-lbl-density'].forEach(function (id2) { document.getElementById(id2).addEventListener('change', onMapLabelsChange); });
     document.getElementById('elp-lbl-zoomsizes').addEventListener('change', onMapLabelsChange);   // delegated: stop rows are dynamic (renderLblStops)
     document.getElementById('elp-lbl-help').addEventListener('click', function (e) { e.preventDefault(); openLabelsHelp(); });
+    // timeline dates: "Fixed date…" picks reveal their date input; Apply runs the bulk mapping
+    [['elp-date-start-col', 'elp-date-start-fixed'], ['elp-date-end-col', 'elp-date-end-fixed']].forEach(function (pr9) {
+      document.getElementById(pr9[0]).addEventListener('change', function () { var f9 = document.getElementById(pr9[1]); if (f9) f9.style.display = this.value === '__fixed' ? '' : 'none'; });
+    });
+    document.getElementById('elp-dates-apply').addEventListener('click', onApplyDates);
     document.getElementById('elp-lbl-halow').addEventListener('input', function () { var v = document.getElementById('elp-lbl-halow-val'); if (v) v.textContent = this.value; });
     document.getElementById('elp-lbl-halow').addEventListener('change', onMapLabelsChange);
     document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
@@ -4865,12 +5029,24 @@
     var isStyleableLayer = isGeojson || (isTilesetNode(node) && ['fill', 'line', 'circle'].indexOf(node.type) > -1);
     document.getElementById('elp-style-section').style.display = isStyleableLayer ? '' : 'none';   // typeless/basemap tilesets: hide style, keep attr + source + zoom
     document.getElementById('elp-interact-row').style.display = isStyleableLayer ? '' : 'none';
-    document.getElementById('elp-labels-sec').style.display = isGeojson ? '' : 'none';   // map labels are drawn/imported-only (labels.js); its own section now, so hide it explicitly for tilesets
+    var labelsCapable = isGeojson || (isTilesetNode(node) && node.type === 'line');   // tileset LINE labels ride the vector source (labels.js 7/16); points/polygons still need geojson anchors
+    document.getElementById('elp-labels-sec').style.display = labelsCapable ? '' : 'none';
+    fillDateSection(node);   // Timeline dates: async sample reveals the section for any layer with DB rows (incl. converted tilesets)
     document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
     var op = paintOpacity(node.paint); if (op == null) op = (node.type === 'fill') ? 0.35 : 1;
     var outline = paintOutline(node.paint) || (node.type === 'fill' ? color : '#000000');
     document.getElementById('elp-title').textContent = node.label || 'Layer style';
+    // what IS this layer? (user 7/15: the panel must say tileset vs drawn/GIS)
+    var kindEl = document.getElementById('elp-kind');
+    if (kindEl) {
+      var kt = '';
+      var tiles0 = (node.source && node.source.tiles && node.source.tiles[0]) || node.source_url || '';
+      if (node.source_type === 'geojson-supabase') kt = '✏️ Drawn / imported layer — editable features';
+      else if (node.pmtiles || tiles0.indexOf('/pmt/') > -1 || /^pmt\//.test(tiles0)) kt = '🧩 Tileset — auto-generated from your data (re-bakes on Publish)';
+      else if (isTilesetNode(node)) kt = '🧩 Vector tileset — external source';
+      kindEl.textContent = kt; kindEl.style.display = kt ? 'block' : 'none';
+    }
     document.getElementById('elp-color').value = color;
     populateColorBy(node);   // "Color by data column" — drawn layers only (hidden otherwise)
     populateDefaults(node);  // "On by default" (expanded-by-default is container-only)
@@ -5074,6 +5250,8 @@
   }
   var _attrCustom = {};   // fid → its custom_fields object, so a single-cell edit rewrites the whole jsonb
   var _attrRows = [], _attrCols = [], _attrSort = null, _attrSel = [];   // loaded rows + column model + {idx,dir} + selected feature_ids (highlighted on the map)
+  var _attrLoadGen = 0;        // bump = abort any in-flight attribute load (close/reopen mid-load of a huge layer)
+  var ATTR_RENDER_CAP = 1500;  // rows RENDERED at once — 78k <tr> killed the page (7/15); all rows stay loaded for sort/search/delete
   function orderAttrKeys(keys, cap) {   // msid FIRST, ms_* style columns LAST, everything else between (cap trims the middle, never msid/ms_*)
     var style = ['ms_color', 'ms_linecolor', 'ms_opacity', 'ms_thickness', 'ms_labelsize'].filter(function (k) { return keys.indexOf(k) > -1; });
     var msid = keys.indexOf('msid') > -1 ? ['msid'] : [];
@@ -5101,17 +5279,46 @@
     thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">Loading…</td></tr>'; foot.textContent = '';
     modal.style.display = 'block';
     _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = false; clearAttrHighlight();
-    var rows = [], total = 0, loadErr = null;   // fetch ALL features (paginated) — no time filter, no 1000 cap
+    // STREAMED load (7/15, after 78k rows hung the page): the FIRST page renders immediately — the
+    // table is usable (sort/edit/drag/close) while the rest loads behind it. Closing the modal bumps
+    // _attrLoadGen, which quietly aborts this loop.
+    var gen = ++_attrLoadGen;
+    var rows = [], total = 0, loadErr = null, streamedFirst = false;
+    var buildTable = function (final) {   // columns + head + body from the rows loaded SO FAR (idempotent)
+      var keysS = [];
+      rows.forEach(function (r) { var cf = r.custom_fields; if (cf && typeof cf === 'object') { _attrCustom[r.feature_id] = cf; Object.keys(cf).forEach(function (k) { if (keysS.indexOf(k) < 0) keysS.push(k); }); } });
+      keysS = orderAttrKeys(keysS, 30);
+      _attrRows = rows;
+      _attrSlug = slug; _attrById = {}; rows.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
+      _attrCols = [
+        { title: '★', kind: 'sel', type: '', w: 30, tip: 'Selected features — click the star to select/deselect; sort this column to bring selected to the top' },
+        { title: 'Label', kind: 'std', field: 'label', type: 'text', w: keysS.length ? 180 : 240 },
+        { title: 'Start', kind: 'date', field: 'start_date', type: 'date', w: 130 },
+        { title: 'End', kind: 'date', field: 'end_date', type: 'date', w: 130 },
+        { title: 'Notes', kind: 'std', field: 'description', type: 'text', w: 220 },
+        { title: 'Page', kind: 'std', field: 'content_id', type: 'text', w: 90 }
+      ].concat(keysS.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 130 }; }));
+      applyAttrView(nodeByLayerDbId(lid) || findNodeById(layers, slug));
+      buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
+      var fEl2 = document.getElementById('editor-attr-foot');
+      if (fEl2) fEl2.textContent = final
+        ? (nfmt(total) + ' feature' + (total === 1 ? '' : 's') + (keysS.length ? '  ·  ' + keysS.length + ' attribute' + (keysS.length === 1 ? '' : 's') : '') + '  ·  click a row to highlight it on the map · Ctrl-click to add')
+        : ('Loading ' + nfmt(rows.length) + (total ? ' / ' + nfmt(total) : '') + '… — the table already works');
+      return keysS;
+    };
     try {
       for (var afrom = 0; afrom < 1000000; afrom += 1000) {
         var ares = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, geom, content_id', afrom === 0 ? { count: 'exact' } : {}).eq('layer_id', lid).order('feature_id').range(afrom, afrom + 999);
+        if (gen !== _attrLoadGen) return;   // modal closed / another layer opened — stop this load
         if (ares.error) { loadErr = ares.error; break; }
         if (afrom === 0 && ares.count != null) total = ares.count;
-        var abatch = ares.data || []; rows = rows.concat(abatch);
-        var fEl = document.getElementById('editor-attr-foot'); if (fEl) fEl.textContent = 'Loading ' + rows.length + (total ? ' / ' + total : '') + '…';
+        var abatch = ares.data || []; Array.prototype.push.apply(rows, abatch);
+        if (!streamedFirst && rows.length) { streamedFirst = true; if (rows.length < (total || Infinity)) buildTable(false); }
+        else { var fEl = document.getElementById('editor-attr-foot'); if (fEl && rows.length < (total || 0)) fEl.textContent = 'Loading ' + nfmt(rows.length) + (total ? ' / ' + nfmt(total) : '') + '… — the table already works'; }
         if (abatch.length < 1000) break;
       }
     } catch (e) { loadErr = e; }
+    if (gen !== _attrLoadGen) return;
     if (loadErr) { tbody.innerHTML = '<tr><td style="padding:14px;color:#b4453a;">Failed to load features.</td></tr>'; return; }
     if (!total) total = rows.length;
     if (!rows.length && isTilesetNode(node)) {   // pure tileset (no rows in `features`): read its attributes from the loaded vector tiles
@@ -5137,24 +5344,8 @@
       return;
     }
     if (!rows.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">No features in this layer yet.</td></tr>'; foot.textContent = '0 features'; return; }
-    // dynamic columns = the union of custom_fields keys across the loaded rows (imported attributes), capped.
-    // Ordered: msid FIRST, the ms_* style columns LAST, imported attributes in between.
-    var keys = [];
-    rows.forEach(function (r) { var cf = r.custom_fields; if (cf && typeof cf === 'object') { _attrCustom[r.feature_id] = cf; Object.keys(cf).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); }); } });
-    keys = orderAttrKeys(keys, 30);
-    _attrRows = rows;
-    _attrSlug = slug; _attrById = {}; rows.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
-    _attrCols = [
-      { title: '\u2605', kind: 'sel', type: '', w: 30, tip: 'Selected features \u2014 click the star to select/deselect; sort this column to bring selected to the top' },
-      { title: 'Label', kind: 'std', field: 'label', type: 'text', w: keys.length ? 180 : 240 },
-      { title: 'Start', kind: 'date', field: 'start_date', type: 'date', w: 130 },
-      { title: 'End', kind: 'date', field: 'end_date', type: 'date', w: 130 },
-      { title: 'Notes', kind: 'std', field: 'description', type: 'text', w: 220 },
-      { title: 'Page', kind: 'std', field: 'content_id', type: 'text', w: 90 }
-    ].concat(keys.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 130 }; }));
-    applyAttrView(nodeByLayerDbId(lid) || findNodeById(layers, slug));
-    buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
-    foot.textContent = total + ' feature' + (total === 1 ? '' : 's') + (keys.length ? '  ·  ' + keys.length + ' attribute' + (keys.length === 1 ? '' : 's') : '') + (total > rows.length ? '  ·  showing first ' + rows.length : '') + '  ·  click a row to highlight it on the map · Ctrl-click to add';
+    if (!total) total = rows.length;
+    buildTable(true);   // final build \u2014 columns from ALL rows (later pages can add custom_fields keys)
   }
   function buildAttrHead() {
     var thead = document.getElementById('editor-attr-thead');
@@ -5282,7 +5473,9 @@
   }
   function renderAttrBody() {
     var tbody = document.getElementById('editor-attr-tbody');
-    tbody.innerHTML = _attrRows.map(function (r) {
+    // render at most ATTR_RENDER_CAP rows — sorting re-slices, so "show me X first" still works on ALL rows
+    var _capped = _attrRows.length > ATTR_RENDER_CAP;
+    tbody.innerHTML = (_capped ? _attrRows.slice(0, ATTR_RENDER_CAP) : _attrRows).map(function (r) {
       var sel = _attrSel.indexOf(String(r.feature_id)) > -1 ? ' class="attr-row-sel"' : '';
       return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + sel + '>' + _attrCols.map(function (c) {
         var stick = c._left != null ? ' class="attr-pin-cell" style="left:' + c._left + 'px;"' : '';
@@ -5293,6 +5486,7 @@
         return '<td' + stick + '><input ' + bind + ' type="' + c.type + '" value="' + v + '" /></td>';
       }).join('') + '</tr>';
     }).join('');
+    if (_capped) tbody.insertAdjacentHTML('beforeend', '<tr><td colspan="' + _attrCols.length + '" style="padding:10px 14px;color:#7a5cc2;background:#f7f4fd;font-size:12px;">Showing the first ' + nfmt(ATTR_RENDER_CAP) + ' of ' + nfmt(_attrRows.length) + ' loaded rows — sorting a column re-picks which ' + nfmt(ATTR_RENDER_CAP) + ' you see.</td></tr>');
     if (!_attrDelegated) { _attrDelegated = true; wireAttrDelegation(tbody); }   // delegate once (scales to all features without per-row listeners)
   }
   function wireAttrDelegation(tbody) {
@@ -5484,7 +5678,7 @@
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }
-  function hideAttrModal() { var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); clearAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn(); }
+  function hideAttrModal() { _attrLoadGen++; var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); clearAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn(); }   // gen bump ABORTS an in-flight load — Close always works, even mid-load of a huge layer
   async function saveAttrCustomCell(fid, key, value) {
     var cf = _attrCustom[fid];
     if (!cf) { cf = _attrCustom[fid] = {}; var row0 = findAttrRow(fid); if (row0) row0.custom_fields = cf; }   // link a fresh object back to the row so re-sort shows the edit

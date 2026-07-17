@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parallel development — the two-window system</title>
+<style>
+  :root { --bg:#faf9fd; --card:#fff; --ink:#2b2740; --dim:#6f6a87; --accent:#6d5bc7; --a2:#e8622c; --line:#e5e1f0; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--ink); font:16px/1.65 'Segoe UI',system-ui,sans-serif; padding:44px 24px 80px; }
+  .wrap { max-width:860px; margin:0 auto; }
+  h1 { font-size:30px; letter-spacing:.3px; margin-bottom:6px; }
+  h1 span { color:var(--accent); }
+  .lede { color:var(--dim); margin-bottom:30px; font-size:17px; }
+  h2 { font-size:20px; margin:36px 0 12px; color:var(--accent); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px 24px; margin-bottom:14px; box-shadow:0 1px 4px rgba(80,70,130,.06); }
+  table { border-collapse:collapse; width:100%; }
+  th,td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-size:13px; text-transform:uppercase; letter-spacing:.8px; }
+  td b.a { color:var(--accent); } td b.b { color:var(--a2); }
+  code { background:#f1eefa; border-radius:5px; padding:2px 7px; font-size:14px; color:#4c4374; }
+  pre { background:#241f38; color:#e8e5f2; padding:14px 18px; border-radius:10px; overflow-x:auto; font-size:14.5px; margin:10px 0; }
+  ol li, ul li { margin:8px 0; }
+  .rule { display:flex; gap:14px; align-items:flex-start; padding:12px 0; border-bottom:1px solid var(--line); }
+  .rule:last-child { border-bottom:0; }
+  .rule .n { flex:0 0 34px; height:34px; border-radius:50%; background:var(--accent); color:#fff; font-weight:700; display:flex; align-items:center; justify-content:center; }
+  .rule b { display:block; }
+  .rule small { color:var(--dim); font-size:14.5px; }
+  .warn { background:#fff6ee; border:1px solid #f3d9c2; border-radius:10px; padding:12px 16px; color:#8a5a2e; margin-top:10px; }
+  .flow { display:flex; gap:10px; flex-wrap:wrap; margin:8px 0; }
+  .step { background:#f1eefa; border-radius:99px; padding:7px 16px; font-size:14.5px; color:#4c4374; font-weight:600; }
+  .arrow { align-self:center; color:var(--dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Parallel development — <span>the two-window system</span></h1>
+  <p class="lede">Two VSCode windows, two folders, one repository. While Claude runs in one window, you work in the other — and git does the recombining, not hand-copying.</p>
+  <div class="warn" style="margin-bottom:24px"><b>Design doc — nothing is set up yet.</b> Activate whenever you like: <code>git worktree add ../mapstructor-B -b dev-B</code> (then a <code>serve-8001.bat</code> in the new folder), or just ask Claude: <i>“set up parallel dev”</i>. Undo: <code>git worktree remove ../mapstructor-B</code>.</div>
+
+  <h2>The two folders</h2>
+  <div class="card">
+    <table>
+      <tr><th></th><th>Window A — main</th><th>Window B — side</th></tr>
+      <tr><td>Folder</td><td><b class="a">c:\repos\mapstructor.github.io</b></td><td><b class="b">c:\repos\mapstructor-B</b></td></tr>
+      <tr><td>Branch</td><td><code>master</code></td><td><code>dev-B</code></td></tr>
+      <tr><td>Server</td><td><code>serve-8000.bat</code> → <b class="a">:8000</b></td><td><code>serve-8001.bat</code> → <b class="b">:8001</b></td></tr>
+      <tr><td>Role</td><td>The product; day-to-day work</td><td>One feature at a time; experiments</td></tr>
+    </table>
+    <p style="margin-top:12px;color:var(--dim)">Both folders are the <b>same git repository</b> (a “worktree”) — one shared history, two checkouts. GitHub Desktop sees one repo; the folder you're in decides the branch. <b>You never switch branches — you switch folders.</b></p>
+  </div>
+
+  <h2>The rules of the road</h2>
+  <div class="card">
+    <div class="rule"><div class="n">1</div><div><b>One window = one folder = one port.</b><small>Never open the same folder in both windows; never share a port.</small></div></div>
+    <div class="rule"><div class="n">2</div><div><b>Commit often, where the work happened.</b><small>Prefix Window B commits with <code>B:</code> so history reads cleanly.</small></div></div>
+    <div class="rule"><div class="n">3</div><div><b>The database is shared.</b><small>There is ONE Supabase. Schema changes and feature edits from either window hit both instantly. Destructive experiments → test-prefixed tables/maps.</small></div></div>
+    <div class="rule"><div class="n">4</div><div><b>Gitignored files don't travel.</b><small>Secrets and tokens never copy into B automatically — copy by hand if B needs one.</small></div></div>
+    <div class="rule"><div class="n">5</div><div><b>B starts at the last commit.</b><small>Uncommitted work in A doesn't exist in B. Commit in A, then in B run <code>git merge master</code> to catch up.</small></div></div>
+  </div>
+
+  <h2>The daily loop</h2>
+  <div class="card">
+    <div class="flow">
+      <span class="step">Open A + B in two windows</span><span class="arrow">→</span>
+      <span class="step">Start each serve bat once</span><span class="arrow">→</span>
+      <span class="step">Task to A's Claude</span><span class="arrow">→</span>
+      <span class="step">Switch to B while it runs</span><span class="arrow">→</span>
+      <span class="step">Test :8000 / :8001</span><span class="arrow">→</span>
+      <span class="step">Commit each side in its window</span>
+    </div>
+    <p style="color:var(--dim)">The two ports mean separate logins, storage and service workers — the windows can't contaminate each other's browser state.</p>
+  </div>
+
+  <h2>Bringing B's work into the product — “merge B”</h2>
+  <div class="card">
+    <p>In Window A's terminal (or ask Claude: <i>“merge B”</i>):</p>
+    <pre>git merge dev-B</pre>
+    <ul>
+      <li><b>No overlap</b> → done instantly. A now contains B's feature.</li>
+      <li><b>Overlapping edits</b> (same lines of the same file, e.g. editing.js) → git pauses and marks each spot with <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code>/<code>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code>. VSCode shows <i>Accept Current / Accept Incoming</i> buttons — pick a winner per spot, save, then <code>git add . &amp;&amp; git commit</code>.</li>
+    </ul>
+    <div class="warn">Keep future conflicts small: every day or two, in Window B run <code>git merge master</code> so B stays close to the product.</div>
+  </div>
+
+  <h2>Disposal / renewal</h2>
+  <div class="card">
+    <ul>
+      <li>Retire B (from A): <code>git worktree remove ../mapstructor-B</code>, then <code>git branch -d dev-B</code> once merged.</li>
+      <li>Fresh B for the next feature: <code>git worktree add ../mapstructor-B -b dev-B2</code></li>
+      <li>B is disposable — merged history is permanent either way.</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>
