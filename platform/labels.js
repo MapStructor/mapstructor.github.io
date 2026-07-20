@@ -169,6 +169,22 @@
       base.layout['text-offset'] = [0, 0.7];
     }
     if (layer.type === 'line') {
+      // GROUPED tileset lines ("treat as one", 7/17): a long company name never fits along one short
+      // FRAGMENT, so per-fragment line placement starves (~1 label/screen on the railways). Instead:
+      // ONE anchor per group value, computed from what's actually RENDERED (timeline + zoom correct),
+      // at the midpoint of the group's longest visible piece, rotated to lie along it. Refreshes on
+      // map idle when the view/filter changes — labels behave as if the segments were one line.
+      if (srcType === 'vector' && layer.groupBy && map) {
+        var gsrcId = layer.id + '-glabels-' + side;
+        base.source = gsrcId;
+        base.layout['text-field'] = ['get', 't'];
+        base.layout['text-rotate'] = ['get', 'r'];
+        base.layout['text-rotation-alignment'] = 'map';
+        base.layout['text-padding'] = cfg.density != null ? +cfg.density : 2;
+        base.layout['text-size'] = sizeFor(function (v) { return v; });
+        msWireGroupLabelAnchors(map, layer, side, gsrcId);
+        return { sourceId: gsrcId, source: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }, layer: base };
+      }
       base.source = layer.id + '-' + side;                    // shared source; text follows the line
       if (srcType === 'vector') base['source-layer'] = layer['source-layer'] || 'features';   // tileset lines
       base.layout['symbol-placement'] = 'line';
@@ -198,6 +214,95 @@
       source: { type: 'geojson', data: msBuildLabelAnchors(layer.source.data && layer.source.data.features, field) },
       layer: base
     };
+  }
+
+  // Group-key normalizer — TRIM ONLY (user 7/18: variant folding like "&"↔"and" removed;
+  // may return later as an opt-in — it can wrongly merge genuinely distinct values).
+  // Blank/whitespace still never groups.
+  function msGroupNorm(v) {
+    return String(v == null ? '' : v).trim();
+  }
+  window.msGroupNorm = msGroupNorm;
+
+  // one label anchor per group FAMILY (normalized), from the RENDERED (date-filtered, visible)
+  // fragments — recomputed when the view or the layer's filter changes; wired once per map+layer+side
+  function msWireGroupLabelAnchors(map, layer, side, gsrcId) {
+    var reg = map._msGAnchors || (map._msGAnchors = {});
+    var wkey = layer.id + '|' + side;
+    if (reg[wkey]) return; reg[wkey] = true;
+    var lineId = layer.id + '-' + side, key = layer.groupBy, lastSig = null, t = null;
+    function lineLen(c) {
+      var L = 0;
+      for (var i = 1; i < c.length; i++) {
+        var dx = (c[i][0] - c[i - 1][0]) * Math.cos(c[i][1] * Math.PI / 180), dy = c[i][1] - c[i - 1][1];
+        L += Math.sqrt(dx * dx + dy * dy);
+      }
+      return L;
+    }
+    function recompute() {
+      try {
+        if (!map.getLayer(lineId) || !map.getSource(gsrcId)) return;
+        var fs = map.queryRenderedFeatures({ layers: [lineId] }) || [];
+        var best = {};   // normalized family → its longest visible piece (+ the raw name to display)
+        for (var i = 0; i < fs.length; i++) {
+          var p = fs[i].properties || {};
+          var v = (key === 'label') ? p.label : p[key];
+          var nv = msGroupNorm(v);
+          if (!nv) continue;
+          var g = fs[i].geometry; if (!g) continue;
+          var lines = g.type === 'LineString' ? [g.coordinates] : (g.type === 'MultiLineString' ? g.coordinates : []);
+          for (var j = 0; j < lines.length; j++) {
+            if (lines[j].length < 2) continue;
+            var L = lineLen(lines[j]);
+            if (!best[nv] || L > best[nv].len) best[nv] = { len: L, coords: lines[j], raw: String(v).trim() };
+          }
+        }
+        var out = [];
+        Object.keys(best).forEach(function (v0) {
+          var v = best[v0].raw;
+          var c = best[v0].coords;
+          var m2 = Math.floor(c.length / 2);
+          var a = c[Math.max(0, m2 - 1)], b = c[Math.min(c.length - 1, m2 + 1)], mid = c[m2];
+          var dx = (b[0] - a[0]) * Math.cos(mid[1] * Math.PI / 180), dy = b[1] - a[1];
+          var rot = -(Math.atan2(dy, dx) * 180 / Math.PI);   // lie along the piece; text-rotate is clockwise
+          while (rot > 90) rot -= 180; while (rot < -90) rot += 180;
+          out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: mid }, properties: { t: v, r: Math.round(rot) } });
+        });
+        var s = map.getSource(gsrcId);
+        if (s && s.setData) s.setData({ type: 'FeatureCollection', features: out });
+      } catch (e) {}
+    }
+    map.on('idle', function () {
+      var sig;
+      try { sig = map.getZoom().toFixed(2) + '|' + map.getCenter().lng.toFixed(3) + '|' + map.getCenter().lat.toFixed(3) + '|' + JSON.stringify(map.getFilter(lineId) || null); } catch (e) { sig = null; }
+      // while the glabels source is EMPTY, never gate — a recompute that ran before the tiles
+      // re-rendered (basemap switch) found 0 features, and with the camera unmoved the signature
+      // would block every retry forever. Recomputing on an empty source is cheap.
+      var empty = false;
+      try { var s0 = map.getSource(gsrcId); empty = !s0 || !s0._data || !s0._data.features || !s0._data.features.length; } catch (e) {}
+      if (!empty && sig !== null && sig === lastSig) return; lastSig = sig;
+      clearTimeout(t); t = setTimeout(recompute, 120);
+    });
+    // A basemap switch re-adds the glabels source EMPTY without moving the camera — the idle
+    // signature (zoom|center|filter) is unchanged, so the gate above would swallow the recompute
+    // and the labels stay gone until a pan (7/18). Reset the gate and repopulate as soon as the
+    // re-added layer + source exist again.
+    map.on('style.load', function () {
+      lastSig = null;
+      var tries = 0;
+      (function again() {
+        try {
+          if (map.getLayer(lineId) && map.getSource(gsrcId)) {
+            recompute();
+            // keep retrying until the recompute actually PRODUCED labels — right after the swap
+            // the tiles may not have re-rendered yet, so an early recompute finds 0 features
+            var s1 = map.getSource(gsrcId);
+            if (s1 && s1._data && s1._data.features && s1._data.features.length) return;
+          }
+        } catch (e) {}
+        if (++tries < 40) setTimeout(again, 500);
+      })();
+    });
   }
 
   // labels must never hide under fills/strokes added after them (engine layers, MapboxDraw copies,

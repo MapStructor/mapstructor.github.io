@@ -133,6 +133,7 @@ var ConfigLoader = (function () {
     var leaf = {};
 
     leaf.id = row.slug;
+    leaf._layerDbId = row.id;   // every leaf knows its DB layer id (group families, tools)
     Object.keys(raw).forEach(function (k) {
       if (k !== "panel") leaf[k] = raw[k];
     });
@@ -367,7 +368,24 @@ var ConfigLoader = (function () {
         }
       },
       { id: "free-streets", name: "Streets", lChecked: true, rChecked: false,
-        styleUrl: "https://tiles.openfreemap.org/styles/liberty" }
+        styleUrl: "https://tiles.openfreemap.org/styles/liberty" },
+      // label-free canvas: the user's DATA (and its labels) reads clearly with nothing competing
+      {
+        id: "free-clean", name: "Clean (no labels)", lChecked: false, rChecked: false,
+        styleUrl: {
+          version: 8,
+          name: "Clean (Carto light, no labels)",
+          glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+          sources: { carto: { type: "raster", tileSize: 256, maxzoom: 20,
+            tiles: [
+              "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+              "https://b.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+              "https://c.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png"
+            ],
+            attribution: "© OpenStreetMap contributors © CARTO" } },
+          layers: [{ id: "carto-clean", type: "raster", source: "carto" }]
+        }
+      }
     ];
   }
 

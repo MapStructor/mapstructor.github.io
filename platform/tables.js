@@ -1,7 +1,7 @@
 /* tables.js — data tables + joins (MVP 7/16).
    "+ Table" button in the editor's add-row → a draggable manager where you can:
      • upload a CSV as a named table (stored in data_tables/data_rows — run
-       mapstructor_docs/sql/tables-setup.sql once),
+       mapstructor_docs/sql/setup/tables-setup.sql once),
      • view/delete tables,
      • JOIN a table onto a layer: pick layer + layer key + table + table key —
        matching rows' columns merge into features.custom_fields via ONE bulk call
@@ -53,7 +53,7 @@
     if (rows.length < 2) throw new Error("CSV needs a header row + at least one data row");
     var head = rows[0].map(function (h, i) { return String(h || "col" + (i + 1)).trim(); });
     var t = await db().from("data_tables").insert({ name: name, columns: head, row_count: rows.length - 1 }).select("id").single();
-    if (t.error) throw new Error(t.error.message + (/(relation|does not exist)/i.test(t.error.message) ? " — run mapstructor_docs/sql/tables-setup.sql first (Ctrl+A!)" : ""));
+    if (t.error) throw new Error(t.error.message + (/(relation|does not exist)/i.test(t.error.message) ? " — run mapstructor_docs/sql/setup/tables-setup.sql first (Ctrl+A!)" : ""));
     var batch = [];
     for (var i = 1; i < rows.length; i++) {
       var obj = {};
@@ -110,7 +110,7 @@
     if (!Object.keys(map).length) throw new Error("the table has no values in that key column");
     status("Joining " + nfmt(Object.keys(map).length) + " keys into the layer…");
     var res = await db().rpc("ms_apply_join", { p_layer: layerId, p_key: layerKey, p_map: map });
-    if (res.error) throw new Error(res.error.message + (/(function|does not exist)/i.test(res.error.message) ? " — run mapstructor_docs/sql/tables-setup.sql first (Ctrl+A!)" : ""));
+    if (res.error) throw new Error(res.error.message + (/(function|does not exist)/i.test(res.error.message) ? " — run mapstructor_docs/sql/setup/tables-setup.sql first (Ctrl+A!)" : ""));
     return res.data;   // features updated
   }
   window._msTables = { parseCSV: parseCSV, createTable: createTable, applyJoin: applyJoin, listTables: listTables };

@@ -123,15 +123,26 @@ function setupMapSwitching() {
   var rightInputs = document.getElementsByName("rtoggle");
   var leftInputs = document.getElementsByName("ltoggle");
 
-  // Apply a basemap to a map. NEVER setStyle while the initial style is still loading: free basemaps
-  // (inline raster / vector URL) can't be "diffed" against the current style, so a mid-load setStyle
-  // makes mapbox-gl "rebuild from scratch" and can leave the map blank (the boot flash-then-white bug,
-  // 7/15). Defer to style.load; on a fully-loaded map (a real radio click) it applies immediately.
+  // Apply a basemap to a map (rebuilt 7/18 — the toggle bugs all lived here):
+  //  - LAST CLICK WINS: the DESIRED style is stored on the map and go() always applies that,
+  //    so a stale deferred closure can never land an old basemap over a newer choice.
+  //  - diff:false forces a full swap, so style.load ALWAYS fires and the engine re-add
+  //    (mapinit readdSide) always runs. A diffed switch can strip runtime-added data layers
+  //    WITHOUT firing style.load ("features disappear"), or partially fail and leave the
+  //    basemap looking unchanged.
+  //  - The old isStyleLoaded() gate returned false during ANY churn (tile loads, label
+  //    recomputes), queueing the click on a style.load that never came ("basemap doesn't
+  //    change"). Only the INITIAL load needs deferring (boot flash-then-white bug, 7/15) —
+  //    after boot (__msBooted, set by readdSide) apply immediately.
   function applyStyle(map, id) {
-    var style = basemapStyle(id);
-    function go() { try { map.setStyle(style); } catch (e) {} }
-    if (map && map.isStyleLoaded && map.isStyleLoaded()) go();
-    else if (map) map.once("style.load", go);
+    if (!map) return;
+    map.__msWantStyle = basemapStyle(id);
+    function go() { try { map.setStyle(map.__msWantStyle, { diff: false }); } catch (e) {} }
+    if (map.__msBooted) go();
+    else if (!map.__msPendingStyle) {
+      map.__msPendingStyle = true;
+      map.once("style.load", function () { map.__msPendingStyle = false; go(); });
+    }
   }
   function idOf(layer) { return (typeof layer.className === "undefined") ? layer.target.className : layer.className; }
   function switchRightLayer(layer) { applyStyle(afterMap, idOf(layer)); }

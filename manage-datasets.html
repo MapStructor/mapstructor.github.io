@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manage datasets — MapStructor (admin)</title>
+  <link rel="icon" type="image/png" href="images/nittygrittymapping_logo.png">
+  <style>
+    :root { --p:#7c5cbf; --ink:#1e1b2e; --line:#eae6f3; --danger:#b4453a; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:'Source Sans Pro',system-ui,Arial,sans-serif; color:var(--ink); background:#faf9fd; }
+    nav { display:flex; align-items:center; justify-content:space-between; padding:14px 26px; border-bottom:1px solid var(--line); background:#fff; }
+    nav a.brand { font-weight:800; font-size:18px; color:var(--ink); text-decoration:none; }
+    nav .nav-right a { color:var(--p); text-decoration:none; font-size:14px; margin-left:16px; }
+    main { max-width:1180px; margin:0 auto; padding:26px 22px 90px; }
+    h1 { font-size:24px; margin:6px 0 2px; }
+    .sub { color:#6b6680; font-size:14px; margin:0 0 18px; }
+    .bar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:14px; }
+    .stat { border:1px solid var(--line); border-radius:12px; background:#fff; padding:12px 16px; }
+    .stat .n { font-size:22px; font-weight:800; } .stat .l { font-size:12px; color:#9a93ad; }
+    .tools { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:8px 0 14px; }
+    input[type=search] { padding:8px 12px; border:1px solid #ccc; border-radius:8px; font:inherit; min-width:230px; }
+    button { font:inherit; cursor:pointer; border-radius:8px; padding:7px 13px; border:1px solid var(--line); background:#fff; color:var(--ink); }
+    button:hover { background:#f5f2fc; }
+    button.danger { border-color:#e0b3ad; background:#fdeeec; color:var(--danger); }
+    button.danger:hover { background:#f9ddd8; }
+    button[disabled] { opacity:.5; cursor:default; }
+    label.chk { font-size:13px; color:#6b6680; display:inline-flex; align-items:center; gap:5px; }
+    table { width:100%; border-collapse:collapse; font-size:13.5px; background:#fff; border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+    th, td { text-align:left; padding:9px 11px; border-bottom:1px solid #f0eef7; vertical-align:top; }
+    th { color:#8a84a0; font-weight:600; font-size:12px; white-space:nowrap; cursor:pointer; user-select:none; background:#faf9fd; position:sticky; top:0; }
+    th:hover { color:var(--p); }
+    tr:last-child td { border-bottom:0; }
+    tr.gone { opacity:.4; }
+    td.name { font-weight:600; max-width:260px; }
+    .maps a { color:var(--p); text-decoration:none; display:inline-block; margin-right:8px; white-space:nowrap; }
+    .maps a:hover { text-decoration:underline; }
+    .orphan { display:inline-block; font-size:11px; font-weight:700; color:#9a6b00; background:#fdf3d6; border-radius:99px; padding:1px 8px; }
+    .big { color:var(--danger); font-weight:700; }
+    .status { font-size:13px; color:var(--p); min-height:20px; margin:8px 0; font-weight:600; }
+    .note { font-size:13px; color:#6b6680; background:#fff7e6; border:1px solid #f0dca8; border-radius:10px; padding:10px 12px; margin:10px 0; }
+    .muted { color:#9a93ad; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js"></script>
+  <script src="platform/topbar.js"></script>
+  <script src="platform/pricing.js"></script>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="index.html">MapStructor</a>
+    <div class="nav-right"><a href="admin.html">Admin</a><a href="dashboard.html">My maps</a></div>
+  </nav>
+  <main id="main" style="display:none;">
+    <h1>Manage datasets <span class="muted" style="font-size:15px;">(admin cleanup)</span></h1>
+    <p class="sub" id="sub"></p>
+    <p class="sub" style="margin:-8px 0 16px;">Sizes are exact data footprints (each feature's real stored bytes). Deleting removes a layer's features and unlinks it from every map — permanent. As admin you can delete any dataset here (untick "only layers I own" to see everyone's).</p>
+
+    <div class="bar">
+      <div class="stat"><div class="n" id="s-db">—</div><div class="l">Database size</div></div>
+      <div class="stat"><div class="n" id="s-layers">—</div><div class="l">Layers</div></div>
+      <div class="stat"><div class="n" id="s-feats">—</div><div class="l">Features</div></div>
+      <div class="stat"><div class="n" id="s-orphans">—</div><div class="l">Orphan layers</div></div>
+    </div>
+
+    <div id="setup-note" class="note" style="display:none;">
+      For exact size numbers, run <b>mapstructor_docs/sql/setup/pricing-storage.sql</b> once (it adds the size function). Feature counts and delete work without it.
+    </div>
+
+    <div id="reclaim" class="note" style="display:none;background:#eef4fb;border-color:#c9ddf3;">
+      <b>Reclaim disk space.</b> Deleting rows frees space for reuse but doesn't shrink the database file on disk (so the size above stays high) until Postgres runs <code>VACUUM FULL</code>. That command can't run from this page (Postgres forbids it inside the app's transactions), so:
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button id="copy-vacuum">📋 Copy VACUUM command</button>
+        <a id="open-sql" href="https://supabase.com/dashboard/project/_/sql/new" target="_blank"><button>Open Supabase SQL editor ↗</button></a>
+        <span id="vacuum-cmd" class="muted" style="font-family:monospace;font-size:12px;"></span>
+      </div>
+      <div class="muted" style="margin-top:6px;">Paste it, Run once — the database size drops to its real value. Takes a brief table lock; safe to run.</div>
+    </div>
+
+    <details style="margin:6px 0 14px;">
+      <summary style="cursor:pointer;font-size:14px;color:#7c5cbf;font-weight:600;">What is an "orphan" layer?</summary>
+      <div class="note" style="background:#f3f0fa;border-color:#e0d8f0;">
+        An <b>orphan</b> is a dataset that belongs to <b>no map</b> — nothing links to it, so it just sits in the database taking up space. They're almost always safe to delete.
+        <br><br>How they happen:
+        <ul style="margin:6px 0 0 18px;padding:0;">
+          <li><b>You deleted the map</b> but the layer stayed. Deleting a map removes the map and its links, but the underlying dataset rows can remain — now unattached.</li>
+          <li><b>Import / draw that was never finished</b> — a layer row got created, then the tab closed or the action was undone, leaving an empty or half-filled layer on no map.</li>
+          <li><b>Leftovers from operations</b> — an "outline" companion layer, an old auto-generated copy, or a failed duplicate/merge that created the layer before erroring.</li>
+          <li><b>Tests</b> — throwaway layers (e.g. "testline", "poly3") made while trying things, never placed on a real map.</li>
+        </ul>
+        <span style="color:#8a84a0;">Example: you had "US Railways v1", replaced it with a fresh import, and deleted the old map — its "Historical_Railroads (copy)" layer is now an orphan.</span>
+      </div>
+    </details>
+
+    <div class="tools">
+      <input type="search" id="q" placeholder="Filter by layer or map name…">
+      <label class="chk"><input type="checkbox" id="only-orphans"> orphans only</label>
+      <label class="chk"><input type="checkbox" id="only-mine"> only layers I own</label>
+      <span style="flex:1"></span>
+      <button id="del-selected" class="danger" disabled>Delete selected (0)</button>
+      <button id="refresh">↻ Refresh</button>
+    </div>
+    <div class="status" id="status"></div>
+
+    <table>
+      <thead><tr>
+        <th style="width:26px;"><input type="checkbox" id="chk-all" title="select all shown"></th>
+        <th data-k="name">Layer</th>
+        <th data-k="maps">On maps</th>
+        <th data-k="features">Features</th>
+        <th data-k="bytes">Size</th>
+        <th data-k="created_at">Created</th>
+        <th data-k="updated_at">Modified</th>
+        <th style="width:80px;">Action</th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </main>
+
+  <div id="deny" style="display:none;max-width:480px;margin:80px auto;text-align:center;color:#6b6680;font-family:'Source Sans Pro',Arial,sans-serif;">
+    <p style="font-size:16px;">This page is for the site admin.</p>
+    <p><a href="index.html" style="color:#7c5cbf;">Back to MapStructor</a></p>
+  </div>
+
+  <script>
+    (function () {
+      var ADMIN_EMAILS = ['nittyjee@gmail.com'];
+      function esc(s){ return String(s==null?'':s).replace(/[<>&]/g,function(c){return({'<':'&lt;','>':'&gt;','&':'&amp;'})[c];}); }
+      function fmtDate(d){ try{ return d?new Date(d).toLocaleDateString([], {year:'numeric',month:'short',day:'numeric'}):''; }catch(e){ return ''; } }
+      function nfmt(n){ try{ return Number(n).toLocaleString('en-US'); }catch(e){ return String(n); } }
+      var db, myId, P, rows = [], avgBytes = 0, _key = 'bytes', _dir = -1;
+
+      function fmtBytes(b){ return (window.MapStructorPricing && P) ? P.fmtBytes(b||0) : (Math.round((b||0)/1024)+' KB'); }
+
+      async function load() {
+        setStatus('Loading datasets…');
+        // 1. all layers I can see (RLS scopes this)
+        var lq = await db.from('layers').select('id,name,user_id,created_at,updated_at');
+        var layers = (lq.data)||[];
+        // 2. layer → maps (project_layers + projects), for links
+        var plq = await db.from('project_layers').select('layer_id, projects(id,name,is_public)');
+        var byLayer = {};
+        ((plq.data)||[]).forEach(function(x){ if(!x.layer_id||!x.projects) return; (byLayer[x.layer_id]=byLayer[x.layer_id]||[]).push(x.projects); });
+        // 3. DB size header + reclaim command (admin_stats — instant)
+        try {
+          var aq = await db.rpc('mapstructor_admin_stats');
+          if (!aq.error && aq.data) {
+            document.getElementById('s-db').textContent = fmtBytes(aq.data.database_bytes);
+            // bare VACUUM FULL reclaims the WHOLE database — avoids the "features is a
+            // view, can't vacuum a view" error (targeting one table needs its real name).
+            var cmd = 'VACUUM FULL;';
+            document.getElementById('vacuum-cmd').textContent = cmd;
+            document.getElementById('reclaim').style.display = 'block';
+            var cvb = document.getElementById('copy-vacuum');
+            cvb.onclick = function(){
+              (navigator.clipboard ? navigator.clipboard.writeText(cmd) : Promise.reject()).then(
+                function(){ cvb.textContent = '✓ Copied — paste it in the SQL editor'; },
+                function(){ window.prompt('Copy this, then run it in the Supabase SQL editor:', cmd); }
+              );
+            };
+          }
+        } catch(e){}
+        // 4. EXACT per-layer count + data bytes — index-backed RPC, run concurrently.
+        //    Sums live-row column sizes = the true data footprint (NOT an estimate,
+        //    and immune to table bloat). Falls back to HEAD counts (no sizes) if the
+        //    RPC isn't deployed yet.
+        var counts = {}, byteMap = {}, haveBytes = false;
+        var lids = layers.map(function(l){return l.id;}), done = 0, ci = 0, CONC = 8, rpcOk = true;
+        async function sworker(){
+          while (ci < lids.length){
+            var lid = lids[ci++];
+            if (rpcOk){
+              try {
+                var r = await db.rpc('mapstructor_layer_stat', { p_layer: lid });
+                if (r.error) throw new Error(r.error.message);
+                counts[lid] = Number(r.data.count)||0; byteMap[lid] = Number(r.data.bytes)||0; haveBytes = true;
+              } catch(e){
+                rpcOk = false;   // function missing → count-only for the rest
+                try { var c = await db.from('features').select('feature_id',{count:'exact',head:true}).eq('layer_id', lid); counts[lid]=c.count||0; } catch(e2){ counts[lid]=null; }
+              }
+            } else {
+              try { var c2 = await db.from('features').select('feature_id',{count:'exact',head:true}).eq('layer_id', lid); counts[lid]=c2.count||0; } catch(e3){ counts[lid]=null; }
+            }
+            done++; if (done % 8 === 0 || done === lids.length) setStatus('Measuring datasets… '+done+'/'+lids.length);
+          }
+        }
+        var ws=[]; for (var w=0; w<CONC; w++) ws.push(sworker());
+        await Promise.all(ws);
+        setStatus('');
+        document.getElementById('setup-note').style.display = haveBytes ? 'none' : 'block';
+
+        rows = layers.map(function(l){
+          var maps = byLayer[l.id]||[];
+          return {
+            id:l.id, name:l.name||'(unnamed)', user_id:l.user_id,
+            maps:maps, mapsText:maps.map(function(m){return m.name||'';}).join(' '),
+            features:(l.id in counts ? counts[l.id] : null),
+            bytes:(l.id in byteMap ? byteMap[l.id] : null),
+            created_at:l.created_at, updated_at:l.updated_at, orphan:maps.length===0, gone:false, sel:false
+          };
+        });
+        document.getElementById('s-layers').textContent = nfmt(rows.length);
+        document.getElementById('s-orphans').textContent = nfmt(rows.filter(function(r){return r.orphan;}).length);
+        var totalF = rows.reduce(function(a,r){return a+(r.features||0);},0);
+        document.getElementById('s-feats').textContent = nfmt(totalF);
+        setStatus('');
+        render();
+      }
+
+      function visibleRows(){
+        var q = document.getElementById('q').value.trim().toLowerCase();
+        var oo = document.getElementById('only-orphans').checked;
+        var om = document.getElementById('only-mine').checked;
+        return rows.filter(function(r){
+          if (r.gone) return false;
+          if (oo && !r.orphan) return false;
+          if (om && r.user_id && r.user_id !== myId) return false;
+          if (q && (r.name.toLowerCase().indexOf(q)===-1 && r.mapsText.toLowerCase().indexOf(q)===-1)) return false;
+          return true;
+        });
+      }
+      function sortRows(list){
+        list.sort(function(a,b){
+          var va=a[_key], vb=b[_key];
+          if (_key==='name'){ va=(a.name||'').toLowerCase(); vb=(b.name||'').toLowerCase(); }
+          else if (_key==='maps'){ va=a.maps.length; vb=b.maps.length; }
+          if (va==null) va=-1; if (vb==null) vb=-1;
+          return (va<vb?-1:va>vb?1:0)*_dir;
+        });
+        return list;
+      }
+      function render(){
+        var list = sortRows(visibleRows());
+        var tb = document.getElementById('rows');
+        tb.innerHTML = list.map(function(r){
+          var mapsHtml = r.maps.length
+            ? r.maps.map(function(m){ return '<a href="map/editor.html?id='+m.id+'" target="_blank" title="edit">'+esc(m.name||'map')+' ↗</a>'; }).join('')
+            : '<span class="orphan">orphan</span>';
+          var big = (r.bytes!=null && r.bytes>2*1024*1024);
+          return '<tr data-id="'+r.id+'"'+(r.gone?' class="gone"':'')+'>'+
+            '<td><input type="checkbox" class="rsel" data-id="'+r.id+'"'+(r.sel?' checked':'')+'></td>'+
+            '<td class="name">'+esc(r.name)+'</td>'+
+            '<td class="maps">'+mapsHtml+'</td>'+
+            '<td'+(big?' class="big"':'')+'>'+(r.features!=null?nfmt(r.features):'<span class="muted">—</span>')+'</td>'+
+            '<td'+(big?' class="big"':'')+'>'+(r.bytes!=null?fmtBytes(r.bytes):'<span class="muted">—</span>')+'</td>'+
+            '<td>'+fmtDate(r.created_at)+'</td>'+
+            '<td>'+fmtDate(r.updated_at)+'</td>'+
+            '<td><button class="danger del-one" data-id="'+r.id+'">Delete</button></td>'+
+          '</tr>';
+        }).join('') || '<tr><td colspan="8" class="muted">No datasets match.</td></tr>';
+        // header arrows
+        Array.prototype.forEach.call(document.querySelectorAll('th[data-k]'), function(th){
+          var base = th.getAttribute('data-k');
+          th.textContent = th.textContent.replace(/ [▲▼]$/,'');
+          if (base===_key) th.textContent += _dir>0?' ▲':' ▼';
+        });
+        // wire row buttons/checkboxes
+        Array.prototype.forEach.call(tb.querySelectorAll('.del-one'), function(b){
+          b.addEventListener('click', function(){ deleteOne(b.getAttribute('data-id')); });
+        });
+        Array.prototype.forEach.call(tb.querySelectorAll('.rsel'), function(c){
+          c.addEventListener('change', function(){ var r=byId(c.getAttribute('data-id')); if(r) r.sel=c.checked; updateSelBtn(); });
+        });
+        updateSelBtn();
+      }
+      function byId(id){ for(var i=0;i<rows.length;i++) if(rows[i].id===id) return rows[i]; return null; }
+      function updateSelBtn(){
+        var n = rows.filter(function(r){return r.sel && !r.gone;}).length;
+        var b = document.getElementById('del-selected');
+        b.textContent = 'Delete selected ('+n+')'; b.disabled = n===0;
+      }
+      function setStatus(m){ document.getElementById('status').textContent = m||''; }
+
+      // chunked, self-contained delete (no timeout even on 78k-row layers).
+      // Falls back to the admin RPC for orphan layers RLS would block.
+      async function wipe(id, onProgress){
+        try {
+          var total = 0;
+          for(;;){
+            var q = await db.from('features').select('feature_id').eq('layer_id', id).limit(3000);
+            if (q.error) throw new Error(q.error.message);
+            if (!q.data || !q.data.length) break;
+            var ids = q.data.map(function(x){return x.feature_id;});
+            var d = await db.from('features').delete().in('feature_id', ids);
+            if (d.error) throw new Error(d.error.message);
+            total += ids.length;
+            if (onProgress) onProgress(total);
+            if (ids.length < 3000) break;
+          }
+          await db.from('project_layers').delete().eq('layer_id', id);
+          var dl = await db.from('layers').delete().eq('id', id);
+          if (dl.error) throw new Error(dl.error.message);
+          return total;
+        } catch (clientErr) {
+          // RLS blocked it (orphan with no owner) → admin definer RPC (storage-fix.sql)
+          var r = await db.rpc('ms_admin_delete_layer', { p_layer: id });
+          if (r.error) throw new Error(clientErr.message + ' — and admin fallback: ' + r.error.message);
+          return r.data;
+        }
+      }
+      async function deleteOne(id){
+        var r = byId(id); if(!r) return;
+        if (!confirm('Delete "'+r.name+'"'+(r.features?(' ('+nfmt(r.features)+' features)'):'')+'?\n\nIts features are removed and it is unlinked from '+(r.maps.length||'no')+' map(s). This cannot be undone.')) return;
+        try {
+          var n = await wipe(id, function(t){ setStatus('Deleting "'+r.name+'"… '+nfmt(t)+' features'); });
+          r.gone = true; r.sel = false;
+          setStatus('Deleted "'+r.name+'" — '+nfmt(n)+' features freed.');
+          render();
+        } catch(e){ setStatus('Delete failed: '+e.message); }
+      }
+      async function deleteSelected(){
+        var sel = rows.filter(function(r){return r.sel && !r.gone;});
+        if (!sel.length) return;
+        var totalF = sel.reduce(function(a,r){return a+(r.features||0);},0);
+        if (!confirm('Delete '+sel.length+' layer(s)'+(totalF?(' (~'+nfmt(totalF)+' features)'):'')+'?\n\nThis cannot be undone.')) return;
+        for (var i=0;i<sel.length;i++){
+          var r = sel[i];
+          try {
+            await wipe(r.id, function(t){ setStatus('['+(i+1)+'/'+sel.length+'] Deleting "'+r.name+'"… '+nfmt(t)); });
+            r.gone = true; r.sel = false; render();
+          } catch(e){ setStatus('Failed on "'+r.name+'": '+e.message+' — stopping.'); return; }
+        }
+        setStatus('Deleted '+sel.length+' layer(s). Reload the admin page to see the new database size.');
+      }
+
+      async function run(){
+        if (!window.MapAuth || !MapAuth.db) { location.replace('index.html'); return; }
+        db = MapAuth.db; P = window.MapStructorPricing;
+        var user = await MapAuth.currentUser();
+        if (!user || !user.email || ADMIN_EMAILS.indexOf(user.email) === -1) { document.getElementById('deny').style.display='block'; return; }
+        myId = user.id;
+        document.getElementById('main').style.display='block';
+        document.getElementById('sub').textContent = 'Signed in as '+user.email+' (admin).';
+        document.getElementById('q').addEventListener('input', render);
+        document.getElementById('only-orphans').addEventListener('change', render);
+        document.getElementById('only-mine').addEventListener('change', render);
+        document.getElementById('refresh').addEventListener('click', load);
+        document.getElementById('del-selected').addEventListener('click', deleteSelected);
+        document.getElementById('chk-all').addEventListener('change', function(){
+          var on=this.checked; visibleRows().forEach(function(r){r.sel=on;}); render();
+        });
+        Array.prototype.forEach.call(document.querySelectorAll('th[data-k]'), function(th){
+          th.addEventListener('click', function(){
+            var k=th.getAttribute('data-k');
+            if (_key===k) _dir=-_dir; else { _key=k; _dir=(k==='name'||k==='maps')?1:-1; }
+            render();
+          });
+        });
+        load();
+      }
+      run();
+    })();
+  </script>
+</body>
+</html>

@@ -157,6 +157,17 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     // (Esri satellite / OpenFreeMap streets — no token, no billing) instead of the static Mapbox pair
     if (raw.baseMaps) replaceArray(baseMaps, raw.baseMaps);
     else if (window.ConfigLoader && ConfigLoader.freeBasemapDefaults) replaceArray(baseMaps, ConfigLoader.freeBasemapDefaults());
+    // new FREE basemaps become available on EXISTING maps too (unchecked, never overriding a saved
+    // set's selections) — e.g. "Clean (no labels)" so data reads with nothing competing
+    try {
+      if (window.ConfigLoader && ConfigLoader.freeBasemapDefaults) {
+        ConfigLoader.freeBasemapDefaults().forEach(function (fb) {
+          if (!baseMaps.some(function (b) { return b && (b.id === fb.id || b.name === fb.name); })) {
+            baseMaps.push(Object.assign({}, fb, { lChecked: false, rChecked: false }));
+          }
+        });
+      }
+    } catch (e) {}
     if (raw.mapSections) replaceArray(mapSections, raw.mapSections);
     if (raw.boundsList) replaceObject(boundsList, raw.boundsList);
     if (raw.zoomButtons) replaceArray(zoomButtons, raw.zoomButtons.map(function (b) {

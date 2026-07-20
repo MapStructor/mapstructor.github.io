@@ -5,7 +5,7 @@ let hoverPopUp = new Array();
 // clipped top map and only fires events in its own half, so each side's handler must light up both.
 function setHoverBoth(config, fid, on) {
   if (fid == null) return;
-  if (on && config.hoverHighlight === false) return;   // #11: hover-highlight disabled for this layer (click `selected` still works)
+  if (on && (config.hoverHighlight === false || config.groupBy)) return;   // #11 gate; grouped ("treat as one") layers never emphasize ONE segment — the group overlay owns hover
   const sl = config["source-layer"];
   try { if (typeof beforeMap !== 'undefined' && beforeMap) beforeMap.setFeatureState({ source: config.id + "-left",  sourceLayer: sl, id: fid }, { hover: on }); } catch (e) {}
   try { if (typeof afterMap  !== 'undefined' && afterMap)  afterMap.setFeatureState({  source: config.id + "-right", sourceLayer: sl, id: fid }, { hover: on }); } catch (e) {}

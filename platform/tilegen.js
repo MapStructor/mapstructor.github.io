@@ -387,7 +387,7 @@
   }
 
   // test seam: the E2E injects a service-key uploader; real sessions use the signed-in client
-  // (needs the storage policies from mapstructor_docs/sql/tilegen-setup.sql — authenticated INSERT/UPDATE on `tiles`)
+  // (needs the storage policies from mapstructor_docs/sql/setup/tilegen-setup.sql — authenticated INSERT/UPDATE on `tiles`)
   var uploadFn = null;
   async function upload(db, projectId, layerId, bytes) {
     if (uploadFn) return uploadFn(projectId, layerId, bytes);

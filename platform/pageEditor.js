@@ -109,7 +109,7 @@
     var d = db(); var rows = regions().map(function (el) { return { key: el.getAttribute("data-edit"), html: el.innerHTML }; });
     try {
       var r = await d.from("site_content").upsert(rows);
-      if (r.error) { window.alert("Save failed: " + r.error.message + (/relation|does not exist|schema cache/i.test(r.error.message) ? "\n\n(The site_content table isn't created yet — run mapstructor_docs/sql/site-content-setup.sql.)" : "")); return; }
+      if (r.error) { window.alert("Save failed: " + r.error.message + (/relation|does not exist|schema cache/i.test(r.error.message) ? "\n\n(The site_content table isn't created yet — run mapstructor_docs/sql/setup/site-content-setup.sql.)" : "")); return; }
       exitEdit();
     } catch (e) { window.alert("Save error: " + (e && e.message)); }
   }

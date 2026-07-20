@@ -273,7 +273,7 @@
     var d = db(); if (!d) { window.alert('No database connection.'); return; }
     try {
       var r = await d.from('site_content').upsert({ key: KEY, html: JSON.stringify({ v: 2, categories: state.categories, cards: state.cards }) });
-      if (r.error) { window.alert('Save failed: ' + r.error.message + (/relation|does not exist|schema cache/i.test(r.error.message) ? '\n\n(The site_content table isn’t created yet — run mapstructor_docs/sql/site-content-setup.sql.)' : '')); return; }
+      if (r.error) { window.alert('Save failed: ' + r.error.message + (/relation|does not exist|schema cache/i.test(r.error.message) ? '\n\n(The site_content table isn’t created yet — run mapstructor_docs/sql/setup/site-content-setup.sql.)' : '')); return; }
       exitManage();
     } catch (e) { window.alert('Save error: ' + (e && e.message)); }
   }

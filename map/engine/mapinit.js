@@ -66,14 +66,49 @@ function initMaps() {
 
 	var initialLoadDone = false;
 
+	// Re-add data layers whenever a style loads. DEFERRED one tick: on a non-diffable basemap
+	// switch (inline free styles) mapbox-gl can still be swapping style objects when style.load
+	// fires — synchronous adds land in the DYING style and vanish (the "Clean basemap hides all
+	// data" bug, 7/18). The idle self-heal then re-adds ANYTHING still missing — every data
+	// layer AND its label layer (labels vanished while data survived when only the first data
+	// layer was checked) — retrying up to 3 idles. addMapLayer is idempotent, so re-running the
+	// whole pass is safe.
+	function readdSide(map, side) {
+		map.__msBooted = true;   // generateMaps.applyStyle: post-boot switches apply immediately
+		function add() {
+			// a second setStyle can land between style.load and this deferred tick (boot auto-switch)
+			// — the add then hits a mid-load style and throws "Style is not done loading"; swallow it,
+			// the idle self-heal below re-adds once the winning style settles
+			try {
+				addLayersToMap(map, side, getDate());
+				if (typeof msRaiseLabelLayers === "function") msRaiseLabelLayers(map, layers);
+				refreshLayers();
+			} catch (e) {}
+		}
+		function healthy() {
+			try {
+				return flatLayers(layers).every(function (l) {
+					if (!map.getLayer(l.id + "-" + side)) return false;
+					var t = l.source && l.source.type;
+					var wantsLabel = l.labels && l.labels.field &&
+						(t === "geojson" || (t === "vector" && l.type === "line"));   // mirror msLabelLayerFor's support test
+					return !wantsLabel || !!map.getLayer(l.id + "-label-" + side);
+				});
+			} catch (e) { return true; }
+		}
+		setTimeout(add, 0);
+		var heals = 0;
+		function heal() {
+			try { if (!healthy()) { add(); if (++heals < 3) map.once("idle", heal); } } catch (e) {}
+		}
+		map.once("idle", heal);
+	}
 	beforeMap.on("style.load", function() {
-		addLayersToMap(beforeMap, "left", getDate());
-		refreshLayers();
+		readdSide(beforeMap, "left");
 	});
 
 	afterMap.on("style.load", function() {
-		addLayersToMap(afterMap, "right", getDate());
-		refreshLayers();
+		readdSide(afterMap, "right");
 		if (!initialLoadDone) {
 			initialLoadDone = true;
 			addEvents();

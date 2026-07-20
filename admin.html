@@ -37,7 +37,7 @@
 <body>
   <nav>
     <a class="brand" href="index.html">MapStructor</a>
-    <div class="nav-right"><a href="dashboard.html">My maps</a></div>
+    <div class="nav-right"><a href="manage-datasets.html">Manage datasets</a> · <a href="dashboard.html">My maps</a></div>
   </nav>
   <main id="main" style="display:none;">
     <h1>Admin dashboard</h1>
@@ -54,7 +54,28 @@
 
     <h2>Plans</h2>
     <div class="cards" id="tiers"></div>
-    <div class="note" id="tiers-note" style="display:none;">Plan breakdown + exact storage appear after you run <b>mapstructor_docs/sql/pricing-setup.sql</b>.</div>
+    <div class="note" id="tiers-note" style="display:none;">Plan breakdown + exact storage appear after you run <b>mapstructor_docs/sql/setup/pricing-storage.sql</b>.</div>
+
+    <h2>Database &amp; infrastructure</h2>
+    <div class="cards">
+      <div class="stat"><div class="n" id="s-db">—</div><div class="l">Database size <span id="s-db-frac" style="font-weight:400;color:#9a93ad;"></span></div></div>
+      <div class="stat"><div class="n" id="s-feat-size">—</div><div class="l">Features table (geometry)</div></div>
+      <div class="stat"><div class="n" id="s-feat-count">—</div><div class="l">Feature rows (≈)</div></div>
+      <div class="stat"><div class="n" id="s-tiles">—</div><div class="l">Tiles bucket (PMTiles)</div></div>
+      <div class="stat"><div class="n" id="s-layers">—</div><div class="l">Layers</div></div>
+      <div class="stat"><div class="n" id="s-tables">—</div><div class="l">Data tables</div></div>
+    </div>
+    <div id="db-bar-wrap" style="margin-top:12px;display:none;">
+      <div style="font-size:13px;color:#6b6680;margin-bottom:4px;">Supabase free plan — database (<span id="db-bar-label"></span>)</div>
+      <div style="height:12px;background:#eee;border-radius:99px;overflow:hidden;"><div id="db-bar" style="height:100%;width:0;background:#7c5cbf;"></div></div>
+    </div>
+    <h2 style="font-size:15px;margin:18px 0 8px;color:#6b6680;">Biggest tables</h2>
+    <table><thead><tr><th data-label="Table">Table</th><th data-label="Size">Size</th></tr></thead><tbody id="top-tables"><tr><td colspan="2" style="color:#9a93ad;">Loading…</td></tr></tbody></table>
+    <div class="note" id="dbstats-note" style="display:none;">Database &amp; infrastructure stats appear after you run <b>mapstructor_docs/sql/setup/pricing-storage.sql</b>.</div>
+
+    <h2>Services &amp; external resources</h2>
+    <table><tbody id="services"></tbody></table>
+    <div class="note">Bandwidth/egress, API request counts, monthly-active auth users, and Edge-Function/CDN usage are <b>not stored in Postgres</b> — they're billing metrics. See them in <a href="https://supabase.com/dashboard/project/_/reports" target="_blank" style="color:#7c5cbf;">Supabase → Reports/Usage</a> and (for the map CDN / Workers) your Cloudflare dashboard. The numbers above are everything queryable from the database itself.</div>
 
     <h2>Recent maps</h2>
     <table><thead><tr><th data-sort="name" data-label="Name">Name</th><th data-sort="owner" data-label="Owner">Owner</th><th data-sort="email" data-label="Email">Email</th><th data-sort="is_public" data-label="Visibility">Visibility</th><th data-sort="created_at" data-label="Created">Created</th><th data-sort="updated_at" data-label="Updated">Updated</th></tr></thead><tbody id="recent"></tbody></table>
@@ -120,29 +141,71 @@
         var ownersLbl = document.getElementById('s-owners').parentNode.querySelector('.l');
         if (ownersLbl) ownersLbl.textContent = 'Registered map owners (+' + (ownerIds.length - regOwners.length) + ' anonymous)';
 
-        // total storage (needs the admin RPC from pricing-setup.sql)
+        // rich DB + infrastructure stats — one instant RPC (storage-fix.sql).
+        // pg_database_size is the exact number Supabase's free 500 MB cap measures.
+        var FREE_DB_BYTES = 500 * 1024 * 1024;
         try {
-          var ts = await db.rpc('mapstructor_total_storage');
-          if (!ts.error && typeof ts.data === 'number') {
-            document.getElementById('s-storage').textContent = P.fmtBytes(ts.data);
-            // free-infra alert (7/15): the platform itself rides Supabase's FREE plan (500 MB database).
-            // Warn the admin early — at 30% — so an infra upgrade happens long before users feel it.
-            var FREE_DB_BYTES = 500 * 1024 * 1024;
-            var frac = ts.data / FREE_DB_BYTES;
+          var as = await db.rpc('mapstructor_admin_stats');
+          if (!as.error && as.data) {
+            var A = as.data, C = A.counts || {};
+            document.getElementById('s-storage').textContent = P.fmtBytes(A.database_bytes || 0);   // Overview "Total storage" = DB size
+            document.getElementById('s-db').textContent = P.fmtBytes(A.database_bytes || 0);
+            document.getElementById('s-feat-size').textContent = A.features_bytes != null ? P.fmtBytes(A.features_bytes) : '—';
+            document.getElementById('s-feat-count').textContent = C.features != null ? Number(C.features).toLocaleString() : '—';
+            document.getElementById('s-tiles').textContent = A.tiles_bucket_bytes != null ? P.fmtBytes(A.tiles_bucket_bytes) : 'n/a';
+            document.getElementById('s-layers').textContent = C.layers != null ? Number(C.layers).toLocaleString() : '—';
+            document.getElementById('s-tables').textContent = C.data_tables != null ? C.data_tables : '—';
+            // free-plan progress bar + early alert at 30%
+            var frac = (A.database_bytes || 0) / FREE_DB_BYTES;
+            document.getElementById('db-bar-wrap').style.display = 'block';
+            document.getElementById('db-bar').style.width = Math.min(100, Math.round(frac * 100)) + '%';
+            document.getElementById('db-bar').style.background = frac >= 0.8 ? '#b4453a' : frac >= 0.5 ? '#d98a00' : '#7c5cbf';
+            document.getElementById('db-bar-label').textContent = P.fmtBytes(A.database_bytes || 0) + ' / ' + P.fmtBytes(FREE_DB_BYTES) + ' · ' + Math.round(frac * 100) + '%';
+            document.getElementById('s-db-frac').textContent = '(' + Math.round(frac * 100) + '% of free)';
             if (frac >= 0.3) {
               var al = document.createElement('div');
               al.style.cssText = 'margin:10px 0;padding:9px 12px;border-radius:8px;font-size:13px;color:#fff;background:' + (frac >= 0.8 ? '#b4453a' : '#d98a00') + ';';
-              al.innerHTML = '<b>Platform storage at ' + Math.round(frac * 100) + '%</b> of the Supabase free plan (' + P.fmtBytes(ts.data) + ' / ' + P.fmtBytes(FREE_DB_BYTES) + '). Plan the infra upgrade before it fills.';
-              var host = document.getElementById('s-storage').closest('#main') || document.getElementById('main');
-              host.insertBefore(al, host.firstChild.nextSibling);
+              al.innerHTML = '<b>Database at ' + Math.round(frac * 100) + '%</b> of the Supabase free plan (' + P.fmtBytes(A.database_bytes) + ' / ' + P.fmtBytes(FREE_DB_BYTES) + '). Clean up junk layers (⚡ Query → Delete) or plan the infra upgrade.';
+              var host = document.getElementById('main');
+              host.insertBefore(al, host.children[2]);
             }
-          } else document.getElementById('s-storage').textContent = '—';
+            // biggest tables
+            document.getElementById('top-tables').innerHTML = (A.top_tables || []).map(function (t) {
+              return '<tr><td>' + esc(t.name) + '</td><td>' + P.fmtBytes(t.bytes || 0) + '</td></tr>';
+            }).join('') || '<tr><td colspan="2" style="color:#9a93ad;">—</td></tr>';
+          } else {
+            document.getElementById('s-storage').textContent = '—';
+            document.getElementById('dbstats-note').style.display = 'block';
+            document.getElementById('top-tables').innerHTML = '';
+          }
+        } catch (e) {
+          document.getElementById('s-storage').textContent = '—';
+          document.getElementById('dbstats-note').style.display = 'block';
+          document.getElementById('top-tables').innerHTML = '';
         }
-        catch (e) { document.getElementById('s-storage').textContent = '—'; }
 
-        // datasets: every layer with its project, owner, feature count and size — sortable, biggest first
+        // services & external resources — what's queryable vs. where to look
         try {
-          var ds = await db.rpc('mapstructor_layer_stats');
+          var authUsers = document.getElementById('s-users').textContent;
+          var svc = [
+            ['Supabase Postgres', 'Database — ' + document.getElementById('s-db').textContent + ' of 500 MB (free plan)'],
+            ['Supabase Storage', 'Tiles bucket (PMTiles) — ' + document.getElementById('s-tiles').textContent],
+            ['Supabase Auth', authUsers + ' registered profiles (monthly-active count is in the Supabase dashboard)'],
+            ['Egress / bandwidth', 'Billing metric — see Supabase → Reports/Usage'],
+            ['API requests', 'Billing metric — see Supabase → Reports/Usage'],
+            ['Map CDN / basemaps', 'OpenFreeMap + Photon (free, external) — no usage on us'],
+            ['Cloudflare (future AI/MCP)', 'Worker + KV — see Cloudflare dashboard once deployed']
+          ];
+          document.getElementById('services').innerHTML = svc.map(function (r) {
+            return '<tr><td style="width:180px;font-weight:600;">' + esc(r[0]) + '</td><td style="color:#6b6680;">' + esc(r[1]) + '</td></tr>';
+          }).join('');
+        } catch (e) {}
+
+        // datasets: biggest layers with project, owner, feature count and size — sortable, biggest first.
+        // Prefer the fast capped mapstructor_layer_sizes (storage-fix.sql); fall back to the old stats RPC.
+        try {
+          var ds = await db.rpc('mapstructor_layer_sizes', { p_limit: 60 });
+          if (ds.error || !Array.isArray(ds.data)) ds = await db.rpc('mapstructor_layer_stats');
           if (!ds.error && Array.isArray(ds.data)) {
             // PROGRESSIVE sort, like a spreadsheet: each click re-sorts the ALREADY-SORTED rows in place —
             // JS sorts are stable, so equal values keep the previous column's order (multi-level grouping).

@@ -690,15 +690,17 @@
             var lids = [];
             (function walk(arr) { (arr || []).forEach(function (n) { if (isEngineEditable(n) && mm.getLayer(n.id + '-' + sd)) lids.push(n.id + '-' + sd); if (n.children) walk(n.children); }); })(layers);
             if (!lids.length) return;
-            // 6px grab corridor (user 7/16: thin lines are brutal to click exactly) — the box
-            // returns candidates ordered by render order; nearest-enough beats pixel-perfect
-            var bx = 6, fs;
+            // 10px grab corridor (user 7/16 + widened 7/17: thin lines are brutal to click exactly) —
+            // the box returns candidates ordered by render order; nearest-enough beats pixel-perfect
+            var bx = 10, fs;
             try { fs = mm.queryRenderedFeatures([[e.point.x - bx, e.point.y - bx], [e.point.x + bx, e.point.y + bx]], { layers: lids }); } catch (err) { return; }
             if (fs && fs.length) found = fs;
           });
           if (!found) return;
-          var node = findNodeById(layers, found[0].layer.id.replace(/-(left|right)$/, ''));
-          if (node) onEngineFeatureClick(node, { features: found, lngLat: e.lngLat });
+          // NEAREST candidate wins — render order picks the wrong line at crossings/parallels
+          var hit = (typeof nearestFeature === 'function' && nearestFeature(found, e.point)) || found[0];
+          var node = findNodeById(layers, hit.layer.id.replace(/-(left|right)$/, ''));
+          if (node) onEngineFeatureClick(node, { features: [hit].concat(found.filter(function (f) { return f !== hit; })), lngLat: e.lngLat });
         });
       });
     }
@@ -742,22 +744,26 @@
     var drawId = 'db-' + fid;
     if (draw && draw.get(drawId)) {   // already pulled into draw (re-click via the edited overlay) → stage 1 unless mid-geometry-edit
       if (_editingDraw !== drawId) { _editingDraw = null; _armedSet = [drawId]; try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {} updateArmedHl(); }
-      showFeaturePanel(drawId); return;
+      showFeaturePanel(drawId); updateGroupHl(drawId); return;
     }
     var lyrId = (typeof slugToLayerDbId !== 'undefined') ? slugToLayerDbId[node.id] : null;
     if (!lyrId) { engineViewerPanel(node, clickEvt); return; }   // this layer's data isn't in our `features` table → not editable, but still show the panel
     // Scope to THIS layer's id. feature_id alone is GLOBAL, so a tile id can collide with an unrelated
     // migrated feature on another layer and "edit" (and hide) the wrong thing — the vanishing-feature bug.
     var EB = getEditBackend(node);   // Phase 2a: read from this layer's edit backend (platform `features` unless the tileset declared its own)
-    var res; try { res = await EB.db.from(EB.table).select(EB.idCol + ', ' + EB.layerCol + ', ' + EB.geomCol + ', label, description, start_date, end_date, content_id').eq(EB.idCol, fid).eq(EB.layerCol, lyrId).single(); } catch (e) { res = { error: e }; }
+    var wantCustom = EB.table === 'features';   // custom_fields is a platform column — foreign edit backends may not have it
+    var res; try { res = await EB.db.from(EB.table).select(EB.idCol + ', ' + EB.layerCol + ', ' + EB.geomCol + ', label, description, start_date, end_date, content_id' + (wantCustom ? ', custom_fields' : '')).eq(EB.idCol, fid).eq(EB.layerCol, lyrId).single(); } catch (e) { res = { error: e }; }
     if (res.error || !res.data || !res.data[EB.geomCol]) { engineViewerPanel(node, clickEvt); return; }   // display-only feature (not in the edit backend) → no edit, but the viewer's panel still opens
     var row = res.data, rowGeom = row[EB.geomCol], origGeom = { type: rowGeom.type, coordinates: rowGeom.coordinates };
     if (origGeom.type === 'MultiPolygon') { _engineWasMulti[drawId] = true; _engineOrigMulti[drawId] = origGeom; }
     var geom = toDrawPolygon(origGeom);   // mapbox-gl-draw needs a Polygon
     featureToDb[drawId] = fid; featureLayer[drawId] = row[EB.layerCol]; _engineEditNode[drawId] = node;
-    featureMeta[drawId] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '' };
+    featureMeta[drawId] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '', custom: row.custom_fields || null };
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
-    try { draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: featureProps(node) || {} }); } catch (e) { setStatus('Edit failed'); return; }
+    var epProps = featureProps(node) || {};
+    // colorBy layers: the editable copy keeps the FEATURE's own category color (not the layer default)
+    try { if (node.colorBy && node.colorBy.mapping && row.custom_fields) { var cbv2 = row.custom_fields[node.colorBy.prop]; var mc2 = cbv2 != null ? node.colorBy.mapping[String(cbv2)] : null; if (mc2) epProps.color = mc2; } } catch (e) {}
+    try { draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: epProps }); } catch (e) { setStatus('Edit failed'); return; }
     (_engineEditIds[node.id] = _engineEditIds[node.id] || []); if (_engineEditIds[node.id].indexOf(fid) < 0) _engineEditIds[node.id].push(fid);
     if (_engineEdited[node.id] && _engineEdited[node.id][fid] != null) { delete _engineEdited[node.id][fid]; refreshEditedOverlay(node); }   // pull it back off the overlay while editing
     applyEngineEditFilter(node);   // hide the read-only render of just this feature, so only the editable copy shows
@@ -771,6 +777,7 @@
     try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {}
     updateArmedHl();
     showFeaturePanel(drawId);
+    updateGroupHl(drawId);
     setStatus('Feature ' + fid + ' — click it again to edit its shape');
   }
   function applyEngineEditFilter(node) {
@@ -1110,7 +1117,7 @@
   }
 
   // ── import: GeoJSON / KML / Shapefile(.zip) → editable geojson-supabase layer(s) ──
-  var LIB = { togeojson: 'https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js', shp: 'https://unpkg.com/shpjs@4.0.4/dist/shp.js', turf: 'https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js' };
+  var LIB = { togeojson: 'https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js', shp: 'https://unpkg.com/shpjs@4.0.4/dist/shp.js', turf: 'https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js', fflate: 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js' };
   var _scripts = {};
   function loadScript(url) {   // lazy-load a parser lib only when that format is imported
     if (_scripts[url]) return _scripts[url];
@@ -1124,8 +1131,8 @@
   function showImportForm() {
     var bar = addFormEl();   // #2: buttons stay visible
     bar.innerHTML =
-      '<div style="font-size:11px;color:#555555;margin-bottom:5px;">Import a file → a new editable layer.<br>GeoJSON · KML · Shapefile (.zip)</div>' +
-      '<input id="editor-import-file" type="file" accept=".geojson,.json,.kml,.zip" style="width:100%;box-sizing:border-box;margin-bottom:6px;font-size:12px;" />' +
+      '<div style="font-size:11px;color:#555555;margin-bottom:5px;">Import file(s) → new editable layer(s).<br>GeoJSON · KML · KMZ · Shapefile (.zip). <b>Select several at once</b> → they land in an "Untitled batch" folder.</div>' +
+      '<input id="editor-import-file" type="file" multiple accept=".geojson,.json,.kml,.kmz,.zip" style="width:100%;box-sizing:border-box;margin-bottom:6px;font-size:12px;" />' +
       '<div style="font-size:11px;color:#555555;margin:8px 0 3px;border-top:1px solid #e8e8e8;padding-top:6px;">&hellip;or from a URL — ArcGIS/ESRI service, Hub page, or .geojson<br><span style="color:#999999;font-size:10px;">(any size — large layers auto-convert to tiles for fast rendering)</span></div>' +
       '<input id="editor-import-url" type="text" placeholder="https://…/MapServer · hub.arcgis.com/maps/… · ….geojson" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
       '<select id="editor-import-svc-layer" style="display:none;width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"></select>' +
@@ -1137,7 +1144,8 @@
       if (!fileInput.files || !fileInput.files.length) return;
       var sel = document.getElementById('editor-parent');
       var parent = (sel && sel.value) ? findNodeById(layers, sel.value) : null;
-      handleImportFile(fileInput.files[0], parent);
+      if (fileInput.files.length > 1) batchImport(fileInput.files, parent);   // several files → one "Untitled batch" folder
+      else handleImportFile(fileInput.files[0], parent);
     });
     document.getElementById('editor-import-url-go').addEventListener('click', importFromUrl);
     document.getElementById('editor-cancel').addEventListener('click', closeAddForm);
@@ -1351,22 +1359,57 @@
     if (lb && !lb.title) lb.title = (lb.textContent || '').trim();
   });
   function importStatus(m) { var s = document.getElementById('editor-import-status'); if (s) s.textContent = m; else setStatus(m); }
-  // Route a file by extension → a GeoJSON FeatureCollection → import it.
-  async function handleImportFile(file, parent) {
-    if (storageGate()) return;   // storage hard-stop: don't import data over the limit
+  // KMZ = a ZIP wrapping a KML (+ optional assets). Unzip, find the .kml, parse it.
+  async function kmzToFc(file) {
+    await loadScript(LIB.fflate);
+    await loadScript(LIB.togeojson);
+    var files = window.fflate.unzipSync(new Uint8Array(await file.arrayBuffer()));
+    var kmlName = Object.keys(files).filter(function (n) { return /\.kml$/i.test(n); }).sort()[0];   // doc.kml / any .kml
+    if (!kmlName) throw new Error('no .kml inside the .kmz');
+    var dom = new DOMParser().parseFromString(new TextDecoder().decode(files[kmlName]), 'text/xml');
+    if (dom.querySelector('parsererror')) throw new Error('the KML inside the KMZ is invalid');
+    return window.toGeoJSON.kml(dom);
+  }
+  // Parse ONE file by extension → FeatureCollection → import as layer(s). Throws on failure.
+  async function importOneFile(file, parent) {
     var ext = (file.name.split('.').pop() || '').toLowerCase();
     importStatus('Reading ' + file.name + '…');
-    try {
-      var fc = null, fmt = '';
-      if (ext === 'geojson' || ext === 'json') { fc = JSON.parse(await file.text()); fmt = 'GeoJSON'; }
-      else if (ext === 'kml') { await loadScript(LIB.togeojson); var dom = new DOMParser().parseFromString(await file.text(), 'text/xml'); if (dom.querySelector('parsererror')) throw new Error('not valid KML/XML'); fc = window.toGeoJSON.kml(dom); fmt = 'KML'; }
-      else if (ext === 'zip') { await loadScript(LIB.shp); var r = await window.shp(await file.arrayBuffer()); fc = Array.isArray(r) ? { type: 'FeatureCollection', features: r.reduce(function (a, c) { return a.concat(c.features || []); }, []) } : r; fmt = 'Shapefile'; }
-      else if (ext === 'kmz') throw new Error('KMZ not supported yet — unzip to KML first');
-      else if (ext === 'tif' || ext === 'tiff') throw new Error('GeoTIFF (raster) import is coming soon');
-      else throw new Error('Unsupported format .' + ext);
-      if (!fc || !fc.features || !fc.features.length) throw new Error('no features found');
-      await importFeatureCollection(fc, stripExt(file.name), parent);
-    } catch (e) { console.warn('editing: import failed', e); importStatus('Import failed: ' + e.message); }
+    var fc = null;
+    if (ext === 'geojson' || ext === 'json') fc = JSON.parse(await file.text());
+    else if (ext === 'kml') { await loadScript(LIB.togeojson); var dom = new DOMParser().parseFromString(await file.text(), 'text/xml'); if (dom.querySelector('parsererror')) throw new Error('not valid KML/XML'); fc = window.toGeoJSON.kml(dom); }
+    else if (ext === 'kmz') fc = await kmzToFc(file);
+    else if (ext === 'zip') { await loadScript(LIB.shp); var r = await window.shp(await file.arrayBuffer()); fc = Array.isArray(r) ? { type: 'FeatureCollection', features: r.reduce(function (a, c) { return a.concat(c.features || []); }, []) } : r; }
+    else if (ext === 'tif' || ext === 'tiff') throw new Error('GeoTIFF (raster) import is coming soon');
+    else throw new Error('unsupported format .' + ext);
+    if (!fc || !fc.features || !fc.features.length) throw new Error('no features found');
+    return await importFeatureCollection(fc, stripExt(file.name), parent);
+  }
+  // Single-file import (the file input's default path) — swallows errors into the status line.
+  async function handleImportFile(file, parent) {
+    if (storageGate()) return;   // storage hard-stop: don't import data over the limit
+    try { await importOneFile(file, parent); }
+    catch (e) { console.warn('editing: import failed', e); importStatus('Import failed: ' + e.message); }
+  }
+  // BATCH import: several files at once → each becomes a layer inside one "Untitled batch"
+  // folder. Size-capped (not feature-capped — hundreds of tiny single-point files are fine).
+  var BATCH_MAX_BYTES = 60 * 1024 * 1024;   // 60 MB of raw files per batch
+  var BATCH_MAX_FILES = 400;                // sanity cap on file count
+  async function batchImport(files, parent) {
+    if (storageGate()) return;
+    files = Array.prototype.slice.call(files);
+    var totalMB = files.reduce(function (a, f) { return a + f.size; }, 0) / 1048576;
+    if (files.length > BATCH_MAX_FILES) { importStatus('That\'s ' + files.length + ' files — the limit is ' + BATCH_MAX_FILES + ' per batch. Select fewer.'); return; }
+    if (totalMB > BATCH_MAX_BYTES / 1048576) { importStatus('That batch is ' + totalMB.toFixed(1) + ' MB — the limit is ' + (BATCH_MAX_BYTES / 1048576) + ' MB per batch. Select fewer/smaller files.'); return; }
+    var grp = await addItem('group', 'Untitled batch', (parent && parent.type === 'section') ? parent : null);
+    if (!grp) { importStatus('Could not create the batch folder'); return; }
+    var ok = 0, failed = [];
+    for (var i = 0; i < files.length; i++) {
+      importStatus('Importing ' + (i + 1) + '/' + files.length + ': ' + files[i].name + '  (' + totalMB.toFixed(1) + ' MB batch)');
+      try { await importOneFile(files[i], grp); ok++; }
+      catch (e) { console.warn('batch: file failed', files[i].name, e); failed.push(files[i].name + (e && e.message ? ' (' + e.message + ')' : '')); }
+    }
+    rerender();
+    setStatus('Batch done — ' + ok + '/' + files.length + ' imported into "Untitled batch"' + (failed.length ? ' · failed: ' + failed.join(', ') : ''));
   }
   // Split a FeatureCollection by geometry type (one type per layer) → persist layers + features.
   async function importFeatureCollection(fc, baseName, parent) {
@@ -1454,6 +1497,14 @@
           }
         }
       } catch (eConv) { console.warn('auto-convert skipped', eConv); importStatus('Imported — tile conversion skipped (' + (eConv && eConv.message) + ')'); }
+      // big-data table sidecar: layers past the big-table threshold get their Parquet baked NOW,
+      // in the background — the fast attribute table works immediately after import, no Publish needed
+      try {
+        if (window.MSBigTable) made.forEach(function (nB) {
+          var featsB = groups[nB.type] || [], lidB = slugToLayerDbId[nB.id];
+          if (lidB && featsB.length > MSBigTable.BIG_ROWS) MSBigTable.bakeFromDb(db, projectId, lidB, importStatus).catch(function (eB2) { console.warn('sidecar bake skipped', eB2); });
+        });
+      } catch (eBk) {}
       return made;
     } catch (e) { console.warn('editing: import persist failed', e); importStatus('Import failed: ' + e.message); return []; }
   }
@@ -2394,7 +2445,7 @@
       guideSetEditing(false);
       setStatus('Guide saved');
     } catch (e) {
-      window.alert('Guide save failed: ' + e.message + (/relation|does not exist|schema cache/i.test(e.message) ? '\n\n(The site_content table isn\'t created yet — run mapstructor_docs/sql/site-content-setup.sql.)' : ''));
+      window.alert('Guide save failed: ' + e.message + (/relation|does not exist|schema cache/i.test(e.message) ? '\n\n(The site_content table isn\'t created yet — run mapstructor_docs/sql/setup/site-content-setup.sql.)' : ''));
     }
     if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
   }
@@ -2915,15 +2966,31 @@
   }
   function drawFeatureAt(pt) {
     try {
-      var fs = beforeMap.queryRenderedFeatures(pt);
+      // ±8px grab corridor — thin lines are brutal to hit exactly; NEAREST candidate wins
+      var bx = 8;
+      var fs = beforeMap.queryRenderedFeatures([[pt.x - bx, pt.y - bx], [pt.x + bx, pt.y + bx]]);
+      var cands = [];
       for (var i = 0; i < fs.length; i++) {
         var f = fs[i];
         if (!f.layer || String(f.layer.id).indexOf('gl-draw') !== 0) continue;
         var did = f.properties && (f.properties.id || f.properties.parent);
-        if (did && featureMeta[did]) return did;
+        if (did && featureMeta[did]) { f._msDid = did; cands.push(f); }
+      }
+      if (cands.length) {
+        var hit = (typeof nearestFeature === 'function' && nearestFeature(cands, pt)) || cands[0];
+        return hit._msDid;
       }
     } catch (e) {}
     return null;
+  }
+  // pill for the GROUP corridor hover — same chrome as feature bubbles, text = the hovered
+  // family's raw name (the popup rides the glow, not exact feature touch)
+  function groupPillHtml(node, raw) {
+    var val = String(raw == null ? '' : raw).trim();
+    if (!val) return null;
+    var col = (node && node.iconColor) || '#3bb2d0';
+    var bg = colorTint(col, 0.5);
+    return "<div style=\"background-color:" + bg + ";border:solid " + col + " 2px;padding:5px;\">" + val.replace(/[<>&]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]; }) + '</div>';
   }
   function drawPopupHtml(node, did) {
     var meta = featureMeta[did] || {};
@@ -2965,11 +3032,21 @@
         // the RIGHT map has no MapboxDraw (which handles the left cursor) — set the pointer here
         // (but never while a draw tool is armed: the draw-side guard owns the right cursor then = not-allowed)
         if (m !== beforeMap && !isDrawArmed()) { try { m.getCanvas().style.cursor = did ? 'pointer' : ''; } catch (x) {} }
-        // hover-HIGHLIGHT (independent of the popup toggle; default on, gated by the layer's elp-hl setting)
-        setHoverHl((did && node && node.hoverHighlight !== false) ? did : null, node);
+        // hover-HIGHLIGHT (independent of the popup toggle; default on, gated by the layer's elp-hl
+        // setting; grouped layers never emphasize a single piece — the group overlay owns hover)
+        setHoverHl((did && node && node.hoverHighlight !== false && !node.groupBy) ? did : null, node);
+        // group hover: any piece of a "Treat as one" layer glows the WHOLE company (clicked group pins)
+        try { groupHoverAt(e.point); } catch (egh) {}
         var on = node && (node._uiHover != null ? node._uiHover : !!node.popupStyle);
         if (did && _drawClickPopId === did) on = false;   // click bubble already labels it — never stack a hover bubble on top
         var html = (did && node && on) ? drawPopupHtml(node, did) : null;
+        // the bubble rides the GLOW: a corridor hit on a grouped layer labels the company even
+        // when the cursor isn't touching the feature pixel-exactly (gated by the popup toggle)
+        if (!html && _lastGroupGv) {
+          var gn = _lastGroupGv.node;
+          var gOn = gn && (gn._uiHover != null ? gn._uiHover : !!gn.popupStyle);
+          if (gOn) html = groupPillHtml(gn, _lastGroupGv.raw);
+        }
         if (!html) { if (hoverPop.isOpen()) hoverPop.remove(); return; }
         hoverPop.setLngLat(e.lngLat).setHTML(html);
         if (!hoverPop.isOpen()) hoverPop.addTo(m);
@@ -3473,6 +3550,9 @@
       return db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gj2.did).then(function (cq) { return (cq && cq.count) || 0; }, function () { return 0; });
     }));
     counts.forEach(function (cn, gi) { if (cn > 0 && cn <= MAX_DRAW) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } });
+    // the map contains a big-table layer → warm the columnar engine at idle, so the first table
+    // open never pays the engine load (user-proposed prefetch rule, 7/18)
+    try { if (window.MSBigTable && counts.some(function (cn) { return cn > MSBigTable.BIG_ROWS; })) MSBigTable.prefetch(); } catch (e) {}
     hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
     // the engine adds its layers on style.load, which can land AFTER the hide above ran (getLayer misses →
     // nothing hidden → drawn features double-render and the engine's click/panel systems stay live) — re-hide once settled
@@ -3704,6 +3784,230 @@
     });
   }
   function updateArmedHl() { setArmedHl(_armedSet.map(function (id2) { try { return draw.get(id2); } catch (e) { return null; } })); }
+  // ═══ GROUP-AS-ONE — universal filter-twin design (7/18) ═══════════════════
+  // Membership is DECLARED, never copied: each grouped layer gets a twin
+  // highlight layer bound to the SAME source, and hover/click merely set its
+  // FILTER to the family's value list. The renderer evaluates membership per
+  // frame on exactly the tiles it draws — the glow can never be stale, partial,
+  // viewport-limited, or desynced, at any zoom, during any tile transition.
+  // (The old overlay SAMPLED tiles into a copy and suffered every timing state:
+  // mid-load emptiness, parent-tile pyramids, loaded-tiles-only membership.)
+  var GROUP_GLOW = {
+    line: { type: 'line', paint: { 'line-color': '#ff9d2e', 'line-width': 4.5, 'line-opacity': 0.55 } },
+    fill: { type: 'fill', paint: { 'fill-color': '#ffd54d', 'fill-opacity': 0.3 } },
+    circle: { type: 'circle', paint: { 'circle-color': '#ffd54d', 'circle-opacity': 0.4, 'circle-radius': 8, 'circle-stroke-color': '#ff9d2e', 'circle-stroke-width': 1.5 } }
+  };
+  var FILTER_NONE = ['in', '__ms_none__', 'x'];   // legacy-syntax "match nothing"
+  var _groupFam = {};       // layerDbId → { loaded, byFamily: {family → {variants:[raw…], count}} }
+  var _groupActive = null;  // { node, raw } currently glowing (hover or pinned)
+  function ensureGroupTwin(node) {
+    var spec = GROUP_GLOW[node.type] || GROUP_GLOW.line;
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
+      var m = pr[1]; if (!m) return;
+      var gid = node.id + '-group-hl-' + pr[0];
+      try {
+        if (m.getLayer(gid) || !m.getSource(node.id + '-' + pr[0])) return;
+        var cfg = { id: gid, type: spec.type, source: node.id + '-' + pr[0], paint: spec.paint, filter: FILTER_NONE };
+        if (node['source-layer']) cfg['source-layer'] = node['source-layer'];
+        m.addLayer(cfg);
+        if (typeof msRaiseLabelLayers === 'function') msRaiseLabelLayers(m, layers);   // glow under labels
+      } catch (e) {}
+    });
+  }
+  // family variant lists come from the SERVER's distinct-value counts (whole layer, not a tile
+  // sample) — loaded once per layer; until they land, the filter matches the exact raw value
+  // and silently upgrades to the full family when counts arrive.
+  function loadGroupFamilies(node) {
+    var lid = slugToLayerDbId[node.id];
+    if (!lid || _groupFam[lid]) return;
+    _groupFam[lid] = { loaded: false, byFamily: {} };
+    try {
+      db.rpc('ms_layer_key_counts', { p_layer: lid, p_key: node.groupBy }).then(function (r) {
+        var st = _groupFam[lid]; st.loaded = true;
+        ((r && r.data) || []).forEach(function (c) {
+          var fam = gnorm(c.k); if (!fam) return;
+          var f = st.byFamily[fam] || (st.byFamily[fam] = { variants: [], count: 0 });
+          f.variants.push(c.k); f.count += c.n;
+        });
+        if (_groupActive && slugToLayerDbId[_groupActive.node.id] === lid) applyGroupFilter();
+      });
+    } catch (e) { _groupFam[lid].loaded = true; }
+  }
+  function familyFor(node, raw) {
+    var lid = slugToLayerDbId[node.id];
+    var st = lid && _groupFam[lid];
+    var fam = st && st.byFamily[gnorm(raw)];
+    return fam || { variants: [String(raw)], count: null };
+  }
+  function applyGroupFilter() {
+    var a = _groupActive;
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
+      var m = pr[1]; if (!m) return;
+      (function walk(arr) { (arr || []).forEach(function (n) {
+        if (n.groupBy) {
+          var gid = n.id + '-group-hl-' + pr[0];
+          if (m.getLayer(gid)) {
+            var filt = FILTER_NONE;
+            if (a && a.node.id === n.id) {
+              // legacy 'in' composes with the engine's legacy date filter (mixing legacy +
+              // expression syntax throws — the historic AHM filter bug)
+              var inClause = ['in', n.groupBy === 'label' ? 'label' : n.groupBy].concat(familyFor(n, a.raw).variants);
+              var base = null; try { base = m.getFilter(n.id + '-' + pr[0]) || null; } catch (e) {}
+              // strip engine-edit ['!in','$id',…] exclusions: a CLICKED piece is pulled into draw and
+              // excluded from the main layer, but it must still glow with its family
+              if (base && base[0] === 'all') base = ['all'].concat(base.slice(1).filter(function (c) { return !(Array.isArray(c) && c[0] === '!in' && c[1] === '$id'); }));
+              else if (base && base[0] === '!in' && base[1] === '$id') base = null;
+              filt = !base ? inClause : (base[0] === 'all' ? base.concat([inClause]) : ['all', base, inClause]);
+            }
+            try { m.setFilter(gid, filt); } catch (e2) {}
+          }
+        }
+        if (n.children) walk(n.children);
+      }); })(typeof layers !== 'undefined' ? layers : []);
+    });
+  }
+  function setGroupActive(node, raw) {   // raw = null clears the glow everywhere
+    _groupActive = (node && raw != null && gnorm(raw)) ? { node: node, raw: raw } : null;
+    if (_groupActive) { ensureGroupTwin(node); loadGroupFamilies(node); }
+    applyGroupFilter();
+    wireGroupFilterSync();
+  }
+  // the twin embeds the MAIN layer's current (date) filter — recompose when the renderer settles
+  // so timeline scrubs keep the glow date-correct. One cheap setFilter; no data copying, ever.
+  var _groupSyncWired = false;
+  function wireGroupFilterSync() {
+    if (_groupSyncWired || typeof beforeMap === 'undefined' || !beforeMap) return;
+    _groupSyncWired = true;
+    beforeMap.on('idle', function () { if (_groupActive) applyGroupFilter(); });
+  }
+  // normalized matching: "Baltimore & Ohio" and "Baltimore and Ohio" are ONE company (data has
+  // 30 such variant families) — labels.js owns the normalizer; fallback = trim only
+  function gnorm(v) { return (window.msGroupNorm || function (x) { return String(x == null ? '' : x).trim().toLowerCase(); })(v); }
+  var _groupLock = false;   // a CLICKED group pins the glow — hover-grouping won't repaint over it
+  function updateGroupHl(did) {
+    var note = document.getElementById('efp-group-note');
+    function off() { _groupLock = false; _groupHoverVal = null; setGroupActive(null, null); if (note) note.style.display = 'none'; }
+    if (!did) { off(); return; }
+    var lid = featureLayer[did];
+    var node = lid ? nodeByLayerDbId(lid) : null;
+    if (!node && _engineEditNode[did]) node = _engineEditNode[did];
+    var key = node && node.groupBy;
+    if (!key) { off(); return; }
+    var m = featureMeta[did] || {};
+    var raw = (key === 'label') ? (m.label || '') : (m.custom ? m.custom[key] : null);
+    if (!gnorm(raw)) { off(); return; }   // blank/junk values NEVER group
+    setGroupActive(node, raw);
+    setArmedHl(null);   // uniform glow: no piece looks more selected than the rest (user 7/17)
+    _groupLock = true;
+    if (note) {
+      var fam = familyFor(node, raw);
+      note.textContent = 'Part of “' + String(raw).trim() + '”' + (fam.count ? ' — ' + nfmt(fam.count) + ' pieces as one' : '');
+      note.style.display = 'block';
+    }
+  }
+  // ── group HOVER: hovering any piece glows the whole company (same overlay; a clicked group pins it) ──
+  var _groupHoverVal = null;
+  function groupEnabledEngineIds() {
+    var ids = [];
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.groupBy && beforeMap.getLayer(n.id + '-left')) ids.push(n.id + '-left'); if (n.children) walk(n.children); }); })(typeof layers !== 'undefined' ? layers : []);
+    return ids;
+  }
+  function groupValueAt(pt) {   // {node, key, val, geom} under the (buffered) point, or null
+    var bx = 8;
+    // draw features first (they render on top)
+    var did = drawFeatureAt(pt);
+    if (did && featureLayer[did]) {
+      var node1 = nodeByLayerDbId(featureLayer[did]) || _engineEditNode[did];
+      var key1 = node1 && node1.groupBy;
+      if (key1) {
+        var m1 = featureMeta[did] || {};
+        var v1 = (key1 === 'label') ? (m1.label || '') : (m1.custom ? m1.custom[key1] : null);
+        if (gnorm(v1)) return { node: node1, key: key1, val: gnorm(v1), raw: v1 };
+      }
+    }
+    // engine-rendered group-enabled layers — NEAREST candidate wins (render order lies at crossings)
+    try {
+      var lids = groupEnabledEngineIds();
+      if (lids.length) {
+        var fs = beforeMap.queryRenderedFeatures([[pt.x - bx, pt.y - bx], [pt.x + bx, pt.y + bx]], { layers: lids }) || [];
+        fs = fs.filter(function (f) {
+          var n2 = findNodeById(layers, String(f.layer.id).replace(/-(left|right)$/, ''));
+          if (!n2 || !n2.groupBy) return false;
+          var vv = (n2.groupBy === 'label') ? (f.properties || {}).label : (f.properties || {})[n2.groupBy];
+          f._msNode = n2; f._msVal = vv;
+          return !!gnorm(vv);
+        });
+        var hit = nearestFeature(fs, pt);
+        if (hit) return { node: hit._msNode, key: hit._msNode.groupBy, val: gnorm(hit._msVal), raw: hit._msVal };
+      }
+    } catch (e) {}
+    return null;
+  }
+  // ── NEAREST-feature hit-testing: a bbox query returns candidates in RENDER order (topmost
+  //    first), so crossing/parallel lines made the corridor pick the WRONG line — you hovered A
+  //    and B glowed. Pick by true screen distance to the cursor instead. ──
+  function distToSegPx(p, a, b) {
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var l2 = dx * dx + dy * dy;
+    if (!l2) { var ex = p.x - a.x, ey = p.y - a.y; return Math.sqrt(ex * ex + ey * ey); }
+    var t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2));
+    var qx = a.x + t * dx - p.x, qy = a.y + t * dy - p.y;
+    return Math.sqrt(qx * qx + qy * qy);
+  }
+  function distToFeaturePx(f, pt) {
+    try {
+      var g = f.geometry; if (!g) return 1e9;
+      var lines;
+      if (g.type === 'LineString') lines = [g.coordinates];
+      else if (g.type === 'MultiLineString') lines = g.coordinates;
+      else if (g.type === 'Polygon') lines = g.coordinates;
+      else if (g.type === 'MultiPolygon') { lines = []; g.coordinates.forEach(function (pg) { lines = lines.concat(pg); }); }
+      else if (g.type === 'Point') { var P0 = beforeMap.project({ lng: g.coordinates[0], lat: g.coordinates[1] }); var ex = pt.x - P0.x, ey = pt.y - P0.y; return Math.sqrt(ex * ex + ey * ey); }
+      else return 1e9;
+      var bd = 1e9;
+      for (var li = 0; li < lines.length; li++) {
+        var c = lines[li], prev = null;
+        for (var i = 0; i < c.length; i++) {
+          var P = beforeMap.project({ lng: c[i][0], lat: c[i][1] });
+          if (prev) { var d = distToSegPx(pt, prev, P); if (d < bd) bd = d; }
+          prev = P;
+        }
+      }
+      return bd;
+    } catch (e) { return 1e9; }
+  }
+  function nearestFeature(fs, pt) {
+    var best = null, bd = 1e9;
+    for (var i = 0; i < (fs || []).length; i++) {
+      var d = distToFeaturePx(fs[i], pt);
+      if (d < bd) { bd = d; best = fs[i]; }
+    }
+    return best;
+  }
+  function setGroupCursor(on) {   // finger whenever a groupable piece is under the cursor. Enforced
+    // EVERY mousemove (no caching) — other handlers (engine panel enter/leave, right-map draw cursor)
+    // also write the canvas cursor, and a cached skip let their stale hand icon win.
+    if (typeof isDrawArmed === 'function' && isDrawArmed()) return;
+    [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
+      if (!m) return;
+      try {
+        var c = m.getCanvas();
+        if (on) { if (c.style.cursor !== 'pointer') c.style.cursor = 'pointer'; }
+        else if (c.style.cursor === 'pointer') c.style.cursor = '';
+      } catch (e) {}
+    });
+  }
+  var _lastGroupGv = null;   // last corridor hit — the hover bubble rides it
+  function groupHoverAt(pt) {   // called from the shared mousemove — declarative: one setFilter per company change
+    var gv = groupValueAt(pt);
+    _lastGroupGv = gv;
+    setGroupCursor(!!gv);
+    if (_groupLock) return;   // a clicked group is pinned — hover only drives the cursor
+    if (!gv) { if (_groupHoverVal != null) { _groupHoverVal = null; setGroupActive(null, null); } return; }
+    if (gv.val === _groupHoverVal) return;   // same family — the filter is already live; the renderer keeps it correct
+    _groupHoverVal = gv.val;
+    setGroupActive(gv.node, gv.raw);
+  }
   function syncAttrRowsFromMap(feats) {   // clicking feature(s) on the MAP selects their row(s) in the open attribute table
     if (!_attrSlug) return;
     if (!feats || !feats.length) { _attrSel = []; applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn(); return; }
@@ -3715,8 +4019,15 @@
     if (!fids.length) return;   // table open for a different layer
     _attrSel = fids;
     applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn();
-    var row = document.querySelector('#editor-attr-tbody tr[data-fid="' + fids[fids.length - 1] + '"]');
-    if (row) row.scrollIntoView({ block: 'nearest' });   // explicit click (not hover) — bringing the row into view is wanted here
+    // windowed body: the row may not be in the DOM at all — scroll the WINDOW to its index,
+    // which renders it, then the usual into-view nudge applies
+    var lastFid = fids[fids.length - 1];
+    var row = document.querySelector('#editor-attr-tbody tr[data-fid="' + lastFid + '"]');
+    if (!row && _attrWin) {
+      for (var ri = 0; ri < _attrRows.length; ri++) { if (String(_attrRows[ri].feature_id) === lastFid) { _attrWin.scrollToIndex(ri); break; } }
+      row = document.querySelector('#editor-attr-tbody tr[data-fid="' + lastFid + '"]');
+    }
+    if (row && !_attrWin) row.scrollIntoView({ block: 'nearest' });   // fixed-viewport mode: scrollToIndex above already placed it; native scrollIntoView would scroll the page
     fillAttrPreview(fids[fids.length - 1]);
   }
   // ── click model on the map (two-stage; modifier = GIS-style multi-select): ──
@@ -3727,10 +4038,10 @@
   // The deselects/selects are DEFERRED one tick: mapbox-draw's click pipeline finishes after this
   // handler and re-applies its own selection — synchronous changes here get clobbered.
   function deferDrawSel(list) { setTimeout(function () { try { draw.changeMode('simple_select', { featureIds: list }); } catch (e2) {} }, 0); }
-  function clearArmedSet() { _armedSet = []; setArmedHl(null); }
+  function clearArmedSet() { _armedSet = []; setArmedHl(null); updateGroupHl(null); }
   function armedIdsToRows() { syncAttrRowsFromMap(_armedSet.map(function (i3) { return { id: i3 }; })); }
   function onSelectionChange(e) {
-    if (!e.features || !e.features.length) { _skipArmOnce = false; _editingDraw = null; _armedSet = []; setArmedHl(null); hideFeaturePanel(); syncAttrRowsFromMap([]); return; }
+    if (!e.features || !e.features.length) { _skipArmOnce = false; _editingDraw = null; _armedSet = []; setArmedHl(null); updateGroupHl(null); hideFeaturePanel(); syncAttrRowsFromMap([]); return; }
     if (_skipArmOnce) {   // a JUST-DRAWN feature: skip stage 1 — it stays selected (stage 2) with the panel open
       var f0 = e.features[0];
       _skipArmOnce = false; _editingDraw = String(f0.id); _armedSet = []; setArmedHl(null);
@@ -3755,6 +4066,7 @@
       setArmedHl(null);
       deferDrawSel([id]);
       showFeaturePanel(id);   // idempotent — also restores the panel when entering from a multi-select set
+      updateGroupHl(id);      // the company stays lit while one piece is being edited
       syncAttrRowsFromMap([{ id: id }]);
       return;
     }
@@ -3764,7 +4076,7 @@
       _armedSet.push(id);
       _editingDraw = null;
       deferDrawSel([]);
-      updateArmedHl(); armedIdsToRows();
+      updateArmedHl(); updateGroupHl(null); armedIdsToRows();   // multi-select is manual — group glow off
       hideFeaturePanel();
       return;
     }
@@ -3774,6 +4086,7 @@
     deferDrawSel([]);
     updateArmedHl();
     showFeaturePanel(id);
+    updateGroupHl(id);
     syncAttrRowsFromMap([{ id: id }]);
   }
   function injectFeaturePanel() {
@@ -3783,6 +4096,7 @@
     p.style.cssText = 'position:fixed;top:120px;right:12px;width:240px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // scroll + stay above the timeline
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b>Feature</b><span id="efp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
+      '<div id="efp-group-note" style="display:none;font-size:11px;color:#7a5cc9;background:#f4f1fb;border-radius:4px;padding:4px 6px;margin-bottom:6px;"></div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label</label>' +
       '<input id="efp-label" type="text" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Notes</label>' +
@@ -3814,7 +4128,7 @@
     document.body.appendChild(p);
     document.getElementById('efp-close').addEventListener('click', function () {   // ✕ = full deselect: also reset the click-stage bookkeeping, or the NEXT click on this feature would skip stage 1
       if (draw) try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {}
-      _editingDraw = null; _armedSet = []; setArmedHl(null);
+      _editingDraw = null; _armedSet = []; setArmedHl(null); updateGroupHl(null);
       hideFeaturePanel();
     });
     document.getElementById('efp-pageid').addEventListener('input', function () { onFeatureField('pageid', this.value); });
@@ -3878,7 +4192,7 @@
     hideFeaturePanel();
     if (!fid) { try { if (draw && draw.get(did)) draw.delete(did); } catch (e) {} return; }   // never-saved feature: just drop it
     var n = await deleteDrawnByFids([fid], 'delete feature');
-    if (_attrSlug) { delete _attrById[String(fid)]; _attrRows = _attrRows.filter(function (r) { return String(r.feature_id) !== String(fid); }); _attrSel = _attrSel.filter(function (s) { return s !== String(fid); }); if (document.getElementById('editor-attr-modal') && document.getElementById('editor-attr-modal').style.display !== 'none') { buildAttrHead(); renderAttrBody(); } }   // keep an open table in sync
+    if (_attrSlug) { delete _attrById[String(fid)]; _attrRows = _attrRows.filter(function (r) { return String(r.feature_id) !== String(fid); }); _attrSel = _attrSel.filter(function (s) { return s !== String(fid); }); if (document.getElementById('editor-attr-modal') && document.getElementById('editor-attr-modal').style.display !== 'none') { buildAttrHead(); renderAttrBody(true); } }   // keep an open table in sync (hold scroll position)
     setStatus(n ? 'Feature deleted' : 'Delete failed');
   }
   // ── encyclopedia info panel (editor): renders into the engine's REAL #rightInfoBar / .infoLayerElem so the
@@ -4093,7 +4407,11 @@
     if (!row || !sel) return;
     syncColorInputForColorBy(node);
     var isDrawn = node && node.source_type === 'geojson-supabase';
-    row.style.display = isDrawn ? 'block' : 'none';
+    // color-by works on TILESET LINE layers too (values come from server counts; the paint match
+    // expression evaluates against tile properties) — polygons/points stay drawn-only for now
+    var tsColorable = node && isTilesetNode(node) && node.type === 'line' && slugToLayerDbId[node.id];
+    row.style.display = (isDrawn || tsColorable) ? 'block' : 'none';
+    var gbRow = document.getElementById('elp-groupby-row'); if (gbRow) gbRow.style.display = 'none';   // (re)shown by fillGroupBySelect on drawn layers only
     ['elp-opacityby-row', 'elp-thickby-row'].forEach(function (rid) { var r2 = document.getElementById(rid); if (r2) r2.style.display = isDrawn ? 'block' : 'none'; });   // the by-column selects live NEXT TO their sliders now (paired groups)
     if (!isDrawn) {
       // TILESETS: the columns live in the tiles — union the property keys of the loaded features so
@@ -4117,6 +4435,16 @@
         } else {
           var mlRow2 = document.getElementById('elp-maplabels-row'); if (mlRow2) mlRow2.style.display = 'none';   // also clears a stale 'block' from a previously-selected drawn layer
           var mlHelp2 = document.getElementById('elp-lbl-help'); if (mlHelp2) mlHelp2.style.display = 'none';
+        }
+        // "Treat as one" works on tilesets too: members come from the loaded tiles (which carry the baked columns)
+        fillGroupBySelect(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
+        // color-by for tileset LINES: same control, values later fetched from server counts
+        if (tsColorable) {
+          sel.innerHTML = '<option value="">Single color</option>';
+          tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }).forEach(function (k) { var oc2 = document.createElement('option'); oc2.value = k; oc2.textContent = k; sel.appendChild(oc2); });
+          var cbt = node.colorBy;
+          if (cbt && cbt.prop) { if (![].slice.call(sel.options).some(function (o) { return o.value === cbt.prop; })) { var oc3 = document.createElement('option'); oc3.value = cbt.prop; oc3.textContent = cbt.prop; sel.appendChild(oc3); } sel.value = cbt.prop; info.textContent = cbt.mode === 'hex' ? "Using the column's own hex colors." : (Object.keys(cbt.mapping || {}).length + ' categories, one color each.'); }
+          else { sel.value = ''; info.textContent = ''; }
         }
       }
       return;
@@ -4149,7 +4477,36 @@
       fillMapLabelControls(node, sortedKeys);
       // the Label-field dropdown gets the same columns ("label" = the feature's own Label field)
       fillLabelFieldSelect(node, sortedKeys);
+      fillGroupBySelect(node, sortedKeys);
     } catch (e) {}
+  }
+  // "Treat as one" — drawn layers only for now (tileset tiles may not carry the column; the
+  // engine source / draw metas do). Same column list as labels/color-by, plus "label".
+  function fillGroupBySelect(node, sortedKeys) {
+    var row = document.getElementById('elp-groupby-row'), sel = document.getElementById('elp-groupby');
+    if (!row || !sel) return;
+    row.style.display = 'block';
+    sel.innerHTML = '<option value="">— off (each feature on its own) —</option><option value="label">label (the feature\'s own Label)</option>';
+    sortedKeys.forEach(function (k) { if (k === 'label') return; var o = document.createElement('option'); o.value = k; o.textContent = k; sel.appendChild(o); });
+    var g = node.groupBy || '';
+    if (g && g !== 'label' && sortedKeys.indexOf(g) < 0) { var o2 = document.createElement('option'); o2.value = g; o2.textContent = g; sel.appendChild(o2); }
+    sel.value = g;
+  }
+  async function onGroupBy(value) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    node.groupBy = (value || '').trim() || null;
+    setStatus('Saving…');
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (node.groupBy) rc.groupBy = node.groupBy; else delete rc.groupBy;
+      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      if (r.error) throw new Error(r.error.message);
+      setStatus('Saved');
+    } catch (e) { setStatus('Save failed'); }
+    if (selectedDrawId) updateGroupHl(selectedDrawId);   // live: re-light (or clear) the current selection
   }
   // map-labels controls: checkbox + column pick (same columns, "label" first) — shared by the
   // geojson path AND tileset LINE layers (labels on tileset lines, 7/16)
@@ -4197,21 +4554,29 @@
         paint[key] = fallback;
         if (info) info.textContent = '';
       } else {
-        var rows = [];
-        for (var off = 0; ; off += 1000) {   // all values (paged)
-          var fr = await db.from('features').select('custom_fields').eq('layer_id', lid).order('feature_id').range(off, off + 999);
-          if (fr.error || !fr.data || !fr.data.length) break;
-          rows = rows.concat(fr.data);
-          if (fr.data.length < 1000) break;
-        }
         var seen = {}, order = [];
-        rows.forEach(function (f) { var v = f.custom_fields ? f.custom_fields[prop] : null; if (v == null) return; var s = String(v); if (!(s in seen)) { seen[s] = 1; order.push(s); } });
+        if (isTilesetNode(node)) {
+          // tileset layers: distinct values from ONE server call (paging 78k rows would be heavy)
+          var cr9 = await db.rpc('ms_layer_key_counts', { p_layer: lid, p_key: prop });
+          if (cr9.error) throw new Error(cr9.error.message + (/function|does not exist/.test(cr9.error.message) ? ' — run sql/setup/query-ops-setup.sql first' : ''));
+          ((cr9.data) || []).slice().sort(function (a, b) { return b.n - a.n; }).forEach(function (c9) { var s9 = String(c9.k); if (!(s9 in seen)) { seen[s9] = 1; order.push(s9); } });
+        } else {
+          var rows = [];
+          for (var off = 0; ; off += 1000) {   // all values (paged)
+            var fr = await db.from('features').select('custom_fields').eq('layer_id', lid).order('feature_id').range(off, off + 999);
+            if (fr.error || !fr.data || !fr.data.length) break;
+            rows = rows.concat(fr.data);
+            if (fr.data.length < 1000) break;
+          }
+          rows.forEach(function (f) { var v = f.custom_fields ? f.custom_fields[prop] : null; if (v == null) return; var s = String(v); if (!(s in seen)) { seen[s] = 1; order.push(s); } });
+        }
         if (!order.length) { setStatus('No values in that column'); showToast('That column has no values'); return; }
         // literal-colour columns: hex (with/without #), rgb()/rgba(), or the explicit "none" (→ un-filled: the
         // source left these uncolored — ESRI renders them invisible; we keep the outline so the feature stays findable)
         var isColorVal = function (v) { var s2 = String(v == null ? '' : v).trim(); return looksHex(s2) || /^rgba?\([^)]+\)$/i.test(s2) || s2.toLowerCase() === 'none'; };
         var allHex = order.every(isColorVal);
-        if (!allHex && order.length > 60) { setStatus('Too many categories'); showToast('Too many distinct values to color by (' + order.length + ')'); return; }
+        var catCap = isTilesetNode(node) ? 600 : 60;   // tileset lines (e.g. 491 railroad companies) legitimately cycle the palette
+        if (!allHex && order.length > catCap) { setStatus('Too many categories'); showToast('Too many distinct values to color by (' + order.length + ')'); return; }
         var mapping = {};
         order.forEach(function (v, i) {
           if (!allHex) { mapping[v] = COLORBY_PALETTE[i % COLORBY_PALETTE.length]; return; }
@@ -4237,7 +4602,7 @@
         var m = ms[0]; if (!m) return;
         try { if (m.getLayer(node.id + ms[1])) m.setPaintProperty(node.id + ms[1], key, paint[key]); } catch (e) {}
       });
-      await loadFeatures();
+      if (!isTilesetNode(node)) await loadFeatures();   // draw copies re-color; tilesets recolor via paint alone
       rerender();   // sidebar icon flips to/from the multicolor gradient (generateLayers reads node.colorBy)
       syncColorInputForColorBy(node);   // panel swatch ↔ multicolor strip
       setStatus('Saved');
@@ -4270,7 +4635,10 @@
       try { if (m.getLayer(lyrId)) m.removeLayer(lyrId); } catch (e) {}
       try { if (m.getSource(srcId)) m.removeSource(srcId); } catch (e) {}
       if (!node.labels || !node.labels.field) return;
-      var proxy = { id: node.id, type: node.type, labels: node.labels,
+      // TILESET lines: labels ride the vector source (labels.js needs the REAL node's source/source-layer);
+      // the geojson-anchor proxy is only for drawn/imported layers
+      var isVecLine = node.type === 'line' && node.source && node.source.type === 'vector';
+      var proxy = isVecLine ? node : { id: node.id, type: node.type, labels: node.labels,
         source: { type: 'geojson', data: { type: 'FeatureCollection', features: labelFeaturesFor(node) } } };
       var ll = msLabelLayerFor(proxy, side, 'visible', m);   // m → fonts the style's glyph server actually has
       if (!ll) return;
@@ -4774,6 +5142,9 @@
         '<label id="elp-hl-label" class="ms-check" style="display:none;margin-bottom:6px;"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
         '<label class="ms-lbl">Label field (what the popup shows)</label>' +
         '<select id="elp-labelfield" class="ms-in"><option value="label">label (the feature\'s own Label)</option></select>' +
+      '<div id="elp-groupby-row" style="display:none;margin-top:8px;"><label class="ms-lbl">Treat as one (highlight group)</label>' +
+      '<select id="elp-groupby" class="ms-in"><option value="">— off (each feature on its own) —</option></select>' +
+      '<div class="ms-note">Click any piece → <b>everything sharing this column\'s value lights up together</b> — e.g. a railroad stored as many segments highlights as ONE line. The data stays in pieces; only the experience is unified.</div></div>' +
       // panel-row + enc-row live INSIDE the Popups & info card (they're the info-panel + encyclopedia settings)
       '<div id="elp-panel-row" style="margin-top:8px;"><label class="ms-lbl">Info panel (on feature click)</label>' +
       '<select id="elp-panel-mode" class="ms-in"><option value="notes">Title + notes</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
@@ -4906,6 +5277,7 @@
     document.getElementById('elp-click').addEventListener('change', onInteraction);
     document.getElementById('elp-hl').addEventListener('change', onInteraction);
     document.getElementById('elp-labelfield').addEventListener('change', onInteraction);
+    document.getElementById('elp-groupby').addEventListener('change', function () { onGroupBy(this.value); });
   }
   // Per-layer hover/click popup toggles + which property the popup shows. The engine wires hover/click
   // only for layers that have a popupStyle (the CSS bubble class), so "Popup on hover" maps to setting it.
@@ -5131,7 +5503,7 @@
       '#editor-attr-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #cccccc;font-size:15px;color:#2b3a4a;cursor:move;}' +   // header doubles as the drag handle (move the panel off the map)
       '#editor-attr-head .attr-head-l{display:flex;align-items:center;gap:10px;min-width:0;}' +
       '#editor-attr-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '#editor-attr-zoom{font-size:12px;padding:3px 9px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;white-space:nowrap;}' +
+      '#editor-attr-zoom,#editor-attr-transfer{font-size:12px;padding:3px 9px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;white-space:nowrap;}' +
       '#editor-attr-zoom:disabled{opacity:0.45;cursor:default;}' +
       '#editor-attr-del{font-size:12px;padding:3px 9px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;white-space:nowrap;}' +
       '#editor-attr-del:disabled{opacity:0.45;cursor:default;}' +
@@ -5173,6 +5545,12 @@
       '#editor-attr-table tr#attr-preview-row td{position:sticky;z-index:4;background:#fffbe6;border-bottom:2px solid #e3dcae;box-sizing:border-box;padding:7px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:#333333;}' +
       '#editor-attr-table tr#attr-preview-row td.attr-preview-empty{color:#999999;font-style:italic;}' +
       '#editor-attr-table th{z-index:5;}' +   // brushed from the map (or direct hover) — matches the cyan map highlight
+      // WHITE-SCROLL root cause (7/18, seen on real-GPU screencast): per-cell position:sticky LEFT
+      // paints on a slow path — during fast vertical scrolling the pinned cells lag the compositor
+      // and show WHITE while normal cells keep up. At scrollLeft 0 sticky adds nothing (cells sit at
+      // their natural spot), so pin-stickiness is DISABLED (ms-nopin, tbody only — the thead preview
+      // row must keep its top-sticky) until the table is actually h-scrolled.
+      '#editor-attr-table.ms-nopin tbody td.attr-pin-cell{position:static;box-shadow:none;}' +
       '#editor-attr-foot{padding:8px 16px;border-top:1px solid #cccccc;font-size:12px;color:#888888;}';
     document.head.appendChild(st);
     var m = document.createElement('div'); m.id = 'editor-attr-modal';
@@ -5180,8 +5558,17 @@
       '<div id="editor-attr-panel">' +
         '<div id="editor-attr-head"><span class="attr-head-l"><b id="editor-attr-title">Attributes</b>' +
           '<button id="editor-attr-zoom" title="Zoom the map to the selected feature(s)" disabled>&#9673; Zoom to selected</button>' +
-          '<button id="editor-attr-del" title="Delete the selected feature(s)" disabled>&#128465; Delete selected</button></span>' +
+          '<button id="editor-attr-del" title="Delete the selected feature(s)" disabled>&#128465; Delete selected</button>' +
+          '<button id="editor-attr-transfer" title="Copy one column\'s values into another">&#8646; Transfer column</button></span>' +
           '<span id="editor-attr-close" title="Close">&times;</span></div>' +
+        '<div id="editor-attr-transfer-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#faf9fd;font-size:12.5px;">' +
+          'Copy <select id="attr-tr-from" style="font-size:12px;max-width:170px;"></select>' +
+          ' into <select id="attr-tr-to" style="font-size:12px;max-width:170px;"></select>' +
+          ' <label style="margin:0 8px;"><input type="checkbox" id="attr-tr-empty" checked style="vertical-align:middle;"> only where the target is empty</label>' +
+          '<button id="attr-tr-go" style="font-size:12px;padding:2px 10px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;cursor:pointer;">Apply</button>' +
+          ' <span id="attr-tr-status" style="color:#8a86a0;"></span>' +
+          '<div style="color:#8a86a0;margin-top:2px;">Rows whose source value is empty are left untouched. Tileset layers: the database updates now; tiles show it after the next Publish.</div>' +
+        '</div>' +
         '<div id="editor-attr-wrap"><table id="editor-attr-table"><thead id="editor-attr-thead"></thead><tbody id="editor-attr-tbody"></tbody></table></div>' +
         '<div id="editor-attr-foot"></div>' +
         '<div id="attr-rz-r"></div><div id="attr-rz-b"></div><div id="attr-rz-c"></div>' +
@@ -5190,6 +5577,8 @@
     document.getElementById('editor-attr-close').addEventListener('click', hideAttrModal);
     document.getElementById('editor-attr-zoom').addEventListener('click', zoomToAttrSelected);
     document.getElementById('editor-attr-del').addEventListener('click', deleteAttrSelected);
+    document.getElementById('editor-attr-transfer').addEventListener('click', toggleTransferPanel);
+    document.getElementById('attr-tr-go').addEventListener('click', runColumnTransfer);
     document.getElementById('editor-attr-head').addEventListener('mousedown', startAttrPanelDrag);
     // custom resize (right edge / bottom edge / corner) — native resize:both only gave the corner
     [['attr-rz-r', true, false], ['attr-rz-b', false, true], ['attr-rz-c', true, true]].forEach(function (spec) {
@@ -5251,7 +5640,10 @@
   var _attrCustom = {};   // fid → its custom_fields object, so a single-cell edit rewrites the whole jsonb
   var _attrRows = [], _attrCols = [], _attrSort = null, _attrSel = [];   // loaded rows + column model + {idx,dir} + selected feature_ids (highlighted on the map)
   var _attrLoadGen = 0;        // bump = abort any in-flight attribute load (close/reopen mid-load of a huge layer)
-  var ATTR_RENDER_CAP = 1500;  // rows RENDERED at once — 78k <tr> killed the page (7/15); all rows stay loaded for sort/search/delete
+  var ATTR_LOAD_CAP = 100000;  // tier-1 guardrail: rows STREAMED into memory — past this, a layer needs the big-data tier (Parquet sidecar) instead of a full fetch; rendering is windowed (MSAttrWindow) so DOM size never depends on row count
+  var _attrWin = null;         // MSAttrWindow instance for the (single, for now) attribute panel
+  var _attrVirtual = null;     // big-data tier: {prov, order, pending, N, gen, lid} when the open table pages from a >cap Parquet sidecar
+  var _attrRebakeT = null;     // debounce for background sidecar rebakes after edits
   function orderAttrKeys(keys, cap) {   // msid FIRST, ms_* style columns LAST, everything else between (cap trims the middle, never msid/ms_*)
     var style = ['ms_color', 'ms_linecolor', 'ms_opacity', 'ms_thickness', 'ms_labelsize'].filter(function (k) { return keys.indexOf(k) > -1; });
     var msid = keys.indexOf('msid') > -1 ? ['msid'] : [];
@@ -5268,6 +5660,104 @@
   }
   function attrDisp(r, c) { var v = attrCellVal(r, c); if (c.kind === 'date') return v ? String(v).slice(0, 10) : ''; return v == null ? '' : v; }
   function findAttrRow(fid) { return _attrById[String(fid)] || null; }
+  // lazy geometry: the table streams WITHOUT geom (it never displays it); the map-facing bits
+  // (hover glow, selection highlight, zoom-to-selected) pull geometries here on demand, batched,
+  // and cache them onto the same row objects. Tile-sourced rows already carry geometry.
+  async function ensureAttrGeoms(fids) {
+    var need = (fids || []).map(String).filter(function (fid) { var r = _attrById[fid]; return r && !r.geom && !r._tile; });
+    if (!need.length) return;
+    var gen = _attrLoadGen;
+    for (var i = 0; i < need.length; i += 200) {
+      try {
+        var res = await db.from('features').select('feature_id, geom').in('feature_id', need.slice(i, i + 200));
+        if (gen !== _attrLoadGen) return;   // table closed / re-opened mid-fetch
+        (res.data || []).forEach(function (r) { var row = _attrById[String(r.feature_id)]; if (row) row.geom = r.geom; });
+      } catch (e) { return; }
+    }
+  }
+  /* ── big-data tier plumbing (7/18) — see platform/bigtable.js ─────────── */
+  function attrBakeStatus(m) { try { setStatus(m); } catch (e) {} }
+  // after a full plain stream, big layers get their sidecar (re)baked in the background from the
+  // rows ALREADY in memory — covers brand-new imports (first open bakes, every later open is fast)
+  // and stale/dirty sidecars (the stream is the fresh truth)
+  function maybeBakeAfterStream(lid, rows, total, gen) {
+    if (!window.MSBigTable || _attrReadonly || !lid) return;
+    if (total <= MSBigTable.BIG_ROWS || total > MSBigTable.BAKE_MAX) return;
+    if (rows.length >= total) {
+      MSBigTable.bakeFromRows(db, projectId, lid, rows, attrBakeStatus).catch(function (e) { console.warn('sidecar bake failed', e); });
+      return;
+    }
+    // display cap hit but the layer is bakeable: keep streaming in the BACKGROUND into a bake-only
+    // copy, then bake — the next open serves ALL rows through virtual mode over the sidecar
+    (async function () {
+      try {
+        var all = rows.slice();
+        for (var from = all.length; from < MSBigTable.BAKE_MAX; from += 1000) {
+          var res = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, content_id').eq('layer_id', lid).order('feature_id').range(from, from + 999);
+          if (res.error) return;
+          Array.prototype.push.apply(all, res.data || []);
+          if (!res.data || res.data.length < 1000) break;
+        }
+        await MSBigTable.bakeFromRows(db, projectId, lid, all, attrBakeStatus);
+      } catch (e) { console.warn('sidecar backfill bake failed', e); }
+    })();
+  }
+  // an edit/delete landed on a sidecar'd layer: stamp dirty NOW (cheap — catches close-before-rebake),
+  // rebake from the in-memory rows once edits settle (for ≤cap tables the rows array IS the edited truth)
+  function scheduleAttrRebake() {
+    if (!window.MSBigTable || _attrReadonly || !_attrSlug) return;
+    var lid = slugToLayerDbId[_attrSlug]; if (!lid) return;
+    if (_attrVirtual) { MSBigTable.noteDirty(db, lid); return; }   // >cap: rebake is a next-stream job, not an in-memory one
+    if (_attrRows.length <= MSBigTable.BIG_ROWS) return;           // small layer — no sidecar to maintain
+    MSBigTable.noteDirty(db, lid);
+    if (_attrRebakeT) clearTimeout(_attrRebakeT);
+    var rowsRef = _attrRows;
+    _attrRebakeT = setTimeout(function () {
+      _attrRebakeT = null;
+      MSBigTable.bakeFromRows(db, projectId, lid, rowsRef, function () {}).catch(function (e) { console.warn('sidecar rebake failed', e); });
+    }, 15000);
+  }
+  // VIRTUAL mode (> display cap): _attrRows is a SPARSE array over the sidecar's full row count.
+  // MSAttrWindow renders ghosts for missing rows and calls fetchAttrPage; sorts run as SQL.
+  async function openVirtualAttr(node, slug, lid, rc, gen) {
+    var foot = document.getElementById('editor-attr-foot');
+    if (foot) foot.textContent = 'Opening big-data table…';
+    var prov = await MSBigTable.openProvider(lid, rc.attrParquet, rc.attrParquetAt, rc.attrParquetRows);
+    if (gen !== _attrLoadGen) return;
+    var N = rc.attrParquetRows;
+    var keysS = orderAttrKeys(prov.customKeys.slice(), 30);
+    _attrRows = new Array(N);
+    _attrSlug = slug; _attrById = {}; ensureAttrMapHover();
+    _attrVirtual = { prov: prov, order: null, pending: {}, N: N, gen: gen, lid: lid };
+    _attrCols = [
+      { title: '★', kind: 'sel', type: '', w: 30, tip: 'Selected features — click the star to select/deselect; sort this column to bring selected to the top' },
+      { title: 'Label', kind: 'std', field: 'label', type: 'text', w: keysS.length ? 180 : 240 },
+      { title: 'Start', kind: 'date', field: 'start_date', type: 'date', w: 130 },
+      { title: 'End', kind: 'date', field: 'end_date', type: 'date', w: 130 },
+      { title: 'Notes', kind: 'std', field: 'description', type: 'text', w: 220 },
+      { title: 'Page', kind: 'std', field: 'content_id', type: 'text', w: 90 }
+    ].concat(keysS.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 130 }; }));
+    applyAttrView(nodeByLayerDbId(lid) || findNodeById(layers, slug));
+    buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
+    if (_attrWin) _attrWin.onMissing = fetchAttrPage;
+    if (foot) foot.textContent = nfmt(N) + ' features · big-data table — rows stream in as you scroll, sorts run in the columnar engine · click a row to highlight it on the map';
+  }
+  function fetchAttrPage(start, end) {
+    var v = _attrVirtual; if (!v) return;
+    var ps = Math.max(0, Math.floor(start / 200) * 200);
+    var pe = Math.min(v.N, ps + 400);   // the visible page + one ahead
+    for (var s = ps; s < pe; s += 200) {
+      (function (s0) {
+        if (v.pending[s0]) return;
+        v.pending[s0] = 1;
+        v.prov.range(s0, 200, v.order).then(function (rs) {
+          if (_attrVirtual !== v || v.gen !== _attrLoadGen) return;
+          for (var i = 0; i < rs.length; i++) { _attrRows[s0 + i] = rs[i]; _attrById[String(rs[i].feature_id)] = rs[i]; }
+          if (_attrWin) _attrWin.update();
+        }, function () { delete v.pending[s0]; });   // failed page → retryable on the next scroll
+      })(s);
+    }
+  }
   async function openAttributeTable(slug) {
     var node = slug && findNodeById(layers, slug); if (!node) return;
     var lid = slugToLayerDbId[slug];
@@ -5278,7 +5768,8 @@
     var thead = document.getElementById('editor-attr-thead'), tbody = document.getElementById('editor-attr-tbody'), foot = document.getElementById('editor-attr-foot');
     thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">Loading…</td></tr>'; foot.textContent = '';
     modal.style.display = 'block';
-    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = false; clearAttrHighlight();
+    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = false; _attrVirtual = null; clearAttrHighlight();
+    if (_attrWin) _attrWin.onMissing = null;   // virtual-mode page fetcher — re-attached only by openVirtualAttr
     // STREAMED load (7/15, after 78k rows hung the page): the FIRST page renders immediately — the
     // table is usable (sort/edit/drag/close) while the rest loads behind it. Closing the modal bumps
     // _attrLoadGen, which quietly aborts this loop.
@@ -5302,13 +5793,45 @@
       buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
       var fEl2 = document.getElementById('editor-attr-foot');
       if (fEl2) fEl2.textContent = final
-        ? (nfmt(total) + ' feature' + (total === 1 ? '' : 's') + (keysS.length ? '  ·  ' + keysS.length + ' attribute' + (keysS.length === 1 ? '' : 's') : '') + '  ·  click a row to highlight it on the map · Ctrl-click to add')
+        ? ((rows.length < total ? 'First ' + nfmt(rows.length) + ' of ' + nfmt(total) + ' features (very large layer — the rest arrives with the big-data table tier)' : nfmt(total) + ' feature' + (total === 1 ? '' : 's')) + (keysS.length ? '  ·  ' + keysS.length + ' attribute' + (keysS.length === 1 ? '' : 's') : '') + '  ·  click a row to highlight it on the map · Ctrl-click to add')
         : ('Loading ' + nfmt(rows.length) + (total ? ' / ' + nfmt(total) : '') + '… — the table already works');
       return keysS;
     };
+    // ── big-data tier (7/18): a baked Parquet sidecar opens big layers in ~a second instead of
+    // re-streaming tens of MB from Postgres. Freshness = exact row-count match + not dirty; any
+    // mismatch falls through to the plain stream, whose tail re-bakes the sidecar. ──
+    if (window.MSBigTable) {
+      try {
+        var rcq = await db.from('layers').select('raw_config').eq('id', lid).single();
+        if (gen !== _attrLoadGen) return;
+        var arc = (rcq.data && rcq.data.raw_config) || {};
+        if (arc.attrParquet) {
+          var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid);
+          if (gen !== _attrLoadGen) return;
+          var live = (cq && cq.count) || 0;
+          var fresh = live === arc.attrParquetRows && !arc.attrParquetDirty;
+          if (fresh && arc.attrParquetRows <= ATTR_LOAD_CAP) {
+            foot.textContent = 'Opening (fast columnar sidecar)…';
+            try {
+              var srows = await MSBigTable.loadAll(lid, arc.attrParquet, arc.attrParquetAt);
+              if (gen !== _attrLoadGen) return;
+              rows = srows; total = srows.length;
+              buildTable(true);
+              return;
+            } catch (eSc) { console.warn('sidecar load failed — falling back to stream', eSc); }
+          } else if (fresh) {   // > display cap: VIRTUAL mode — rows page in on demand, sorts run as SQL in the worker
+            try { await openVirtualAttr(node, slug, lid, arc, gen); return; }
+            catch (eV) { console.warn('virtual table failed — falling back to stream', eV); }
+          }
+        }
+      } catch (eRc) {}
+      if (gen !== _attrLoadGen) return;
+    }
     try {
       for (var afrom = 0; afrom < 1000000; afrom += 1000) {
-        var ares = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, geom, content_id', afrom === 0 ? { count: 'exact' } : {}).eq('layer_id', lid).order('feature_id').range(afrom, afrom + 999);
+        // NO geom (7/18): geometry was ~half of a 72MB table download and the table never displays
+        // it — hover/highlight/zoom fetch geometries per-row on demand (ensureAttrGeoms)
+        var ares = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, content_id', afrom === 0 ? { count: 'exact' } : {}).eq('layer_id', lid).order('feature_id').range(afrom, afrom + 999);
         if (gen !== _attrLoadGen) return;   // modal closed / another layer opened — stop this load
         if (ares.error) { loadErr = ares.error; break; }
         if (afrom === 0 && ares.count != null) total = ares.count;
@@ -5316,6 +5839,7 @@
         if (!streamedFirst && rows.length) { streamedFirst = true; if (rows.length < (total || Infinity)) buildTable(false); }
         else { var fEl = document.getElementById('editor-attr-foot'); if (fEl && rows.length < (total || 0)) fEl.textContent = 'Loading ' + nfmt(rows.length) + (total ? ' / ' + nfmt(total) : '') + '… — the table already works'; }
         if (abatch.length < 1000) break;
+        if (rows.length >= ATTR_LOAD_CAP) break;   // guardrail: don't pull a million-row layer into browser memory — first 100k stay fully usable
       }
     } catch (e) { loadErr = e; }
     if (gen !== _attrLoadGen) return;
@@ -5346,6 +5870,7 @@
     if (!rows.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">No features in this layer yet.</td></tr>'; foot.textContent = '0 features'; return; }
     if (!total) total = rows.length;
     buildTable(true);   // final build \u2014 columns from ALL rows (later pages can add custom_fields keys)
+    maybeBakeAfterStream(lid, rows, total, gen);   // big layers: bake/refresh the Parquet sidecar in the background \u2014 the NEXT open is fast
   }
   function buildAttrHead() {
     var thead = document.getElementById('editor-attr-thead');
@@ -5460,6 +5985,17 @@
     if (_attrSort && _attrSort.idx === ci) _attrSort.dir = (_attrSort.dir === 'asc') ? 'desc' : 'asc';
     else _attrSort = { idx: ci, dir: 'asc' };
     var c = _attrCols[ci], dir = _attrSort.dir;
+    if (_attrVirtual) {   // big-data table: the sort runs as SQL in the columnar engine (worker thread), pages refetch under the new order
+      var v = _attrVirtual;
+      v.order = c.kind === 'sel' ? { selFids: _attrSel.slice(), dir: dir }
+        : c.kind === 'custom' ? { custom: c.key, dir: dir }
+          : { col: c.field, dir: dir };
+      v.pending = {};
+      _attrRows = new Array(v.N); _attrById = {};
+      buildAttrHead();
+      if (_attrWin) _attrWin.setRows(_attrRows, false); else renderAttrBody();
+      return;
+    }
     _attrRows.sort(function (a, b) {
       var va = attrCellVal(a, c), vb = attrCellVal(b, c);
       var na = (va == null || va === ''), nb = (vb == null || vb === '');
@@ -5471,22 +6007,58 @@
     });
     buildAttrHead(); renderAttrBody();
   }
-  function renderAttrBody() {
+  // TEXT-FIRST rows (7/18, the white-scroll fix): a row full of live <input> form controls
+  // costs ~10x a text row to build — 85 buffered rows × 22 inputs made every window rebuild
+  // eat a whole frame (11–18ms measured), so fast scrolling outran the renderer and showed
+  // blank. Rows now render as text; the SELECTED row(s) materialize real inputs — identical
+  // UX to the existing two-click model (inputs were click-blocked until selected anyway).
+  function attrRowHtml(r) {
+    // virtual (big-data) mode: a not-yet-fetched row renders as a ghost of the same height —
+    // no data-fid, so clicks/hover/measure all skip it; the page fetch replaces it in ~100ms
+    if (!r) return '<tr class="attr-row-ghost" style="height:' + ((_attrWin && _attrWin.rowH) || 30) + 'px;"><td colspan="' + (_attrCols.length || 1) + '" style="padding:5px 7px;color:#a5a5a5;">…</td></tr>';
+    var isSel = _attrSel.indexOf(String(r.feature_id)) > -1;
+    return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + (isSel ? ' class="attr-row-sel"' : '') + '>' + _attrCols.map(function (c) {
+      var stick = c._left != null ? ' class="attr-pin-cell" style="left:' + c._left + 'px;"' : '';
+      if (c.kind === 'sel') return '<td class="attr-sel-cell' + (c._left != null ? ' attr-pin-cell' : '') + '"' + (c._left != null ? ' style="left:' + c._left + 'px;"' : '') + ' title="Select / deselect this feature"></td>';
+      var bind = c.kind === 'custom' ? 'data-fc="' + attrEsc(c.key) + '"' : 'data-f="' + attrEsc(c.field) + '"';
+      var v = attrEsc(attrDisp(r, c));
+      if (_attrReadonly || !isSel) return '<td' + stick + '><span ' + bind + ' style="display:block;padding:5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + v + '</span></td>';
+      return '<td' + stick + '><input ' + bind + ' type="' + c.type + '" value="' + v + '" /></td>';
+    }).join('') + '</tr>';
+  }
+  // selection changed → any DOM row whose input-vs-text state no longer matches gets rebuilt
+  // in place (cheap: only the rows that flipped)
+  function refreshAttrRowEditability() {
+    if (_attrReadonly) return;
+    var tbody = document.getElementById('editor-attr-tbody'); if (!tbody) return;
+    Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) {
+      var fid = tr.getAttribute('data-fid');
+      var should = _attrSel.indexOf(fid) > -1, has = !!tr.querySelector('input');
+      if (should !== has) { var r = findAttrRow(fid); if (r) tr.outerHTML = attrRowHtml(r); }
+    });
+  }
+  // WINDOWED body (7/18, replaces the 1,500-row render cap): MSAttrWindow keeps only the
+  // visible slice (+overscan) in the DOM over the FULL row set — 78k rows scroll seamlessly
+  // with ~40 <tr> alive. Events stay delegated on the tbody, so recycled rows keep working.
+  // keepScroll=true holds the scroll position (deletes / in-place syncs); default jumps to top.
+  function renderAttrBody(keepScroll) {
     var tbody = document.getElementById('editor-attr-tbody');
-    // render at most ATTR_RENDER_CAP rows — sorting re-slices, so "show me X first" still works on ALL rows
-    var _capped = _attrRows.length > ATTR_RENDER_CAP;
-    tbody.innerHTML = (_capped ? _attrRows.slice(0, ATTR_RENDER_CAP) : _attrRows).map(function (r) {
-      var sel = _attrSel.indexOf(String(r.feature_id)) > -1 ? ' class="attr-row-sel"' : '';
-      return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + sel + '>' + _attrCols.map(function (c) {
-        var stick = c._left != null ? ' class="attr-pin-cell" style="left:' + c._left + 'px;"' : '';
-        if (c.kind === 'sel') return '<td class="attr-sel-cell' + (c._left != null ? ' attr-pin-cell' : '') + '"' + (c._left != null ? ' style="left:' + c._left + 'px;"' : '') + ' title="Select / deselect this feature"></td>';
-        var bind = c.kind === 'custom' ? 'data-fc="' + attrEsc(c.key) + '"' : 'data-f="' + attrEsc(c.field) + '"';
-        var v = attrEsc(attrDisp(r, c));
-        if (_attrReadonly) return '<td' + stick + '><span ' + bind + ' style="display:block;padding:6px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + v + '</span></td>';
-        return '<td' + stick + '><input ' + bind + ' type="' + c.type + '" value="' + v + '" /></td>';
-      }).join('') + '</tr>';
-    }).join('');
-    if (_capped) tbody.insertAdjacentHTML('beforeend', '<tr><td colspan="' + _attrCols.length + '" style="padding:10px 14px;color:#7a5cc2;background:#f7f4fd;font-size:12px;">Showing the first ' + nfmt(ATTR_RENDER_CAP) + ' of ' + nfmt(_attrRows.length) + ' loaded rows — sorting a column re-picks which ' + nfmt(ATTR_RENDER_CAP) + ' you see.</td></tr>');
+    if (!_attrWin && window.MSAttrWindow) {
+      var wrapEl = document.getElementById('editor-attr-wrap');
+      _attrWin = new MSAttrWindow({
+        scrollEl: wrapEl,
+        tbody: tbody,
+        renderRow: attrRowHtml,
+        colCount: function () { return _attrCols.length; }
+      });
+      // pin-stickiness only while actually h-scrolled (see ms-nopin CSS note)
+      var tblEl = document.getElementById('editor-attr-table');
+      var syncNopin = function () { tblEl.classList.toggle('ms-nopin', wrapEl.scrollLeft === 0); };
+      wrapEl.addEventListener('scroll', syncNopin, { passive: true });
+      syncNopin();
+    }
+    if (_attrWin) { _attrWin._measured = false; _attrWin.setRows(_attrRows, keepScroll); }
+    else tbody.innerHTML = _attrRows.slice(0, 1500).map(attrRowHtml).join('');   // attrGrid.js missing — degraded but alive
     if (!_attrDelegated) { _attrDelegated = true; wireAttrDelegation(tbody); }   // delegate once (scales to all features without per-row listeners)
   }
   function wireAttrDelegation(tbody) {
@@ -5513,6 +6085,7 @@
   function applyAttrSelClasses() {
     var tbody = document.getElementById('editor-attr-tbody'); if (!tbody) return;
     Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) { tr.classList.toggle('attr-row-sel', _attrSel.indexOf(tr.getAttribute('data-fid')) > -1); });
+    refreshAttrRowEditability();   // text-first rows: selected rows swap to real inputs, deselected back to text
   }
   function updateAttrZoomBtn() { var b = document.getElementById('editor-attr-zoom'); if (b) b.disabled = !_attrSel.length; }
   function updateAttrDelBtn() {
@@ -5525,10 +6098,12 @@
     var fids = _attrSel.slice(), n = fids.length;
     if (!window.confirm('Delete ' + n + ' feature' + (n > 1 ? 's' : '') + ' from this layer? You can undo this.')) return;
     await deleteDrawnByFids(fids, 'delete ' + n + ' feature' + (n > 1 ? 's' : ''));
+    if (_attrVirtual) { setStatus('Deleted ' + n + ' feature' + (n > 1 ? 's' : '')); openAttributeTable(_attrSlug); return; }   // sparse rows can't be filtered in place — reopen (count mismatch → fresh stream + rebake)
     fids.forEach(function (fid) { delete _attrById[String(fid)]; });
     _attrRows = _attrRows.filter(function (r) { return fids.indexOf(String(r.feature_id)) < 0; });
     _attrSel = [];
-    buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn(); updateAttrHighlight();
+    buildAttrHead(); renderAttrBody(true); updateAttrZoomBtn(); updateAttrDelBtn(); updateAttrHighlight();
+    scheduleAttrRebake();   // sidecar'd layer: row count changed — refresh the bake in the background
     setStatus('Deleted ' + n + ' feature' + (n > 1 ? 's' : ''));
   }
   function attrMaps() { var a = []; if (typeof beforeMap !== 'undefined' && beforeMap) a.push(beforeMap); if (typeof afterMap !== 'undefined' && afterMap) a.push(afterMap); return a; }
@@ -5551,8 +6126,12 @@
   }
   function updateAttrHighlight() {
     ensureAttrHlLayers();
-    var feats = _attrSel.map(function (fid) { var r = findAttrRow(fid); return (r && r.geom) ? { type: 'Feature', geometry: r.geom, properties: {} } : null; }).filter(Boolean);
-    attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {} });
+    var want = _attrSel.slice();
+    ensureAttrGeoms(want).then(function () {
+      if (want.join(',') !== _attrSel.join(',')) return;   // selection moved on while geoms were in flight
+      var feats = _attrSel.map(function (fid) { var r = findAttrRow(fid); return (r && r.geom) ? { type: 'Feature', geometry: r.geom, properties: {} } : null; }).filter(Boolean);
+      attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {} });
+    });
   }
   function clearAttrHighlight() {
     _attrSel = [];
@@ -5580,11 +6159,27 @@
     var tbody = document.getElementById('editor-attr-tbody');
     if (tbody) {
       Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) { tr.classList.toggle('attr-row-hover', tr.getAttribute('data-fid') === _attrHover); });
-      if (scroll && _attrHover) { var row = tbody.querySelector('tr[data-fid="' + _attrHover + '"]'); if (row) row.scrollIntoView({ block: 'nearest' }); }
+      if (scroll && _attrHover) {
+        var row = tbody.querySelector('tr[data-fid="' + _attrHover + '"]');
+        if (!row && _attrWin) {   // fixed viewport: bring the row's WINDOW here, then it exists
+          for (var hi = 0; hi < _attrRows.length; hi++) { if (String(_attrRows[hi].feature_id) === _attrHover) { _attrWin.scrollToIndex(hi); break; } }
+          row = tbody.querySelector('tr[data-fid="' + _attrHover + '"]');
+          Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) { tr.classList.toggle('attr-row-hover', tr.getAttribute('data-fid') === _attrHover); });
+        } else if (row && !_attrWin) row.scrollIntoView({ block: 'nearest' });
+      }
     }
     ensureAttrHlLayers();
-    var hdata = (function () { var r = _attrHover && findAttrRow(_attrHover); return (r && r.geom) ? { type: 'Feature', geometry: r.geom, properties: {} } : { type: 'FeatureCollection', features: [] }; })();
-    attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hover-src'); if (src) src.setData(hdata); } catch (e) {} });
+    var paintHover = function () {
+      var r = _attrHover && findAttrRow(_attrHover);
+      var hdata = (r && r.geom) ? { type: 'Feature', geometry: r.geom, properties: {} } : { type: 'FeatureCollection', features: [] };
+      attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hover-src'); if (src) src.setData(hdata); } catch (e) {} });
+    };
+    var r0 = fid && findAttrRow(fid);
+    if (r0 && !r0.geom && !r0._tile) {
+      var hf = fid;
+      ensureAttrGeoms([fid]).then(function () { if (_attrHover === hf) paintHover(); });   // apply only if still the hovered row
+      paintHover();   // clear/keep current glow immediately — no stale feature lingering
+    } else paintHover();
   }
   function ensureAttrMapHover() {   // wire the map → row direction once
     if (_attrHoverWired || typeof beforeMap === 'undefined' || !beforeMap) return;
@@ -5655,8 +6250,9 @@
       setStatus('Saved');
     } catch (e) { console.warn('editing: zoom-button toggle save failed', e); setStatus('Save failed'); }
   }
-  function zoomToAttrSelected() {
+  async function zoomToAttrSelected() {
     if (!_attrSel.length || typeof beforeMap === 'undefined' || !beforeMap) return;
+    await ensureAttrGeoms(_attrSel);
     var geoms = _attrSel.map(function (fid) { var r = findAttrRow(fid); return r && r.geom; }).filter(Boolean);
     var b = geomsBounds(geoms); if (!b) return;
     try {
@@ -5678,6 +6274,50 @@
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }
+  // ── "⇄ Transfer column": copy one column's values into another (e.g. RRname → Label), server-side
+  //    in id-batches so 78k-row layers finish without timeouts. Source-empty rows are never touched.
+  function toggleTransferPanel() {
+    var p9 = document.getElementById('editor-attr-transfer-panel'); if (!p9) return;
+    if (_attrReadonly || !_attrSlug || !slugToLayerDbId[_attrSlug]) { setStatus('Transfer works on database-backed layers only'); return; }
+    var show = p9.style.display === 'none';
+    if (show) {
+      var opts = [];
+      _attrCols.forEach(function (c) {
+        if (c.kind === 'std' && c.field === 'label') opts.push({ v: 'label', t: 'Label' });
+        else if (c.kind === 'custom' && c.key) opts.push({ v: c.key, t: c.key });
+      });
+      ['attr-tr-from', 'attr-tr-to'].forEach(function (id9) {
+        var s9 = document.getElementById(id9);
+        s9.innerHTML = opts.map(function (o) { return '<option value="' + attrEsc(o.v) + '">' + attrEsc(o.t) + '</option>'; }).join('');
+      });
+      document.getElementById('attr-tr-to').value = 'label';
+      document.getElementById('attr-tr-status').textContent = '';
+    }
+    p9.style.display = show ? 'block' : 'none';
+  }
+  async function runColumnTransfer() {
+    var from = document.getElementById('attr-tr-from').value, to = document.getElementById('attr-tr-to').value;
+    var onlyEmpty = document.getElementById('attr-tr-empty').checked;
+    var st9 = document.getElementById('attr-tr-status');
+    var slug9 = _attrSlug, lid = slug9 && slugToLayerDbId[slug9];
+    if (!lid) { st9.textContent = 'No database layer.'; return; }
+    if (from === to) { st9.textContent = 'Pick two different columns.'; return; }
+    if (!confirm('Copy "' + from + '" into "' + to + '"' + (onlyEmpty ? ' where "' + to + '" is empty' : ' — OVERWRITING existing values') + '?\n\nThis changes the layer everywhere it is used.')) return;
+    try {
+      st9.textContent = 'Listing rows…';
+      var idr = await db.rpc('ms_layer_ids', { p_layer: lid, p_passthrough_key: null });
+      if (idr.error) throw new Error(idr.error.message);
+      var ids = idr.data || [], changed = 0;
+      for (var i9 = 0; i9 < ids.length; i9 += 3000) {
+        var r9 = await db.rpc('ms_transfer_column', { p_layer: lid, p_from: from, p_to: to, p_ids: ids.slice(i9, i9 + 3000), p_only_empty: onlyEmpty });
+        if (r9.error) throw new Error(r9.error.message + (/function|does not exist/.test(r9.error.message) ? ' — run sql/setup/query-ops-setup.sql first (adds ms_transfer_column)' : ''));
+        changed += (r9.data || 0);
+        st9.textContent = 'Transferring… ' + nfmt(Math.min(i9 + 3000, ids.length)) + '/' + nfmt(ids.length);
+      }
+      st9.textContent = '✓ ' + nfmt(changed) + ' rows updated — reloading table…';
+      openAttributeTable(slug9);
+    } catch (e9) { st9.textContent = 'Failed: ' + e9.message; }
+  }
   function hideAttrModal() { _attrLoadGen++; var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); clearAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn(); }   // gen bump ABORTS an in-flight load — Close always works, even mid-load of a huge layer
   async function saveAttrCustomCell(fid, key, value) {
     var cf = _attrCustom[fid];
@@ -5687,13 +6327,13 @@
     else if (/^-?\d+(\.\d+)?$/.test(v)) cf[key] = Number(v);   // keep numbers numeric
     else cf[key] = value;
     setStatus('Saving…');
-    try { var r = await db.from('features').update({ custom_fields: Object.keys(cf).length ? cf : null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    try { var r = await db.from('features').update({ custom_fields: Object.keys(cf).length ? cf : null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); scheduleAttrRebake(); }
     catch (e) { setStatus('Save failed'); }
   }
   async function saveAttrCell(fid, field, value) {
     var v = (value === '') ? null : value, upd = {}; upd[field] = v;
     setStatus('Saving…');
-    try { var r = await db.from('features').update(upd).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    try { var r = await db.from('features').update(upd).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); scheduleAttrRebake(); }
     catch (e) { setStatus('Save failed'); return; }
     var row = findAttrRow(fid); if (row) row[field] = v;   // keep the in-memory model in sync so a re-sort reflects the edit
     var did = 'db-' + fid, m = featureMeta[did];   // mirror into MapboxDraw meta + the open feature panel

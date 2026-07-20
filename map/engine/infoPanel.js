@@ -77,7 +77,7 @@ function registerInfoPanelClicks() {
         if (hoveredId.left !== null)
           beforeMap.setFeatureState({ source: layer.id + "-left", sourceLayer: sourceLayer, id: hoveredId.left }, { hover: false });
         hoveredId.left = e.features[0].id;
-        if (layer.hoverHighlight !== false) beforeMap.setFeatureState({ source: layer.id + "-left", sourceLayer: sourceLayer, id: hoveredId.left }, { hover: true });   // #11 gate
+        if (layer.hoverHighlight !== false && !layer.groupBy) beforeMap.setFeatureState({ source: layer.id + "-left", sourceLayer: sourceLayer, id: hoveredId.left }, { hover: true });   // #11 gate; grouped layers hover as ONE (group overlay)
       }
     });
     beforeMap.on("mouseleave", layer.id + "-left", function() {
@@ -93,7 +93,7 @@ function registerInfoPanelClicks() {
         if (hoveredId.right !== null)
           afterMap.setFeatureState({ source: layer.id + "-right", sourceLayer: sourceLayer, id: hoveredId.right }, { hover: false });
         hoveredId.right = e.features[0].id;
-        if (layer.hoverHighlight !== false) afterMap.setFeatureState({ source: layer.id + "-right", sourceLayer: sourceLayer, id: hoveredId.right }, { hover: true });   // #11 gate
+        if (layer.hoverHighlight !== false && !layer.groupBy) afterMap.setFeatureState({ source: layer.id + "-right", sourceLayer: sourceLayer, id: hoveredId.right }, { hover: true });   // #11 gate; grouped layers hover as ONE (group overlay)
       }
     });
     afterMap.on("mouseleave", layer.id + "-right", function() {
