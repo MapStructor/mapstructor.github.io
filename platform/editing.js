@@ -371,7 +371,7 @@
       e.stopPropagation(); e.preventDefault();
       var row = t.closest('.layer-list-row'); if (!row) return;
       var cb = row.querySelector('input[type="checkbox"]');
-      if (cb && cb.id) openAttributeTable(cb.id);
+      if (cb && cb.id) openFeaturesList(cb.id);   // the icon now opens the LIST; "Expand" in the list opens the full table
     }, true);
   }
   function enhanceRows() {
@@ -5644,6 +5644,11 @@
   var _attrWin = null;         // MSAttrWindow instance for the (single, for now) attribute panel
   var _attrVirtual = null;     // big-data tier: {prov, order, pending, N, gen, lid} when the open table pages from a >cap Parquet sidecar
   var _attrRebakeT = null;     // debounce for background sidecar rebakes after edits
+  // FEATURES LIST (Rung 1, 7/20): the ▦ icon opens a lightweight docked LIST (icon + label per row,
+  // count-only footer) instead of the full grid; an "Expand" button opens today's attribute table.
+  // It SHARES the attr module state (_attrSel/_attrById/_attrRows/_attrSlug) so map highlight, hover
+  // and zoom reuse the exact same helpers as the table. See openFeaturesList.
+  var _flistWin = null, _flistSlug = null, _flistIcon = '';
   function orderAttrKeys(keys, cap) {   // msid FIRST, ms_* style columns LAST, everything else between (cap trims the middle, never msid/ms_*)
     var style = ['ms_color', 'ms_linecolor', 'ms_opacity', 'ms_thickness', 'ms_labelsize'].filter(function (k) { return keys.indexOf(k) > -1; });
     var msid = keys.indexOf('msid') > -1 ? ['msid'] : [];
@@ -6319,6 +6324,163 @@
     } catch (e9) { st9.textContent = 'Failed: ' + e9.message; }
   }
   function hideAttrModal() { _attrLoadGen++; var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); clearAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn(); }   // gen bump ABORTS an in-flight load — Close always works, even mid-load of a huge layer
+
+  /* ── FEATURES LIST (Rung 1) ───────────────────────────────────────────────
+     A docked, lightweight list of a layer's features (icon + label). Opens from the ▦ icon;
+     "Expand" hands off to the full attribute table (openAttributeTable). Reuses the attr module
+     state + map highlight/hover/zoom helpers, so selection and glow behave exactly like the table. */
+  function injectFeaturesList() {
+    if (document.getElementById('editor-flist')) return;
+    var st = document.createElement('style');
+    st.textContent =
+      '#editor-flist{position:fixed;z-index:3990;width:300px;background:#fff;border:1px solid #c9bfe8;border-radius:6px;box-shadow:0 3px 16px rgba(0,0,0,0.18);display:none;flex-direction:column;overflow:hidden;font-family:"Source Sans Pro",Arial,sans-serif;}' +
+      '#flist-head{display:flex;align-items:center;gap:6px;padding:9px 10px;border-bottom:1px solid #ececec;}' +
+      '#flist-title{font-weight:700;color:#2b3a4a;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;}' +
+      '.flist-hbtn{font-size:12px;padding:3px 9px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;white-space:nowrap;}' +
+      '.flist-hbtn:disabled{opacity:0.45;cursor:default;}' +
+      '#flist-close{cursor:pointer;color:#333333;font-size:18px;font-weight:700;line-height:1;padding:2px 9px;border:1px solid #bbbbbb;border-radius:3px;background:#f2f2f2;}' +
+      '#flist-close:hover{background:#fdeaea;color:#b4453a;border-color:#e0b4b4;}' +
+      '#editor-flist-wrap{flex:1;overflow:auto;position:relative;}' +
+      '#editor-flist-table{width:100%;border-collapse:separate;border-spacing:0;font-size:13.5px;table-layout:fixed;}' +
+      '#editor-flist-table td{padding:7px 10px;border-bottom:1px solid #f0f0f3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;box-sizing:border-box;}' +
+      '#editor-flist-table tr:hover td{background:#d6f3ff;}' +
+      '#editor-flist-table tr.flist-row-sel td{background:#fff5cc;}' +
+      '.flist-ico{display:inline-block;width:16px;text-align:center;margin-right:9px;font-size:12px;vertical-align:middle;}' +
+      '.flist-lbl{vertical-align:middle;}' +
+      '.flist-untitled{color:#aaaaaa;font-style:italic;}' +
+      '#editor-flist-foot{padding:7px 12px;border-top:1px solid #ececec;font-size:12px;color:#888888;}';
+    document.head.appendChild(st);
+    var el = document.createElement('div'); el.id = 'editor-flist';
+    el.innerHTML =
+      '<div id="flist-head">' +
+        '<b id="flist-title">Features</b>' +
+        '<button id="flist-zoom" class="flist-hbtn" title="Zoom the map to the selected feature" disabled>&#9673; Zoom</button>' +
+        '<button id="flist-expand" class="flist-hbtn" title="Open the full attribute table">&#8599; Expand</button>' +
+        '<span id="flist-close" title="Close">&times;</span>' +
+      '</div>' +
+      '<div id="editor-flist-wrap"><table id="editor-flist-table"><tbody id="editor-flist-tbody"></tbody></table></div>' +
+      '<div id="editor-flist-foot"></div>';
+    document.body.appendChild(el);
+    document.getElementById('flist-close').addEventListener('click', hideFeaturesList);
+    document.getElementById('flist-zoom').addEventListener('click', zoomToAttrSelected);
+    document.getElementById('flist-expand').addEventListener('click', function () {
+      var slug = _flistSlug;
+      el.style.display = 'none';   // list yields to the full table (they share one selection)
+      if (slug) openAttributeTable(slug);
+    });
+    var tb = document.getElementById('editor-flist-tbody');
+    tb.addEventListener('click', function (e) {
+      var tr = e.target.closest('tr[data-fid]'); if (!tr) return;
+      selectAttrRow(tr.getAttribute('data-fid'), e.ctrlKey || e.metaKey);   // shared: updates _attrSel + map highlight
+      syncFlistSel(); updateFlistZoom();
+    });
+    tb.addEventListener('mouseover', function (e) { var tr = e.target.closest('tr[data-fid]'); setAttrHover(tr ? tr.getAttribute('data-fid') : null, false); });
+    tb.addEventListener('mouseleave', function () { setAttrHover(null, false); });
+    window.addEventListener('resize', function () { if (el.style.display !== 'none') dockFeaturesList(); });   // keep it docked + full-height on resize
+  }
+  function flistRowHtml(r) {
+    if (!r) return '<tr class="flist-ghost"><td style="color:#bbbbbb;">…</td></tr>';
+    var sel = _attrSel.indexOf(String(r.feature_id)) > -1;
+    var lbl = (r.label == null || r.label === '') ? '<span class="flist-untitled">(untitled)</span>' : attrEsc(r.label);
+    return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + (sel ? ' class="flist-row-sel"' : '') + '><td title="' + attrEsc(r.label || '') + '">' + _flistIcon + '<span class="flist-lbl">' + lbl + '</span></td></tr>';
+  }
+  function syncFlistSel() {
+    var tb = document.getElementById('editor-flist-tbody'); if (!tb) return;
+    Array.prototype.forEach.call(tb.querySelectorAll('tr[data-fid]'), function (tr) { tr.classList.toggle('flist-row-sel', _attrSel.indexOf(tr.getAttribute('data-fid')) > -1); });
+  }
+  function updateFlistZoom() { var b = document.getElementById('flist-zoom'); if (b) b.disabled = !_attrSel.length; }
+  function flistLayerIcon(node) {
+    var col = (node && node.iconColor) || (node && node.paint && typeof node.paint[colorKeyFor(node.type)] === 'string' && node.paint[colorKeyFor(node.type)]) || '#3bb2d0';
+    var t = node && node.type;
+    var glyph = t === 'line' ? '━' : (t === 'circle' ? '●' : '■');   // line / point / polygon
+    return '<span class="flist-ico" style="color:' + col + ';">' + glyph + '</span>';
+  }
+  function dockFeaturesList() {
+    var el = document.getElementById('editor-flist'); if (!el) return;
+    var anchor = document.getElementById('layers-panel-content') || document.querySelector('.editor-sidebar') || document.querySelector('#sidebar');
+    var r = anchor ? anchor.getBoundingClientRect() : { right: 470, top: 96 };
+    var top = Math.round(Math.max(8, r.top));
+    // fill down to just above the bottom timeline (or the viewport floor if there isn't one)
+    var tl = document.querySelector('.timeline');
+    var bottom = (tl && tl.offsetHeight) ? Math.round(tl.getBoundingClientRect().top - 8) : (window.innerHeight - 14);
+    el.style.left = Math.round(r.right + 6) + 'px';
+    el.style.top = top + 'px';
+    el.style.height = Math.max(240, bottom - top) + 'px';
+  }
+  function hideFeaturesList() {
+    _attrLoadGen++;   // aborts an in-flight list load
+    var el = document.getElementById('editor-flist'); if (el) el.style.display = 'none';
+    _flistSlug = null; _attrSlug = null;
+    setAttrHover(null, false); clearAttrHighlight();
+  }
+  async function loadFlistRows(lid, gen) {
+    // fast path: reuse the tier-2 Parquet sidecar if it's fresh (instant for big layers)
+    if (window.MSBigTable) {
+      try {
+        var rcq = await db.from('layers').select('raw_config').eq('id', lid).single();
+        if (gen !== _attrLoadGen) return null;
+        var rc = (rcq.data && rcq.data.raw_config) || {};
+        if (rc.attrParquet && !rc.attrParquetDirty && rc.attrParquetRows <= ATTR_LOAD_CAP) {
+          var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid);
+          if (gen !== _attrLoadGen) return null;
+          if (((cq && cq.count) || 0) === rc.attrParquetRows) {
+            var srows = await MSBigTable.loadAll(lid, rc.attrParquet, rc.attrParquetAt);
+            if (gen !== _attrLoadGen) return null;
+            return srows;
+          }
+        }
+      } catch (e) {}
+    }
+    // fallback: stream just feature_id + label (light — no geometry, no custom fields)
+    var out = [];
+    for (var from = 0; from < 1000000; from += 1000) {
+      var res = await db.from('features').select('feature_id, label').eq('layer_id', lid).order('feature_id').range(from, from + 999);
+      if (gen !== _attrLoadGen) return null;
+      if (res.error) throw new Error(res.error.message);
+      Array.prototype.push.apply(out, res.data || []);
+      if (from === 0 && out.length) { _attrRows = out.slice(); rebuildFlistIndex(); renderFlist(); document.getElementById('editor-flist-foot').textContent = 'Loading ' + nfmt(out.length) + '…'; }
+      if (!res.data || res.data.length < 1000) break;
+      if (out.length >= ATTR_LOAD_CAP) break;
+    }
+    return out;
+  }
+  function rebuildFlistIndex() { _attrById = {}; _attrRows.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); }
+  function renderFlist() {
+    var tbody = document.getElementById('editor-flist-tbody'), wrap = document.getElementById('editor-flist-wrap');
+    if (!_flistWin && window.MSAttrWindow) {
+      _flistWin = new MSAttrWindow({ scrollEl: wrap, tbody: tbody, renderRow: flistRowHtml, colCount: function () { return 1; } });
+    }
+    if (_flistWin) { _flistWin._measured = false; _flistWin.setRows(_attrRows, true); }
+    else tbody.innerHTML = _attrRows.slice(0, 500).map(flistRowHtml).join('');
+  }
+  async function openFeaturesList(slug) {
+    var node = slug && findNodeById(layers, slug); if (!node) return;
+    var lid = slugToLayerDbId[slug];
+    if (!lid) { setStatus('No stored data for this layer'); return; }
+    injectFeaturesList();
+    var el = document.getElementById('editor-flist');
+    document.getElementById('flist-title').textContent = node.label || 'Features';
+    _flistSlug = slug; _attrSlug = slug; _attrReadonly = false;
+    _flistIcon = flistLayerIcon(node);
+    _attrSel = []; _attrById = {}; _attrRows = [];
+    clearAttrHighlight(); ensureAttrHlLayers(); ensureAttrMapHover();
+    el.style.display = 'flex'; dockFeaturesList();
+    document.getElementById('editor-flist-tbody').innerHTML = '<tr><td style="padding:12px;color:#999999;">Loading…</td></tr>';
+    document.getElementById('editor-flist-foot').textContent = '';
+    updateFlistZoom();
+    var gen = ++_attrLoadGen;
+    var rows;
+    try { rows = await loadFlistRows(lid, gen); } catch (e) { document.getElementById('editor-flist-tbody').innerHTML = '<tr><td style="padding:12px;color:#b4453a;">Failed to load features.</td></tr>'; return; }
+    if (rows == null || gen !== _attrLoadGen) return;   // closed / superseded
+    _attrRows = rows; rebuildFlistIndex();
+    if (!rows.length) {
+      document.getElementById('editor-flist-tbody').innerHTML = '<tr><td style="padding:12px;color:#999999;">No listed features for this layer.</td></tr>';
+      document.getElementById('editor-flist-foot').textContent = '0 features';
+      return;
+    }
+    renderFlist();
+    document.getElementById('editor-flist-foot').textContent = nfmt(rows.length) + ' feature' + (rows.length === 1 ? '' : 's');
+  }
   async function saveAttrCustomCell(fid, key, value) {
     var cf = _attrCustom[fid];
     if (!cf) { cf = _attrCustom[fid] = {}; var row0 = findAttrRow(fid); if (row0) row0.custom_fields = cf; }   // link a fresh object back to the row so re-sort shows the edit
