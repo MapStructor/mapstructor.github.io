@@ -43,17 +43,42 @@
     } catch (e) {}
     return null;
   }
+  // deepest/last #rrggbb inside a value: a plain colour string returns itself; a categorical paint
+  // EXPRESSION (['match'…] / ['case'…]) yields its last (category/fallback) colour. Before this the
+  // raster only accepted a plain string, so EVERY colour-by layer dropped to the default purple
+  // during scrub instead of the layer's real colour (user 7/20, quick-fix #1 — full per-category
+  // colouring is still TODO). NOTE: matches #rrggbb only; named/rgb() colours still fall through.
+  function hexIn(x) {
+    var hit = null;
+    (function walk(v) {
+      if (typeof v === "string") { if (/^#[0-9a-f]{6}$/i.test(v.trim())) hit = v.trim(); }
+      else if (Array.isArray(v)) v.forEach(walk);
+    })(x);
+    return hit;
+  }
   function colorOf(lid) {   // the engine node's own colour, when findable (editor exposes the slug map)
     try {
       var slug = slugOf(lid);
       if (slug && typeof layers !== "undefined") {
         var node = (function find(a) { for (var i = 0; i < (a || []).length; i++) { if (a[i].id === slug) return a[i]; var c = find(a[i].children); if (c) return c; } return null; })(layers);
         var p = (node && node.paint) || {};
-        var c = p["line-color"] || p["fill-color"] || p["circle-color"] || (node && node.color);
-        if (typeof c === "string") return hexToRgb(c);
+        var c = hexIn(p["line-color"]) || hexIn(p["fill-color"]) || hexIn(p["circle-color"]) || (node && hexIn(node.iconColor)) || (node && hexIn(node.color));
+        if (c) return hexToRgb(c);
       }
     } catch (e) {}
-    return hexToRgb(null);
+    return hexToRgb(null);   // fallback: the site purple — only when nothing resolvable
+  }
+  // a converted layer switched OFF in the sidebar must not scrub either (user 7/20). The checkbox
+  // id IS the layer slug (toggleElement), and it survives hideVectors (which only flips map layer
+  // visibility) — so it's a stable per-frame signal. Can't resolve it → draw (safe default).
+  function itemActive(it) {
+    try {
+      var slug = it.slug || (it.slug = slugOf(it.lid));
+      if (!slug) return true;
+      var cb = document.getElementById(slug);
+      if (cb && cb.type === "checkbox") return !!cb.checked;
+    } catch (e) {}
+    return true;
   }
 
   var VS = "attribute vec2 q;uniform vec2 p0,p1;varying vec2 v;void main(){v=q;vec2 px=mix(p0,p1,q);gl_Position=vec4(px.x*2.-1.,1.-px.y*2.,0.,1.);}";
@@ -144,6 +169,7 @@
     gl.viewport(0, 0, cv.width, cv.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
     S.items.forEach(function (it) {
+      if (!itemActive(it)) return;   // layer unchecked in the sidebar → its raster stays dark too
       var want = pickLevel(view.m, it);
       gl.uniform1f(view.U.year, year);
       gl.uniform1f(view.U.base, it.cfg.yearBase || 1799);

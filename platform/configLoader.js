@@ -71,7 +71,7 @@ var ConfigLoader = (function () {
     var rows = [];
     try {
       for (var off = 0; ; off += 1000) {
-        var r = await db.from("features").select(sel).eq("layer_id", n._layerDbId).order("feature_id").range(off, off + 999);
+        var r = await db.from("features").select(sel).eq("layer_id", n._dataLayerId || n._layerDbId).order("feature_id").range(off, off + 999);
         if (r.error) { n._hydrating = false; return false; }   // stays _deferred → the next toggle retries
         rows = rows.concat(r.data || []);
         if (!r.data || r.data.length < 1000) break;
@@ -181,9 +181,13 @@ var ConfigLoader = (function () {
     // GeoJSON map layer — so they get the engine's paint/popup/panel like any tileset.
     if (row.source_type === "geojson-supabase") {
       leaf._layerDbId = row.id;
+      leaf._dataLayerId = raw.instanceOf || row.id;   // 7/21: instances fetch their SOURCE layer's rows
       leaf.source = { type: "geojson", data: { type: "FeatureCollection", features: (features || []).map(featureToGeo) } };
-      // off-by-default layer that got no features from the bundle → deferred (hydrateDeferredFeatures fills it post-boot)
-      if (row.enabled_by_default === false && (!features || !features.length)) leaf._deferred = true;
+      // off-by-default layer that got no features from the bundle → deferred (hydrateDeferredFeatures fills it post-boot).
+      // 7/21: an INSTANCE with no bundled features defers too regardless of its own default — its source's
+      // features may not be in the bundle (e.g. the source layer is off-by-default), and hydration reads
+      // _dataLayerId, so the deferred fill pulls the SOURCE's rows.
+      if ((row.enabled_by_default === false || raw.instanceOf) && (!features || !features.length)) leaf._deferred = true;
       if (leaf.type == null) leaf.type = "circle";
       if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
     }
@@ -289,7 +293,7 @@ var ConfigLoader = (function () {
     (bundle.projectLayers || []).forEach(function (pl) {
       if (!pl.layers) return;
       var praw = pl.layers.raw_config || {};
-      var featLayerId = praw.outlineOf ? slugToId[praw.outlineOf] : pl.layers.id;   // outline layers draw their parent's features
+      var featLayerId = praw.outlineOf ? slugToId[praw.outlineOf] : (praw.instanceOf || pl.layers.id);   // outline layers draw their parent's features; instances (7/21) share their source layer's
       var entry = { sort: pl.sort_order, node: leafFromRow(pl.layers, registry, (bundle.featuresByLayer || {})[featLayerId]) };
       if (pl.group_id && groupNodes[pl.group_id]) groupNodes[pl.group_id].kids.push(entry);
       else if (pl.section_id && sectionNodes[pl.section_id]) sectionNodes[pl.section_id].kids.push(entry);
@@ -384,6 +388,24 @@ var ConfigLoader = (function () {
             ],
             attribution: "© OpenStreetMap contributors © CARTO" } },
           layers: [{ id: "carto-clean", type: "raster", source: "carto" }]
+        }
+      },
+      // TERRAIN (7/21, user ask): OpenTopoMap — hillshade relief, contour lines, and land cover
+      // (forest/grassland tints). Free, keyless, global; SRTM elevation under an OSM render.
+      {
+        id: "free-terrain", name: "Terrain", lChecked: false, rChecked: false,
+        styleUrl: {
+          version: 8,
+          name: "Terrain (OpenTopoMap)",
+          glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+          sources: { otm: { type: "raster", tileSize: 256, maxzoom: 17,
+            tiles: [
+              "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+              "https://b.tile.opentopomap.org/{z}/{x}/{y}.png",
+              "https://c.tile.opentopomap.org/{z}/{x}/{y}.png"
+            ],
+            attribution: "© OpenStreetMap contributors, SRTM | map style © OpenTopoMap (CC-BY-SA)" } },
+          layers: [{ id: "otm-terrain", type: "raster", source: "otm" }]
         }
       }
     ];

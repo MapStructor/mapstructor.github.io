@@ -587,9 +587,18 @@
       '<div class="msq-row"><select id="msq-dup-layer" class="msq-in"></select><button id="msq-dup" class="msq-btn">Duplicate → "(copy)"</button></div>' +
       '<div class="msq-note">Server-side copy — nothing downloads. Test operations on the copy; delete it when done. Counts toward storage while it exists.</div>' +
       "</div>" +
+      '<div class="msq-sec"><h4>Split into labeled &amp; unlabeled layers</h4>' +
+      '<div class="msq-row"><select id="msq-split-layer" class="msq-in"></select><select id="msq-split-col" class="msq-in"><option value="">— label column —</option></select></div>' +
+      '<div class="msq-row"><button id="msq-split-go" class="msq-btn msq-go">Split → two new layers</button></div>' +
+      '<div class="msq-note">Pick the column that defines "labeled". Features that <b>have a value</b> in it become a <b>"— labeled"</b> layer; blanks become <b>"— unlabeled"</b>. The original is untouched; large results auto-convert to tiles. Loads the layer\'s geometry first, so big layers take a moment.</div>' +
+      "</div>" +
       '<div class="msq-sec"><h4>Delete layer (full, chunked)</h4>' +
       '<div class="msq-row"><select id="msq-del-layer" class="msq-in"></select><button id="msq-del" class="msq-btn" style="border-color:#e0b9b9;background:#ffefef;color:#8f3d3d;">Delete completely</button></div>' +
       '<div class="msq-note">Removes the layer\'s features in batches (the normal delete can time out on big layers), then the layer itself — from <b>every</b> map that uses it. Frees storage. No undo.</div>' +
+      "</div>" +
+      '<div class="msq-sec"><h4>Clear a column (empty all values)</h4>' +
+      '<div class="msq-row"><select id="msq-clear-layer" class="msq-in"></select><select id="msq-clear-col" class="msq-in"><option value="">— column —</option></select><button id="msq-clear-go" class="msq-btn" style="border-color:#e0b9b9;background:#ffefef;color:#8f3d3d;">Clear all values</button></div>' +
+      '<div class="msq-note">Empties <b>every</b> value in the chosen column of <b>this</b> layer — a standard field (label / description / Start / End) goes blank; a data column is removed. Modifies the layer in place, <b>no undo</b>. If the column is drawn on the map (labels) or drives the timeline (dates), re-bake to update the tiles (the Timeline-dates “Apply” auto-rebakes, or Publish); reopen the attribute table to see it cleared there. Needs <b>query-ops-setup.sql</b> (v7).</div>' +
       "</div>" +
       '<div class="msq-sec"><h4>Merge complete lines per company, per era</h4>' +
       '<div class="msq-row"><select id="msq-op-layer" class="msq-in"></select><select id="msq-op-key" class="msq-in"></select></div>' +
@@ -648,6 +657,10 @@
 
     // operations wiring
     el.querySelector("#msq-dup").addEventListener("click", onDup);
+    el.querySelector("#msq-split-layer").addEventListener("change", fillSplitCols);
+    el.querySelector("#msq-split-go").addEventListener("click", onSplit);
+    el.querySelector("#msq-clear-layer").addEventListener("change", fillClearCols);
+    el.querySelector("#msq-clear-go").addEventListener("click", onClearColumn);
     el.querySelector("#msq-del").addEventListener("click", onDelLayer);
     el.querySelector("#msq-op-layer").addEventListener("change", fillOpKeys);
     el.querySelector("#msq-op-dry").addEventListener("click", onOpDry);
@@ -670,8 +683,9 @@
     var ls = [];
     try { ls = await projectLayers(); } catch (e) {}
     var opts = '<option value="">— layer —</option>' + ls.map(function (l) { return '<option value="' + l.id + '">' + (l.name || "layer") + "</option>"; }).join("");
-    ["msq-dup-layer", "msq-op-layer", "msq-sql-layer", "msq-js-layer"].forEach(function (id) {
+    ["msq-dup-layer", "msq-op-layer", "msq-sql-layer", "msq-js-layer", "msq-split-layer", "msq-clear-layer"].forEach(function (id) {
       var s = document.getElementById(id);
+      if (!s) return;
       var v = s.value;
       s.innerHTML = opts;
       if (v) s.value = v;
@@ -693,6 +707,85 @@
       var ks = await layerKeys(lsel.value);
       ksel.innerHTML = ks.map(function (k) { return '<option value="' + k + '">key: ' + k + "</option>"; }).join("");
     } catch (e) { ksel.innerHTML = "<option value='label'>key: label</option>"; }
+  }
+  // ── Split a layer into "labeled" + "unlabeled" by a column's presence ──
+  async function fillSplitCols() {
+    var lsel = document.getElementById("msq-split-layer"), csel = document.getElementById("msq-split-col");
+    if (!csel) return;
+    if (!lsel.value) { csel.innerHTML = '<option value="">— label column —</option>'; return; }
+    csel.innerHTML = '<option value="">loading…</option>';
+    try {
+      var ks = await layerKeys(lsel.value);   // ['label', ...custom fields]
+      var cols = ["label"].concat(ks.filter(function (k) { return k !== "label"; }));
+      csel.innerHTML = cols.map(function (k) { return '<option value="' + k + '"' + (k === "label" ? " selected" : "") + ">" + k + "</option>"; }).join("");
+    } catch (e) { csel.innerHTML = '<option value="label">label</option>'; }
+  }
+  function isBlankVal(v) { return v == null || String(v).trim() === ""; }   // "labeled" = a non-blank value ("" / " " / null = unlabeled)
+  async function onSplit() {
+    var lsel = document.getElementById("msq-split-layer"), lid = lsel.value;
+    if (!lid) { status("Pick a layer to split."); return; }
+    var col = document.getElementById("msq-split-col").value || "label";
+    var base = (lsel.selectedOptions[0] && lsel.selectedOptions[0].textContent) || "Layer";
+    var btn = document.getElementById("msq-split-go"); btn.disabled = true;
+    try {
+      var fc = await fetchLayerFC(lid, status);
+      var labeled = [], unlabeled = [];
+      fc.features.forEach(function (f) {
+        var props = {}; Object.keys(f.properties || {}).forEach(function (k) { if (k !== "feature_id") props[k] = f.properties[k]; });   // drop the internal id
+        (isBlankVal(f.properties ? f.properties[col] : null) ? unlabeled : labeled).push({ type: "Feature", geometry: f.geometry, properties: props });
+      });
+      if (!labeled.length && !unlabeled.length) { status("That layer has no features."); btn.disabled = false; return; }
+      status("Splitting by “" + col + "” — " + nfmt(labeled.length) + " labeled, " + nfmt(unlabeled.length) + " unlabeled…");
+      if (labeled.length) await saveAsLayer({ type: "FeatureCollection", features: labeled }, base + " — labeled", status);
+      if (unlabeled.length) await saveAsLayer({ type: "FeatureCollection", features: unlabeled }, base + " — unlabeled", status);
+      status("Done — created " + (labeled.length ? '"' + base + ' — labeled" (' + nfmt(labeled.length) + ")" : "") + (labeled.length && unlabeled.length ? " and " : "") + (unlabeled.length ? '"' + base + ' — unlabeled" (' + nfmt(unlabeled.length) + ")" : "") + ".");
+      pushHist("Operations", 'Split "' + base + '" by ' + col + " → " + nfmt(labeled.length) + " labeled / " + nfmt(unlabeled.length) + " unlabeled");
+      fillLayerSelects();
+    } catch (e) { status("Split failed: " + (e && e.message ? e.message : e)); }
+    btn.disabled = false;
+  }
+
+  async function fillClearCols() {
+    var lsel = document.getElementById("msq-clear-layer"), csel = document.getElementById("msq-clear-col");
+    if (!csel) return;
+    if (!lsel.value) { csel.innerHTML = '<option value="">— column —</option>'; return; }
+    csel.innerHTML = '<option value="">loading…</option>';
+    try {
+      var ks = await layerKeys(lsel.value);   // ['label', ...custom fields]
+      var custom = ks.filter(function (k) { return k !== "label"; });
+      csel.innerHTML = '<option value="">— column —</option>' +
+        '<option value="label">label</option>' +
+        '<option value="description">description</option>' +
+        '<option value="start_date">start_date (Start)</option>' +
+        '<option value="end_date">end_date (End)</option>' +
+        custom.map(function (k) { return '<option value="' + k + '">' + k + "</option>"; }).join("");
+    } catch (e) { csel.innerHTML = '<option value="">— column —</option>'; }
+  }
+  async function onClearColumn() {
+    var lsel = document.getElementById("msq-clear-layer"), lid = lsel.value;
+    if (!lid) { status("Pick a layer."); return; }
+    var col = document.getElementById("msq-clear-col").value;
+    if (!col) { status("Pick a column to clear."); return; }
+    var base = (lsel.selectedOptions[0] && lsel.selectedOptions[0].textContent) || "Layer";
+    if (!confirm("Clear ALL values in “" + col + "” for “" + base + "”?\n\nThis empties that column on every feature and CANNOT be undone.")) return;
+    var btn = document.getElementById("msq-clear-go"); btn.disabled = true;
+    try {
+      status("Listing features…");
+      var idr = await db().rpc("ms_layer_ids", { p_layer: lid, p_passthrough_key: null });
+      if (idr.error) throw new Error(idr.error.message);
+      var ids = idr.data || [], cleared = 0;
+      if (!ids.length) { status("That layer has no features."); btn.disabled = false; return; }
+      for (var i = 0; i < ids.length; i += 3000) {
+        var r = await db().rpc("ms_clear_column", { p_layer: lid, p_col: col, p_ids: ids.slice(i, i + 3000) });
+        if (r.error) throw new Error(r.error.message + (/function|does not exist/i.test(r.error.message) ? " — run sql/setup/query-ops-setup.sql (v7) first (adds ms_clear_column)" : ""));
+        cleared += (r.data || 0);
+        status("Clearing “" + col + "”… " + nfmt(Math.min(i + 3000, ids.length)) + "/" + nfmt(ids.length));
+      }
+      status("Cleared “" + col + "” on " + nfmt(cleared) + " feature" + (cleared === 1 ? "" : "s") + " — re-bake (Publish / Timeline-dates Apply) if it's on the map; reopen the attribute table to refresh it there.");
+      pushHist("Operations", "Cleared column “" + col + "” on “" + base + "” (" + nfmt(cleared) + ")");
+      fillClearCols();   // a cleared custom key is gone now — refresh the picker
+    } catch (e) { status("Clear failed: " + (e && e.message ? e.message : e)); }
+    btn.disabled = false;
   }
 
   function showStats(st) {

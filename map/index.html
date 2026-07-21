@@ -1,10 +1,10 @@
-<!doctype html>
+﻿<!doctype html>
 <html>
   <head>
-  <!-- <script src="../platform/sitelock.js"></script> --> <!-- dev lock DISABLED — uncomment to re-lock -->
+  <!-- <script src="../platform/sitelock.js"></script> --> <!-- dev lock DISABLED â€” uncomment to re-lock -->
     <!-- SOURCES-->
 
-    <!-- Platform project id (?id=<uuid>) — when set, the engine defers its boot
+    <!-- Platform project id (?id=<uuid>) â€” when set, the engine defers its boot
          steps and ../platform/projectLoader.js runs them once the project's
          config has been fetched from the database. Null = static boot. -->
     <script>
@@ -15,7 +15,7 @@
     <script src="project/lists/test-project.js"></script>
     <script>
       var _project = useTestProject ? testProjectPath : "project";
-      document.write('<script src="' + _project + '/lists/header.js?v=20260718l"><\/script>');
+      document.write('<script src="' + _project + '/lists/header.js?v=20260721c"><\/script>');
     </script>
     <!-- END TESTING -->
     <!-- <script src="project/lists/header.js"></script> -->
@@ -105,13 +105,13 @@
 
     <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
-    <!-- place search (geocoder) is an EDITING tool — editor.html only, view pages stay clean -->
+    <!-- place search (geocoder) is an EDITING tool â€” editor.html only, view pages stay clean -->
 
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="../platform/auth.js?v=20260718l"></script>
-    <script src="../platform/topbar.js?v=20260718l"></script>   <!-- #17: header shows the signed-in account (and enables Edit-map/#16 later) -->
+    <script src="../platform/auth.js?v=20260721c"></script>
+    <script src="../platform/topbar.js?v=20260721c"></script>   <!-- #17: header shows the signed-in account (and enables Edit-map/#16 later) -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
       rel="stylesheet"
@@ -126,7 +126,7 @@
       href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css"
       type="text/css"
     />
-    <link href="engine/engine.css?v=20260718l" rel="stylesheet" />
+    <link href="engine/engine.css?v=20260721c" rel="stylesheet" />
     <!--
     <link
       rel="stylesheet"
@@ -147,11 +147,11 @@
 
     <!-- TESTING: delete this block and uncomment lines below to clean up -->
     <script>
-      document.write('<script src="' + _project + '/lists/disclaimer.js?v=20260718l"><\/script>');
-      document.write('<script src="' + _project + '/lists/features.js?v=20260718l"><\/script>');
-      document.write('<script src="' + _project + '/lists/sliderDates.js?v=20260718l"><\/script>');
-      document.write('<script src="' + _project + '/lists/layersList.js?v=20260718l"><\/script>');
-      document.write('<script src="' + _project + '/lists/modalinfo.js?v=20260718l"><\/script>');
+      document.write('<script src="' + _project + '/lists/disclaimer.js?v=20260721c"><\/script>');
+      document.write('<script src="' + _project + '/lists/features.js?v=20260721c"><\/script>');
+      document.write('<script src="' + _project + '/lists/sliderDates.js?v=20260721c"><\/script>');
+      document.write('<script src="' + _project + '/lists/layersList.js?v=20260721c"><\/script>');
+      document.write('<script src="' + _project + '/lists/modalinfo.js?v=20260721c"><\/script>');
     </script>
     <!-- END TESTING -->
     <!-- <script src="js/lists/disclaimer.js"></script> -->
@@ -161,9 +161,9 @@
     <!-- <script src="js/lists/modalinfo.js"></script> -->
     <script src="engine/handle-mobile-devices.js"></script>
     <script src="engine/utils.js"></script>
-    <script src="engine/index.js?v=20260718l"></script>
+    <script src="engine/index.js?v=20260721c"></script>
 
-    <!-- Google Analytics — driven by siteAnalytics.trackingId in header.js -->
+    <!-- Google Analytics â€” driven by siteAnalytics.trackingId in header.js -->
     <!-- To revert: comment out NEW BLOCK below, uncomment OLD BLOCK below -->
 
     <!-- NEW BLOCK -->
@@ -201,7 +201,7 @@
 
 
 
-    <!-- Header hidden by DEFAULT (raw_config.features.header must be true to show it) — applied at parse
+    <!-- Header hidden by DEFAULT (raw_config.features.header must be true to show it) â€” applied at parse
          so there is NO flash of the header on load; projectLoader shows it for header-on maps once config arrives. -->
     <style id="ms-preheader-css">
       body.ms-no-header .header{display:none;}
@@ -215,7 +215,7 @@
   <body>
     <script>document.body.classList.add('ms-no-header');</script>
 
-    <!-- Disclaimer — shown on every page load (toggle in project/lists/disclaimer.js) -->
+    <!-- Disclaimer â€” shown on every page load (toggle in project/lists/disclaimer.js) -->
     <div id="disclaimer-overlay">
       <div id="disclaimer-card">
         <div id="disclaimer-accent"></div>
@@ -276,7 +276,7 @@
 
       <br />
       <div>
-        <script src="engine/generateLayers.js?v=20260718l"></script>
+        <script src="engine/generateLayers.js?v=20260721c"></script>
         <hr />
         <p class="title">MAPS</p>
 
@@ -344,39 +344,39 @@
 
     <!-- TESTING: delete this block and uncomment lines below to clean up -->
     <script>
-      document.write('<script src="' + _project + '/lists/bounds.js?v=20260718l"><\/script>');
-      document.write('<script src="' + _project + '/lists/mapData.js?v=20260718l"><\/script>');
+      document.write('<script src="' + _project + '/lists/bounds.js?v=20260721c"><\/script>');
+      document.write('<script src="' + _project + '/lists/mapData.js?v=20260721c"><\/script>');
     </script>
     <!-- END TESTING -->
     <!-- <script src="js/lists/bounds.js"></script> -->
     <!-- <script src="js/lists/mapData.js"></script> -->
-    <script src="engine/generateMaps.js?v=20260718l"></script>
-    <script src="engine/refreshLayers.js?v=20260718l"></script>
-    <script src="engine/addMapLayer.js?v=20260718l"></script>
-    <script src="engine/eventsHandle.js?v=20260718l"></script>
-    <script src="engine/addLayers.js?v=20260718l"></script>
+    <script src="engine/generateMaps.js?v=20260721c"></script>
+    <script src="engine/refreshLayers.js?v=20260721c"></script>
+    <script src="engine/addMapLayer.js?v=20260721c"></script>
+    <script src="engine/eventsHandle.js?v=20260721c"></script>
+    <script src="engine/addLayers.js?v=20260721c"></script>
     <!-- TESTING: delete this block and uncomment line below to clean up -->
     <script>
-      document.write('<script src="' + _project + '/lists/restrictedToken.js?v=20260718l"><\/script>');
+      document.write('<script src="' + _project + '/lists/restrictedToken.js?v=20260721c"><\/script>');
       document.write('<script src="' + _project + '/secrets/mapbox-token.js"><\/script>');
     </script>
     <!-- END TESTING -->
     <!-- <script src="js/mapbox-token.js"></script> -->
-    <script src="engine/infoPanel.js?v=20260718l"></script>
-    <script src="engine/mapinit.js?v=20260718l"></script>
+    <script src="engine/infoPanel.js?v=20260721c"></script>
+    <script src="engine/mapinit.js?v=20260721c"></script>
     <script src="engine/sliderpopups.js"></script>
-    <script src="../platform/configLoader.js?v=20260718l" onerror="void(0)"></script>
-    <script src="../platform/labels.js?v=20260718l" onerror="void(0)"></script>
-    <script src="../platform/groupView.js?v=20260718l" onerror="void(0)"></script>   <!-- "treat as one" hover/click in VIEW mode -->
+    <script src="../platform/configLoader.js?v=20260721c" onerror="void(0)"></script>
+    <script src="../platform/labels.js?v=20260721c" onerror="void(0)"></script>
+    <script src="../platform/groupView.js?v=20260721c" onerror="void(0)"></script>   <!-- "treat as one" hover/click in VIEW mode -->
 
-    <script src="../platform/renderRegistry.js?v=20260718l" onerror="void(0)"></script>
-    <script src="../platform/projectLoader.js?v=20260718l" onerror="void(0)"></script>
-    <script src="../platform/download.js?v=20260718l" onerror="void(0)"></script>   <!-- ⬇ Download whole project (sidebar button) -->
-    <script src="../platform/rasterScrub.js?v=20260718l" onerror="void(0)"></script>   <!-- ⚡ EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
-    <script src="../platform/tables.js?v=20260718l" onerror="void(0)"></script>   <!-- 📊 Data tables + joins -->
-    <script src="../platform/layerJson.js?v=20260718l" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
+    <script src="../platform/renderRegistry.js?v=20260721c" onerror="void(0)"></script>
+    <script src="../platform/projectLoader.js?v=20260721c" onerror="void(0)"></script>
+    <script src="../platform/download.js?v=20260721c" onerror="void(0)"></script>   <!-- â¬‡ Download whole project (sidebar button) -->
+    <script src="../platform/rasterScrub.js?v=20260721c" onerror="void(0)"></script>   <!-- âš¡ EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
+    <script src="../platform/tables.js?v=20260721c" onerror="void(0)"></script>   <!-- ðŸ“Š Data tables + joins -->
+    <script src="../platform/layerJson.js?v=20260721c" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
     <script>
-      // Standalone deploys ship map/ without platform/ — if ?id= is set but the
+      // Standalone deploys ship map/ without platform/ â€” if ?id= is set but the
       // loader didn't arrive, boot the static config so the page still works.
       if (platformProjectId && typeof PlatformProjectLoader === "undefined") {
         generateLayersPanel();

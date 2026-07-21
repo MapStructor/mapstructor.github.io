@@ -442,6 +442,11 @@ div.layer-list-row {
   width: 100%;
 }
 
+/* Breathing room between top-level sections in the layer list (7/21) — sections
+   used to stack flush; give each section block space above so they read as distinct. */
+.ms-section-block { margin-top: 18px; }
+.ms-section-block:first-child { margin-top: 0; }
+
 div.layer-list-row:hover {
   background-color: #ddd;
 }

@@ -28,7 +28,9 @@ function styleColumnPaint(layer) {
   const ok = layer.type === "fill" ? "fill-opacity" : layer.type === "line" ? "line-opacity" : "circle-opacity";
   if (p[ck] != null) p[ck] = ["to-color", ["get", "ms_color"], p[ck]];
   if (p[ok] != null && typeof p[ok] !== "object") p[ok] = msNumCol("ms_opacity", p[ok]);
-  if (layer.type === "line" && p["line-width"] != null) p["line-width"] = msNumCol("ms_thickness", p["line-width"]);
+  // object = a stored expression (e.g. the 7/21 zoom-width interpolate, which already embeds the
+  // ms_thickness override per stop) — wrapping it again would nest ["zoom"] inside `case` (illegal)
+  if (layer.type === "line" && p["line-width"] != null && typeof p["line-width"] !== "object") p["line-width"] = msNumCol("ms_thickness", p["line-width"]);
   if (layer.type === "circle" && p["circle-radius"] != null) {
     // per-feature ms_thickness override, then zoom-scaled: the stored radius is the ZOOMED-IN size,
     // shrinking toward 35% by z6 — matches the editor's draw copies (points read like real markers)
@@ -71,7 +73,7 @@ function addLayersToMap(map, side, date) {
     // sharing the fill's source (Mapbox fill-outline-color can't exceed 1px). For a vector
     // tileset the line needs the same source-layer to find the geometry; geojson has none.
     if (layer.stroke) {
-      const strokeCfg = { id: layer.id + "-stroke-" + side, type: "line", source: layer.id + "-" + side, paint: styleColumnStroke(layer), layout: { "line-cap": "round", "line-join": "round", visibility: initVis } };
+      const strokeCfg = { id: layer.id + "-stroke-" + side, type: "line", source: layer.id + "-" + side, timelineIgnore: layer.timelineIgnore, paint: styleColumnStroke(layer), layout: { "line-cap": "round", "line-join": "round", visibility: initVis } };
       if (layer["source-layer"]) strokeCfg["source-layer"] = layer["source-layer"];
       addMapLayer(map, strokeCfg, date);
     }

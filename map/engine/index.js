@@ -195,13 +195,21 @@ if (jQuery.browser.msie)
 	
   });
 
-  // close modal by click outside the box
+  // close modal by click outside the box — but ONLY when the click actually STARTED on the backdrop.
+  // A drag that begins inside the box (e.g. selecting text while editing the ℹ popup) and releases on
+  // the backdrop fires a `click` whose target is .modal; without this guard that closed the popup
+  // mid-edit. (jQuery UI guards the same way via the mousedown target.) And while the editor is actively
+  // editing this popup (window.__msModalLock), the backdrop never closes — only the ✕ button does.
+  var _msModalDownOnBackdrop = false;
+  $("div.modal").on("mousedown", function (e) { _msModalDownOnBackdrop = (e.target === this); });
 
   $("div.modal-body").click(function (e) {
     e.stopPropagation();
   });
 
   $("div.modal").click(function () {
+    if (!_msModalDownOnBackdrop) return;   // drag started inside the box → keep it open
+    if (window.__msModalLock) return;      // editor is editing this popup → only the ✕ closes
     $("label#close").trigger("click");
   });
 

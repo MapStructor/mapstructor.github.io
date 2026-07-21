@@ -218,14 +218,26 @@ function changeDate(unixDate) {
   flatLayers(layers).forEach(layer => {
     const leftId  = layer.id + "-left";
     const rightId = layer.id + "-right";
-    if (beforeMap.getLayer(leftId))  beforeMap.setFilter(leftId,  dateFilter);
-    if (afterMap.getLayer(rightId))  afterMap.setFilter(rightId,  dateFilter);
+    // 7/21: timelineIgnore — this layer always shows EVERYTHING (e.g. a linked instance used as an
+    // "all data at once" view of end-dated data). Clear any date filter instead of applying one.
+    const lf = layer.timelineIgnore ? null : dateFilter;
+    if (beforeMap.getLayer(leftId))  beforeMap.setFilter(leftId,  lf);
+    if (afterMap.getLayer(rightId))  afterMap.setFilter(rightId,  lf);
     // companion layers (stroke outline, hover highlight) get a date filter at ADD time —
     // they must follow the slider too, or outlines freeze at the boot date
     ["-stroke-", "-highlighted-"].forEach(sfx => {
       const l = layer.id + sfx + "left", r = layer.id + sfx + "right";
-      if (beforeMap.getLayer(l)) beforeMap.setFilter(l, dateFilter);
-      if (afterMap.getLayer(r)) afterMap.setFilter(r, dateFilter);
+      if (beforeMap.getLayer(l)) beforeMap.setFilter(l, lf);
+      if (afterMap.getLayer(r)) afterMap.setFilter(r, lf);
+    });
+    // 7/21: LABELS follow the slider too — coalesce keeps dateless anchors (group/point anchors carry
+    // no Day props) always visible, while tile-riding labels hide with their features
+    const lblF = layer.timelineIgnore ? null
+      : ["all", ["<=", ["coalesce", ["get", "DayStart"], 0], date], [">=", ["coalesce", ["get", "DayEnd"], 99999999], date]];
+    ["-label-"].forEach(sfx => {
+      const l = layer.id + sfx + "left", r = layer.id + sfx + "right";
+      if (beforeMap.getLayer(l)) beforeMap.setFilter(l, lblF);
+      if (afterMap.getLayer(r)) afterMap.setFilter(r, lblF);
     });
   });
   
@@ -243,6 +255,7 @@ var _DP_KEYS = { fill: ["fill-opacity"], line: ["line-opacity"], circle: ["circl
 function _dpTargets() {
   var t = [];
   flatLayers(layers).forEach(function (layer) {
+    if (layer.timelineIgnore) return;   // 7/21: always-show layers never dim during a scrub either
     var kind = _DP_KEYS[layer.type] ? layer.type : null;
     if (kind) {
       t.push([beforeMap, layer.id + "-left", kind], [afterMap, layer.id + "-right", kind]);

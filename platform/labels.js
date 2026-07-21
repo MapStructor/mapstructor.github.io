@@ -174,7 +174,12 @@
       // ONE anchor per group value, computed from what's actually RENDERED (timeline + zoom correct),
       // at the midpoint of the group's longest visible piece, rotated to lie along it. Refreshes on
       // map idle when the view/filter changes — labels behave as if the segments were one line.
-      if (srcType === 'vector' && layer.groupBy && map) {
+      // 7/21: ALL tileset lines label via the group-anchor system — ungrouped layers group by the
+      // LABEL field itself (fragments sharing a name get ONE well-placed label; single-feature names
+      // are a group of 1). Kills the line-placement starvation (long names never fit short/curvy
+      // fragments at low zoom — canals showed 0 labels at z7 with every feature carrying a name) AND
+      // keeps labels timeline-correct: anchors recompute from the RENDERED (date-filtered) fragments.
+      if (srcType === 'vector' && map) {
         var gsrcId = layer.id + '-glabels-' + side;
         base.source = gsrcId;
         base.layout['text-field'] = ['get', 't'];
@@ -230,7 +235,8 @@
     var reg = map._msGAnchors || (map._msGAnchors = {});
     var wkey = layer.id + '|' + side;
     if (reg[wkey]) return; reg[wkey] = true;
-    var lineId = layer.id + '-' + side, key = layer.groupBy, lastSig = null, t = null;
+    // 7/21: ungrouped layers anchor by their LABEL field — same machinery, group-of-1 per name
+    var lineId = layer.id + '-' + side, key = layer.groupBy || (layer.labels && layer.labels.field) || 'label', lastSig = null, t = null;
     function lineLen(c) {
       var L = 0;
       for (var i = 1; i < c.length; i++) {

@@ -113,7 +113,7 @@ function buildContainerHTML(node) {
   if (node.type === "section") {
     var childHTML = node.children.map(buildContainerHTML).join('');
     return (
-      '<div id="' + node.id + '">' +
+      '<div class="ms-section-block" id="' + node.id + '">' +
         '<div class="layer-list-row" style="display:flex;justify-content:center;align-items:center">' +
           '<i class="fas fa-minus-square compress-expand-icon" id="' + node.caretId + '" style="margin-right:5px"' +
             ' onclick="sectionCompressExpand(\'#' + node.containerId + '\',\'#' + node.caretId + '\')"></i>' +

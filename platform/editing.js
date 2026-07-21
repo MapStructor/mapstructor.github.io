@@ -138,6 +138,7 @@
     generateLayersPanel();
     var root2 = document.getElementById('layers-panel-content');
     if (root2) root2.querySelectorAll('input[type=checkbox][id]').forEach(function (cb) { if (cb.id in live) cb.checked = live[cb.id]; });
+    if (typeof window.__msRenderLegend === 'function') window.__msRenderLegend();   // keep the legend in sync with the layer tree
   }
   function uid() { return 'new-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
   var LAYER_COLORS = ['#4a9eff', '#e8553e', '#3bb273', '#b56cd6', '#e8a33e', '#3ec0d0', '#d64576'];
@@ -393,6 +394,9 @@
       });
       var enNode = findNodeById(layers, id);
       var enCb = row.querySelector('input[type="checkbox"]');
+      // 7/21: editing-only badge + italic name — this layer is stripped from VIEW mode
+      // (raw_config.editorOnly); the sidebar marks it so the owner can spot it at a glance.
+      if (enNode && enNode.editorOnly) updateEditorOnlyRow(enNode, row);
       // Checkbox toggles are SESSION-ONLY (defaults are set explicitly in each item's panel — see
       // elp-default-vis). Drawn layers need their MapboxDraw copies toggled by hand; group/section
       // checkboxes must cascade to them too (the engine only flips child checkbox props — no events).
@@ -446,6 +450,7 @@
         if (moveNode(dragNode, targetNode, dropPos(row, targetNode, e.clientY))) { rerender(); persistOrder(); }
       });
     });
+    try { injectStyleRows(); } catch (e) {}   // nested style-category sub-rows (opt-in per layer)
   }
 
   // ── drag-reorder: move a node in the tree, then renumber the whole tree's
@@ -1359,16 +1364,73 @@
     if (lb && !lb.title) lb.title = (lb.textContent || '').trim();
   });
   function importStatus(m) { var s = document.getElementById('editor-import-status'); if (s) s.textContent = m; else setStatus(m); }
-  // KMZ = a ZIP wrapping a KML (+ optional assets). Unzip, find the .kml, parse it.
-  async function kmzToFc(file) {
-    await loadScript(LIB.fflate);
+  // KML/KMZ → parsed XML DOM (KMZ = a ZIP wrapping a .kml + optional assets).
+  async function kmlDomFromFile(file, ext) {
     await loadScript(LIB.togeojson);
-    var files = window.fflate.unzipSync(new Uint8Array(await file.arrayBuffer()));
-    var kmlName = Object.keys(files).filter(function (n) { return /\.kml$/i.test(n); }).sort()[0];   // doc.kml / any .kml
-    if (!kmlName) throw new Error('no .kml inside the .kmz');
-    var dom = new DOMParser().parseFromString(new TextDecoder().decode(files[kmlName]), 'text/xml');
-    if (dom.querySelector('parsererror')) throw new Error('the KML inside the KMZ is invalid');
-    return window.toGeoJSON.kml(dom);
+    var text;
+    if (ext === 'kmz') {
+      await loadScript(LIB.fflate);
+      var files = window.fflate.unzipSync(new Uint8Array(await file.arrayBuffer()));
+      var kmlName = Object.keys(files).filter(function (n) { return /\.kml$/i.test(n); }).sort()[0];   // doc.kml / any .kml
+      if (!kmlName) throw new Error('no .kml inside the .kmz');
+      text = new TextDecoder().decode(files[kmlName]);
+    } else text = await file.text();
+    var dom = new DOMParser().parseFromString(text, 'text/xml');
+    if (dom.querySelector('parsererror')) throw new Error(ext === 'kmz' ? 'the KML inside the KMZ is invalid' : 'not valid KML/XML');
+    return dom;
+  }
+  // Split a KML by its FOLDERS. A KML of separate folders is authored to open as SEPARATE things, so we
+  // import each folder as its own layer — never merged/flattened (user 7/20: "a really bad idea to
+  // merge and flatten it"). Each Placemark is grouped by its nearest <Folder> ancestor's name; each
+  // group is re-serialized to a standalone KML and run through togeojson (so styles/geometry parse
+  // exactly as togeojson expects). Returns [{name,fc}] when there are ≥2 groupings, else null (the
+  // file is effectively one layer and the caller uses the whole-file FeatureCollection as before).
+  function kmlFolderParts(dom) {
+    var root = dom.querySelector('Document') || dom.documentElement; if (!root) return null;
+    var pms = Array.prototype.slice.call(root.getElementsByTagName('Placemark'));
+    if (pms.length < 2) return null;
+    function folderNameOf(node) {
+      var n = node.parentNode;
+      while (n && n.nodeType === 1) {
+        if ((n.localName || n.tagName) === 'Folder') {
+          var ne = Array.prototype.filter.call(n.childNodes, function (c) { return c.nodeType === 1 && (c.localName || c.tagName) === 'name'; })[0];
+          return (ne && (ne.textContent || '').trim()) || 'Folder';
+        }
+        n = n.parentNode;
+      }
+      return null;   // not inside any folder → "loose"
+    }
+    var groups = {}, order = [];
+    pms.forEach(function (pm) {
+      var fn = folderNameOf(pm) || 'Ungrouped';
+      if (!(fn in groups)) { groups[fn] = []; order.push(fn); }
+      groups[fn].push(pm);
+    });
+    if (order.length < 2) return null;   // one grouping (or all loose) → single layer, current behavior
+    var ser = new XMLSerializer(), parts = [];
+    order.forEach(function (fn) {
+      var inner = groups[fn].map(function (pm) { return ser.serializeToString(pm); }).join('');
+      var kmlStr = '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>' + inner + '</Document></kml>';
+      var d = new DOMParser().parseFromString(kmlStr, 'text/xml');
+      var fc = null; try { fc = window.toGeoJSON.kml(d); } catch (e) {}
+      if (fc && fc.features && fc.features.length) parts.push({ name: fn, fc: fc });
+    });
+    return parts.length >= 2 ? parts : null;
+  }
+  // Multi-folder KML → one layer per folder, grouped under the file name. NEVER merged.
+  async function importKmlFolders(parts, fileName, parent) {
+    var container = (parent && parent.type === 'group') ? parent   // already in a batch group → add layers here (no nested group)
+      : await addItem('group', fileName || 'Imported KML', (parent && parent.type === 'section') ? parent : null);
+    if (!container) throw new Error('could not create a group for the KML folders');
+    var ok = 0, failed = [];
+    for (var i = 0; i < parts.length; i++) {
+      importStatus('Importing folder ' + (i + 1) + '/' + parts.length + ': ' + parts[i].name + '…');
+      try { await importFeatureCollection(parts[i].fc, parts[i].name, container); ok++; }
+      catch (e) { console.warn('kml folder import failed', parts[i].name, e); failed.push(parts[i].name); }
+    }
+    rerender();
+    setStatus('Imported ' + ok + ' of ' + parts.length + ' KML folders as separate layers' + (failed.length ? ' · failed: ' + failed.join(', ') : ''));
+    return container;
   }
   // Parse ONE file by extension → FeatureCollection → import as layer(s). Throws on failure.
   async function importOneFile(file, parent) {
@@ -1376,8 +1438,12 @@
     importStatus('Reading ' + file.name + '…');
     var fc = null;
     if (ext === 'geojson' || ext === 'json') fc = JSON.parse(await file.text());
-    else if (ext === 'kml') { await loadScript(LIB.togeojson); var dom = new DOMParser().parseFromString(await file.text(), 'text/xml'); if (dom.querySelector('parsererror')) throw new Error('not valid KML/XML'); fc = window.toGeoJSON.kml(dom); }
-    else if (ext === 'kmz') fc = await kmzToFc(file);
+    else if (ext === 'kml' || ext === 'kmz') {
+      var kdom = await kmlDomFromFile(file, ext);
+      var parts = kmlFolderParts(kdom);   // multi-folder KML → import each folder as its OWN layer (never merged)
+      if (parts) return await importKmlFolders(parts, stripExt(file.name), parent);
+      fc = window.toGeoJSON.kml(kdom);
+    }
     else if (ext === 'zip') { await loadScript(LIB.shp); var r = await window.shp(await file.arrayBuffer()); fc = Array.isArray(r) ? { type: 'FeatureCollection', features: r.reduce(function (a, c) { return a.concat(c.features || []); }, []) } : r; }
     else if (ext === 'tif' || ext === 'tiff') throw new Error('GeoTIFF (raster) import is coming soon');
     else throw new Error('unsupported format .' + ext);
@@ -1693,7 +1759,7 @@
       oCb.addEventListener('change', function () {
         if (this.checked) return;
         if (_editPopupId) { try { savePopupEdit(); } catch (e) {} }   // flush — closing inside the 600ms debounce must not drop the last keystrokes
-        _editPopupId = null;
+        _editPopupId = null; window.__msModalLock = false;   // edit session ended → backdrop can close again
         var c = document.querySelector('div.modal-content'); if (c) c.removeAttribute('contenteditable');
         var tl = document.getElementById('editor-modal-tools'); if (tl) tl.classList.remove('on');
       });
@@ -1710,6 +1776,7 @@
     var content = document.querySelector('div.modal-content'); var tools = document.getElementById('editor-modal-tools');
     if (!content || !tools) return;
     _editPopupId = popupId; content.setAttribute('contenteditable', 'true'); tools.classList.add('on');
+    window.__msModalLock = true;   // while editing, the engine's backdrop-click won't close the modal — only the ✕ (see engine/index.js)
   }
   async function savePopupEdit() {
     // SNAPSHOT the target + html now — the close handler nulls _editPopupId and this function
@@ -3542,6 +3609,9 @@
 
     // Classify by size: small layers edit in MapboxDraw; large ones (imported 10k+ datasets) render
     // via the engine like a tileset — MapboxDraw can't hold tens of thousands of features (it freezes).
+    // 7/21: DATED layers (any feature with start/end dates) also render via the ENGINE regardless of size —
+    // MapboxDraw copies carry no dates and apply no timeline filter, so in-draw layers could never animate
+    // (the Steamboat bug). Engine-rendered = animates like the viewer; editing = click a feature to pull it in.
     _drawLayerSlugs = {};
     var smallIds = [];
     // one COUNT per layer, but in PARALLEL — awaiting them one-by-one stalled boot ~N×roundtrip (20+
@@ -3549,7 +3619,10 @@
     var counts = await Promise.all(gjList.map(function (gj2) {
       return db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gj2.did).then(function (cq) { return (cq && cq.count) || 0; }, function () { return 0; });
     }));
-    counts.forEach(function (cn, gi) { if (cn > 0 && cn <= MAX_DRAW) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } });
+    var datedCounts = await Promise.all(gjList.map(function (gj2) {
+      return db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gj2.did).or('start_date.not.is.null,end_date.not.is.null').then(function (cq) { return (cq && cq.count) || 0; }, function () { return 0; });
+    }));
+    counts.forEach(function (cn, gi) { if (cn > 0 && cn <= MAX_DRAW && !datedCounts[gi]) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } });
     // the map contains a big-table layer → warm the columnar engine at idle, so the first table
     // open never pays the engine load (user-proposed prefetch rule, 7/18)
     try { if (window.MSBigTable && counts.some(function (cn) { return cn > MSBigTable.BIG_ROWS; })) MSBigTable.prefetch(); } catch (e) {}
@@ -4385,12 +4458,14 @@
   function colorKeyFor(type) { return type === 'fill' ? 'fill-color' : type === 'line' ? 'line-color' : 'circle-color'; }
   function looksHex(v) { return /^#?[0-9a-fA-F]{6}$/.test(String(v == null ? '' : v).trim()); }
   function normHex(v) { v = String(v).trim(); return (v[0] === '#' ? v : '#' + v).toLowerCase(); }
-  function syncColorInputForColorBy(node) {   // colour-by on → swap the single swatch for the multicolor strip
-    var rowC = document.getElementById('elp-color-row'), strip = document.getElementById('elp-multicolor-strip');
+  function syncColorInputForColorBy(node) {   // colour-by on → swap the single swatch for the multicolor strip (or the 2-swatch binary strip)
+    var rowC = document.getElementById('elp-color-row'), strip = document.getElementById('elp-multicolor-strip'), bin = document.getElementById('elp-binary-strip');
     if (!rowC || !strip) return;
-    var multi = !!(node && node.colorBy);
-    rowC.style.display = multi ? 'none' : 'block';
-    strip.style.display = multi ? 'flex' : 'none';
+    var cb = node && node.colorBy;
+    var presence = !!(cb && cb.mode === 'presence');
+    rowC.style.display = cb ? 'none' : 'block';
+    strip.style.display = (cb && !presence) ? 'flex' : 'none';
+    if (bin) bin.style.display = presence ? 'block' : 'none';
   }
   // The bubble "Label field" (and the map-labels column pick, where supported) share one column list.
   function fillLabelFieldSelect(node, sortedKeys) {
@@ -4445,6 +4520,7 @@
           var cbt = node.colorBy;
           if (cbt && cbt.prop) { if (![].slice.call(sel.options).some(function (o) { return o.value === cbt.prop; })) { var oc3 = document.createElement('option'); oc3.value = cbt.prop; oc3.textContent = cbt.prop; sel.appendChild(oc3); } sel.value = cbt.prop; info.textContent = cbt.mode === 'hex' ? "Using the column's own hex colors." : (Object.keys(cbt.mapping || {}).length + ' categories, one color each.'); }
           else { sel.value = ''; info.textContent = ''; }
+          addPresenceOption(sel, node);   // + "Labeled vs unlabeled" (reflects saved presence mode)
         }
       }
       return;
@@ -4464,6 +4540,7 @@
       sortedKeys.forEach(function (k) { var o = document.createElement('option'); o.value = k; o.textContent = k; sel.appendChild(o); });
       var cb = node.colorBy;
       if (cb && cb.prop) { sel.value = cb.prop; info.textContent = cb.mode === 'hex' ? "Using the column's own hex colors." : (Object.keys(cb.mapping || {}).length + ' categories, one color each.'); }
+      addPresenceOption(sel, node);   // + "Labeled vs unlabeled" (reflects saved presence mode)
       // opacity/thickness-by dropdowns get the same columns
       [['elp-opacityby', 'opacityBy', 'Single opacity (slider above)', 'opacity'], ['elp-thickby', 'thicknessBy', 'Single thickness (slider above)', 'thickness']].forEach(function (spec) {
         var s2 = document.getElementById(spec[0]); if (!s2) return;
@@ -4539,7 +4616,241 @@
       : (lbc.varyZoom === false && lbc.sizeUniform > 0) ? [[11, lbc.sizeUniform]]
       : [[6, 10], [11, 13], [16, 17]]);
   }
+  // ── "Labeled vs unlabeled" (binary category, Rung 2a) ──────────────────────
+  // A two-bucket rule keyed on whether a field has a value: fixes the auto-generated per-name
+  // coloring (blank name → jarring red). The field is the layer's label field (or the column the
+  // old auto-colorBy used). Needs NO tile regen when that field is already baked (RRname/label are).
+  function presenceField(node) { return (node.labels && node.labels.field) || (node.colorBy && node.colorBy.prop) || 'label'; }
+  function presenceExpr(field, presentColor, absentColor) {
+    var f = ['to-string', ['get', field]];   // missing/null → "" ; the data uses " " for blank too
+    return ['case', ['any', ['==', f, ''], ['==', f, ' ']], absentColor, presentColor];
+  }
+  function addPresenceOption(sel, node) {   // inject the "Labeled vs unlabeled" choice + reflect saved state
+    if (!sel || [].slice.call(sel.options).some(function (o) { return o.value === '__present__'; })) { /* already there */ }
+    else { var opt = document.createElement('option'); opt.value = '__present__'; opt.textContent = 'Labeled vs unlabeled (2 colors)'; sel.insertBefore(opt, sel.options[1] || null); }
+    var cb = node && node.colorBy;
+    if (cb && cb.mode === 'presence') {
+      sel.value = '__present__';
+      var bp = document.getElementById('elp-bin-present'), ba = document.getElementById('elp-bin-absent');
+      if (bp) bp.value = looksHex(cb.present) ? normHex(cb.present) : '#3bb2d0';
+      if (ba) ba.value = looksHex(cb.absent) ? normHex(cb.absent) : '#cccccc';
+      var info = document.getElementById('elp-colorby-info');
+      if (info) info.textContent = 'Labeled = has a value in ' + (cb.prop || 'label') + '.';
+    }
+  }
+  function buildPresencePaint(node) {   // {paint, present, absent, field} from the two swatches
+    var key = colorKeyFor(node.type);
+    var present = (document.getElementById('elp-bin-present') || {}).value || '#3bb2d0';
+    var absent = (document.getElementById('elp-bin-absent') || {}).value || '#cccccc';
+    var field = (node.colorBy && node.colorBy.mode === 'presence' && node.colorBy.prop) || presenceField(node);
+    var paint = JSON.parse(JSON.stringify(node.paint || {}));
+    paint[key] = presenceExpr(field, present, absent);
+    return { paint: paint, present: present, absent: absent, field: field, key: key };
+  }
+  function livePresenceColors() {   // realtime preview on both swipe sides, no DB write (feedback: style previews live)
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var b = buildPresencePaint(node);
+    [[beforeMap, '-left'], [typeof afterMap !== 'undefined' ? afterMap : null, '-right']].forEach(function (ms) {
+      var m = ms[0]; if (!m) return; try { if (m.getLayer(node.id + ms[1])) m.setPaintProperty(node.id + ms[1], b.key, b.paint[b.key]); } catch (e) {}
+    });
+  }
+  async function savePresenceColors() {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var b = buildPresencePaint(node);
+    node.paint = b.paint;
+    node.colorBy = { mode: 'presence', prop: b.field, present: b.present, absent: b.absent, mapping: { labeled: b.present, unlabeled: b.absent } };   // mapping keeps the sidebar multicolor icon happy
+    setStatus('Saving…');
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      rc.colorBy = node.colorBy;
+      var r = await db.from('layers').update({ paint: b.paint, raw_config: rc }).eq('id', lid);
+      if (r.error) throw new Error(r.error.message);
+      livePresenceColors();
+      if (!isTilesetNode(node)) await loadFeatures();
+      rerender(); syncColorInputForColorBy(node); renderLegend();
+      var info = document.getElementById('elp-colorby-info'); if (info) info.textContent = 'Labeled = has a value in ' + b.field + '.';
+      setStatus('Saved');
+    } catch (e) { console.warn('presence colorBy failed', e); setStatus('Save failed'); }
+  }
+  // ── Legend (experiment, 7/20) — a small on-map box listing each legend-enabled layer's colors ──
+  function legendItemsFor(node) {
+    var cb = node.colorBy;
+    if (cb && cb.mode === 'presence') return [{ label: 'Labeled', color: cb.present || '#3bb2d0' }, { label: 'Unlabeled', color: cb.absent || '#cccccc' }];
+    if (cb && cb.mapping) {
+      var ks = Object.keys(cb.mapping);
+      var items = ks.slice(0, 12).map(function (k) { return { label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; });
+      if (ks.length > 12) items.push({ label: '… +' + (ks.length - 12) + ' more', color: 'transparent' });
+      return items;
+    }
+    var key = colorKeyFor(node.type);
+    var col = (node.paint && typeof node.paint[key] === 'string' && node.paint[key]) || node.iconColor || '#3bb2d0';
+    return [{ label: node.label || 'Layer', color: col }];
+  }
+  function renderLegend() {
+    var box = document.getElementById('ms-legend');
+    if (!box) {
+      box = document.createElement('div'); box.id = 'ms-legend';
+      box.style.cssText = 'position:fixed;z-index:3980;bottom:80px;max-width:240px;max-height:42vh;overflow:auto;background:rgba(255,255,255,0.95);border:1px solid #c9bfe8;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.15);padding:8px 11px;font-family:"Source Sans Pro",Arial,sans-serif;font-size:12px;color:#2b3a4a;';
+      document.body.appendChild(box);
+    }
+    var on = [];
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.legend && n.checked !== false) on.push(n); if (n.children) walk(n.children); }); })(layers);
+    if (!on.length) { box.style.display = 'none'; return; }
+    var anchor = document.getElementById('layers-panel-content');   // dock to the sidebar's right edge, like the features list
+    box.style.left = Math.round((anchor ? anchor.getBoundingClientRect().right : 470) + 6) + 'px';
+    box.style.display = 'block';
+    box.innerHTML = '<div style="font-weight:700;margin-bottom:5px;">Legend</div>' + on.map(function (n) {
+      return '<div style="margin-bottom:7px;"><div style="font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + attrEsc(n.label || 'Layer') + '</div>' +
+        legendItemsFor(n).map(function (it) { return '<div style="display:flex;align-items:center;gap:6px;margin:1px 0;"><span style="display:inline-block;width:13px;height:13px;flex:0 0 auto;border:1px solid #999999;border-radius:2px;background:' + attrEsc(it.color) + ';"></span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + attrEsc(it.label) + '</span></div>'; }).join('') +
+      '</div>';
+    }).join('');
+  }
+  window.__msRenderLegend = renderLegend;   // let visibility toggles refresh the legend
+  async function onToggleLegend(on) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    node.legend = !!on;
+    renderLegend();
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;   // still shows this session even if not persistable
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (node.legend) rc.legend = true; else delete rc.legend;
+      await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+    } catch (e) {}
+  }
+  // ── Style categories under the layer (7/20) — nested sub-rows in the sidebar, each with a
+  // checkbox that shows/hides that category's features on the map (via a slider-safe opacity
+  // expression). Opt-in per layer (node.styleRows); only meaningful for color-by layers. ──
+  function opKeyFor(node) { return node.type === 'fill' ? 'fill-opacity' : node.type === 'line' ? 'line-opacity' : 'circle-opacity'; }
+  function styleCatsFor(node) {   // [{key,label,color}] — the rows to show; [] for single-color layers
+    var cb = node.colorBy;
+    if (cb && cb.mode === 'presence') return [{ key: '__present__', label: 'Labeled', color: cb.present || '#3bb2d0' }, { key: '__absent__', label: 'Unlabeled', color: cb.absent || '#cccccc' }];
+    if (cb && cb.mapping) { var ks = Object.keys(cb.mapping); return ks.slice(0, 20).map(function (k) { return { key: k, label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; }); }
+    return [];
+  }
+  function styleOpacityExpr(node) {
+    var key = opKeyFor(node), cur = node.paint && node.paint[key];
+    if (typeof cur === 'number') node.styleBaseOp = cur;   // remember the flat base before we replace it with an expression
+    var base = (typeof node.styleBaseOp === 'number') ? node.styleBaseOp : 1;
+    var hidden = node.styleHidden || [];
+    if (!hidden.length) return base;
+    var cb = node.colorBy;
+    if (cb && cb.mode === 'presence') {
+      var f = ['to-string', ['get', cb.prop || 'label']], blank = ['any', ['==', f, ''], ['==', f, ' ']];
+      return ['case', blank, (hidden.indexOf('__absent__') > -1 ? 0 : base), (hidden.indexOf('__present__') > -1 ? 0 : base)];
+    }
+    if (cb && cb.mapping) { var expr = ['match', ['to-string', ['get', cb.prop]]]; hidden.forEach(function (v) { expr.push(v, 0); }); expr.push(base); return expr; }
+    return base;
+  }
+  function applyStyleVisibility(node) {
+    var key = opKeyFor(node), expr = styleOpacityExpr(node);
+    node.paint = node.paint || {}; node.paint[key] = expr;
+    [[beforeMap, '-left'], [typeof afterMap !== 'undefined' ? afterMap : null, '-right']].forEach(function (ms) {
+      var m = ms[0]; if (!m) return; try { if (m.getLayer(node.id + ms[1])) m.setPaintProperty(node.id + ms[1], key, expr); } catch (e) {}
+    });
+  }
+  async function persistStyleRows(node) {
+    var lid = slugToLayerDbId[node.id]; if (!lid) return;
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (node.styleRows) rc.styleRows = true; else delete rc.styleRows;
+      if (node.styleHidden && node.styleHidden.length) rc.styleHidden = node.styleHidden; else delete rc.styleHidden;
+      if (typeof node.styleBaseOp === 'number') rc.styleBaseOp = node.styleBaseOp; else delete rc.styleBaseOp;
+      await db.from('layers').update({ paint: node.paint, raw_config: rc }).eq('id', lid);
+    } catch (e) {}
+  }
+  function toggleStyleCat(id, key, visible) {
+    var node = findNodeById(layers, id); if (!node) return;
+    node.styleHidden = node.styleHidden || [];
+    var i = node.styleHidden.indexOf(key);
+    if (visible) { if (i > -1) node.styleHidden.splice(i, 1); } else { if (i < 0) node.styleHidden.push(key); }
+    applyStyleVisibility(node); persistStyleRows(node); renderLegend(); syncLayerMaster(node);
+  }
+  // ── Group-like layer checkbox (7/20): the layer's own checkbox reflects its style categories,
+  //    exactly like a group reflects its children. NOTE refreshLayers() keys the WHOLE layer's
+  //    map-visibility off this checkbox's .checked and re-runs every render — so partial state
+  //    can't be a plain unchecked box (that would blank the categories still switched on). Partial
+  //    → indeterminate (a dash) while staying .checked; all-off → unchecked; all-on → clear dash.
+  function syncLayerMaster(node) {
+    if (!node) return;
+    var cats = node.styleRows ? styleCatsFor(node) : []; if (!cats.length) return;
+    var cb = document.getElementById(node.toggleElement || node.id); if (!cb) return;
+    var hidden = node.styleHidden || [];
+    var off = cats.filter(function (c) { return hidden.indexOf(c.key) > -1; }).length;
+    if (off === 0) { cb.indeterminate = false; cb.checked = true; }             // all on → box checked (turning the layer
+                                                                                //   off routes through onLayerMasterToggle, which sets styleHidden=all, so empty ⟺ on)
+    else if (off >= cats.length) { cb.indeterminate = false; cb.checked = false; }   // all off → whole layer off
+    else { cb.indeterminate = true; cb.checked = true; }                        // partial → dash, keep layer visible
+  }
+  function onLayerMasterToggle(cb) {   // a real click on a style-category layer's own checkbox
+    var node = findNodeById(layers, cb.id); if (!node || !node.styleRows) return;
+    var cats = styleCatsFor(node); if (!cats.length) return;
+    node.styleHidden = cb.checked ? [] : cats.map(function (c) { return c.key; });   // on → all categories on; off → all off
+    cb.indeterminate = false;
+    applyStyleVisibility(node); persistStyleRows(node);
+    if (window.__msInjectStyleRows) window.__msInjectStyleRows();   // repaint the sub-row checkboxes to match
+    try { renderLegend(); } catch (e) {}
+  }
+  if (typeof window !== 'undefined' && !window.__msMasterWired) {
+    window.__msMasterWired = true;   // one delegated listener — layer rows re-render constantly, so per-row binding would leak
+    document.addEventListener('change', function (e) {
+      var t = e.target; if (!t || t.type !== 'checkbox' || !t.closest) return;
+      if (!t.closest('.layer-list-row')) return;   // sub-rows live OUTSIDE .layer-list-row → never match
+      var node = findNodeById(layers, t.id); if (!node || !node.styleRows) return;
+      onLayerMasterToggle(t);
+    }, true);
+  }
+  function injectStyleRows() {   // runs after every sidebar render (end of enhanceRows)
+    var panel = document.getElementById('layers-panel-content'); if (!panel) return;
+    if (!document.getElementById('ms-stylerow-css')) {
+      var st = document.createElement('style'); st.id = 'ms-stylerow-css';
+      st.textContent = '.ms-stylerow{display:flex;align-items:center;gap:7px;padding:3px 8px 3px 46px;font-size:12.5px;color:#4a4a4a;}' +
+        '.ms-stylerow input{margin:0;flex:0 0 auto;cursor:pointer;}' +
+        '.ms-stylerow-sw{display:inline-block;width:12px;height:12px;flex:0 0 auto;border:1px solid #999999;border-radius:2px;}' +
+        '.ms-stylerow-lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}';
+      document.head.appendChild(st);
+    }
+    Array.prototype.forEach.call(panel.querySelectorAll('.ms-stylerow'), function (r) { r.remove(); });
+    Array.prototype.forEach.call(panel.querySelectorAll('.layer-list-row'), function (row) {
+      var id = row.getAttribute('data-node-id') || rowNodeId(row); if (!id) return;
+      var node = findNodeById(layers, id); if (!node || !node.styleRows) return;
+      var cats = styleCatsFor(node); if (!cats.length) return;
+      var hidden = node.styleHidden || [];
+      cats.slice().reverse().forEach(function (c) {   // reversed inserts keep natural top-to-bottom order right under the row
+        var d = document.createElement('div'); d.className = 'ms-stylerow';
+        var on = hidden.indexOf(c.key) < 0;
+        d.innerHTML = '<input type="checkbox" ' + (on ? 'checked' : '') + ' /><span class="ms-stylerow-sw" style="background:' + attrEsc(c.color) + ';"></span><span class="ms-stylerow-lbl" title="' + attrEsc(c.label) + '">' + attrEsc(c.label) + '</span>';
+        d.querySelector('input').addEventListener('change', function () { toggleStyleCat(id, c.key, this.checked); });
+        row.parentNode.insertBefore(d, row.nextSibling);
+      });
+      syncLayerMaster(node);   // reflect partial/all-off on the layer's own checkbox (the dash)
+    });
+  }
+  window.__msInjectStyleRows = injectStyleRows;
+  async function onToggleStyleRows(on) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    node.styleRows = !!on;
+    injectStyleRows(); persistStyleRows(node);
+  }
   async function onColorBy(prop) {
+    if (prop === '__present__') {   // Rung 2a: binary labeled/unlabeled — seed defaults then persist
+      var node0 = activeLayerId && findNodeById(layers, activeLayerId); if (!node0) return;
+      var bp = document.getElementById('elp-bin-present'), ba = document.getElementById('elp-bin-absent');
+      var seededPresent = (node0.colorBy && node0.colorBy.mode === 'presence' && looksHex(node0.colorBy.present)) ? normHex(node0.colorBy.present)
+        : (node0.iconColor && looksHex(node0.iconColor)) ? normHex(node0.iconColor) : '#3bb2d0';
+      var seededAbsent = (node0.colorBy && node0.colorBy.mode === 'presence' && looksHex(node0.colorBy.absent)) ? normHex(node0.colorBy.absent) : '#cccccc';
+      if (bp) bp.value = seededPresent; if (ba) ba.value = seededAbsent;
+      syncColorInputForColorBy({ colorBy: { mode: 'presence' } });   // reveal the two swatches immediately
+      await savePresenceColors();
+      return;
+    }
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
@@ -4605,6 +4916,7 @@
       if (!isTilesetNode(node)) await loadFeatures();   // draw copies re-color; tilesets recolor via paint alone
       rerender();   // sidebar icon flips to/from the multicolor gradient (generateLayers reads node.colorBy)
       syncColorInputForColorBy(node);   // panel swatch ↔ multicolor strip
+      renderLegend();   // legend swatches follow the new colors
       setStatus('Saved');
     } catch (e) { console.warn('colorBy failed', e); setStatus('Save failed'); }
   }
@@ -4795,23 +5107,66 @@
     } catch (e) { console.warn('map labels failed', e); setStatus('Save failed'); }
   }
   // ── Timeline dates (7/15): column → Start/End mapping. See the elp-dates-sec template block. ──
-  function parseLooseDate(v, isEnd) {   // "1877" → 1877-01-01 / 1877-12-31; ISO passes; anything Date can read → ISO; junk/0 → null
+  function parseLooseDate(v, isEnd) {   // "1877"→1877-01-01/12-31; "18700101"→1870-01-01; ISO passes; Date-readable→ISO; junk/0/9999…→null
     if (v == null) return null;
     v = String(v).trim();
     if (!v || v === '0' || /^(none|null|n\/a)$/i.test(v)) return null;
     if (/^\d{3,4}$/.test(v)) { var y = ('0000' + v).slice(-4); return isEnd ? y + '-12-31' : y + '-01-01'; }
+    // Compact integer dates (the railway "DayStart"/"DayEnd" convention, e.g. 18700101): YYYYMMDD or
+    // YYYYMM. A 00 month/day means "unknown" → widen to the period's start (Jan 1 / day 1) or end
+    // (Dec 31 / month-end). Year ≥ 9999 is the "no end" sentinel (99990101) → leave it open (null).
+    var mc = /^(\d{4})(\d{2})(\d{2})$/.exec(v) || /^(\d{4})(\d{2})$/.exec(v);
+    if (mc) {
+      var Y = +mc[1]; if (Y >= 9999) return null;
+      var Mo = +(mc[2] || 0), Da = +(mc[3] || 0), p2 = function (n) { return ('0' + n).slice(-2); };
+      if (Mo < 1 || Mo > 12) Mo = isEnd ? 12 : 1;
+      if (Da < 1 || Da > 31) Da = isEnd ? new Date(Y, Mo, 0).getDate() : 1;   // day 0 of next month = last day of this one
+      return mc[1] + '-' + p2(Mo) + '-' + p2(Da);
+    }
     if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
     var d = new Date(v);
     return isNaN(d) ? null : d.toISOString().slice(0, 10);
+  }
+  // 7/21: per-layer timeline opt-out — node.timelineIgnore → raw_config; the engine (changeDate/
+  // paintDate/addMapLayer) skips filtering these layers, so they always show every feature.
+  async function onTlIgnore(on) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) { setStatus('That layer has no database id'); return; }
+    if (on) node.timelineIgnore = true; else delete node.timelineIgnore;
+    // live: clear (on) or re-apply (off) the date filter on both maps, companions included
+    var d = (typeof editorCurrentDate === 'function') ? editorCurrentDate() : null;
+    var f = (!on && d) ? ['all', ['<=', 'DayStart', d], ['>=', 'DayEnd', d]] : null;
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var m = pair[1]; if (!m) return;
+      [node.id + '-' + pair[0], node.id + '-stroke-' + pair[0], node.id + '-highlighted-' + pair[0]].forEach(function (id) {
+        try { if (m.getLayer(id)) m.setFilter(id, f); } catch (e) {}
+      });
+    });
+    setStatus('Saving…');
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (on) rc.timelineIgnore = true; else delete rc.timelineIgnore;
+      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      if (r.error) throw new Error(r.error.message);
+      setStatus('Saved');
+    } catch (e) { console.warn('timelineIgnore save failed', e); setStatus('Save failed'); }
   }
   var _dateSecGen = 0;
   async function fillDateSection(node) {   // populate the column picks from a 60-row sample; reveal only for layers with DB rows
     var sec = document.getElementById('elp-dates-sec'); if (!sec) return;
     sec.style.display = 'none';
+    var tlCb = document.getElementById('elp-tlignore'); if (tlCb) tlCb.checked = !!(node && node.timelineIgnore);
     var gen = ++_dateSecGen;
     var lid = node && slugToLayerDbId[node.id];
     if (!lid && idsReady) { try { await idsReady; } catch (e) {} lid = node && slugToLayerDbId[node.id]; }   // early click during a heavy boot — ids may still be resolving
     if (!lid || gen !== _dateSecGen) return;
+    // 7/21 instances: reveal the section (the ignore-timeline checkbox is their main use) but hide the
+    // column-mapping tools — dates live on the ORIGINAL layer's data, which this instance only mirrors.
+    var tools = document.getElementById('elp-dates-tools');
+    if (node && node.instanceOf) { if (tools) tools.style.display = 'none'; sec.style.display = ''; return; }
+    if (tools) tools.style.display = '';
     try {
       var r = await db.from('features').select('custom_fields').eq('layer_id', lid).limit(60);
       if (gen !== _dateSecGen || r.error || !r.data || !r.data.length) return;   // stale pick / no rows → stay hidden
@@ -4827,6 +5182,152 @@
       sec.style.display = '';
     } catch (e) {}
   }
+  // Core date-writer — shared by the style-panel "Timeline dates" tool AND the attr-table
+  // "Transfer column → Start/End". start/end each = {col:'<custom key>'} | {fixed:'YYYY-MM-DD'} | null.
+  // Reads custom_fields[col], parses via parseLooseDate (years, ISO, railway YYYYMMDD ints like
+  // 18700101), groups rows by the computed value, and writes in batched .in() UPDATEs (features is a
+  // VIEW — no upsert/ON CONFLICT; repeated year values collapse to a handful of requests).
+  async function applyDatesToLayer(lid, slug, node, start, end) {
+    var rows = [], from9 = 0;
+    for (;;) {
+      msProgress('Reading features… ' + nfmt(rows.length));
+      var r9 = await db.from('features').select('feature_id, start_date, end_date, custom_fields').eq('layer_id', lid).order('feature_id').range(from9, from9 + 999);
+      if (r9.error) throw new Error(r9.error.message);
+      Array.prototype.push.apply(rows, r9.data || []);
+      if (!r9.data || r9.data.length < 1000) break;
+      from9 += 1000;
+    }
+    if (!rows.length) { msProgress(''); setStatus('No features'); return 0; }
+    var clobber = [];
+    if (start) { var ns = rows.filter(function (r) { return r.start_date != null; }).length; if (ns) clobber.push(nfmt(ns) + ' features already have a Start date'); }
+    if (end) { var ne = rows.filter(function (r) { return r.end_date != null; }).length; if (ne) clobber.push(nfmt(ne) + ' features already have an End date'); }
+    if (clobber.length && !window.confirm('There is data in the date column' + (clobber.length > 1 ? 's' : '') + ' (' + clobber.join('; ') + '). Are you sure you want to replace it?')) { msProgress(''); setStatus('Cancelled'); return 0; }
+    var upserts = [], blank = 0, groups9 = {};
+    rows.forEach(function (r) {
+      var sv, ev, touched = false;
+      if (start) { sv = start.fixed != null ? start.fixed : parseLooseDate(r.custom_fields && r.custom_fields[start.col], false); touched = true; if (!sv) blank++; }
+      if (end) { ev = end.fixed != null ? end.fixed : parseLooseDate(r.custom_fields && r.custom_fields[end.col], true); touched = true; if (!ev) blank++; }
+      if (!touched) return;
+      var key9 = (start ? String(sv) : '·') + '|' + (end ? String(ev) : '·');
+      (groups9[key9] = groups9[key9] || { s: sv, e: ev, ids: [] }).ids.push(r.feature_id);
+      upserts.push(1);
+    });
+    var doneN = 0, keys9 = Object.keys(groups9);
+    for (var g9 = 0; g9 < keys9.length; g9++) {
+      var grp = groups9[keys9[g9]];
+      var patch9 = {};
+      if (start) patch9.start_date = grp.s != null ? grp.s : null;
+      if (end) patch9.end_date = grp.e != null ? grp.e : null;
+      for (var c9 = 0; c9 < grp.ids.length; c9 += 400) {
+        var w9 = await db.from('features').update(patch9).in('feature_id', grp.ids.slice(c9, c9 + 400));
+        if (w9.error) throw new Error(w9.error.message);
+        doneN += Math.min(400, grp.ids.length - c9);
+        msProgress('Setting dates… ' + nfmt(doneN) + '/' + nfmt(upserts.length) + ' (' + nfmt(keys9.length) + ' distinct values)');
+      }
+    }
+    upserts = [];
+    keys9.forEach(function (k9) { var grp2 = groups9[k9]; grp2.ids.forEach(function (fid2) { var u2 = { feature_id: fid2 }; if (start) u2.start_date = grp2.s != null ? grp2.s : null; if (end) u2.end_date = grp2.e != null ? grp2.e : null; upserts.push(u2); }); });
+    if (_attrSlug === slug && _attrRows.length) {   // keep an open attribute table on this layer in sync
+      var byId9 = {}; upserts.forEach(function (u) { byId9[String(u.feature_id)] = u; });
+      _attrRows.forEach(function (r) { var u = byId9[String(r.feature_id)]; if (!u) return; if ('start_date' in u) r.start_date = u.start_date; if ('end_date' in u) r.end_date = u.end_date; });
+      try { renderAttrBody(); } catch (e2) {}
+    }
+    msProgress('Dates set on ' + nfmt(upserts.length) + ' features' + (blank ? ' (' + nfmt(blank) + ' had no readable date — left empty)' : '') + '.');
+    setStatus('Dates applied');
+    // AUTO-REBAKE (7/20): a vector-TILE layer renders from its tiles, and the slider filters the tiles'
+    // BAKED days — so new dates don't take effect until the tiles re-bake. Do that automatically for
+    // THIS layer (background), so the user never has to Publish just to make the timeline filter. Drawn
+    // (geojson) layers need no bake — their config rebuilds DayStart/DayEnd from the DB on next load.
+    try {
+      var didBake = await rebakeLayerTiles(lid, 'Baking the dates into');
+      if (didBake) { msProgress('Done — dates baked into the tiles. Refresh the map to see the timeline filter this layer.'); setStatus('Dates baked into tiles'); }
+      // 7/21: a small layer that WAS in MapboxDraw is now dated → on next load it re-classifies to
+      // engine-rendered (draw copies can't animate). Tell the user the one step that makes it live.
+      else if (_drawLayerSlugs[slug]) { msProgress('Dates set on ' + nfmt(upserts.length) + ' features. Refresh the page — dated layers render like the viewer and animate with the timeline.'); }
+    } catch (eBake) { console.warn('auto-rebake failed', eBake); msProgress('Dates saved, but the tile re-bake failed (' + (eBake && eBake.message || eBake) + ') — hit Publish to bake them in.'); }
+    return upserts.length;
+  }
+  // Regenerate ONE layer's tiles from its current features (the tiler is lazy-loaded, like import/publish).
+  // Shared by the Timeline-dates auto-rebake AND the panel's bake button — far lighter than Publish
+  // (sewUpProject), which walks every tiled layer. Returns 'rebaked' | 'converted' | false.
+  // 7/21: allowConvert lets the BUTTON first-time bake a live geojson layer to tiles (same proven path);
+  // the Timeline-dates auto-rebake passes false — live layers animate without any bake, never convert them.
+  async function rebakeLayerTiles(lid, verb, allowConvert) {
+    var lrow = await db.from('layers').select('id,name,type,source_type,raw_config').eq('id', lid).single();
+    var L = lrow.data;
+    if (!L) return false;
+    var isTiled = !!(L.raw_config && L.raw_config.pmtiles);
+    if (!isTiled && !(allowConvert && L.source_type === 'geojson-supabase')) return false;
+    await loadScript('../platform/tilegen.js?v=' + Date.now());   // MSTileGen isn't on the page until loaded
+    if (!(window.MSTileGen && MSTileGen.sewUpLayer)) throw new Error('tiler unavailable');
+    msProgress((verb || 'Baking') + ' ' + (L.name || 'the layer') + '’s tiles…');
+    var n = await MSTileGen.sewUpLayer(db, projectId, L, function (m) { msProgress(m); }, !isTiled);
+    if (!n) return false;   // e.g. zero features — nothing baked
+    return isTiled ? 'rebaked' : 'converted';
+  }
+  async function onRebakeLayer() {
+    if (!activeLayerId) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) { setStatus('That layer has no database id'); return; }
+    var node = findNodeById(layers, activeLayerId);
+    var btn = document.getElementById('elp-rebake'), lbl = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.textContent = '🧩 Baking…'; }
+    try {
+      var did = await rebakeLayerTiles(lid, 'Baking', true);   // allowConvert: live layers first-time bake here
+      if (did === 'converted') { msProgress('Done — “' + ((node && node.label) || 'layer') + '” baked to tiles. Refresh the page to load the tiled layer.'); setStatus('Baked to tiles'); }
+      else if (did) { msProgress('Done — “' + ((node && node.label) || 'layer') + '” re-baked. Refresh the map to see the updated tiles.'); setStatus('Tiles re-baked'); }
+      else { setStatus('Nothing to bake for this layer'); }
+    } catch (e) { console.warn('rebake failed', e); msProgress('Bake failed: ' + ((e && e.message) || e)); setStatus('Bake failed'); }
+    finally { if (btn) { btn.disabled = false; btn.innerHTML = lbl || '🧩 Re-bake this layer&rsquo;s tiles'; } }
+  }
+  // ── Linked instances (7/21): a second layers row over the SAME data — raw_config.instanceOf points at
+  //    the source; geojson instances resolve features through it (configLoader indirection), tiled
+  //    instances share the source's tile URL. NO data copies anywhere. Display-only (editable:false):
+  //    features and dates are edited on the original; style, visibility, editing-only and
+  //    ignore-timeline are all independent per instance.
+  async function onCreateInstance() {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var srcLid = slugToLayerDbId[activeLayerId]; if (!srcLid) { setStatus('That layer has no database id'); return; }
+    var btn = document.getElementById('elp-instance'); if (btn) btn.disabled = true;
+    setStatus('Creating instance…');
+    try {
+      var cur = await db.from('layers').select('*').eq('id', srcLid).single();
+      if (cur.error || !cur.data) throw new Error(cur.error ? cur.error.message : 'source layer not found');
+      var src = cur.data;
+      var slug = uid();
+      var rc = JSON.parse(JSON.stringify(src.raw_config || {}));
+      rc.instanceOf = srcLid;
+      rc.editable = false;                        // display-only — the original owns feature editing
+      rc.containerId = 'cont-' + slug; rc.className = slug; rc.topLayerClass = slug; rc.toggleElement = slug;
+      delete rc.rasterYears;                      // the source already draws the scrub raster — don't double it
+      delete rc.labels;                           // labels can be turned on for the instance explicitly
+      delete rc.editorOnly;                       // fresh instance starts fully visible
+      var row = {
+        slug: slug,
+        name: (src.name || 'Layer') + ' (view)',
+        type: src.type, color: src.color,
+        source_type: src.source_type, source_url: src.source_url, source_layer: src.source_layer,
+        source_minzoom: src.source_minzoom, source_maxzoom: src.source_maxzoom,
+        paint: src.paint, layout: src.layout,
+        hover: src.hover, hover_paint: src.hover_paint, click: src.click,
+        popup_style: src.popup_style, popup_prop: src.popup_prop,
+        enabled_by_default: true,
+        user_id: src.user_id || null,
+        raw_config: rc
+      };
+      var ins = await db.from('layers').insert(row).select('id').single();
+      if (ins.error) throw new Error(ins.error.message);
+      var pl = await db.from('project_layers').select('sort_order, section_id, group_id').eq('project_id', projectId).eq('layer_id', srcLid).limit(1);
+      var p0 = (pl.data && pl.data[0]) || {};
+      var lk = await db.from('project_layers').insert({ project_id: projectId, layer_id: ins.data.id, sort_order: (p0.sort_order || 0) + 1, section_id: p0.section_id || null, group_id: p0.group_id || null });
+      if (lk.error) throw new Error(lk.error.message);
+      msProgress('Instance created — reloading to wire it up…');
+      setTimeout(function () { location.reload(); }, 600);
+    } catch (e) {
+      console.warn('instance failed', e); setStatus('Instance failed: ' + ((e && e.message) || e));
+      if (btn) btn.disabled = false;
+    }
+  }
   async function onApplyDates() {
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
@@ -4840,63 +5341,8 @@
     var start = pick('elp-date-start-col', 'elp-date-start-fixed'), end = pick('elp-date-end-col', 'elp-date-end-fixed');
     if (!start && !end) { setStatus('Pick a column (or fixed date) first'); return; }
     var btn = document.getElementById('elp-dates-apply'); if (btn) btn.disabled = true;
-    try {
-      // pull every row's ids + current dates + fields (paged), with visible progress
-      var rows = [], from9 = 0;
-      for (;;) {
-        msProgress('Reading features… ' + nfmt(rows.length));
-        var r9 = await db.from('features').select('feature_id, start_date, end_date, custom_fields').eq('layer_id', lid).order('feature_id').range(from9, from9 + 999);
-        if (r9.error) throw new Error(r9.error.message);
-        Array.prototype.push.apply(rows, r9.data || []);
-        if (!r9.data || r9.data.length < 1000) break;
-        from9 += 1000;
-      }
-      if (!rows.length) { msProgress(''); setStatus('No features'); return; }
-      // "there is data in the column — replace?" (kept simple: one confirm covering the fields being written)
-      var clobber = [];
-      if (start) { var ns = rows.filter(function (r) { return r.start_date != null; }).length; if (ns) clobber.push(nfmt(ns) + ' features already have a Start date'); }
-      if (end) { var ne = rows.filter(function (r) { return r.end_date != null; }).length; if (ne) clobber.push(nfmt(ne) + ' features already have an End date'); }
-      if (clobber.length && !window.confirm('There is data in the date column' + (clobber.length > 1 ? 's' : '') + ' (' + clobber.join('; ') + '). Are you sure you want to replace it?')) { msProgress(''); setStatus('Cancelled'); return; }
-      // compute, then GROUP rows by their computed (start,end) pair — `features` is a VIEW, so
-      // upsert/ON CONFLICT can't work through it ("no unique or exclusion constraint", 7/15).
-      // Year data repeats heavily (~dozens of distinct values for 78k rows), so grouped UPDATEs
-      // with .in(feature_id, …) need only a handful of requests.
-      var upserts = [], parsed = 0, blank = 0, groups9 = {};
-      rows.forEach(function (r) {
-        var sv, ev, touched = false;
-        if (start) { sv = start.fixed != null ? start.fixed : parseLooseDate(r.custom_fields && r.custom_fields[start.col], false); touched = true; if (sv) parsed++; else blank++; }
-        if (end) { ev = end.fixed != null ? end.fixed : parseLooseDate(r.custom_fields && r.custom_fields[end.col], true); touched = true; if (ev) parsed++; else blank++; }
-        if (!touched) return;
-        var key9 = (start ? String(sv) : '·') + '|' + (end ? String(ev) : '·');
-        (groups9[key9] = groups9[key9] || { s: sv, e: ev, ids: [] }).ids.push(r.feature_id);
-        upserts.push(1);
-      });
-      var doneN = 0, keys9 = Object.keys(groups9);
-      for (var g9 = 0; g9 < keys9.length; g9++) {
-        var grp = groups9[keys9[g9]];
-        var patch9 = {};
-        if (start) patch9.start_date = grp.s != null ? grp.s : null;
-        if (end) patch9.end_date = grp.e != null ? grp.e : null;
-        for (var c9 = 0; c9 < grp.ids.length; c9 += 400) {
-          var w9 = await db.from('features').update(patch9).in('feature_id', grp.ids.slice(c9, c9 + 400));
-          if (w9.error) throw new Error(w9.error.message);
-          doneN += Math.min(400, grp.ids.length - c9);
-          msProgress('Setting dates… ' + nfmt(doneN) + '/' + nfmt(upserts.length) + ' (' + nfmt(keys9.length) + ' distinct values)');
-        }
-      }
-      // rebuild `upserts` shape for the sync-below (feature_id → values)
-      upserts = [];
-      keys9.forEach(function (k9) { var grp2 = groups9[k9]; grp2.ids.forEach(function (fid2) { var u2 = { feature_id: fid2 }; if (start) u2.start_date = grp2.s != null ? grp2.s : null; if (end) u2.end_date = grp2.e != null ? grp2.e : null; upserts.push(u2); }); });
-      // keep open copies in sync: the attribute table (if on this layer) + draw-side meta
-      if (_attrSlug === activeLayerId && _attrRows.length) {
-        var byId9 = {}; upserts.forEach(function (u) { byId9[String(u.feature_id)] = u; });
-        _attrRows.forEach(function (r) { var u = byId9[String(r.feature_id)]; if (!u) return; if ('start_date' in u) r.start_date = u.start_date; if ('end_date' in u) r.end_date = u.end_date; });
-        try { renderAttrBody(); } catch (e2) {}
-      }
-      msProgress('Dates set on ' + nfmt(upserts.length) + ' features' + (blank ? ' (' + nfmt(blank) + ' had no readable date — left empty)' : '') + '.');
-      setStatus('Dates applied');
-      if (node.source_type === 'vector-tiles-url' || (node.source && node.source.type !== 'geojson')) setTimeout(function () { msProgress('Tiled layer: hit Publish to bake the new dates into its tiles.'); }, 2500);
-    } catch (e) { console.warn('apply dates failed', e); msProgress(''); setStatus('Dates failed: ' + e.message); }
+    try { await applyDatesToLayer(lid, activeLayerId, node, start, end); }
+    catch (e) { console.warn('apply dates failed', e); msProgress(''); setStatus('Dates failed: ' + e.message); }
     finally { if (btn) btn.disabled = false; }
   }
   // ── Opacity / Thickness by data column: the column's numeric value drives that feature's opacity or
@@ -5023,6 +5469,79 @@
     document.getElementById('elp-default-vis').checked = node.checked !== false;
     document.getElementById('elp-default-exp-label').style.display = isContainer ? 'block' : 'none';
     if (isContainer) document.getElementById('elp-default-exp').checked = !node.collapsed;
+    // editing-only visibility — leaves carry the flag; a container's checkbox reflects (and cascades
+    // to) its descendants: checked when EVERY descendant layer is editing-only (7/21 group support)
+    var eoLbl = document.getElementById('elp-editoronly-label');
+    if (eoLbl) {
+      eoLbl.style.display = 'block';
+      var eoOn;
+      if (isContainer) {
+        var leaves = [];
+        (function walk(nn) { (nn.children || []).forEach(function (c) { if (c.type === 'group' || c.type === 'section') walk(c); else leaves.push(c); }); })(node);
+        eoOn = leaves.length > 0 && leaves.every(function (c) { return !!c.editorOnly; });
+        node.editorOnly = eoOn || undefined;
+      } else eoOn = !!node.editorOnly;
+      document.getElementById('elp-editoronly').checked = !!eoOn;
+    }
+  }
+  // 7/21: "Only visible while editing" — raw_config.editorOnly; projectLoader strips these from VIEW
+  // mode (viewer/preview/downloads all boot through it), the editor shows them + a sidebar badge.
+  // SURGICAL row update — a full rerender() collapsed the open group the row lives in (user 7/21).
+  function updateEditorOnlyRow(node, rowEl) {
+    var row = rowEl || document.querySelector('.layer-list-row[data-node-id="' + node.id + '"]'); if (!row) return;
+    var lbl = row.querySelector('label');
+    var badge = row.querySelector('.ms-eo-badge');
+    if (node.editorOnly) {
+      if (lbl) lbl.style.fontStyle = 'italic';   // extra-clear at a glance (user 7/21)
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'ms-eo-badge';
+        badge.title = 'Only visible while editing — hidden in view mode';
+        badge.innerHTML = '<i class="fas fa-eye-slash"></i>';
+        badge.setAttribute('style', 'display:inline-block;margin-left:5px;font-size:10px;color:#b98317;vertical-align:middle;cursor:default;');
+        if (lbl) lbl.appendChild(badge); else row.appendChild(badge);
+      }
+    } else {
+      if (lbl) lbl.style.fontStyle = '';
+      if (badge) badge.remove();
+    }
+  }
+  async function onEditorOnly(on) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var isContainer = node.type === 'group' || node.type === 'section';
+    setStatus('Saving…');
+    try {
+      if (isContainer) {
+        // GROUP/SECTION (user 7/21): the whole container is editing-only — cascade the flag onto every
+        // descendant LAYER row (the viewer strip works on leaves; a container emptied by the strip is
+        // removed too). The container node carries the flag for the UI checkbox state.
+        if (on) node.editorOnly = true; else delete node.editorOnly;
+        var kids = [];
+        (function walk(nn) { (nn.children || []).forEach(function (c) { if (c.type === 'group' || c.type === 'section') { if (on) c.editorOnly = true; else delete c.editorOnly; walk(c); } else { kids.push(c); } }); })(node);
+        for (var k = 0; k < kids.length; k++) {
+          var kn = kids[k], klid = slugToLayerDbId[kn.id]; if (!klid) continue;
+          if (on) kn.editorOnly = true; else delete kn.editorOnly;
+          var kc = await db.from('layers').select('raw_config').eq('id', klid).single();
+          var krc = (kc.data && kc.data.raw_config) || {};
+          if (on) krc.editorOnly = true; else delete krc.editorOnly;
+          await db.from('layers').update({ raw_config: krc }).eq('id', klid);
+          updateEditorOnlyRow(kn);
+        }
+        updateEditorOnlyRow(node);
+        setStatus('Saved');
+        return;
+      }
+      var lid = slugToLayerDbId[activeLayerId]; if (!lid) { setStatus('That layer has no database id'); return; }
+      if (on) node.editorOnly = true; else delete node.editorOnly;
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (on) rc.editorOnly = true; else delete rc.editorOnly;
+      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      if (r.error) throw new Error(r.error.message);
+      setStatus('Saved');
+      updateEditorOnlyRow(node);   // badge + italic in place — group stays open
+    } catch (e) { console.warn('editorOnly save failed', e); setStatus('Save failed'); }
   }
   // ── Editor UI design system (7/8): ONE place to restyle the panels. Every recurring "type" of control
   //    (section heading, field label, checkbox, input/select, slider, button, note, divider…) is a class
@@ -5074,10 +5593,19 @@
       // name field at the very top — the same rename as double-clicking the row (works for layers, groups and sections)
       '<input id="elp-name" type="text" placeholder="Name" title="Rename this item" style="width:100%;box-sizing:border-box;margin-bottom:4px;padding:6px 8px;border:1px solid #bbbbbb;border-radius:4px;font-size:15px;font-weight:600;" />' +
       '<div id="elp-kind" class="ms-note-accent" style="display:none;margin:0 0 8px;font-size:11px;"></div>' +   // what IS this layer — tileset vs drawn/imported
+      // Re-bake JUST this layer\'s tiles (converted tilesets only) — far lighter than Publish, which re-bakes every layer.
+      '<button id="elp-rebake" style="display:none;width:100%;box-sizing:border-box;margin:0 0 8px;padding:6px 10px;border:1px solid #cdbff0;border-radius:6px;background:#f2ecff;color:#5b4b9a;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;" title="Regenerate ONLY this layer\'s tiles from its current data — much lighter than Publish, which re-bakes every layer">🧩 Re-bake this layer&rsquo;s tiles</button>' +
+      // 7/21: live layers get the same button as a first-time "Bake to tiles" (optional — they need no bake)
+      '<div id="elp-rebake-note" class="ms-note" style="display:none;margin:-4px 0 8px;">Live layer — it updates and animates instantly, no baking needed. Bake only if it&rsquo;s very large and slow.</div>' +
+      // 7/21: linked instances — a second layer over the SAME data, styled independently (no data copy)
+      '<div id="elp-instance-note" class="ms-note-accent" style="display:none;margin:0 0 8px;">⧉ Linked instance — shares another layer&rsquo;s data. Style it independently here; edit features and dates on the original layer.</div>' +
+      '<button id="elp-instance" style="display:none;width:100%;box-sizing:border-box;margin:0 0 8px;padding:6px 10px;border:1px solid #bfd8f0;border-radius:6px;background:#ecf4ff;color:#2b5b8a;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;" title="Create a linked copy of this layer that shares its data (no duplication) but can be styled independently — e.g. an always-on \'all data\' view next to the timeline-filtered one">⧉ Create linked instance</button>' +
       // ── on-by-default + delete live AT THE TOP (below the title), no section heading — 7/8 layout pass ──
       '<div id="elp-defaults-row">' +
         '<label id="elp-default-vis-label" class="ms-check" style="margin-bottom:3px;"><input id="elp-default-vis" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />On by default</label>' +
         '<label id="elp-default-exp-label" class="ms-check" style="display:none;"><input id="elp-default-exp" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Expanded by default</label>' +
+        // 7/21: editing-only layers — shown here in the editor, stripped from VIEW mode (viewer/preview/downloads)
+        '<label id="elp-editoronly-label" class="ms-check" style="margin-bottom:3px;" title="Show this layer only in editing mode — viewers never see it"><input id="elp-editoronly" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Only visible while editing</label>' +
       '</div>' +
       '<div id="elp-delete-wrap" style="margin:6px 0 2px;">' +
         '<button id="elp-delete" class="ms-btn-danger">Delete</button>' +
@@ -5120,20 +5648,6 @@
         '<div class="ms-note">Polygons label at their visual center; lines along the path. Density = breathing room per label — fewer means only labels with room draw.</div>' +
       '</div>' +
       '</div>' +
-      // ── TIMELINE DATES (7/15): map a data column (or one fixed date) into every feature's
-      //    Start/End — the fields the bottom timeline slider filters on. Shown when the layer has
-      //    DB rows (drawn/imported AND converted-tileset layers); columns come from a row sample.
-      '<div id="elp-dates-sec" class="' + SECTOP + '" style="display:none;">' +
-      SEC('Timeline dates') +
-      '<label class="ms-lbl">Start date from</label>' +
-      '<select id="elp-date-start-col" class="ms-in"><option value="">— don\'t change —</option><option value="__fixed">⏱ One fixed date for all…</option></select>' +
-      '<input id="elp-date-start-fixed" type="date" class="ms-in" style="display:none;margin-top:3px;" />' +
-      '<label class="ms-lbl" style="margin-top:6px;">End date from</label>' +
-      '<select id="elp-date-end-col" class="ms-in"><option value="">— don\'t change —</option><option value="__fixed">⏱ One fixed date for all…</option></select>' +
-      '<input id="elp-date-end-fixed" type="date" class="ms-in" style="display:none;margin-top:3px;" />' +
-      '<button id="elp-dates-apply" class="ms-btn" style="margin-top:8px;">Apply to all features</button>' +
-      '<div class="ms-note">Fills each feature\'s <b>Start/End</b> (what the timeline slider filters on) from a data column — or one fixed date for every feature. Years like "1877" become 1877-01-01 for starts and 1877-12-31 for ends.</div>' +
-      '</div>' +
       // ── POPUPS & INFO ──
       '<div id="elp-interact-row" class="' + SECTOP + '">' +
         SEC('Popups &amp; info') +
@@ -5164,11 +5678,20 @@
       '<div id="elp-multicolor-strip" style="display:none;height:30px;box-sizing:border-box;margin-bottom:8px;border:1px solid #bbbbbb;border-radius:4px;background:linear-gradient(90deg,#e6194b,#f58231,#ffe119,#3cb44b,#4363d8,#911eb4);align-items:center;justify-content:center;">' +
         '<span style="font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.6);">Multiple colors — by column</span>' +
       '</div>' +
+      // "Labeled vs unlabeled" (binary category): two swatches, live preview (see onColorBy → __present__)
+      '<div id="elp-binary-strip" style="display:none;margin-bottom:8px;">' +
+        '<div style="display:flex;gap:9px;align-items:center;margin-bottom:5px;"><input id="elp-bin-present" type="color" class="ms-color" style="height:28px;width:46px;padding:0;" /><span class="ms-note" style="margin:0;">Labeled (has a value)</span></div>' +
+        '<div style="display:flex;gap:9px;align-items:center;"><input id="elp-bin-absent" type="color" class="ms-color" style="height:28px;width:46px;padding:0;" /><span class="ms-note" style="margin:0;">Unlabeled (blank)</span></div>' +
+      '</div>' +
       '<div id="elp-colorby-row" style="margin:0 0 8px;display:none;">' +
         '<label class="ms-lbl">Color by data column</label>' +
         '<select id="elp-colorby" class="ms-in"><option value="">Single color</option></select>' +
         '<div id="elp-colorby-info" class="ms-note"></div>' +
       '</div>' +
+      // legend (experiment): show this layer's colors in an on-map box
+      '<label id="elp-legend-row" class="ms-check" style="margin:2px 0 8px;display:block;"><input id="elp-legend-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show legend on the map</label>' +
+      // style categories nested under the layer in the sidebar, each toggleable like a layer
+      '<label id="elp-stylerows-row" class="ms-check" style="margin:2px 0 8px;display:block;"><input id="elp-stylerows-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show style categories under the layer</label>' +
       // ── FILL group: everything about the face of the feature, paired (7/8 layout pass) ──
       '<div class="' + GRP + '">' +
       '<label id="elp-fill-vis-row" class="ms-check" style="display:none;margin-bottom:4px;"><input id="elp-fill-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show fill</label>' +
@@ -5189,6 +5712,19 @@
       '<input id="elp-outline" type="color" class="ms-color" style="height:28px;" /></div>' +
       '<div id="elp-width-row" style="margin-top:6px;"><label class="ms-lbl"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
       '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" class="ms-range" /></div>' +
+      // 7/21: zoom-varied line width — checkbox expands 3 zoom→px stops (interpolate); unchecked = the uniform slider above
+      '<div id="elp-wzoom-row" style="margin-top:4px;display:none;">' +
+        '<label class="ms-check" title="Line width follows the zoom level (thin when zoomed out, thick when zoomed in)"><input id="elp-wzoom-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Vary width by zoom</label>' +
+        '<div id="elp-wzoom-box" style="display:none;margin:4px 0 2px;padding:6px 8px;border:1px solid #e2e2e2;border-radius:5px;background:#fafafa;">' +
+          [0, 1, 2].map(function (wi) {
+            return '<div style="display:flex;gap:6px;align-items:center;margin:2px 0;"><span class="ms-note" style="margin:0;">at zoom</span>' +
+              '<input id="elp-wz-z' + wi + '" type="number" min="0" max="22" step="1" class="ms-in" style="width:56px;" />' +
+              '<span class="ms-note" style="margin:0;">&rarr;</span>' +
+              '<input id="elp-wz-w' + wi + '" type="number" min="0" max="40" step="0.5" class="ms-in" style="width:64px;" />' +
+              '<span class="ms-note" style="margin:0;">px</span></div>';
+          }).join('') +
+        '</div>' +
+      '</div>' +
       '<div id="elp-thickby-row" style="margin-top:4px;display:none;">' +
         '<label class="ms-lbl" style="margin-top:2px;">Thickness by data column</label>' +
         '<select id="elp-thickby" class="ms-in"><option value="">Single thickness (slider above)</option></select>' +
@@ -5219,9 +5755,29 @@
         SEC('Layer info') +
         '<button id="elp-info" class="ms-btn" style="padding:7px;font-weight:600;">&#9432; Edit&hellip; <span style="font-weight:400;color:#888;">(adds the &#9432; button when filled)</span></button>' +
       '</div>' +
+      // ── TIMELINE DATES — moved to the BOTTOM of the panel (user 7/20). Maps a data column (or one
+      //    fixed date) into every feature's Start/End (what the timeline slider filters on); shown by
+      //    fillDateSection for any layer with DB rows. Applying auto-rebakes tiled layers.
+      '<div id="elp-dates-sec" class="' + SECTOP + '" style="display:none;">' +
+      SEC('Timeline dates') +
+      // 7/21: opt this layer out of the slider entirely — e.g. an instance used as the "all data at once" view
+      '<label class="ms-check" style="margin-bottom:6px;" title="This layer always shows every feature — the timeline slider never filters it"><input id="elp-tlignore" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Ignore the timeline (always show everything)</label>' +
+      '<div id="elp-dates-tools">' +   // 7/21: instances hide the column-mapping tools (dates live on the original) but keep the ignore checkbox above
+      '<label class="ms-lbl">Start date from</label>' +
+      '<select id="elp-date-start-col" class="ms-in"><option value="">— don\'t change —</option><option value="__fixed">⏱ One fixed date for all…</option></select>' +
+      '<input id="elp-date-start-fixed" type="date" class="ms-in" style="display:none;margin-top:3px;" />' +
+      '<label class="ms-lbl" style="margin-top:6px;">End date from</label>' +
+      '<select id="elp-date-end-col" class="ms-in"><option value="">— don\'t change —</option><option value="__fixed">⏱ One fixed date for all…</option></select>' +
+      '<input id="elp-date-end-fixed" type="date" class="ms-in" style="display:none;margin-top:3px;" />' +
+      '<button id="elp-dates-apply" class="ms-btn" style="margin-top:8px;">Apply to all features</button>' +
+      '<div class="ms-note">Fills each feature\'s <b>Start/End</b> (what the timeline slider filters on) from a data column — or one fixed date for every feature. Years like "1877" become 1877-01-01 for starts and 1877-12-31 for ends.</div>' +
+      '</div>' +
+      '</div>' +
       '</div>';   // close #elp-body (the scrolling region under the sticky header)
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
+    document.getElementById('elp-rebake').addEventListener('click', onRebakeLayer);
+    document.getElementById('elp-instance').addEventListener('click', onCreateInstance);
     document.getElementById('elp-name').addEventListener('change', function () { if (activeLayerId) commitRename(activeLayerId, this.value); });
     // Delete → in-panel Yes/No confirm (never a browser dialog)
     function elpDelReset() { var c = document.getElementById('elp-delete-confirm'), b = document.getElementById('elp-delete'); if (c) c.style.display = 'none'; if (b) b.style.display = 'block'; }
@@ -5238,8 +5794,15 @@
     document.getElementById('elp-del-yes').addEventListener('click', function () { elpDelReset(); if (activeLayerId) onDelete(activeLayerId, true); });
     document.getElementById('elp-default-vis').addEventListener('change', function () { onDefaultVisible(this.checked); });
     document.getElementById('elp-default-exp').addEventListener('change', function () { onDefaultExpanded(this.checked); });
+    document.getElementById('elp-editoronly').addEventListener('change', function () { onEditorOnly(this.checked); });
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
     document.getElementById('elp-colorby').addEventListener('change', function () { onColorBy(this.value); });
+    document.getElementById('elp-bin-present').addEventListener('input', livePresenceColors);   // live preview while dragging the picker
+    document.getElementById('elp-bin-absent').addEventListener('input', livePresenceColors);
+    document.getElementById('elp-bin-present').addEventListener('change', savePresenceColors);   // commit on release
+    document.getElementById('elp-bin-absent').addEventListener('change', savePresenceColors);
+    document.getElementById('elp-legend-on').addEventListener('change', function () { onToggleLegend(this.checked); });
+    document.getElementById('elp-stylerows-on').addEventListener('change', function () { onToggleStyleRows(this.checked); });
     document.getElementById('elp-opacityby').addEventListener('change', function () { onStyleNumBy('opacity', this.value); });
     document.getElementById('elp-thickby').addEventListener('change', function () { onStyleNumBy('thickness', this.value); });
     document.getElementById('elp-maplabels-on').addEventListener('change', onMapLabelsChange);
@@ -5252,11 +5815,14 @@
       document.getElementById(pr9[0]).addEventListener('change', function () { var f9 = document.getElementById(pr9[1]); if (f9) f9.style.display = this.value === '__fixed' ? '' : 'none'; });
     });
     document.getElementById('elp-dates-apply').addEventListener('click', onApplyDates);
+    document.getElementById('elp-tlignore').addEventListener('change', function () { onTlIgnore(this.checked); });
     document.getElementById('elp-lbl-halow').addEventListener('input', function () { var v = document.getElementById('elp-lbl-halow-val'); if (v) v.textContent = this.value; });
     document.getElementById('elp-lbl-halow').addEventListener('change', onMapLabelsChange);
     document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
     document.getElementById('elp-outline').addEventListener('input', function () { onLayerStyle('outline', this.value); });
     document.getElementById('elp-width').addEventListener('input', function () { document.getElementById('elp-width-val').textContent = this.value; onLayerStyle('width', parseFloat(this.value)); });
+    document.getElementById('elp-wzoom-on').addEventListener('change', onWzoom);
+    [0, 1, 2].forEach(function (wi) { ['elp-wz-z' + wi, 'elp-wz-w' + wi].forEach(function (wid) { document.getElementById(wid).addEventListener('input', function () { if (document.getElementById('elp-wzoom-on').checked) onWzoom(); }); }); });
     document.getElementById('elp-radius').addEventListener('input', function () { document.getElementById('elp-radius-val').textContent = this.value; onLayerStyle('radius', parseFloat(this.value)); });
     document.getElementById('elp-fill-vis').addEventListener('change', function () { onLayerStyle('fillVisible', this.checked); });
     document.getElementById('elp-outline-vis').addEventListener('change', function () { onLayerStyle('outlineVisible', this.checked); });
@@ -5411,15 +5977,35 @@
     document.getElementById('elp-title').textContent = node.label || 'Layer style';
     // what IS this layer? (user 7/15: the panel must say tileset vs drawn/GIS)
     var kindEl = document.getElementById('elp-kind');
+    var tiles0 = (node.source && node.source.tiles && node.source.tiles[0]) || node.source_url || '';
+    var isConvertedTs = !!(node.pmtiles || tiles0.indexOf('/pmt/') > -1 || /^pmt\//.test(tiles0));   // OUR generated tiles → re-bakeable
     if (kindEl) {
       var kt = '';
-      var tiles0 = (node.source && node.source.tiles && node.source.tiles[0]) || node.source_url || '';
       if (node.source_type === 'geojson-supabase') kt = '✏️ Drawn / imported layer — editable features';
-      else if (node.pmtiles || tiles0.indexOf('/pmt/') > -1 || /^pmt\//.test(tiles0)) kt = '🧩 Tileset — auto-generated from your data (re-bakes on Publish)';
+      else if (isConvertedTs) kt = '🧩 Tileset — auto-generated from your data';
       else if (isTilesetNode(node)) kt = '🧩 Vector tileset — external source';
       kindEl.textContent = kt; kindEl.style.display = kt ? 'block' : 'none';
     }
+    // 7/21 universal bake: tiled layers RE-bake; live geojson layers can FIRST-TIME bake (optional —
+    // they animate/update instantly without tiles, the note says so). Outline companions excluded.
+    var isLiveGj = node.source_type === 'geojson-supabase' && !node.outlineOf && !node.instanceOf;
+    var rebakeBtn = document.getElementById('elp-rebake'), rebakeNote = document.getElementById('elp-rebake-note');
+    if (rebakeBtn) {
+      // instances NEVER bake — a bake reads features by the instance's own id (none) and would write empty tiles
+      rebakeBtn.style.display = ((isConvertedTs && !node.instanceOf) || isLiveGj) ? 'block' : 'none';
+      rebakeBtn.innerHTML = isConvertedTs ? '🧩 Re-bake this layer&rsquo;s tiles' : '🧩 Bake this layer to tiles';
+      rebakeBtn.title = isConvertedTs
+        ? 'Regenerate ONLY this layer\'s tiles from its current data — much lighter than Publish, which walks every layer'
+        : 'Convert this live layer to tiles (speed for very large data). Live layers update & animate instantly without baking.';
+    }
+    if (rebakeNote) rebakeNote.style.display = (isLiveGj && !isConvertedTs) ? 'block' : 'none';
+    // 7/21 linked instances: create-button on real data layers; explainer note on instances themselves
+    var instBtn = document.getElementById('elp-instance'), instNote = document.getElementById('elp-instance-note');
+    if (instBtn) instBtn.style.display = ((isConvertedTs || node.source_type === 'geojson-supabase') && !node.instanceOf && !node.outlineOf) ? 'block' : 'none';
+    if (instNote) instNote.style.display = node.instanceOf ? 'block' : 'none';
     document.getElementById('elp-color').value = color;
+    var legOn = document.getElementById('elp-legend-on'); if (legOn) legOn.checked = !!node.legend;
+    var srOn = document.getElementById('elp-stylerows-on'); if (srOn) srOn.checked = !!node.styleRows;
     populateColorBy(node);   // "Color by data column" — drawn layers only (hidden otherwise)
     populateDefaults(node);  // "On by default" (expanded-by-default is container-only)
     document.getElementById('elp-opacity').value = op;
@@ -5440,6 +6026,7 @@
     document.getElementById('elp-width').value = width;
     document.getElementById('elp-width-val').textContent = width;
     document.getElementById('elp-width-label').textContent = (node.type === 'line') ? 'Width' : 'Outline width';
+    fillWzoomUI(node);   // 7/21: "Vary width by zoom" checkbox + stops (lines only; parses the stored expression)
     // width = line/outline thickness: lines, un-split polygons (auto-outline), and circles (circle-stroke-width — uncapped, no split needed)
     document.getElementById('elp-width-row').style.display = ((node.type === 'line') || (fillStroke && !node.outlineSplit) || node.type === 'circle') ? 'block' : 'none';
     var radius = (node.paint && node.paint['circle-radius'] != null) ? node.paint['circle-radius'] : 5;
@@ -5458,8 +6045,10 @@
     document.getElementById('elp-nidprop-row').style.display = (isTsPanel && (pmodeUI === 'drupal' || pmodeUI === 'both')) ? 'block' : 'none';
     document.getElementById('elp-nidprop').value = (node.panel && node.panel.nidProp) || (isTsPanel ? 'nid' : 'content_id');
     var isTs = isTilesetNode(node);   // tilesets show their Source (url / source-layer / zooms) so it can be viewed + repointed (e.g. to a PMTiles worker)
-    document.getElementById('elp-src-row').style.display = isTs ? 'block' : 'none';
-    if (isTs) {
+    // 7/21 — Source repoint HIDDEN for now: an accidental "Apply source" click could re-point a layer and wipe its
+    // generated tiles/work. Users add a new file instead; re-enable when we build "live layers". Code kept intact below.
+    document.getElementById('elp-src-row').style.display = 'none';
+    if (false && isTs) {
       var src = node.source || {}, isTilesUrl = !!(src.tiles && src.tiles.length);
       document.getElementById('elp-src-url').value = src.url || (src.tiles && src.tiles[0]) || '';
       document.getElementById('elp-src-sl').value = node['source-layer'] || '';
@@ -6510,6 +7099,87 @@
       }
     }
   }
+  // ── Zoom-varied line width (7/21): "Vary width by zoom" builds a top-level interpolate over 3
+  //    zoom→px stops; each stop's output keeps the per-feature ms_thickness override (flat, all zooms).
+  //    The truth lives IN node.paint['line-width'] itself — the UI re-derives its stops by parsing it,
+  //    so nothing extra persists and the viewer renders the same expression untouched. ──
+  function wzParse(node) {   // stored interpolate → [[zoom, px]…] (px = each output's case fallback)
+    var lw = node && node.paint && node.paint['line-width'];
+    if (!Array.isArray(lw) || lw[0] !== 'interpolate') return null;
+    var out = [];
+    for (var i = 3; i + 1 < lw.length; i += 2) {
+      var o = lw[i + 1], w = Array.isArray(o) ? o[o.length - 1] : o;
+      out.push([lw[i], typeof w === 'number' ? w : 2]);
+    }
+    return out.length >= 2 ? out : null;
+  }
+  function wzDefaults(node) {   // common default derived from the current uniform width
+    var W = paintWidth(node.paint); if (W == null) W = 2;
+    function r1(x) { return Math.max(0.5, Math.round(x * 2) / 2); }
+    return [[5, r1(W * 0.5)], [10, W], [15, r1(W * 2.5)]];
+  }
+  function fillWzoomUI(node) {
+    var row = document.getElementById('elp-wzoom-row'); if (!row) return;
+    // lines only; not while thickness-by-column drives the width; not for MapboxDraw-resident layers
+    // (their visible copies are draw styles, which can't take zoom expressions)
+    var eligible = node && node.type === 'line' && !node.thicknessBy && !node.outlineOf &&
+      !(node.source_type === 'geojson-supabase' && _drawLayerSlugs[node.id]);
+    row.style.display = eligible ? 'block' : 'none';
+    if (!eligible) return;
+    var stops = wzParse(node), on = !!stops;
+    if (!stops) stops = wzDefaults(node);
+    document.getElementById('elp-wzoom-on').checked = on;
+    document.getElementById('elp-wzoom-box').style.display = on ? 'block' : 'none';
+    for (var i = 0; i < 3; i++) {
+      var s = stops[i] || stops[stops.length - 1];
+      document.getElementById('elp-wz-z' + i).value = s[0];
+      document.getElementById('elp-wz-w' + i).value = s[1];
+    }
+  }
+  function onWzoom() {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node || node.type !== 'line') return;
+    var on = document.getElementById('elp-wzoom-on').checked;
+    document.getElementById('elp-wzoom-box').style.display = on ? 'block' : 'none';
+    if (_styleSession !== node.id) { _styleSession = node.id; _styleBefore = { color: node.iconColor, paint: node.paint ? JSON.parse(JSON.stringify(node.paint)) : null }; }
+    node.paint = node.paint || {};
+    if (on) {
+      var stops = [];
+      for (var i = 0; i < 3; i++) {
+        var z = parseFloat(document.getElementById('elp-wz-z' + i).value), w = parseFloat(document.getElementById('elp-wz-w' + i).value);
+        if (!isNaN(z) && !isNaN(w)) stops.push([z, w]);
+      }
+      stops.sort(function (a, b) { return a[0] - b[0]; });
+      for (var j = 1; j < stops.length; j++) if (stops[j][0] <= stops[j - 1][0]) stops[j][0] = stops[j - 1][0] + 0.5;   // interpolate demands strictly ascending zooms
+      if (stops.length < 2) return;   // need at least two stops to interpolate — keep typing
+      node.widthZoom = { stops: stops };
+      // 7/21: PLAIN numeric outputs = a pure camera expression the GPU interpolates perfectly smoothly
+      // while zooming. Embedding the per-feature ms_thickness case made it a composite (data+zoom)
+      // expression, which re-evaluates per integer zoom and visibly STEPPED between levels (user
+      // report). Only pay that cost when the layer's features actually use ms_thickness — and tiles
+      // never do (skinny tiles carry no ms_* columns).
+      var useMs = false;
+      if (!isTilesetNode(node)) {
+        try {
+          var wfs = (node.source && node.source.data && node.source.data.features) || [];
+          for (var wf = 0; wf < wfs.length; wf++) { var wv = (wfs[wf].properties || {}).ms_thickness; if (wv != null && String(wv) !== '' && !isNaN(parseFloat(wv))) { useMs = true; break; } }
+        } catch (eMs) {}
+      }
+      var ex = ['interpolate', ['linear'], ['zoom']];
+      stops.forEach(function (s) { ex.push(s[0], useMs ? numColExpr('ms_thickness', s[1]) : s[1]); });
+      node.paint['line-width'] = ex;
+    } else {
+      delete node.widthZoom;
+      var wSl = parseFloat((document.getElementById('elp-width') || {}).value);
+      node.paint['line-width'] = !isNaN(wSl) ? wSl : 2;
+    }
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {   // live on both maps
+      var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0];
+      try { if (m.getLayer(id)) m.setPaintProperty(id, 'line-width', node.paint['line-width']); } catch (e) {}
+    });
+    clearTimeout(_layerStyleTimer);
+    _layerStyleTimer = setTimeout(function () { saveLayerStyle(node.id); }, 500);
+  }
   var _styleSession = null, _styleBefore = null;   // capture the pre-edit style once per edit session (debounced edits → one undo)
   function onLayerStyle(field, value) {
     if (!activeLayerId) return;
@@ -6531,7 +7201,13 @@
     var _opExpr = (node.opacityBy && node.paint && Array.isArray(node.paint[_ok2])) ? node.paint[_ok2] : null;
     var _tk2 = numByKeys(node, 'thickness')[0];
     var _thExpr = (node.thicknessBy && node.paint && Array.isArray(node.paint[_tk2])) ? node.paint[_tk2] : null;
+    // zoom-varied width (7/21): survives unrelated edits; moving the uniform width slider EXITS it
+    var _wzExpr = (node.type === 'line' && node.paint && Array.isArray(node.paint['line-width']) && node.paint['line-width'][0] === 'interpolate') ? node.paint['line-width'] : null;
     node.paint = buildLayerPaint(node.type, color, op, outline, outlineVis, width, radius);
+    if (field === 'width' && node.widthZoom) {
+      delete node.widthZoom; _wzExpr = null;
+      var _wzCb = document.getElementById('elp-wzoom-on'); if (_wzCb) { _wzCb.checked = false; var _wzBox = document.getElementById('elp-wzoom-box'); if (_wzBox) _wzBox.style.display = 'none'; }
+    } else if (_wzExpr) { node.paint['line-width'] = _wzExpr; }
     if ((field === 'opacity' || field === 'fillVisible') && node.opacityBy) {
       node.opacityBy = null;
       var _obSel = document.getElementById('elp-opacityby'); if (_obSel) _obSel.value = '';
@@ -6604,6 +7280,16 @@
             if (tp['line-opacity'] != null) { try { m.setPaintProperty(sid, 'line-opacity', tp['line-opacity']); } catch (e) {} }
           }
         }
+      });
+    } else if (node.source_type === 'geojson-supabase' && !_drawLayerSlugs[node.id]) {
+      // 7/21: ENGINE-rendered geojson (large or dated layers) — no MapboxDraw copies to repaint;
+      // repaint the engine layers directly, exactly like tilesets. (Before this, styling a large
+      // layer silently previewed nothing.)
+      var gp = node.paint || {};
+      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+        var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0]; var ml = m.getLayer(id); if (!ml) return;
+        Object.keys(gp).forEach(function (k) { if (k.indexOf(ml.type + '-') === 0) { try { m.setPaintProperty(id, k, gp[k]); } catch (e) {} } });
+        if (node.iconColor && !node.colorBy) { try { m.setPaintProperty(id, ml.type + '-color', node.iconColor); } catch (e) {} }
       });
     } else if (draw) {
       // Repaint the layer's features with the new color/opacity. Only a delete+add

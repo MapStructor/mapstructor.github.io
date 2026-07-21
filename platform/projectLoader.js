@@ -72,6 +72,39 @@ window.msApplyHeaderFeature = function (visible, projectName) {
 (async function () {
   if (typeof platformProjectId === "undefined" || !platformProjectId) return;
 
+  // ── Fail-safe loading pill (7/21): a tiny NON-BLOCKING "Loading map…" chip while the map boots.
+  // Designed so it can never get stuck or block anything: pointer-events:none (clicks pass straight
+  // through), covers no UI (small, bottom-center), and REMOVES ITSELF unconditionally after 12s even
+  // if every hide signal fails. Hides early on the first map 'idle' (tiles painted).
+  var msPillGone = false, msPillEl = null;
+  function msPillHide() {
+    if (msPillGone) return; msPillGone = true;
+    try { if (msPillEl) { msPillEl.style.opacity = "0"; setTimeout(function () { try { msPillEl.remove(); } catch (e) {} }, 350); } } catch (e) {}
+  }
+  try {
+    msPillEl = document.createElement("div");
+    msPillEl.id = "ms-load-pill";
+    // Centered over the MAP AREA (7/21 — bottom placement hid behind the timeline bar). Safe by
+    // construction: pointer-events:none (clicks pass through) + the 12s hard-cap removal below.
+    msPillEl.setAttribute("style", "position:fixed;left:58%;top:42%;transform:translate(-50%,-50%);z-index:2147483000;pointer-events:none;background:rgba(23,26,33,0.85);color:#fff;padding:11px 20px;border-radius:999px;font:600 14.5px 'Source Sans Pro',Arial,sans-serif;letter-spacing:.2px;box-shadow:0 4px 18px rgba(0,0,0,.35);opacity:1;transition:opacity .3s;display:flex;align-items:center;gap:10px;");
+    msPillEl.innerHTML = "<span style=\"width:12px;height:12px;border-radius:50%;border:2.5px solid rgba(255,255,255,.35);border-top-color:#fff;display:inline-block;animation:mspillspin .8s linear infinite;\"></span>Loading map…";
+    var msPillKf = document.createElement("style"); msPillKf.textContent = "@keyframes mspillspin{to{transform:rotate(360deg)}}";
+    document.head.appendChild(msPillKf);
+    document.body.appendChild(msPillEl);
+    setTimeout(msPillHide, 12000);   // HARD CAP — the pill cannot outlive this, no matter what breaks
+    var msPillN = 0, msPillT = setInterval(function () {   // the map object exists only later — poll cheaply until the cap
+      msPillN++;
+      if (msPillGone || msPillN > 40) { clearInterval(msPillT); return; }
+      try {
+        if (typeof beforeMap !== "undefined" && beforeMap && beforeMap.once) {
+          clearInterval(msPillT);
+          beforeMap.once("idle", msPillHide);
+          if (beforeMap.loaded && beforeMap.loaded()) msPillHide();   // already painted before we attached
+        }
+      } catch (e) { clearInterval(msPillT); }
+    }, 300);
+  } catch (ePill) {}
+
   var SUPABASE_URL = "https://eqpxlwbjqiwfjlsuapvu.supabase.co";
   var SUPABASE_KEY = "sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD";
 
@@ -302,6 +335,27 @@ window.msApplyHeaderFeature = function (visible, projectName) {
       await Promise.race([swReady, new Promise(function (res) { setTimeout(res, 3000); })]);
     }
   } catch (eSw) {}
+
+  // ── editing-only layers (7/21): raw_config.editorOnly → visible ONLY in the editor. Strip them from
+  // the tree in VIEW mode before the panel renders — viewer, preview, and downloaded copies all boot
+  // through here, so this one gate covers them all. The editor keeps them (and badges them in the sidebar).
+  if (!/editor\.html/i.test(location.pathname)) {
+    try {
+      (function stripEO(arr) {
+        for (var i = (arr || []).length - 1; i >= 0; i--) {
+          var n = arr[i];
+          if (n.children) {
+            var had = n.children.length;
+            stripEO(n.children);
+            // a group/section whose layers were ALL editing-only strips with them (7/21 group support);
+            // containers that were empty to begin with stay (the owner made them empty on purpose)
+            if (had > 0 && n.children.length === 0) arr.splice(i, 1);
+          }
+          else if (n.editorOnly) arr.splice(i, 1);
+        }
+      })(layers);
+    } catch (eEO) {}
+  }
 
   generateLayersPanel();
   generateBaseMapsPanel();

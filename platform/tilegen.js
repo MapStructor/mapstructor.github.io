@@ -425,6 +425,11 @@
     rc.convertedFrom = rc.convertedFrom || cur.data.source_type || "geojson-supabase";
     rc.tilesGeneratedAt = new Date().toISOString();
     rc.tilesBytes = bytes.length;                            // size on record — surfaces in status/answers
+    // Dirty-tracking stamps (7/21): Publish skips layers whose data hasn't changed since this bake.
+    // count catches adds/deletes; max feature id catches add+delete pairs that leave the count equal;
+    // features.updated_at (trigger-set on UPDATE, verified 7/21) catches edits.
+    rc.tilesFeatureCount = (features && features.length) || 0;
+    try { rc.tilesMaxFid = (features || []).reduce(function (m, f) { var v = Number(f && f.id); return v > m ? v : m; }, 0) || null; } catch (eMx) {}
     // EXPERIMENTAL instant-scrub raster — guarded; remove together with platform/rasterScrub.js
     try {
       status("Baking instant-scrub raster…");
@@ -443,51 +448,78 @@
     return { tilesUrl: rc.pmtiles, bytes: bytes.length, maxZoom: built.maxZoom };
   }
 
-  // publish-time "sew up": re-generate every converted layer from its CURRENT features, so the
-  // published snapshot always ships fresh tiles. Returns how many layers were regenerated.
+  // Re-bake ONE already-tiled layer from its CURRENT features. Shared by Publish's sew-up AND by the
+  // Timeline-dates tool's auto-rebake (7/20) — so setting dates on a tileset takes effect on the very
+  // next load without a full Publish. Returns 1 if it re-baked, 0 if the layer isn't tile-backed.
+  // 7/21: `force` skips the tile-backed gate — the panel's universal bake button uses it to FIRST-TIME
+  // convert a live geojson layer to tiles through this same proven path.
+  async function sewUpLayer(db, projectId, L, statusFn, force) {
+    var status = statusFn || function () {};
+    if (!L) return 0;
+    if (!(L.raw_config && L.raw_config.pmtiles) && !force) return 0;   // only layers that already live as tiles (unless forced)
+    status("Regenerating tiles: " + (L.name || "layer") + "…");
+    // LABELS IN SKINNY TILES (7/16): `label` always rides along, plus the column the layer's
+    // map-labels config points at (fetched surgically via the JSON arrow — never all of custom_fields).
+    var lblField = (L.raw_config && L.raw_config.labels && L.raw_config.labels.field) || null;
+    if (lblField === "label") lblField = null;
+    var sel = "feature_id, geom, start_date, end_date, label" + (lblField ? ", lblv:custom_fields->>" + lblField : "");
+    var feats = [], from = 0;
+    for (;;) {
+      var r = await db.from("features").select(sel).eq("layer_id", L.id).order("feature_id").range(from, from + 999);
+      if (r.error || !r.data || !r.data.length) break;
+      r.data.forEach(function (f) {
+        // SKINNY TILES (7/16): id + timeline days ONLY. The days MUST stay baked — the slider filter
+        // can only act on data physically inside the tile. Dateless features get always-visible bounds.
+        var props = {
+          DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, "") || 0 : 0,
+          DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, "") || 99999999 : 99999999
+        };
+        if (f.label != null && f.label !== "") props.label = f.label;
+        if (lblField && f.lblv != null && f.lblv !== "") props[lblField] = f.lblv;
+        feats.push({ type: "Feature", id: f.feature_id, properties: props, geometry: f.geom });
+      });
+      if (r.data.length < 1000) break;
+      from += 1000;
+    }
+    if (!feats.length) return 0;
+    await convertLayer(db, projectId, L.id, feats, { name: L.name, geomKind: L.type, status: status });
+    return 1;
+  }
+  // 7/21 dirty check: is this layer's data UNCHANGED since its last bake? Any doubt → false (re-bake;
+  // correctness over speed). Uses the stamps convertLayer records: count (adds/deletes), max feature id
+  // (add+delete pairs), and features.updated_at — trigger-set on UPDATE (verified 7/21) — for edits.
+  // 2-minute slack on the timestamp compare absorbs client/server clock skew, biased toward re-baking.
+  async function layerTilesClean(db, L) {
+    try {
+      var rc = (L && L.raw_config) || {};
+      if (!rc.tilesGeneratedAt || rc.tilesFeatureCount == null) return false;   // pre-7/21 bake — no stamps, bake once to gain them
+      var cq = await db.from("features").select("feature_id", { count: "exact", head: true }).eq("layer_id", L.id);
+      if (((cq && cq.count) || 0) !== rc.tilesFeatureCount) return false;
+      if (rc.tilesMaxFid != null) {
+        var mf = await db.from("features").select("feature_id").eq("layer_id", L.id).order("feature_id", { ascending: false }).limit(1);
+        var mfid = mf.data && mf.data[0] && mf.data[0].feature_id;
+        if (mfid != null && Number(mfid) !== Number(rc.tilesMaxFid)) return false;
+      }
+      var nu = await db.from("features").select("updated_at").eq("layer_id", L.id).not("updated_at", "is", null).order("updated_at", { ascending: false }).limit(1);
+      var newest = nu.data && nu.data[0] && nu.data[0].updated_at;
+      if (newest && new Date(newest).getTime() > new Date(rc.tilesGeneratedAt).getTime() - 120000) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+  // publish-time "sew up": re-generate every converted layer whose data CHANGED since its last bake
+  // (unchanged layers skip — Publish used to re-bake everything and was "really heavy"). Returns how
+  // many layers were regenerated.
   async function sewUpProject(db, projectId, statusFn) {
     var status = statusFn || function () {};
     var pl = await db.from("project_layers").select("layer_id, layers(id, name, type, source_type, raw_config)").eq("project_id", projectId);
     if (pl.error || !pl.data) return 0;
-    var todo = pl.data.map(function (r) { return r.layers; }).filter(function (l) {
-      return l && l.raw_config && l.raw_config.pmtiles;   // only layers that already live as tiles
-    });
-    var done = 0;
+    var todo = pl.data.map(function (r) { return r.layers; }).filter(function (l) { return l && l.raw_config && l.raw_config.pmtiles; });
+    var done = 0, skipped = 0;
     for (var i = 0; i < todo.length; i++) {
-      var L = todo[i];
-      status("Regenerating tiles: " + (L.name || "layer") + "…");
-      // LABELS IN SKINNY TILES (7/16): `label` always rides along, plus the column the layer's
-      // map-labels config points at (fetched surgically via the JSON arrow — never all of
-      // custom_fields). Changing the label column takes effect at the next Publish.
-      var lblField = (L.raw_config && L.raw_config.labels && L.raw_config.labels.field) || null;
-      if (lblField === "label") lblField = null;
-      var sel = "feature_id, geom, start_date, end_date, label" + (lblField ? ", lblv:custom_fields->>" + lblField : "");
-      var feats = [], from = 0;
-      for (;;) {
-        var r = await db.from("features").select(sel).eq("layer_id", L.id).order("feature_id").range(from, from + 999);
-        if (r.error || !r.data || !r.data.length) break;
-        r.data.forEach(function (f) {
-          // SKINNY TILES (7/16): id + timeline days ONLY. Attributes repeat at every zoom a
-          // feature spans — label/description/custom_fields stay in features_data and are
-          // fetched by id on click (enterEngineEdit already does). The days MUST stay baked:
-          // the slider filter can only act on data physically inside the tile.
-          // TIMELINE CONTRACT: tiles WITHOUT DayStart/DayEnd render NOTHING (7/15 bug) —
-          // dateless features get always-visible bounds.
-          var props = {
-            DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, "") || 0 : 0,
-            DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, "") || 99999999 : 99999999
-          };
-          if (f.label != null && f.label !== "") props.label = f.label;
-          if (lblField && f.lblv != null && f.lblv !== "") props[lblField] = f.lblv;
-          feats.push({ type: "Feature", id: f.feature_id, properties: props, geometry: f.geom });
-        });
-        if (r.data.length < 1000) break;
-        from += 1000;
-      }
-      if (!feats.length) continue;
-      await convertLayer(db, projectId, L.id, feats, { name: L.name, geomKind: L.type, status: status });
-      done++;
+      if (await layerTilesClean(db, todo[i])) { skipped++; status("“" + (todo[i].name || "layer") + "” unchanged — tiles already current, skipping."); continue; }
+      if (await sewUpLayer(db, projectId, todo[i], status)) done++;
     }
+    if (skipped) status(skipped + " unchanged layer" + (skipped === 1 ? "" : "s") + " skipped; " + done + " re-baked.");
     return done;
   }
 
@@ -498,7 +530,9 @@
     needsTiles: needsTiles,
     buildArchive: buildArchive,
     convertLayer: convertLayer,
+    sewUpLayer: sewUpLayer,
     sewUpProject: sewUpProject,
+    layerTilesClean: layerTilesClean,
     zxyToTileId: zxyToTileId,
     publicUrl: publicUrl,
     _setUploadFn: function (fn) { uploadFn = fn; }
