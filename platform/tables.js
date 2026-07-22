@@ -265,7 +265,7 @@
     if (row && !document.getElementById("mst-open")) {
       var b = document.createElement("button");
       b.id = "mst-open";
-      b.textContent = "+ Table";
+      b.textContent = "Table";
       b.title = "Data tables & joins";
       b.addEventListener("click", function (e) { e.preventDefault(); open(); });
       row.appendChild(b);

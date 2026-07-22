@@ -447,6 +447,19 @@ div.layer-list-row {
 .ms-section-block { margin-top: 18px; }
 .ms-section-block:first-child { margin-top: 0; }
 
+/* ▦ still reads as a table, struck through + amber = "hidden in view mode" (editor-only state;
+   set by raw_config.tableBtn === false via the layer panel's "Table button shown in view" box). */
+.ms-tbl-off { color: #c9762b !important; position: relative; }
+.ms-tbl-off::after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 45%;
+  border-top: 2px solid #c9762b;
+  transform: rotate(-35deg);
+}
+
 div.layer-list-row:hover {
   background-color: #ddd;
 }

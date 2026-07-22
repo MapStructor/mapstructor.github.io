@@ -247,7 +247,20 @@
         if (node.type === 'group') { var gp = findParent(layers, node); if (gp && gp.type === 'section') parentSecId = gp._dbId; }
         if (loc) loc.arr.splice.apply(loc.arr, [loc.idx, 1].concat(node.children || []));
         else removeFromTree(layers, node);
-        if (node._dbId) { var dc = await db.from(node.type === 'group' ? 'layer_groups' : 'layer_sections').delete().eq('id', node._dbId); if (dc.error) throw new Error(dc.error.message); }
+        if (node._dbId) {
+          // FK-CASCADE GUARD (7/22 — THE vanishing-groups root cause): deleting a SECTION row
+          // CASCADE-DELETED every layer_groups row inside it (cascade proven by direct test),
+          // even though the app had moved the children out in the tree — the session kept
+          // showing groups that no longer existed in the DB, and the next load was flat.
+          // Detach ALL DB dependents FIRST; only then delete the now-childless container row.
+          if (node.type === 'section') {
+            var dg1 = await db.from('layer_groups').update({ section_id: null }).eq('section_id', node._dbId); if (dg1.error) throw new Error(dg1.error.message);
+            var dg2 = await db.from('project_layers').update({ section_id: null }).eq('section_id', node._dbId); if (dg2.error) throw new Error(dg2.error.message);
+          } else {
+            var dg3 = await db.from('project_layers').update({ group_id: null }).eq('group_id', node._dbId); if (dg3.error) throw new Error(dg3.error.message);
+          }
+          var dc = await db.from(node.type === 'group' ? 'layer_groups' : 'layer_sections').delete().eq('id', node._dbId); if (dc.error) throw new Error(dc.error.message);
+        }
         rerender();
         await persistOrder();
         // Undoable: re-create the container DB row (new id), move its children back under it,
@@ -265,10 +278,24 @@
             rerender(); await persistOrder();
           }
           async function reremove() {
+            // REDO of a container delete is DESTRUCTIVE and used to replay with no confirmation —
+            // a stray Ctrl+Y could silently delete a group again (7/22). Ask, like the original did.
+            if (!window.confirm('Redo: delete "' + (cnode.label || ctype) + '" again? Its contents move out (not deleted).')) throw new Error('cancelled');
             var l2 = locate(layers, cnode);
             if (l2) l2.arr.splice.apply(l2.arr, [l2.idx, 1].concat(cnode.children || []));
             else removeFromTree(layers, cnode);
-            if (cnode._dbId) { try { await db.from(table).delete().eq('id', cnode._dbId); } catch (e) {} }
+            if (cnode._dbId) {
+              try {
+                // same FK-cascade guard as the primary delete path (see onDelete)
+                if (ctype === 'section') {
+                  await db.from('layer_groups').update({ section_id: null }).eq('section_id', cnode._dbId);
+                  await db.from('project_layers').update({ section_id: null }).eq('section_id', cnode._dbId);
+                } else {
+                  await db.from('project_layers').update({ group_id: null }).eq('group_id', cnode._dbId);
+                }
+                await db.from(table).delete().eq('id', cnode._dbId);
+              } catch (e) {}
+            }
             rerender(); await persistOrder();
           }
           pushUndo(readd, reremove, 'delete ' + (cnode.label || ctype));
@@ -368,6 +395,7 @@
   if (!window.__msAttrBtnWired) {
     window.__msAttrBtnWired = true;
     document.addEventListener('click', function (e) {
+      if (window.__msEditLocked) return;   // locked map: the features list (and its Expand → editable table) stays off
       var t = e.target && e.target.closest && e.target.closest('.attr-table-btn'); if (!t) return;
       e.stopPropagation(); e.preventDefault();
       var row = t.closest('.layer-list-row'); if (!row) return;
@@ -493,7 +521,14 @@
       }
     }
     try { for (var k = 0; k < layers.length; k++) await walk(layers[k], null, null); setStatus('Saved'); }
-    catch (e) { console.warn('editing: reorder save failed', e); setStatus('Reorder save failed: ' + e.message); }
+    catch (e) {
+      console.warn('editing: reorder save failed', e);
+      setStatus('Reorder save failed: ' + e.message);
+      // LOUD (7/22): a failed persistOrder means the arrangement you SEE (incl. which layers sit in
+      // which groups) is NOT saved — a page reload would flatten it. The tiny status line was easy
+      // to miss; this must never be silent.
+      showToast('⚠ Layer order/grouping did NOT save (' + e.message + '). Your arrangement will be lost on reload — try the move again.', 10000);
+    }
   }
   // Where would a drop land on this row? top 30% = before, bottom 30% = after,
   // middle of a container = into it.
@@ -859,10 +894,10 @@
   function showButtons() {
     var bar = document.getElementById('editor-add-bar');
     bar.innerHTML = '<div id="editor-add-buttons"><div class="erow" style="margin-bottom:6px;">' +
-      '<button data-type="layer">+ Layer</button>' +
-      '<button data-type="tileset">+ Tileset</button>' +
-      '<button data-type="import">+ Import</button>' +
-      '<button data-type="export">⬇ Export</button></div>' +
+      '<button data-type="layer">Layer</button>' +
+      '<button data-type="tileset">Tileset</button>' +
+      '<button data-type="import">Import</button>' +
+      '<button data-type="export">Export</button></div>' +
       '<div class="erow">' +
       '<button data-type="group">+ Group</button>' +
       '<button data-type="section">+ Section</button></div>' +
@@ -1110,7 +1145,7 @@
     var type = document.getElementById('editor-ts-type').value || 'fill';
     var s = document.getElementById('editor-ts-sl-status');
     function warn(msg) { if (s) { s.innerHTML = msg; s.style.color = '#b4453a'; } }
-    if (!isMapboxUrl(url)) { warn('This button is for mapbox:// tilesets. For PMTiles / XYZ use <b>+ Tileset</b>.'); return; }
+    if (!isMapboxUrl(url)) { warn('This button is for mapbox:// tilesets. For PMTiles / XYZ use <b>Tileset</b>.'); return; }
     var tok = getStoredMapboxToken() || (window.mapboxgl && mapboxgl.accessToken) || '';
     if (!tok) { warn('No Mapbox token — set one with the 🔑 button first.'); return; }
     if (!name || !sl) { setStatus('Name, tileset URL + source layer required'); return; }
@@ -1664,10 +1699,26 @@
   window.addEventListener('beforeunload', function (e) {
     if (_msPendingSave || (_msIsAnonUser && _msAnonEdited)) { e.preventDefault(); e.returnValue = ''; return ''; }
   });
+  // Unpublished-changes badge (7/22, the "grouped in edit, flat in view" confusion): the public
+  // view shows the last PUBLISHED snapshot, so any save after a publish means live ≠ public —
+  // show it on the button ("Publish •") instead of leaving the user to discover the drift.
+  // v1 is session-scoped: we can't cheaply know cross-session dirtiness at boot.
+  var _msUnpublished = false;
+  function msMarkUnpublished() {
+    if (_msUnpublished) return; _msUnpublished = true;
+    var hb = document.getElementById('editor-publish-btn');
+    if (hb && hb.textContent === 'Publish') { hb.textContent = 'Publish •'; hb.title = 'You have changes the public view does not show yet — publish to update it'; }
+  }
+  function msClearUnpublished() {
+    _msUnpublished = false;
+    var hb = document.getElementById('editor-publish-btn');
+    if (hb) { hb.title = 'Publish the current state to the public view'; if (hb.textContent === 'Publish •') hb.textContent = 'Publish'; }
+  }
   function setStatus(msg) {
     var s = String(msg == null ? '' : msg);
     if (s.indexOf('Saving') === 0) { _msPendingSave = true; _msAnonEdited = true; }
     else if (s.toLowerCase().indexOf('failed') === -1) { _msPendingSave = false; }   // "… failed" keeps the flag — that data is NOT persisted
+    if (s.indexOf('Saved') === 0 || s.indexOf('Deleted') === 0) msMarkUnpublished();   // every successful save = drift from the published snapshot
     var el = document.getElementById('editor-save-status');
     if (!el) return;
     el.textContent = msg;
@@ -1714,8 +1765,12 @@
       content.parentNode.insertBefore(tools, content);
       Array.prototype.forEach.call(tools.querySelectorAll('button[data-cmd]'), function (b) {
         b.addEventListener('mousedown', function (e) { e.preventDefault(); });   // keep caret/selection inside .modal-content
+        // mousedown preventDefault is LOAD-BEARING: without it the button steals focus, the text
+        // SELECTION collapses, and execCommand('bold' etc.) has nothing to apply to (the "bold
+        // button does not work" bug, 7/22)
+        b.addEventListener('mousedown', function (e) { e.preventDefault(); });
         b.addEventListener('click', function (e) {
-          e.preventDefault(); content.focus();
+          e.preventDefault();
           var cmd = b.getAttribute('data-cmd'), val = b.getAttribute('data-val');
           if (cmd === 'createLink') { val = prompt('Link URL:'); if (!val) return; }
           try { document.execCommand(cmd, false, val || undefined); } catch (err) {}
@@ -1866,6 +1921,7 @@
       '<div class="mss-sectop">' +
         MSEC('Header') +
         '<label class="mss-check"><input id="esp-feat-header" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show header (logo &amp; title bar)</label>' +
+        '<label class="mss-check" style="display:block;margin-top:6px;"><input id="esp-lock" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />🔒 Lock this map — view &amp; copy only (editing off until unlocked here)</label>' +
         '<div class="mss-note">Off: the logo, map name and About link move to the top of the sidebar.</div>' +
         '<label class="mss-lbl" style="margin-top:8px;">Header logo</label>' +
         '<input id="esp-logo-file" type="file" accept="image/*" style="width:100%;box-sizing:border-box;font-size:11px;" />' +
@@ -1882,6 +1938,7 @@
     document.getElementById('esp-tl-end').addEventListener('change', onTimelineSave);
     document.getElementById('esp-tl-today').addEventListener('change', function () { document.getElementById('esp-tl-end').disabled = this.checked; onTimelineSave(); });
     document.getElementById('esp-feat-header').addEventListener('change', onFeatureHeader);
+    document.getElementById('esp-lock').addEventListener('change', onEditLockToggle);
     document.getElementById('esp-logo-file').addEventListener('change', onLogoFile);
     document.getElementById('esp-logo-link').addEventListener('change', onLogoLink);
     // Sharing (who can see the map) moved to its own 🔗 Share panel in the top bar — see platform/share.js.
@@ -1901,10 +1958,14 @@
       var src = bundle.project;
       // 1 — the project row (private, owned by me)
       var np = strip(src); np.name = (src.name || 'Untitled Map') + ' (copy)'; np.user_id = u.id; np.is_public = false;
+      // a copy starts PRIVATE and unshared regardless of the source's sharing — the owner re-shares deliberately
+      np.raw_config = np.raw_config ? JSON.parse(JSON.stringify(np.raw_config)) : {};
+      np.raw_config.visibility = 'private';
+      delete np.raw_config.editAccess;
       var rp = await db.from('projects').insert(np).select('id').single(); if (rp.error) throw new Error(rp.error.message);
       var newId = rp.data.id;
       // 2 — sections, 3 — groups (remap ids)
-      var secMap = {}, grpMap = {};
+      var secMap = {}, grpMap = {}, layerIdMap = {}, slugMap = {};
       for (var i = 0; i < (bundle.sections || []).length; i++) {
         var s = bundle.sections[i]; var ns = strip(s); ns.project_id = newId;
         var rs = await db.from('layer_sections').insert(ns).select('id').single(); if (rs.error) throw new Error(rs.error.message);
@@ -1921,24 +1982,69 @@
       for (var k = 0; k < (bundle.projectLayers || []).length; k++) {
         var pl = bundle.projectLayers[k], L = pl.layers; if (!L) continue;
         var nl = strip(L); if (nl.slug) nl.slug = L.slug + '-c' + Math.random().toString(36).slice(2, 7);
+        // fresh bake identity: drop the dirty-check stamps so the copy's FIRST Publish bakes its
+        // OWN tiles/rasters into its own storage path (until then it renders from the source
+        // map's archives — same pixels, shared files, fully independent after one publish)
+        if (nl.raw_config) {
+          nl.raw_config = JSON.parse(JSON.stringify(nl.raw_config));
+          delete nl.raw_config.tilesGeneratedAt; delete nl.raw_config.tilesFeatureCount; delete nl.raw_config.tilesMaxFid;
+        }
         var rl = await db.from('layers').insert(nl).select('id').single(); if (rl.error) throw new Error(rl.error.message);
         var newLid = rl.data.id;
+        layerIdMap[L.id] = newLid; slugMap[L.slug] = nl.slug;
         var npl = strip(pl, ['layers']);
         npl.project_id = newId; npl.layer_id = newLid;
         npl.section_id = pl.section_id ? (secMap[pl.section_id] || null) : null;
         npl.group_id = pl.group_id ? (grpMap[pl.group_id] || null) : null;
         var rpl = await db.from('project_layers').insert(npl); if (rpl.error) throw new Error(rpl.error.message);
-        if (L.source_type === 'geojson-supabase') {   // duplicate the features (paged; select * so custom fields survive)
-          for (var off = 0; ; off += 1000) {
-            var fr = await db.from('features').select('*').eq('layer_id', L.id).order('feature_id').range(off, off + 999);
-            if (fr.error || !fr.data || !fr.data.length) break;
+        // Duplicate the features (paged; select * so custom fields survive). Converted tilesets
+        // (raw_config.pmtiles) keep their features in the DB as the editable source of truth —
+        // skipping them left copies with EMPTY attribute tables/feature lists, and a re-bake on
+        // the copy would have baked zero-feature tiles (user 7/22, copy be897684).
+        if (L.source_type === 'geojson-supabase' || (L.raw_config && L.raw_config.pmtiles)) {
+          // FAST PATH (7/22): one server-side INSERT…SELECT copies the whole layer in seconds with
+          // zero client transfer — needs ms_copy_layer_features (query-ops-setup.sql v8). Falls
+          // back to client-side keyset paging when the RPC isn't installed yet.
+          var rpcCopied = -1;
+          try {
+            var rpcC = await db.rpc('ms_copy_layer_features', { p_src: L.id, p_dst: newLid });
+            if (!rpcC.error && typeof rpcC.data === 'number') rpcCopied = rpcC.data;
+          } catch (eRpcC) {}
+          if (rpcCopied >= 0) { featTotal += rpcCopied; }
+          else {
+          // KEYSET pagination (feature_id > last), not OFFSET — deep offsets on big layers hit the
+          // DB statement timeout and silently truncated the copy (78k-layer repair, 7/22)
+          var lastFid = null;
+          for (;;) {
+            var fq = db.from('features').select('*').eq('layer_id', L.id).order('feature_id').limit(1000);
+            if (lastFid != null) fq = fq.gt('feature_id', lastFid);
+            var fr = await fq;
+            if (fr.error) throw new Error('feature copy read: ' + fr.error.message);
+            if (!fr.data || !fr.data.length) break;
+            lastFid = fr.data[fr.data.length - 1].feature_id;
             var rows = fr.data.map(function (f) { var nf = strip(f, ['feature_id']); nf.layer_id = newLid; return nf; });
             var ri = await db.from('features').insert(rows); if (ri.error) throw new Error(ri.error.message);
             featTotal += rows.length;
             if (fr.data.length < 1000) break;
           }
+          }
         }
         setStatus('Copying… ' + (k + 1) + '/' + bundle.projectLayers.length + ' layers');
+      }
+      // Remap cross-layer references the raw copy carried verbatim: instanceOf (a source layer's
+      // DB id) and outlineOf (a parent layer's SLUG) must point INSIDE the copy — otherwise
+      // instances/outlines stay tied to the source map and break if it's ever deleted (7/22).
+      for (var m = 0; m < (bundle.projectLayers || []).length; m++) {
+        var opl = bundle.projectLayers[m], oL = opl.layers; if (!oL || !oL.raw_config) continue;
+        var oc = oL.raw_config, upd = null;
+        if (oc.instanceOf && layerIdMap[oc.instanceOf]) { upd = upd || {}; upd.instanceOf = layerIdMap[oc.instanceOf]; }
+        if (oc.outlineOf && slugMap[oc.outlineOf]) { upd = upd || {}; upd.outlineOf = slugMap[oc.outlineOf]; }
+        if (upd && layerIdMap[oL.id]) {
+          var curC = await db.from('layers').select('raw_config').eq('id', layerIdMap[oL.id]).single();
+          var rcC = (curC.data && curC.data.raw_config) || {};
+          Object.keys(upd).forEach(function (kk) { rcC[kk] = upd[kk]; });
+          var ru = await db.from('layers').update({ raw_config: rcC }).eq('id', layerIdMap[oL.id]); if (ru.error) throw new Error(ru.error.message);
+        }
       }
       setStatus('Copied ✓ (' + featTotal + ' features)');
       window.location.href = 'editor.html?id=' + newId;
@@ -1960,10 +2066,23 @@
       } catch (eTiles) { console.warn('tile sew-up skipped', eTiles); }
       setStatus('Publishing…');
       var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);   // snapshot the current live config
+      // GHOST GUARD (7/22): a long-lived tab can display groups/sections that no longer exist in
+      // the DB (be897684 — the tab showed two groups, layer_groups had zero rows; publish reads
+      // the DB, so the published view stayed flat while the tab looked grouped). Publishing
+      // proceeds, but say LOUDLY why the view won't match what this window shows.
+      try {
+        var sessContainers = 0;
+        (function cntC(a) { (a || []).forEach(function (n) { if (n.type === 'group' || n.type === 'section') sessContainers++; if (n.children) cntC(n.children); }); })(typeof layers !== 'undefined' ? layers : []);
+        var dbContainers = (bundle.groups || []).length + (bundle.sections || []).length;
+        if (sessContainers > dbContainers) {
+          showToast('⚠ ' + (sessContainers - dbContainers) + ' group/section(s) shown in this window are NOT in the saved map — the published view will not have them. Refresh this page and re-create them, then publish again.', 12000);
+        }
+      } catch (eGhost) {}
       await db.from('project_snapshots').delete().eq('project_id', projectId).eq('label', 'published');   // one published snapshot per project
       var r = await db.from('project_snapshots').insert({ project_id: projectId, label: 'published', state: bundle });
       if (r.error) throw new Error(r.error.message);
       setStatus('Published ✓');
+      msClearUnpublished();   // live and public are in sync again
       if (hb) { hb.textContent = 'Published ✓'; setTimeout(function () { hb.textContent = 'Publish'; hb.disabled = false; }, 2500); }
     } catch (e) { console.warn('publish failed', e); setStatus('Publish failed'); if (hb) { hb.textContent = 'Publish'; hb.disabled = false; } }
   }
@@ -2003,13 +2122,30 @@
     injectSettingsPanel();
     var p = document.getElementById('editor-settings-panel');
     if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
-    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); } } catch (e) {}
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); document.getElementById('esp-lock').checked = !!(r.data.raw_config && r.data.raw_config.editLock); } } catch (e) {}
     p.style.display = 'block';
   }
   async function saveMapName(name) {
     name = (name || '').trim(); if (!name) return;
     setStatus('Saving…');
     try { var r = await db.from('projects').update({ name: name }).eq('id', projectId); if (r.error) throw new Error(r.error.message); applyHeaderText(name); var ei = document.getElementById('esp-name'); if (ei && ei.value !== name) ei.value = name; setStatus('Map renamed'); } catch (e) { setStatus('Save failed'); }
+  }
+  // 🔒 editing lock (7/22): raw_config.editLock — ON reloads straight into the locked (view/copy)
+  // page; OFF simply persists. Only this Settings checkbox and the lock panel's Unlock change it.
+  async function onEditLockToggle() {
+    var box = document.getElementById('esp-lock');
+    var on = !!(box && box.checked);
+    if (on && !window.confirm('Lock this map? Editing turns OFF for everyone (including you) until it is unlocked again. Viewing and copying stay available.')) { if (box) box.checked = false; return; }
+    setStatus('Saving…');
+    try {
+      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (on) rc.editLock = true; else delete rc.editLock;
+      var u = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (u.error) throw new Error(u.error.message);
+      setStatus('Saved');
+      if (on) { showToast('🔒 Locked — reloading into view-only…', 4000); setTimeout(function () { location.reload(); }, 900); }
+      else showToast('🔓 Unlocked.');
+    } catch (e) { setStatus('Save failed'); showToast('Lock change failed: ' + (e && e.message)); if (box) box.checked = !on; }
   }
   async function onSettingsName() { return saveMapName(document.getElementById('esp-name').value); }
   // Feature: header on/off — persists raw_config.features.header and applies live (msApplyHeaderFeature
@@ -2593,10 +2729,10 @@
           h('Adding your data') +
           '<p>Use the buttons above the layer list:</p>' +
           '<ul>' +
-          '<li><b>+ Import</b> — upload GeoJSON, KML, or a zipped Shapefile. Features arrive as an editable layer; very large files automatically render the fast way.</li>' +
-          '<li><b>+ Tileset</b> — connect a hosted vector tileset (URL + source layer) for city-scale data.</li>' +
-          '<li><b>+ Layer</b> — a new empty layer to draw into.</li>' +
-          '<li><b>⬇ Export</b> — download any layer back out as GeoJSON, KML, or Shapefile.</li>' +
+          '<li><b>Import</b> — upload GeoJSON, KML, or a zipped Shapefile. Features arrive as an editable layer; very large files automatically render the fast way.</li>' +
+          '<li><b>Tileset</b> — connect a hosted vector tileset (URL + source layer) for city-scale data.</li>' +
+          '<li><b>Layer</b> — a new empty layer to draw into.</li>' +
+          '<li><b>Export</b> — download any layer back out as GeoJSON, KML, or Shapefile.</li>' +
           '</ul>' +
           h('Editing features & their info') +
           '<p>Clicks work in two stages, so you never move something by accident:</p>' +
@@ -2859,7 +2995,14 @@
       if (e.key === 'Escape' && _measuring) { e.preventDefault(); cancelMeasure(); return; }
       if (e.key === 'Escape' && _splitMode) { e.preventDefault(); cancelSplit(); return; }
       if (!(e.ctrlKey || e.metaKey)) return;
-      var tag = (document.activeElement || {}).tagName || ''; if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      // UNDO SCOPING (7/22, "very serious"): while the user is TYPING — inputs, textareas, and
+      // any contenteditable (About/info editors, feature notes), or while a popup is in edit
+      // mode — Ctrl+Z/Y must be the BROWSER'S TEXT undo, never the map's. Without the
+      // isContentEditable exemption, undoing text in the About editor silently popped map
+      // operations (renames, styles, group deletes) — "it was editing my map".
+      var ae = document.activeElement || {};
+      var tag = ae.tagName || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae.isContentEditable || window.__msModalLock) return;
       var isZ = e.key === 'z' || e.key === 'Z', isY = e.key === 'y' || e.key === 'Y', isC = e.key === 'c' || e.key === 'C', isV = e.key === 'v' || e.key === 'V';
       if (isZ && !e.shiftKey) { e.preventDefault(); doUndo(); }
       else if (isY || (isZ && e.shiftKey)) { e.preventDefault(); doRedo(); }
@@ -3190,14 +3333,14 @@
   async function doUndo() {
     if (_undoing || !_undoStack.length) return;
     var op = _undoStack.pop(); _undoing = true; setStatus('Undoing…');
-    try { await op.undo(); _redoStack.push(op); setStatus('Undone' + (op.label ? ' — ' + op.label : '')); }
+    try { await op.undo(); _redoStack.push(op); setStatus('Undone' + (op.label ? ' — ' + op.label : '')); showToast('↩ Undone: ' + (op.label || 'map change')); }
     catch (e) { console.warn('editing: undo failed', e); _undoStack.push(op); setStatus('Undo failed'); }
     _undoing = false; updateUndoButtons();
   }
   async function doRedo() {
     if (_undoing || !_redoStack.length) return;
     var op = _redoStack.pop(); _undoing = true; setStatus('Redoing…');
-    try { await op.redo(); _undoStack.push(op); setStatus('Redone' + (op.label ? ' — ' + op.label : '')); }
+    try { await op.redo(); _undoStack.push(op); setStatus('Redone' + (op.label ? ' — ' + op.label : '')); showToast('↪ Redone: ' + (op.label || 'map change')); }
     catch (e) { console.warn('editing: redo failed', e); _redoStack.push(op); setStatus('Redo failed'); }
     _undoing = false; updateUndoButtons();
   }
@@ -4211,8 +4354,9 @@
     efpNotes.addEventListener('input', function () { onFeatureField('notes', this.innerHTML); });   // contenteditable → store HTML (WYSIWYG)
     Array.prototype.forEach.call(document.querySelectorAll('#efp-notes-tools button[data-cmd]'), function (b) {
       b.addEventListener('mousedown', function (e) { e.preventDefault(); });   // keep the caret/selection inside efp-notes
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); });   // keep the text selection alive (see modal toolbar note)
       b.addEventListener('click', function (e) {
-        e.preventDefault(); efpNotes.focus();
+        e.preventDefault();
         var cmd = b.getAttribute('data-cmd'), val;
         if (cmd === 'createLink') { val = prompt('Link URL:'); if (!val) return; }
         try { document.execCommand(cmd, false, val || undefined); } catch (err) {}
@@ -5740,6 +5884,7 @@
       '<button id="elp-zoomextent" class="ms-btn" style="margin-top:6px;">⤢ Zoom to features’ extent</button>' +
       '<div id="elp-zoom-info" class="ms-note" style="font-size:11px;margin-top:4px;text-align:center;">Zoom target: not set</div>' +
       '<label class="ms-check" style="display:block;margin-top:8px;"><input id="elp-zoombtn" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Zoom button (&#8982;) on the layer row</label>' +
+      '<label class="ms-check" id="elp-tablebtn-row" style="display:block;margin-top:4px;"><input id="elp-tablebtn" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Table button (&#9638;) shown in view mode</label>' +
       '</div>' +
       // ── SOURCE (tilesets only) ──
       '<div id="elp-src-row" class="' + SECTOP + '" style="display:none;">' +
@@ -5834,6 +5979,7 @@
     document.getElementById('elp-setzoom').addEventListener('click', function () { if (activeLayerId) onSetZoom(activeLayerId); });   // set-zoom moved here from the layer row
     document.getElementById('elp-zoomextent').addEventListener('click', onZoomExtent);
     document.getElementById('elp-zoombtn').addEventListener('change', function () { onZoomBtnToggle(this.checked); });
+    document.getElementById('elp-tablebtn').addEventListener('change', function () { onTableBtnToggle(this.checked); });
     document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
     document.getElementById('elp-nidprop').addEventListener('change', function () { onNidProp(this.value); });
     document.getElementById('elp-panel-mode').addEventListener('change', function () { onPanelMode(this.value); });
@@ -6061,6 +6207,8 @@
     document.getElementById('elp-click').checked = (node._uiClick != null) ? node._uiClick : !!node.click;
     document.getElementById('elp-hl').checked = node.hoverHighlight !== false;
     document.getElementById('elp-zoombtn').checked = node.zoomBtn !== false;   // per-row ⌖ toggle — default on
+    document.getElementById('elp-tablebtn').checked = node.tableBtn !== false;   // per-row ▦-in-view toggle — default on
+    document.getElementById('elp-tablebtn-row').style.display = (node.type === 'group' || node.type === 'section') ? 'none' : 'block';   // ▦ exists on leaves only
     document.getElementById('elp-hl-label').style.display = node.highlight ? 'block' : 'none';   // hover-highlight toggle only where a highlight exists
     (function () {   // label-field is a SELECT now — make sure the saved value exists as an option before setting it
       var lf = document.getElementById('elp-labelfield');
@@ -6844,6 +6992,32 @@
       setStatus('Saved');
     } catch (e) { console.warn('editing: zoom-button toggle save failed', e); setStatus('Save failed'); }
   }
+  // Per-row ▦ table button in VIEW mode (default ON) — node.tableBtn === false persists as
+  // raw_config.tableBtn (configLoader's raw spread carries it to the viewer; generateLayers gates).
+  // The editor KEEPS its ▦ either way, restyled as an amber ✕-square so the owner sees the state.
+  // Surgical icon swap only — rerender() would fold the open group (the editorOnly lesson, 7/21).
+  async function onTableBtnToggle(on) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node || node.type === 'group' || node.type === 'section') return;
+    if (on) delete node.tableBtn; else node.tableBtn = false;
+    updateTableBtnRow(node);
+    setStatus('Saving…');
+    try {
+      var lidT = slugToLayerDbId[node.id]; if (!lidT) throw new Error('no layer id');
+      var cT = await db.from('layers').select('raw_config').eq('id', lidT).single();
+      var rT = (cT.data && cT.data.raw_config) || {};
+      if (on) delete rT.tableBtn; else rT.tableBtn = false;
+      var uT = await db.from('layers').update({ raw_config: rT }).eq('id', lidT); if (uT.error) throw new Error(uT.error.message);
+      setStatus('Saved');
+    } catch (e) { console.warn('editing: table-button toggle save failed', e); setStatus('Save failed'); }
+  }
+  function updateTableBtnRow(node) {
+    var row = document.querySelector('.layer-list-row[data-node-id="' + node.id + '"]'); if (!row) return;
+    var ic = row.querySelector('.attr-table-btn'); if (!ic) return;
+    // keep the table glyph either way — the amber strike (.ms-tbl-off, engine.css) marks hidden-in-view
+    ic.classList.toggle('ms-tbl-off', node.tableBtn === false);
+    ic.title = node.tableBtn === false ? 'Attribute table — hidden in view mode (still opens for you)' : 'Attribute table';
+  }
   async function zoomToAttrSelected() {
     if (!_attrSel.length || typeof beforeMap === 'undefined' || !beforeMap) return;
     await ensureAttrGeoms(_attrSel);
@@ -7520,13 +7694,53 @@
     window.generateLayersPanel = function () { var r = _origGenPanel.apply(this, arguments); try { enhanceRows(); } catch (e) {} return r; };
   }
 
-  start();
-  (function whenReady() {
-    if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); loadProjectChrome(); setupInPlaceEditing(); var _mtries = 0; var _miv = setInterval(function () { patchMapsRender(); var sec = document.getElementById('base-maps-section'); var has = sec && sec.querySelector('.layer-list-row'); if (has) { injectMapsChrome(); enhanceMapRows(); } if ((window.__mapsRenderPatched && has) || ++_mtries > 30) clearInterval(_miv); }, 400); }
-    else setTimeout(whenReady, 150);
-  })();
-  (function waitForMap() {
-    if (typeof beforeMap !== 'undefined' && beforeMap && typeof MapboxDraw !== 'undefined') setupDraw();
-    else setTimeout(waitForMap, 250);
+  // ── EDITING LOCK (7/22, user: "keep original maps totally intact — only edit copies").
+  //    projects.raw_config.editLock — toggled ONLY in map Settings; the dashboard just shows it.
+  //    A locked map's editor page wires NO edit machinery at all: the engine underneath keeps
+  //    rendering (viewing works), and this panel offers view / copy / deliberate unlock.
+  function showLockPanel() {
+    if (document.getElementById('ms-lock-panel')) return;
+    window.__msEditLocked = true;
+    var d = document.createElement('div');
+    d.id = 'ms-lock-panel';
+    d.style.cssText = 'position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:6500;background:#fff;border:2px solid #b4453a;border-radius:12px;box-shadow:0 10px 34px rgba(0,0,0,.3);padding:14px 18px;font-family:"Source Sans Pro",Arial,sans-serif;font-size:14px;color:#1e1b2e;max-width:440px;text-align:center;';
+    d.innerHTML = '<div style="font-weight:800;font-size:16px;margin-bottom:4px;">🔒 This map is locked</div>' +
+      '<div style="color:#6b6680;margin-bottom:10px;">Viewing works; editing is off to protect the original. Make a copy to edit, or unlock deliberately.</div>' +
+      '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">' +
+      '<button id="ms-lock-copy" style="padding:7px 13px;border:none;border-radius:7px;background:#7c5cbf;color:#fff;font-weight:700;cursor:pointer;">&#10697; Make an editable copy</button>' +
+      '<a id="ms-lock-view" href="index.html' + location.search + '" style="padding:7px 13px;border:1px solid #bbbbbb;border-radius:7px;background:#fff;color:#222;font-weight:600;text-decoration:none;">Open the viewer</a>' +
+      '<button id="ms-lock-unlock" style="padding:7px 13px;border:1px solid #e0b4b4;border-radius:7px;background:#fdeaea;color:#b4453a;font-weight:700;cursor:pointer;">🔓 Unlock &amp; edit…</button></div>' +
+      '<div id="editor-save-status" style="margin-top:8px;font-size:12px;color:#6b6680;"></div>';   // setStatus funnel → copy progress shows here
+    document.body.appendChild(d);
+    document.getElementById('ms-lock-copy').addEventListener('click', function () { copyMapToMyAccount(); });
+    document.getElementById('ms-lock-unlock').addEventListener('click', async function () {
+      if (!window.confirm('Unlock this map for editing? It stays unlocked until you lock it again in Settings.')) return;
+      try {
+        var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
+        var rc = (cur.data && cur.data.raw_config) || {};
+        delete rc.editLock;
+        var u = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (u.error) throw new Error(u.error.message);
+        location.reload();
+      } catch (e) { alert('Unlock failed: ' + (e && e.message)); }
+    });
+  }
+  (async function bootGate() {
+    var locked = false;
+    try {
+      if (projectId && db) {
+        var lr = await db.from('projects').select('raw_config').eq('id', projectId).single();
+        locked = !!(lr.data && lr.data.raw_config && lr.data.raw_config.editLock);
+      }
+    } catch (eLk) {}
+    if (locked) { showLockPanel(); return; }   // NOTHING below runs — no edit wiring, no draw, no writes
+    start();
+    (function whenReady() {
+      if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); loadProjectChrome(); setupInPlaceEditing(); var _mtries = 0; var _miv = setInterval(function () { patchMapsRender(); var sec = document.getElementById('base-maps-section'); var has = sec && sec.querySelector('.layer-list-row'); if (has) { injectMapsChrome(); enhanceMapRows(); } if ((window.__mapsRenderPatched && has) || ++_mtries > 30) clearInterval(_miv); }, 400); }
+      else setTimeout(whenReady, 150);
+    })();
+    (function waitForMap() {
+      if (typeof beforeMap !== 'undefined' && beforeMap && typeof MapboxDraw !== 'undefined') setupDraw();
+      else setTimeout(waitForMap, 250);
+    })();
   })();
 })();

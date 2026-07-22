@@ -195,7 +195,7 @@
       function fmtDate(d) { try { return d ? new Date(d).toLocaleDateString() : ''; } catch (e) { return ''; } }
 
       async function loadMaps() {
-        var res = await db.from('projects').select('id,name,updated_at,is_public,visibility:raw_config->>visibility').eq('user_id', user.id).order('updated_at', { ascending: false });   // only THIS user's maps (RLS is still permissive — tighten at Step 25)
+        var res = await db.from('projects').select('id,name,updated_at,is_public,visibility:raw_config->>visibility,editLock:raw_config->>editLock').eq('user_id', user.id).order('updated_at', { ascending: false });   // only THIS user's maps (RLS is still permissive — tighten at Step 25)
         if (res.error) { listEl.innerHTML = '<p class="msg err">Could not load your maps.</p>'; return; }
         render(res.data || []);
       }
@@ -209,16 +209,21 @@
           var row = document.createElement('div'); row.className = 'map-row';
           // the one-click public/private pill was TOO easy to flip by accident — it's a read-only chip now;
           // changing visibility is a deliberate act inside the Share panel
-          row.innerHTML = '<span class="map-name">' + esc(m.name || 'Untitled Map') + '</span>'
+          // Open + the map name are REAL LINKS (not JS navigation) so ctrl/cmd-click and
+          // middle-click open the map in a new tab natively (user 7/22)
+          var openHref = 'map/editor.html?id=' + encodeURIComponent(m.id);
+          // 🔒 status only — locking/unlocking lives in the map's own Settings (user 7/22)
+          var locked = m.editLock === 'true' || m.editLock === true;
+          row.innerHTML = '<a class="map-name" href="' + openHref + '" style="color:inherit;text-decoration:none;">' + esc(m.name || 'Untitled Map') + '</a>'
+            + (locked ? '<span class="pill" style="cursor:default;background:#fdeaea;color:#b4453a;" title="Locked — editing is off; unlock inside the map’s Settings">🔒 locked</span>' : '')
             + '<span class="pill' + (vis === 'public' ? ' pub' : '') + '" style="cursor:default;">' + visLabel + '</span>'
             + '<span class="map-meta">' + fmtDate(m.updated_at) + '</span>'
             + '<div class="row-actions">'
-            + '<button class="btn" data-act="open">Open</button>'
+            + '<a class="btn" data-act="open" href="' + openHref + '" style="display:inline-block;text-decoration:none;">Open</a>'
             + '<button class="btn btn-light" data-act="share">Share</button>'
             + '<button class="btn btn-light" data-act="rename">Rename</button>'
             + '<button class="btn btn-danger" data-act="delete">Delete</button>'
             + '</div>';
-          row.querySelector('[data-act=open]').onclick = function () { location.href = 'map/editor.html?id=' + m.id; };
           row.querySelector('[data-act=share]').onclick = function () {
             if (window.MapShare) MapShare.open({ db: db, projectId: m.id, viewUrl: new URL('map/index.html?id=' + m.id, location.href).href, onChange: loadMaps });
           };
@@ -228,6 +233,9 @@
             if (!r.error) loadMaps();
           };
           row.querySelector('[data-act=delete]').onclick = async function () {
+            // a LOCKED map cannot be deleted from here — deletion must happen deliberately inside
+            // the map itself (unlock in its Settings first). (user 7/22)
+            if (locked) { alert('"' + (m.name || 'Untitled Map') + '" is locked. Open the map and unlock it in Settings before deleting.'); return; }
             if (!confirm('Delete "' + (m.name || 'Untitled Map') + '"? This removes the map. (Trash/restore is coming.)')) return;
             var r = await db.from('projects').delete().eq('id', m.id);
             if (!r.error) loadMaps();

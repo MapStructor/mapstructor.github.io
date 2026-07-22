@@ -7,8 +7,13 @@ function renderGroupNode(groupNode) {
   return r;
 }
 
-// Row buttons, in order: ℹ info (ONLY when that layer actually has info content) · ⌖ zoom · ▦ attribute
-// table (editor only, leaves only — the editor sets window.__msEditorAttr and wires the click).
+// Row buttons — ▦ features/table FIRST (user 7/21), then ℹ info (only when that layer has info
+// content), then ⌖ zoom. The EDITOR (window.__msEditorAttr) always shows ▦ on leaves; when the layer
+// opted out of the view-mode list (raw_config.tableBtn === false, same convention as zoomBtn) the ▦
+// keeps its table glyph but gets the amber strike-through (.ms-tbl-off, engine.css) so the owner sees
+// the state — clicking it still opens the table. The VIEWER shows ▦ only when viewerTable.js is
+// present (window.__msViewerAttr), the layer has DB rows behind it (drawn or converted — external
+// tilesets have no rows), and it wasn't opted out.
 function layerRowButtons(layerData, zoomName, isLeaf) {
   const infoKey = layerData.infoId || ((layerData.id || "") + "-info");
   const hasInfo = typeof window !== "undefined" && window.modal_content_html && window.modal_content_html[infoKey];
@@ -16,9 +21,17 @@ function layerRowButtons(layerData, zoomName, isLeaf) {
   const zn = String(zoomName == null ? "" : zoomName).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
   // zoomBtn === false (raw_config.zoomBtn, per layer/group) hides the row's ⌖ — default is shown
   const zoomBtn = layerData.zoomBtn === false ? "" : `<i class="fa fa-crosshairs zoom-to-layer" onclick="zoomToLayer('${zn}')" title="Zoom to Layer"></i>`;
-  const tableBtn = (isLeaf && typeof window !== "undefined" && window.__msEditorAttr)
-    ? `<i class="fa fa-table attr-table-btn" title="Attribute table"></i>` : "";
-  return `<div class="layer-buttons-block"><div class="layer-buttons-list">${infoBtn}${zoomBtn}${tableBtn}</div></div>`;
+  const tblOff = layerData.tableBtn === false;
+  let tableBtn = "";
+  if (isLeaf && typeof window !== "undefined") {
+    if (window.__msEditorAttr) tableBtn = tblOff
+      ? `<i class="fa fa-table attr-table-btn ms-tbl-off" title="Attribute table — hidden in view mode (still opens for you)"></i>`
+      : `<i class="fa fa-table attr-table-btn" title="Attribute table"></i>`;
+    else if (window.__msViewerAttr && !tblOff && (layerData._layerDbId || layerData._dataLayerId) &&
+             (layerData.pmtiles || (layerData.source && layerData.source.type === "geojson")))
+      tableBtn = `<i class="fa fa-table attr-table-btn" title="Features list"></i>`;
+  }
+  return `<div class="layer-buttons-block"><div class="layer-buttons-list">${tableBtn}${infoBtn}${zoomBtn}</div></div>`;
 }
 
 function renderLayerRow(layerData, groupName) {

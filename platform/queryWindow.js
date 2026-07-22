@@ -1002,7 +1002,7 @@
     if (row && !document.getElementById("msq-open")) {
       var b = document.createElement("button");
       b.id = "msq-open";
-      b.textContent = "⚡ Query";
+      b.textContent = "Query";
       b.title = "Query & operations (merge lines, SQL, JS)";
       b.addEventListener("click", function (e) { e.preventDefault(); open(); });
       row.appendChild(b);

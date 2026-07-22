@@ -6,17 +6,21 @@
    reappears snapped to the exact release date and the raster fades. (v3's both-at-once variant
    was rejected: the opaque raster hides forward changes and exposes vector lag backward.)
 
-   ON/OFF: the "⚡ Instant scrub" chip near the timeline (persisted: localStorage ms-raster-scrub).
+   ON/OFF: the "⚡ Instant scrub" chip near the timeline — EDITOR ONLY (persisted: localStorage
+   ms-raster-scrub). VIEW mode is always on with no chip (user 7/21: the public should never miss
+   the speed; may become configurable later).
    REMOVE ENTIRELY: delete this file, its <script> include in map/index.html + map/editor.html,
    and the bakeYearsRaster block in platform/tilegen.js. Nothing else references it. */
 (function () {
   "use strict";
   if (window.MSRasterScrub) return;
   var LS = "ms-raster-scrub";
+  // the chip (and its localStorage opt-out) is an editor testing tool; viewers always scrub fast
+  var IS_EDITOR = /editor\.html/i.test((location && location.pathname) || "");
   // beyond maxZoom the raster steps aside entirely (user 7/16): up close N-in-view is small, so
   // the engine's own paint-scrub animates the vector cheaply AND crisply — the raster's job is
   // the wide views where N explodes and its resolution limit doesn't show.
-  var S = { on: localStorage.getItem(LS) !== "off", maxZoom: 8.5, items: [], views: [], dragging: false, hideT: null, lastYear: 1900 };
+  var S = { on: IS_EDITOR ? localStorage.getItem(LS) !== "off" : true, maxZoom: 8.5, items: [], views: [], dragging: false, hideT: null, lastYear: 1900 };
   window.MSRasterScrub = S;
 
   function yearOf(unix) { var d = new Date(unix * 1000); return d.getUTCFullYear() + d.getUTCMonth() / 12; }
@@ -26,7 +30,14 @@
     var n = parseInt(m[1], 16);
     return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
   }
-  function slugOf(lid) {
+  function cfgKey(c) {   // stable identity of a rasterYears config: first level's first tile URL + bounds
+    try {
+      var lv = (c.levels && c.levels[0]) || c;
+      var t = (lv.tiles && lv.tiles[0]) || lv;
+      return String(t.url || c.url || "") + "|" + String(c.bounds || "");
+    } catch (e) { return ""; }
+  }
+  function slugOf(lid, cfg) {
     // converted layers carry their db id inside their tile URL (pmt/{pid}/{lid}/…) — works on
     // viewer AND editor, no dependency on editing.js internals
     try {
@@ -40,6 +51,21 @@
         });
       })(typeof layers !== "undefined" ? layers : []);
       if (hit) return hit;
+      // COPIED maps (7/22): cloned layers keep the SOURCE map's ids inside their tile URLs, so
+      // the id-in-URL match above never hits — every checkbox/colour lookup failed and rasters
+      // drew for switched-off layers, all in fallback purple. The node itself carries the same
+      // rasterYears config (raw_config spreads onto nodes) — match on that instead.
+      if (cfg) {
+        var want = cfgKey(cfg);
+        if (want) (function walk2(a) {
+          (a || []).forEach(function (n) {
+            if (hit) return;
+            if (n.rasterYears && cfgKey(n.rasterYears) === want) hit = n.id;
+            if (n.children) walk2(n.children);
+          });
+        })(typeof layers !== "undefined" ? layers : []);
+        if (hit) return hit;
+      }
     } catch (e) {}
     return null;
   }
@@ -56,9 +82,9 @@
     })(x);
     return hit;
   }
-  function colorOf(lid) {   // the engine node's own colour, when findable (editor exposes the slug map)
+  function colorOf(lid, cfg) {   // the engine node's own colour, when findable (editor exposes the slug map)
     try {
-      var slug = slugOf(lid);
+      var slug = slugOf(lid, cfg);
       if (slug && typeof layers !== "undefined") {
         var node = (function find(a) { for (var i = 0; i < (a || []).length; i++) { if (a[i].id === slug) return a[i]; var c = find(a[i].children); if (c) return c; } return null; })(layers);
         var p = (node && node.paint) || {};
@@ -70,15 +96,19 @@
   }
   // a converted layer switched OFF in the sidebar must not scrub either (user 7/20). The checkbox
   // id IS the layer slug (toggleElement), and it survives hideVectors (which only flips map layer
-  // visibility) — so it's a stable per-frame signal. Can't resolve it → draw (safe default).
+  // visibility) — so it's a stable per-frame signal.
+  // 7/22 FLIP: can't resolve → DON'T draw (was: draw). The old default made copied maps scrub
+  // every baked layer at once — switched-off ones and layers no longer on the map included.
+  // A raster with no matching sidebar node has no business on this map's screen.
   function itemActive(it) {
     try {
-      var slug = it.slug || (it.slug = slugOf(it.lid));
-      if (!slug) return true;
+      var slug = it.slug || (it.slug = slugOf(it.lid, it.cfg));
+      if (!slug) return false;
       var cb = document.getElementById(slug);
       if (cb && cb.type === "checkbox") return !!cb.checked;
+      return false;
     } catch (e) {}
-    return true;
+    return false;
   }
 
   var VS = "attribute vec2 q;uniform vec2 p0,p1;varying vec2 v;void main(){v=q;vec2 px=mix(p0,p1,q);gl_Position=vec4(px.x*2.-1.,1.-px.y*2.,0.,1.);}";
@@ -253,11 +283,18 @@
 
   function hook() {
     var $s = $("#slider");
-    $s.on("slidestart", function () {
+    $s.on("slidestart", function (e, ui) {
       if (!S.on || !S.items.length || !S.views.length) return;
       if (S.views[0].m.getZoom() > S.maxZoom) return;   // deep zoom: vector animates natively — raster stays out entirely
-      S.items.forEach(function (it) { if (!it.slug) { it.slug = slugOf(it.lid); it.color = colorOf(it.lid); } });   // slug map may not exist at load time
-      S.dragging = true; clearTimeout(S.hideT); showAll(); hideVectors();
+      S.items.forEach(function (it) { if (!it.slug) { it.slug = slugOf(it.lid, it.cfg); it.color = colorOf(it.lid, it.cfg); } });   // slug map may not exist at load time
+      S.dragging = true; clearTimeout(S.hideT);
+      // draw the CURRENT year BEFORE revealing the canvas — it otherwise flashed its stale
+      // last-drag frame (looked like "all the data") for the whole click-hold until the first
+      // slide event landed, then snapped (user 7/22)
+      var v0 = (ui && ui.value != null) ? ui.value : (function () { try { return $s.slider("value"); } catch (e2) { return null; } })();
+      if (v0 != null) S.lastYear = yearOf(v0);
+      S.views.forEach(function (v) { drawView(v, S.lastYear); });
+      showAll(); hideVectors();
     });
     $s.on("slide", function (e, ui) {
       if (!S.on || !S.dragging || !ui) return;
@@ -296,7 +333,7 @@
     ((r && r.data) || []).forEach(function (row) {
       var L = row.layers, ry = L && L.raw_config && L.raw_config.rasterYears;
       if (ry && (ry.url || ry.levels) && ry.bounds) S.items.push({
-        lid: L.id, cfg: ry, color: colorOf(L.id), slug: slugOf(L.id),
+        lid: L.id, cfg: ry, color: colorOf(L.id, ry), slug: slugOf(L.id, ry),
         // every level normalizes to a TILE LIST: whole-image levels = one tile with the full
         // bounds; the finest level ships real quadrant tiles (pre-pyramid bakes still work)
         levels: (ry.levels || [{ url: ry.url, width: ry.width, height: ry.height }]).map(function (lv) {
@@ -309,7 +346,8 @@
       if (m && m.getContainer) { var v = makeView(m); if (v) S.views.push(v); }
     });
     if (!S.views.length) return;
-    chip(); hook();
+    if (IS_EDITOR) chip();
+    hook();
   }
 
   var tries = 0;
