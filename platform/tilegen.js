@@ -116,21 +116,28 @@
   //  2. DUPLICATE MERGE — after skinny props + per-zoom simplification, stacked/parallel
   //     features often collapse to IDENTICAL geometry with identical days; one survives
   //     (tippecanoe's coalesce). Points are never dropped or merged.
-  var DIET = { dropPx: 0.75, unitsPerPx: 4096 / 512 };   // tweakable (speedlab knob)
+  var DIET = { dropPx: 0.75, unitsPerPx: 4096 / 512, disabled: false, tolerance: null };   // tweakable (speedlab knobs; disabled=true → zero reductions)
   function dietFeatures(feats) {
+    if (DIET.disabled) return feats;   // "literally no reductions" test/override (7/23)
     var out = [], seen = {}, minD = DIET.dropPx * DIET.unitsPerPx, minD2 = minD * minD;
     for (var i = 0; i < feats.length; i++) {
       var f = feats[i];
       if (f.type !== 1) {   // 1 = point
-        var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, g = f.geometry;
-        for (var r = 0; r < g.length; r++) for (var p = 0; p < g[r].length; p++) {
-          var pt = g[r][p];
-          if (pt[0] < x0) x0 = pt[0]; if (pt[0] > x1) x1 = pt[0];
-          if (pt[1] < y0) y0 = pt[1]; if (pt[1] > y1) y1 = pt[1];
+        // SUB-PIXEL DROP applies to POLYGONS ONLY (type 3). Networks like NTAD arrive as
+        // thousands of SHORT LINE SEGMENTS chained into routes — dropping "invisible" segments
+        // punches holes in the chain and whole corridors render as dashes/nothing (7/23).
+        // Lines rely on geojson-vt's own simplification instead; dedup still applies to both.
+        if (f.type === 3) {
+          var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, g0 = f.geometry;
+          for (var r = 0; r < g0.length; r++) for (var p = 0; p < g0[r].length; p++) {
+            var pt = g0[r][p];
+            if (pt[0] < x0) x0 = pt[0]; if (pt[0] > x1) x1 = pt[0];
+            if (pt[1] < y0) y0 = pt[1]; if (pt[1] > y1) y1 = pt[1];
+          }
+          var dx = x1 - x0, dy = y1 - y0;
+          if (dx * dx + dy * dy < minD2) continue;
         }
-        var dx = x1 - x0, dy = y1 - y0;
-        if (dx * dx + dy * dy < minD2) continue;
-        var key = f.type + "|" + (f.tags && f.tags.DayStart) + "|" + (f.tags && f.tags.DayEnd) + "|" + JSON.stringify(g);
+        var key = f.type + "|" + (f.tags && f.tags.DayStart) + "|" + (f.tags && f.tags.DayEnd) + "|" + JSON.stringify(f.geometry);
         if (seen[key]) continue;
         seen[key] = 1;
       }
@@ -154,7 +161,12 @@
     if (!fromGeojsonVt) throw new Error("vt-pbf did not expose fromGeojsonVt");
 
     status("Cutting tiles…");
-    var index = geojsonvt(fc, { maxZoom: maxZoom, indexMaxZoom: 5, buffer: 64, extent: 4096, tolerance: 3 });
+    // tolerance: geojson-vt DROPS lines shorter than this many tile units per zoom — at 3 that's
+    // ~300 m at z6, which punched visible holes in segment-chained networks (NTAD 7/23). Lines
+    // get 1 (only sub-100 m pieces drop at far zooms — invisible under a 1px stroke); other
+    // geometry keeps 3. DIET.tolerance overrides both (speedlab knob).
+    var tol = DIET.tolerance != null ? DIET.tolerance : (opts.lineLayer ? 1 : 3);
+    var index = geojsonvt(fc, { maxZoom: maxZoom, indexMaxZoom: 5, buffer: 64, extent: 4096, tolerance: tol });
 
     // walk the pyramid LEVEL BY LEVEL under a tile BUDGET. maxZoom 15 on a continent-wide layer
     // meant ~900k tiles (the 891,784-tile killed-page incident, 7/15) — many minutes of gzip for
@@ -412,7 +424,7 @@
     var geomKind = o.geomKind || "fill";
     var maxZoom = (geomKind === "circle" || geomKind === "Point") ? 13 : 15;
     var fc = { type: "FeatureCollection", features: features };
-    var built = await buildArchive(fc, { maxZoom: maxZoom, tileBudget: o.tileBudget, name: o.name || "layer", status: status });
+    var built = await buildArchive(fc, { maxZoom: maxZoom, tileBudget: o.tileBudget, name: o.name || "layer", status: status, lineLayer: (o.geomKind === "line" || o.geomKind === "LineString") });
     var bytes = built.bytes;
     var mb = (bytes.length / 1048576).toFixed(1);
     status("Uploading tiles (" + mb + " MB)…");
@@ -463,10 +475,22 @@
     var lblField = (L.raw_config && L.raw_config.labels && L.raw_config.labels.field) || null;
     if (lblField === "label") lblField = null;
     var sel = "feature_id, geom, start_date, end_date, label" + (lblField ? ", lblv:custom_fields->>" + lblField : "");
-    var feats = [], from = 0;
+    // KEYSET pagination (feature_id > last) — OFFSET paging hit the DB statement timeout at depth
+    // and SILENTLY truncated big layers (NTAD 7/23: baked 214k of 302,771 and called it success).
+    // Errors now retry once, then ABORT LOUDLY — a partial archive must never look like a bake.
+    var feats = [], lastFid = null, retried = false;
     for (;;) {
-      var r = await db.from("features").select(sel).eq("layer_id", L.id).order("feature_id").range(from, from + 999);
-      if (r.error || !r.data || !r.data.length) break;
+      var q = db.from("features").select(sel).eq("layer_id", L.id).order("feature_id").limit(1000);
+      if (lastFid != null) q = q.gt("feature_id", lastFid);
+      var r = await q;
+      if (r.error) {
+        if (!retried) { retried = true; status("Row fetch hiccup — retrying…"); await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }
+        status("⚠ Tile bake ABORTED for “" + (L.name || "layer") + "” — row fetch failed at " + feats.length.toLocaleString() + " rows (" + r.error.message + "). The existing archive is kept; try again.");
+        throw new Error("bake aborted: feature fetch failed at " + feats.length + " (" + r.error.message + ")");
+      }
+      retried = false;
+      if (!r.data || !r.data.length) break;
+      lastFid = r.data[r.data.length - 1].feature_id;
       r.data.forEach(function (f) {
         // SKINNY TILES (7/16): id + timeline days ONLY. The days MUST stay baked — the slider filter
         // can only act on data physically inside the tile. Dateless features get always-visible bounds.
@@ -478,8 +502,8 @@
         if (lblField && f.lblv != null && f.lblv !== "") props[lblField] = f.lblv;
         feats.push({ type: "Feature", id: f.feature_id, properties: props, geometry: f.geom });
       });
+      if (feats.length % 25000 < 1000) status("Fetching rows… " + feats.length.toLocaleString());
       if (r.data.length < 1000) break;
-      from += 1000;
     }
     if (!feats.length) return 0;
     await convertLayer(db, projectId, L.id, feats, { name: L.name, geomKind: L.type, status: status });
@@ -493,13 +517,21 @@
     try {
       var rc = (L && L.raw_config) || {};
       if (!rc.tilesGeneratedAt || rc.tilesFeatureCount == null) return false;   // pre-7/21 bake — no stamps, bake once to gain them
-      var cq = await db.from("features").select("feature_id", { count: "exact", head: true }).eq("layer_id", L.id);
-      if (((cq && cq.count) || 0) !== rc.tilesFeatureCount) return false;
-      if (rc.tilesMaxFid != null) {
-        var mf = await db.from("features").select("feature_id").eq("layer_id", L.id).order("feature_id", { ascending: false }).limit(1);
-        var mfid = mf.data && mf.data[0] && mf.data[0].feature_id;
-        if (mfid != null && Number(mfid) !== Number(rc.tilesMaxFid)) return false;
+      // 7/23 speedup: TWO queries not three — the count rides along with the max-fid row (adds,
+      // deletes, and add+delete pairs all covered), then one newest-updated_at row for edits.
+      // COUNT-TIMEOUT TOLERANCE (7/23 eve): exact counts time out on 300k layers; a timeout must
+      // NOT read as "dirty" — that silently re-baked the tippecanoe archive with the browser
+      // tiler. On timeout, judge by max-fid + updated_at alone (both cheap + index-backed).
+      var cnt = null, mfid = null;
+      var mf = await db.from("features").select("feature_id", { count: "exact" }).eq("layer_id", L.id).order("feature_id", { ascending: false }).limit(1);
+      if (!mf.error) { cnt = mf.count; mfid = mf.data && mf.data[0] && mf.data[0].feature_id; }
+      else {
+        var mf2 = await db.from("features").select("feature_id").eq("layer_id", L.id).order("feature_id", { ascending: false }).limit(1);
+        mfid = mf2.data && mf2.data[0] && mf2.data[0].feature_id;
       }
+      if (cnt != null && cnt !== rc.tilesFeatureCount) return false;
+      if (rc.tilesMaxFid != null && mfid != null && Number(mfid) !== Number(rc.tilesMaxFid)) return false;
+      if (cnt == null && mfid == null) return false;   // could verify NOTHING — doubt still re-bakes
       var nu = await db.from("features").select("updated_at").eq("layer_id", L.id).not("updated_at", "is", null).order("updated_at", { ascending: false }).limit(1);
       var newest = nu.data && nu.data[0] && nu.data[0].updated_at;
       if (newest && new Date(newest).getTime() > new Date(rc.tilesGeneratedAt).getTime() - 120000) return false;
@@ -508,18 +540,27 @@
   }
   // publish-time "sew up": re-generate every converted layer whose data CHANGED since its last bake
   // (unchanged layers skip — Publish used to re-bake everything and was "really heavy"). Returns how
-  // many layers were regenerated.
+  // many layers were regenerated. 7/23: the clean checks for ALL layers run CONCURRENTLY up front
+  // (pool of 4 — Supabase throttles bigger bursts) so Publish no longer crawls layer-by-layer just
+  // to discover nothing changed; only actually-dirty layers then bake, one at a time.
   async function sewUpProject(db, projectId, statusFn) {
     var status = statusFn || function () {};
     var pl = await db.from("project_layers").select("layer_id, layers(id, name, type, source_type, raw_config)").eq("project_id", projectId);
     if (pl.error || !pl.data) return 0;
     var todo = pl.data.map(function (r) { return r.layers; }).filter(function (l) { return l && l.raw_config && l.raw_config.pmtiles; });
+    if (!todo.length) return 0;
+    status("Checking " + todo.length + " tiled layer" + (todo.length === 1 ? "" : "s") + " for changes…");
+    var clean = new Array(todo.length), next = 0;
+    async function worker() {
+      for (;;) { var i = next++; if (i >= todo.length) return; clean[i] = await layerTilesClean(db, todo[i]); }
+    }
+    await Promise.all([worker(), worker(), worker(), worker()]);
     var done = 0, skipped = 0;
     for (var i = 0; i < todo.length; i++) {
-      if (await layerTilesClean(db, todo[i])) { skipped++; status("“" + (todo[i].name || "layer") + "” unchanged — tiles already current, skipping."); continue; }
+      if (clean[i]) { skipped++; continue; }
       if (await sewUpLayer(db, projectId, todo[i], status)) done++;
     }
-    if (skipped) status(skipped + " unchanged layer" + (skipped === 1 ? "" : "s") + " skipped; " + done + " re-baked.");
+    status(skipped ? (skipped + " unchanged layer" + (skipped === 1 ? "" : "s") + " skipped; " + done + " re-baked.") : (done + " layer" + (done === 1 ? "" : "s") + " re-baked."));
     return done;
   }
 

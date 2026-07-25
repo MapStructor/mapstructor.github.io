@@ -138,7 +138,7 @@ async function serveTile(pid, lid, z, x, y, retried) {
     var entries = a.root;
     for (var depth = 0; depth < 4; depth++) {
       var hit = findEntry(entries, tid);
-      if (!hit) return new Response("", { status: 204 });
+      if (!hit) return new Response(null, { status: 204 });
       if (hit.tile) {
         var bytes = await rangeRead(url, a.header.dataOff + hit.tile.offset, hit.tile.length, a.etag);
         if (a.header.tileGz) bytes = await gunzip(bytes);   // synthetic responses aren't content-decoded by the browser — serve raw
@@ -151,7 +151,7 @@ async function serveTile(pid, lid, z, x, y, retried) {
       }
       entries = a.leaves[key];
     }
-    return new Response("", { status: 204 });
+    return new Response(null, { status: 204 });
   } catch (err) {
     // archive regenerated mid-session (etag mismatch) or a decode straddled versions — drop the
     // cached directories and retry ONCE against the fresh file

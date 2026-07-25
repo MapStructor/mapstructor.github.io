@@ -95,32 +95,43 @@
 
   window.MapAuth = { db: db, currentUser: currentUser, isReal: isReal, signUp: signUp, signIn: signIn, signOut: signOut, onChange: onChange, openAuthModal: openAuthModal };
 
-  // ── Admin infra alert (7/15): the platform rides Supabase's FREE plan (500 MB database). When
-  // total platform data crosses 30%, the ADMIN gets a prominent on-open notice with an Okay button.
-  // Okay snoozes it until usage climbs into the NEXT 10% band (40%, 50%, …) or 7 days pass.
+  // ── Platform storage guard (7/15, rethresholded 7/23): the platform rides Supabase PRO (8 GB
+  // database; the spend cap keeps that hard). Policy (user 7/23): stay under 50% in general —
+  // the ADMIN gets an on-open alert from 50%; at 80% the whole site goes EDIT-LOCKDOWN for
+  // everyone (window.__msStorageLockdown — the editor refuses to boot into editing) until space
+  // is cleared. Okay snoozes the alert until usage climbs into the NEXT 10% band or 7 days pass.
   // The email arm is .github/workflows/storage-alert.yml (daily check → GitHub issue → email).
   // Lives in auth.js because every page loads it — the alert follows the admin anywhere on the site.
   (function () {
     var ADMIN_EMAILS = ['nittyjee@gmail.com'];   // same client owner-gate as admin.html / editing.js
-    var FREE_DB_BYTES = 500 * 1024 * 1024, THRESHOLD = 0.30, ACK_KEY = 'ms-infra-alert-ack';
-    function fmtMB(b) { return (b / (1024 * 1024)).toFixed(0) + ' MB'; }
+    var PLAN_DB_BYTES = 8 * 1024 * 1024 * 1024, ALERT_AT = 0.50, LOCKDOWN_AT = 0.80, ACK_KEY = 'ms-infra-alert-ack';
+    window.MSStorageGuard = { planBytes: PLAN_DB_BYTES, alertAt: ALERT_AT, lockdownAt: LOCKDOWN_AT, frac: null, ready: null };
+    function fmtGB(b) { return (b / (1024 * 1024 * 1024)).toFixed(2) + ' GB'; }
     async function check() {
       try {
+        var seam = (location.search.match(/[?&]infratest=(\d+)/) || [])[1];   // test seam (same idiom as ?storagefull=1)
+        var r = seam ? { data: PLAN_DB_BYTES * (+seam / 100) } : await db.rpc('mapstructor_total_storage');
+        if (r.error || typeof r.data !== 'number') return;
+        var frac = r.data / PLAN_DB_BYTES;
+        window.MSStorageGuard.frac = frac;
+        // 80%+: site-wide edit lockdown flag — EVERYONE (admin included; the point is protecting
+        // the platform). editing.js checks this at boot and refuses to wire editing.
+        if (frac >= LOCKDOWN_AT) window.__msStorageLockdown = { frac: frac, used: r.data, plan: PLAN_DB_BYTES };
+        // the on-open alert stays admin-only
         var u = await currentUser();
         if (!u || !u.email || ADMIN_EMAILS.indexOf(u.email) === -1) return;
-        var seam = (location.search.match(/[?&]infratest=(\d+)/) || [])[1];   // test seam (same idiom as ?storagefull=1)
-        var r = seam ? { data: FREE_DB_BYTES * (+seam / 100) } : await db.rpc('mapstructor_total_storage');
-        if (r.error || typeof r.data !== 'number') return;
-        var frac = r.data / FREE_DB_BYTES;
-        if (frac < THRESHOLD) return;
-        var band = Math.floor(frac * 10) * 10;   // 30, 40, 50, … — each new band re-alerts
-        try { var ack = JSON.parse(localStorage.getItem(ACK_KEY) || 'null'); if (ack && ack.band >= band && (Date.now() - ack.t) < 7 * 864e5) return; } catch (e) {}
+        if (frac < ALERT_AT) return;
+        var band = Math.floor(frac * 10) * 10;   // 50, 60, 70, … — each new band re-alerts
+        var hard = frac >= LOCKDOWN_AT;
+        if (!hard) { try { var ack = JSON.parse(localStorage.getItem(ACK_KEY) || 'null'); if (ack && ack.band >= band && (Date.now() - ack.t) < 7 * 864e5) return; } catch (e) {} }
         var ov = document.createElement('div');
         ov.style.cssText = 'position:fixed;inset:0;background:rgba(20,18,30,0.55);z-index:6000;display:flex;align-items:center;justify-content:center;font-family:Source Sans Pro,Arial,sans-serif;';
         ov.innerHTML =
-          '<div style="width:430px;max-width:92vw;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.45);padding:22px 26px;color:#2a2a33;">' +
-            '<div style="font-size:19px;font-weight:800;color:' + (frac >= 0.8 ? '#b4453a' : '#c47c00') + ';">⚠ Platform storage at ' + Math.round(frac * 100) + '%</div>' +
-            '<p style="margin:10px 0 4px;font-size:14px;line-height:1.5;">MapStructor\'s Supabase free plan holds <b>' + fmtMB(FREE_DB_BYTES) + '</b> of data; the platform is using <b>' + fmtMB(r.data) + '</b>. Plan the infra upgrade before it fills — imports and edits stop working for everyone at 100%.</p>' +
+          '<div style="width:460px;max-width:92vw;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.45);padding:22px 26px;color:#2a2a33;">' +
+            '<div style="font-size:19px;font-weight:800;color:' + (hard ? '#b4453a' : '#c47c00') + ';">⚠ Platform storage at ' + Math.round(frac * 100) + '%</div>' +
+            '<p style="margin:10px 0 4px;font-size:14px;line-height:1.5;">The Supabase Pro database holds <b>' + fmtGB(PLAN_DB_BYTES) + '</b>; the platform is using <b>' + fmtGB(r.data) + '</b>. Policy: stay under 50%.' +
+            (hard ? ' <b>Editing is now locked down site-wide (80% rule)</b> until space is cleared.' : '') + '</p>' +
+            '<p style="margin:8px 0 0;font-size:13px;line-height:1.5;color:#555;">To clear space: delete unwanted maps/copies (Dashboard), sweep orphan datasets (<a href="/manage-datasets.html" style="color:#7c5cbf;">Manage datasets</a>), then run <code>VACUUM FULL;</code> in the Supabase SQL editor — deletes don\'t shrink the database until the vacuum runs.</p>' +
             '<button id="ms-infra-ok" style="margin-top:14px;width:100%;padding:9px 0;border:none;border-radius:8px;background:#7c5cbf;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">Okay</button>' +
           '</div>';
         document.body.appendChild(ov);
@@ -130,7 +141,8 @@
         });
       } catch (e) {}
     }
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(check, 1200); });
-    else setTimeout(check, 1200);
+    var p; if (document.readyState === 'loading') { p = new Promise(function (res) { document.addEventListener('DOMContentLoaded', function () { setTimeout(function () { res(check()); }, 1200); }); }); }
+    else { p = new Promise(function (res) { setTimeout(function () { res(check()); }, 1200); }); }
+    window.MSStorageGuard.ready = p;
   })();
 })();

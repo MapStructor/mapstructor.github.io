@@ -138,7 +138,7 @@
         var lq = await db.from('layers').select('id,name,user_id,created_at,updated_at');
         var layers = (lq.data)||[];
         // 2. layer → maps (project_layers + projects), for links
-        var plq = await db.from('project_layers').select('layer_id, projects(id,name,is_public)');
+        var plq = await db.from('project_layers').select('layer_id, projects(id,name,is_public,editLock:raw_config->>editLock)');
         var byLayer = {};
         ((plq.data)||[]).forEach(function(x){ if(!x.layer_id||!x.projects) return; (byLayer[x.layer_id]=byLayer[x.layer_id]||[]).push(x.projects); });
         // 3. DB size header + reclaim command (admin_stats — instant)
@@ -191,12 +191,14 @@
 
         rows = layers.map(function(l){
           var maps = byLayer[l.id]||[];
+          // a dataset on ANY locked map is untouchable here — the map lock protects its data too (7/23)
+          var locked = maps.some(function(m){ return m.editLock === 'true' || m.editLock === true; });
           return {
             id:l.id, name:l.name||'(unnamed)', user_id:l.user_id,
             maps:maps, mapsText:maps.map(function(m){return m.name||'';}).join(' '),
             features:(l.id in counts ? counts[l.id] : null),
             bytes:(l.id in byteMap ? byteMap[l.id] : null),
-            created_at:l.created_at, updated_at:l.updated_at, orphan:maps.length===0, gone:false, sel:false
+            created_at:l.created_at, updated_at:l.updated_at, orphan:maps.length===0, locked:locked, gone:false, sel:false
           };
         });
         document.getElementById('s-layers').textContent = nfmt(rows.length);
@@ -234,18 +236,18 @@
         var tb = document.getElementById('rows');
         tb.innerHTML = list.map(function(r){
           var mapsHtml = r.maps.length
-            ? r.maps.map(function(m){ return '<a href="map/editor.html?id='+m.id+'" target="_blank" title="edit">'+esc(m.name||'map')+' ↗</a>'; }).join('')
+            ? r.maps.map(function(m){ var lk=(m.editLock==='true'||m.editLock===true); return '<a href="map/editor.html?id='+m.id+'" target="_blank" title="'+(lk?'locked map':'edit')+'">'+(lk?'🔒 ':'')+esc(m.name||'map')+' ↗</a>'; }).join('')
             : '<span class="orphan">orphan</span>';
           var big = (r.bytes!=null && r.bytes>2*1024*1024);
           return '<tr data-id="'+r.id+'"'+(r.gone?' class="gone"':'')+'>'+
-            '<td><input type="checkbox" class="rsel" data-id="'+r.id+'"'+(r.sel?' checked':'')+'></td>'+
+            '<td>'+(r.locked?'':'<input type="checkbox" class="rsel" data-id="'+r.id+'"'+(r.sel?' checked':'')+'>')+'</td>'+
             '<td class="name">'+esc(r.name)+'</td>'+
             '<td class="maps">'+mapsHtml+'</td>'+
             '<td'+(big?' class="big"':'')+'>'+(r.features!=null?nfmt(r.features):'<span class="muted">—</span>')+'</td>'+
             '<td'+(big?' class="big"':'')+'>'+(r.bytes!=null?fmtBytes(r.bytes):'<span class="muted">—</span>')+'</td>'+
             '<td>'+fmtDate(r.created_at)+'</td>'+
             '<td>'+fmtDate(r.updated_at)+'</td>'+
-            '<td><button class="danger del-one" data-id="'+r.id+'">Delete</button></td>'+
+            '<td>'+(r.locked?'<span title="On a locked map — unlock it in the map’s Settings to delete this dataset" style="font-size:12px;color:#8a8496;white-space:nowrap;">🔒 locked</span>':'<button class="danger del-one" data-id="'+r.id+'">Delete</button>')+'</td>'+
           '</tr>';
         }).join('') || '<tr><td colspan="8" class="muted">No datasets match.</td></tr>';
         // header arrows
@@ -265,7 +267,7 @@
       }
       function byId(id){ for(var i=0;i<rows.length;i++) if(rows[i].id===id) return rows[i]; return null; }
       function updateSelBtn(){
-        var n = rows.filter(function(r){return r.sel && !r.gone;}).length;
+        var n = rows.filter(function(r){return r.sel && !r.gone && !r.locked;}).length;
         var b = document.getElementById('del-selected');
         b.textContent = 'Delete selected ('+n+')'; b.disabled = n===0;
       }
@@ -300,6 +302,7 @@
       }
       async function deleteOne(id){
         var r = byId(id); if(!r) return;
+        if (r.locked){ alert('"'+r.name+'" is on a locked map. Open that map and unlock it in Settings before deleting this dataset.'); return; }
         if (!confirm('Delete "'+r.name+'"'+(r.features?(' ('+nfmt(r.features)+' features)'):'')+'?\n\nIts features are removed and it is unlinked from '+(r.maps.length||'no')+' map(s). This cannot be undone.')) return;
         try {
           var n = await wipe(id, function(t){ setStatus('Deleting "'+r.name+'"… '+nfmt(t)+' features'); });
@@ -309,7 +312,7 @@
         } catch(e){ setStatus('Delete failed: '+e.message); }
       }
       async function deleteSelected(){
-        var sel = rows.filter(function(r){return r.sel && !r.gone;});
+        var sel = rows.filter(function(r){return r.sel && !r.gone && !r.locked;});
         if (!sel.length) return;
         var totalF = sel.reduce(function(a,r){return a+(r.features||0);},0);
         if (!confirm('Delete '+sel.length+' layer(s)'+(totalF?(' (~'+nfmt(totalF)+' features)'):'')+'?\n\nThis cannot be undone.')) return;
@@ -337,7 +340,7 @@
         document.getElementById('refresh').addEventListener('click', load);
         document.getElementById('del-selected').addEventListener('click', deleteSelected);
         document.getElementById('chk-all').addEventListener('change', function(){
-          var on=this.checked; visibleRows().forEach(function(r){r.sel=on;}); render();
+          var on=this.checked; visibleRows().forEach(function(r){ if(!r.locked) r.sel=on; }); render();
         });
         Array.prototype.forEach.call(document.querySelectorAll('th[data-k]'), function(th){
           th.addEventListener('click', function(){

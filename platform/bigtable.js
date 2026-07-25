@@ -154,14 +154,25 @@
     } finally { delete _baking[layerId]; }
   }
 
-  // stream a layer's rows (geom-free) out of Postgres, then bake — the backfill/import path
+  // stream a layer's rows (geom-free) out of Postgres, then bake — the backfill/import path.
+  // KEYSET pagination (7/23): OFFSET paging hit the DB statement timeout at depth on 300k-row
+  // layers and the bake either died or silently shorted (same bug fixed in tilegen + copy).
   async function bakeFromDb(db, projectId, layerId, status) {
-    var rows = [];
-    for (var from = 0; from < BAKE_MAX; from += 1000) {
-      var res = await db.from("features").select("feature_id, label, description, start_date, end_date, custom_fields, content_id").eq("layer_id", layerId).order("feature_id").range(from, from + 999);
-      if (res.error) throw new Error(res.error.message);
-      Array.prototype.push.apply(rows, res.data || []);
-      if (!res.data || res.data.length < 1000) break;
+    var rows = [], lastFid = null, retried = false;
+    while (rows.length < BAKE_MAX) {
+      var q = db.from("features").select("feature_id, label, description, start_date, end_date, custom_fields, content_id").eq("layer_id", layerId).order("feature_id").limit(1000);
+      if (lastFid != null) q = q.gt("feature_id", lastFid);
+      var res = await q;
+      if (res.error) {
+        if (!retried) { retried = true; await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }
+        throw new Error(res.error.message);
+      }
+      retried = false;
+      if (!res.data || !res.data.length) break;
+      lastFid = res.data[res.data.length - 1].feature_id;
+      Array.prototype.push.apply(rows, res.data);
+      if (status && rows.length % 25000 < 1000) status("Reading rows for the fast table… " + rows.length.toLocaleString());
+      if (res.data.length < 1000) break;
     }
     if (rows.length <= BIG_ROWS) return null;   // shrunk below the tier since it was queued
     return bakeFromRows(db, projectId, layerId, rows, status);

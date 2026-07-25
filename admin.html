@@ -66,7 +66,7 @@
       <div class="stat"><div class="n" id="s-tables">—</div><div class="l">Data tables</div></div>
     </div>
     <div id="db-bar-wrap" style="margin-top:12px;display:none;">
-      <div style="font-size:13px;color:#6b6680;margin-bottom:4px;">Supabase free plan — database (<span id="db-bar-label"></span>)</div>
+      <div style="font-size:13px;color:#6b6680;margin-bottom:4px;">Supabase Pro plan — database (<span id="db-bar-label"></span>)</div>
       <div style="height:12px;background:#eee;border-radius:99px;overflow:hidden;"><div id="db-bar" style="height:100%;width:0;background:#7c5cbf;"></div></div>
     </div>
     <h2 style="font-size:15px;margin:18px 0 8px;color:#6b6680;">Biggest tables</h2>
@@ -142,8 +142,9 @@
         if (ownersLbl) ownersLbl.textContent = 'Registered map owners (+' + (ownerIds.length - regOwners.length) + ' anonymous)';
 
         // rich DB + infrastructure stats — one instant RPC (storage-fix.sql).
-        // pg_database_size is the exact number Supabase's free 500 MB cap measures.
-        var FREE_DB_BYTES = 500 * 1024 * 1024;
+        // pg_database_size is the exact number Supabase's plan cap measures. PRO = 8 GB included
+        // (spend cap on, so it's hard). Policy 7/23: stay under 50%; site edit-lockdown at 80%.
+        var FREE_DB_BYTES = 8 * 1024 * 1024 * 1024;
         try {
           var as = await db.rpc('mapstructor_admin_stats');
           if (!as.error && as.data) {
@@ -188,7 +189,7 @@
         try {
           var authUsers = document.getElementById('s-users').textContent;
           var svc = [
-            ['Supabase Postgres', 'Database — ' + document.getElementById('s-db').textContent + ' of 500 MB (free plan)'],
+            ['Supabase Postgres', 'Database — ' + document.getElementById('s-db').textContent + ' of 8 GB (Pro plan; policy: stay under 50%)'],
             ['Supabase Storage', 'Tiles bucket (PMTiles) — ' + document.getElementById('s-tiles').textContent],
             ['Supabase Auth', authUsers + ' registered profiles (monthly-active count is in the Supabase dashboard)'],
             ['Egress / bandwidth', 'Billing metric — see Supabase → Reports/Usage'],

@@ -780,7 +780,22 @@
     return { db: client, table: eb.table, idCol: eb.id_col || 'feature_id', layerCol: eb.layer_col || 'layer_id', geomCol: eb.geom_col || 'geom' };
   }
 
+  // ── map-select ⇄ attribute-table sync (7/23): selecting a feature on the MAP stars its row in
+  //    an open table for that layer, so a working set can be collected by clicking the map and
+  //    sorted to the top with the ★ column. Adds only — never un-stars (no surprise removals). ──
+  function attrStarFromMap(node, fid) {
+    try {
+      if (fid == null || !node) return;
+      if (!_attrSlug || node.id !== _attrSlug) return;   // table not open, or open on a different layer
+      var f = String(fid);
+      if (_attrSel.indexOf(f) === -1) selectAttrRow(f, true);
+      window.__msAttrStar = { fid: f, len: _attrSel.length };   // observability (tests + debugging)
+      var tr = document.querySelector('#editor-attr-tbody tr[data-fid="' + f.replace(/"/g, '') + '"]');
+      if (tr && tr.scrollIntoView) tr.scrollIntoView({ block: 'nearest' });
+    } catch (e) {}
+  }
   async function enterEngineEdit(node, fid, clickEvt) {
+    attrStarFromMap(node, fid);
     var drawId = 'db-' + fid;
     if (draw && draw.get(drawId)) {   // already pulled into draw (re-click via the edited overlay) → stage 1 unless mid-geometry-edit
       if (_editingDraw !== drawId) { _editingDraw = null; _armedSet = [drawId]; try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {} updateArmedHl(); }
@@ -907,8 +922,64 @@
         '<button data-type="mbtoken" title="Enter your Mapbox access token (admin only, stored in this browser)">🔑 Mapbox token</button>' +
         '<button data-type="mbtileset" title="Add a Mapbox tileset (admin only — uses your token)">+ Mapbox tileset</button></div>' : '') +
       '</div>' +
-      '<div id="editor-add-form"></div>';
+      '<div id="editor-add-form"></div>' +
+      // map data footprint — exact stored bytes, filled in the background after boot (user 7/23)
+      '<div id="ms-map-size" title="Exact stored size of this map’s data — click to refresh" style="margin-top:6px;padding-top:5px;border-top:1px dashed #ddd;font-size:11px;color:#6b6580;cursor:pointer;">' + (_mapSizeText || 'Map data: measuring…') + '</div>';
     bar.querySelectorAll('#editor-add-buttons button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
+    var msEl = document.getElementById('ms-map-size');
+    if (msEl) msEl.addEventListener('click', function () { refreshMapSize(true); });
+    if (!_mapSizeRun) refreshMapSize(false);
+  }
+  // ── SIZE READOUTS (7/23): exact per-layer bytes via mapstructor_layer_stat, cached; the sidebar
+  //    total fills progressively (one paced RPC per layer), the layer panel reads the same cache. ──
+  var _layerSizeCache = {}, _mapSizeText = '', _mapSizeRun = 0, _elpSizeGen = 0;
+  function fmtSz(b) { return (window.P && P.fmtBytes) ? P.fmtBytes(b) : (Math.round(b / 104857.6) / 10 + ' MB'); }
+  async function refreshMapSize(force) {
+    var run = ++_mapSizeRun;
+    var el = function () { return document.getElementById('ms-map-size'); };
+    try {
+      if (idsReady) { try { await idsReady; } catch (e0) {} }
+      var ids = [], seen = {};
+      Object.keys(slugToLayerDbId).forEach(function (k) { var v = slugToLayerDbId[k]; if (v && !seen[v]) { seen[v] = 1; ids.push(v); } });
+      if (force) ids.forEach(function (id) { delete _layerSizeCache[id]; });
+      var total = 0, feats = 0, unmeasured = 0;
+      for (var i = 0; i < ids.length; i++) {
+        if (run !== _mapSizeRun) return;
+        var st = _layerSizeCache[ids[i]];
+        if (!st) {
+          try { var r = await db.rpc('mapstructor_layer_stat', { p_layer: ids[i] }); if (!r.error && r.data) { st = r.data; _layerSizeCache[ids[i]] = st; } } catch (e1) {}
+          await new Promise(function (rs) { setTimeout(rs, 120); });   // pace — Supabase throttles bursts
+        }
+        if (st) { total += (st.bytes || 0); feats += (st.count || 0); }
+        else unmeasured++;   // stat RPC timed out (big layers on a busy DB) — an under-count must SAY so
+        if (el()) el().textContent = 'Map data: ' + fmtSz(total) + (i < ids.length - 1 ? '…' : '');
+      }
+      if (run !== _mapSizeRun) return;
+      // baked tile archives count too (Publish writes them to the tiles bucket under this project)
+      var tileBytes = 0;
+      try {
+        var tl = await db.storage.from('tiles').list(projectId, { limit: 200 });
+        (tl.data || []).forEach(function (ob) { tileBytes += ((ob.metadata || {}).size || 0); });
+      } catch (e2) {}
+      _mapSizeText = feats
+        ? ('Map data: ' + fmtSz(total) + ' · ' + feats.toLocaleString() + ' features' + (tileBytes ? ' · +' + fmtSz(tileBytes) + ' vector tiles & scrub rasters' : ''))
+        : (tileBytes ? ('Map data: ' + fmtSz(tileBytes) + ' vector tiles & scrub rasters · 0 rows stored here') : 'Map data: 0 B stored here — renders from external tilesets/archives');
+      if (unmeasured) _mapSizeText += ' · ⚠ ' + unmeasured + ' layer' + (unmeasured === 1 ? '' : 's') + ' unmeasured (click to retry)';
+      if (el()) el().textContent = _mapSizeText;
+    } catch (e) {}
+  }
+  async function fillLayerSize(node) {
+    var elS = document.getElementById('elp-size'); if (!elS) return;
+    elS.style.display = 'none';
+    var gen = ++_elpSizeGen;
+    if (node && node.instanceOf) { elS.style.display = ''; elS.textContent = 'Instance — shares its source layer’s data (adds 0 B of its own)'; return; }
+    var lid = node && slugToLayerDbId[node.id];
+    if (!lid && idsReady) { try { await idsReady; } catch (e0) {} lid = node && slugToLayerDbId[node.id]; }
+    if (!lid || gen !== _elpSizeGen) return;
+    function show(st) { if (gen !== _elpSizeGen) return; elS.style.display = ''; elS.textContent = (st.count ? (fmtSz(st.bytes || 0) + ' stored · ' + st.count.toLocaleString() + ' features') : 'No rows stored here (tileset / external data)'); }
+    var st = _layerSizeCache[lid];
+    if (st) { show(st); return; }
+    try { var r = await db.rpc('mapstructor_layer_stat', { p_layer: lid }); if (!r.error && r.data) { _layerSizeCache[lid] = r.data; show(r.data); } } catch (e) {}
   }
   function markAddActive(type) {   // highlight which add-action's form is open (or none)
     var btns = document.querySelectorAll('#editor-add-buttons button');
@@ -1612,12 +1683,17 @@
   window._msImportFC = importFeatureCollection;   // programmatic import seam (harness + future API)
   async function batchInsertFeatures(layerId, feats) {
     var BATCH = 500;
-    for (var i = 0; i < feats.length; i += BATCH) {
-      if (feats.length > BATCH) importStatus('Saving features… ' + nfmt(Math.min(i + BATCH, feats.length)) + '/' + nfmt(feats.length));   // uncapped imports can be 100k+ rows — show progress, not silence
-      var rows = feats.slice(i, i + BATCH).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null, custom_fields: importCustomFields(f.properties) }; });
-      var r = await db.from('features').insert(rows);
-      if (r.error) throw new Error('feature insert: ' + r.error.message);
-    }
+    // Publishing while an import is still SAVING bakes a partial tile archive (NTAD 7/23:
+    // baked at 194k of 302,771 → "so many lines missing"). Flag the window so onPublish waits.
+    window.__msImportSaving = (window.__msImportSaving || 0) + 1;
+    try {
+      for (var i = 0; i < feats.length; i += BATCH) {
+        if (feats.length > BATCH) importStatus('Saving features… ' + nfmt(Math.min(i + BATCH, feats.length)) + '/' + nfmt(feats.length));   // uncapped imports can be 100k+ rows — show progress, not silence
+        var rows = feats.slice(i, i + BATCH).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null, custom_fields: importCustomFields(f.properties) }; });
+        var r = await db.from('features').insert(rows);
+        if (r.error) throw new Error('feature insert: ' + r.error.message);
+      }
+    } finally { window.__msImportSaving--; }
   }
   var LABEL_KEYS = ['name', 'Name', 'NAME', 'label', 'Label', 'LABEL', 'title', 'Title', 'TITLE'];
   function importLabelKey(props) {
@@ -1921,7 +1997,6 @@
       '<div class="mss-sectop">' +
         MSEC('Header') +
         '<label class="mss-check"><input id="esp-feat-header" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show header (logo &amp; title bar)</label>' +
-        '<label class="mss-check" style="display:block;margin-top:6px;"><input id="esp-lock" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />🔒 Lock this map — view &amp; copy only (editing off until unlocked here)</label>' +
         '<div class="mss-note">Off: the logo, map name and About link move to the top of the sidebar.</div>' +
         '<label class="mss-lbl" style="margin-top:8px;">Header logo</label>' +
         '<input id="esp-logo-file" type="file" accept="image/*" style="width:100%;box-sizing:border-box;font-size:11px;" />' +
@@ -1929,6 +2004,12 @@
         '<input id="esp-logo-link" type="text" placeholder="https://…" class="mss-in" />' +
       '</div>' +
       '<div class="mss-note" style="margin-top:12px;">To edit the <b>About</b> text, click the <b>ABOUT</b> button (header) or the sidebar <b>About</b> link and edit the popup directly.</div>' +
+      // ── LOCK — deliberately LAST, its own section at the bottom (protection, not everyday chrome) ──
+      '<div class="mss-sectop">' +
+        MSEC('Protection') +
+        '<label class="mss-check"><input id="esp-lock" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />🔒 Lock this map — view &amp; copy only (editing off until unlocked here)</label>' +
+        '<div class="mss-note">Locked maps and their datasets can\'t be edited, deleted, or cleaned up anywhere — dashboard and dataset-manager deletes are refused too.</div>' +
+      '</div>' +
       '</div>';
     document.body.appendChild(p);
     document.getElementById('esp-close').addEventListener('click', function () { p.style.display = 'none'; });
@@ -2058,6 +2139,11 @@
     if (hb) { hb.disabled = true; hb.textContent = 'Publishing…'; }
     setStatus('Publishing…');
     try {
+      // never bake while an import is mid-save — the archive would freeze a partial layer (7/23)
+      while (window.__msImportSaving > 0) {
+        setStatus('Waiting for the import to finish saving before publishing…');
+        await new Promise(function (rs) { setTimeout(rs, 1500); });
+      }
       // "sew up" tiles first: converted layers regenerate from their CURRENT features, so the
       // published snapshot always ships fresh tiles (edits since the last generate are folded in)
       try {
@@ -3247,6 +3333,27 @@
         setHoverHl((did && node && node.hoverHighlight !== false && !node.groupBy) ? did : null, node);
         // group hover: any piece of a "Treat as one" layer glows the WHOLE company (clicked group pins)
         try { groupHoverAt(e.point); } catch (egh) {}
+        // UNIVERSAL grab-radius cursor (7/23): ANY engine-editable feature inside the same 10px
+        // corridor the CLICK uses shows the finger — feedback must never depend on a layer having
+        // groups (NTAD had none → no cursor → "really hard to select"). Cheap: only queried when
+        // draw + group hover both missed; only touches the cursor when it would actually change.
+        try {
+          if (!isDrawArmed()) {
+            var hitU = !!did || !!_lastGroupGv;
+            if (!hitU) {
+              var sdU = (m === beforeMap) ? 'left' : 'right', eLids = [];
+              (function walkU(arr) { (arr || []).forEach(function (n) { if (isEngineEditable(n) && m.getLayer(n.id + '-' + sdU)) eLids.push(n.id + '-' + sdU); if (n.children) walkU(n.children); }); })(layers);
+              if (eLids.length) {
+                var bxU = 10;
+                var fsU = m.queryRenderedFeatures([[e.point.x - bxU, e.point.y - bxU], [e.point.x + bxU, e.point.y + bxU]], { layers: eLids });
+                hitU = !!(fsU && fsU.length);
+              }
+            }
+            var cU = m.getCanvas();
+            if (hitU) { if (cU.style.cursor !== 'pointer') cU.style.cursor = 'pointer'; }
+            else if (cU.style.cursor === 'pointer') cU.style.cursor = '';
+          }
+        } catch (eUc) {}
         var on = node && (node._uiHover != null ? node._uiHover : !!node.popupStyle);
         if (did && _drawClickPopId === did) on = false;   // click bubble already labels it — never stack a hover bubble on top
         var html = (did && node && on) ? drawPopupHtml(node, did) : null;
@@ -4371,6 +4478,7 @@
   }
   function showFeaturePanel(drawId) {
     selectedDrawId = drawId;
+    attrStarFromMap(drawNodeFor(drawId), featureToDb[drawId]);   // map-select ⇄ table: star the row (user 7/23)
     injectFeaturePanel();
     var meta = featureMeta[drawId] || { label: '', notes: '', start: '', end: '' };
     var p = document.getElementById('editor-feature-panel'); if (!p) return;
@@ -5736,6 +5844,7 @@
       '<div id="elp-body" style="padding:12px;">' +
       // name field at the very top — the same rename as double-clicking the row (works for layers, groups and sections)
       '<input id="elp-name" type="text" placeholder="Name" title="Rename this item" style="width:100%;box-sizing:border-box;margin-bottom:4px;padding:6px 8px;border:1px solid #bbbbbb;border-radius:4px;font-size:15px;font-weight:600;" />' +
+      '<div id="elp-size" title="Exact stored size of this layer’s data" style="display:none;margin:-1px 0 6px;font-size:11px;color:#6b6580;"></div>' +
       '<div id="elp-kind" class="ms-note-accent" style="display:none;margin:0 0 8px;font-size:11px;"></div>' +   // what IS this layer — tileset vs drawn/imported
       // Re-bake JUST this layer\'s tiles (converted tilesets only) — far lighter than Publish, which re-bakes every layer.
       '<button id="elp-rebake" style="display:none;width:100%;box-sizing:border-box;margin:0 0 8px;padding:6px 10px;border:1px solid #cdbff0;border-radius:6px;background:#f2ecff;color:#5b4b9a;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;" title="Regenerate ONLY this layer\'s tiles from its current data — much lighter than Publish, which re-bakes every layer">🧩 Re-bake this layer&rsquo;s tiles</button>' +
@@ -6089,6 +6198,8 @@
     var p = document.getElementById('editor-layer-panel'); if (!p) return;
     try { if (window._elpDelReset) window._elpDelReset(); } catch (e) {}   // switching items collapses a half-open delete confirm
     var elpName = document.getElementById('elp-name'); if (elpName) elpName.value = node.label || '';   // top name field — all node types
+    var elpSz = document.getElementById('elp-size'); if (elpSz) elpSz.style.display = 'none';   // shown per-leaf by fillLayerSize
+    if (node.type !== 'section' && node.type !== 'group') fillLayerSize(node);
     if (node.type === 'section') {   // #4: sections get a minimal panel — title + defaults + Delete (no style/zoom)
       document.getElementById('elp-title').textContent = node.label || 'Section';
       document.getElementById('elp-style-section').style.display = 'none';
@@ -6464,7 +6575,12 @@
   async function openVirtualAttr(node, slug, lid, rc, gen) {
     var foot = document.getElementById('editor-attr-foot');
     if (foot) foot.textContent = 'Opening big-data table…';
-    var prov = await MSBigTable.openProvider(lid, rc.attrParquet, rc.attrParquetAt, rc.attrParquetRows);
+    // 20s cap (7/23): a hung columnar engine used to leave "Opening…" forever ("table doesn't
+    // even open") — timing out THROWS, and the caller falls back to the streaming loader instead
+    var prov = await Promise.race([
+      MSBigTable.openProvider(lid, rc.attrParquet, rc.attrParquetAt, rc.attrParquetRows),
+      new Promise(function (ignore, rej) { setTimeout(function () { rej(new Error('big-table engine timed out (20s)')); }, 20000); })
+    ]);
     if (gen !== _attrLoadGen) return;
     var N = rc.attrParquetRows;
     var keysS = orderAttrKeys(prov.customKeys.slice(), 30);
@@ -6548,10 +6664,16 @@
         if (gen !== _attrLoadGen) return;
         var arc = (rcq.data && rcq.data.raw_config) || {};
         if (arc.attrParquet) {
-          var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid);
+          // freshness (7/23 rules): the exact count TIMES OUT on the very layers that need the
+          // sidecar — a failed count must TRUST the sidecar (attrParquetDirty catches real edits).
+          // And a cap-sized sidecar (BAKE_MAX rows) can never equal a bigger live count — accept it
+          // and let the footer say "first N of…".
+          var cq = null; try { cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid); } catch (eCq) {}
           if (gen !== _attrLoadGen) return;
-          var live = (cq && cq.count) || 0;
-          var fresh = live === arc.attrParquetRows && !arc.attrParquetDirty;
+          var live = (cq && !cq.error && cq.count != null) ? cq.count : null;
+          var capMax = (window.MSBigTable && MSBigTable.BAKE_MAX) || 300000;
+          var capped = arc.attrParquetRows >= capMax;
+          var fresh = !arc.attrParquetDirty && (live == null || live === arc.attrParquetRows || (capped && live >= arc.attrParquetRows));
           if (fresh && arc.attrParquetRows <= ATTR_LOAD_CAP) {
             foot.textContent = 'Opening (fast columnar sidecar)…';
             try {
@@ -6570,16 +6692,28 @@
       if (gen !== _attrLoadGen) return;
     }
     try {
-      for (var afrom = 0; afrom < 1000000; afrom += 1000) {
+      // KEYSET stream (7/23): offset paging hit the statement timeout at depth on big layers and
+      // killed the whole table ("Failed to load features"); no count:'exact' either — computing it
+      // on a 300k layer 500s the very first page. Total = rows streamed (footer live-counts).
+      var aLast = null, aRetried = false;
+      for (;;) {
         // NO geom (7/18): geometry was ~half of a 72MB table download and the table never displays
         // it — hover/highlight/zoom fetch geometries per-row on demand (ensureAttrGeoms)
-        var ares = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, content_id', afrom === 0 ? { count: 'exact' } : {}).eq('layer_id', lid).order('feature_id').range(afrom, afrom + 999);
+        var aq = db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, content_id').eq('layer_id', lid).order('feature_id').limit(1000);
+        if (aLast != null) aq = aq.gt('feature_id', aLast);
+        var ares = await aq;
         if (gen !== _attrLoadGen) return;   // modal closed / another layer opened — stop this load
-        if (ares.error) { loadErr = ares.error; break; }
-        if (afrom === 0 && ares.count != null) total = ares.count;
-        var abatch = ares.data || []; Array.prototype.push.apply(rows, abatch);
-        if (!streamedFirst && rows.length) { streamedFirst = true; if (rows.length < (total || Infinity)) buildTable(false); }
-        else { var fEl = document.getElementById('editor-attr-foot'); if (fEl && rows.length < (total || 0)) fEl.textContent = 'Loading ' + nfmt(rows.length) + (total ? ' / ' + nfmt(total) : '') + '… — the table already works'; }
+        if (ares.error) {
+          if (!aRetried) { aRetried = true; await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }
+          loadErr = ares.error; break;
+        }
+        aRetried = false;
+        var abatch = ares.data || [];
+        if (!abatch.length) break;
+        aLast = abatch[abatch.length - 1].feature_id;
+        Array.prototype.push.apply(rows, abatch);
+        if (!streamedFirst && rows.length) { streamedFirst = true; buildTable(false); }
+        else { var fEl = document.getElementById('editor-attr-foot'); if (fEl) fEl.textContent = 'Loading ' + nfmt(rows.length) + '… — the table already works'; }
         if (abatch.length < 1000) break;
         if (rows.length >= ATTR_LOAD_CAP) break;   // guardrail: don't pull a million-row layer into browser memory — first 100k stay fully usable
       }
@@ -7733,6 +7867,20 @@
       }
     } catch (eLk) {}
     if (locked) { showLockPanel(); return; }   // NOTHING below runs — no edit wiring, no draw, no writes
+    // 80% STORAGE LOCKDOWN (7/23): when the platform database crosses 80% of the Pro plan, the
+    // editor refuses to boot into editing for EVERYONE (admin included) — the map still renders
+    // for viewing. auth.js computes the flag; we wait for its check before wiring anything.
+    try { if (window.MSStorageGuard && MSStorageGuard.ready) await MSStorageGuard.ready; } catch (eSg) {}
+    if (window.__msStorageLockdown) {
+      var sl = window.__msStorageLockdown;
+      var pnl = document.createElement('div');
+      pnl.id = 'ms-storage-lock-panel';
+      pnl.style.cssText = 'position:fixed;top:70px;left:50%;transform:translateX(-50%);z-index:6500;background:#fff;border:2px solid #b4453a;border-radius:12px;box-shadow:0 14px 50px rgba(0,0,0,0.35);padding:16px 22px;width:440px;max-width:92vw;font-family:Source Sans Pro,Arial,sans-serif;color:#2a2a33;';
+      pnl.innerHTML = '<div style="font-size:17px;font-weight:800;color:#b4453a;">⛔ Editing paused — platform storage at ' + Math.round(sl.frac * 100) + '%</div>' +
+        '<p style="margin:8px 0 0;font-size:13.5px;line-height:1.5;">The database is past the 80% safety line, so all editing is paused site-wide until space is cleared. Viewing still works. To clear space: delete unwanted maps/copies, sweep orphan datasets in <a href="../manage-datasets.html" style="color:#7c5cbf;">Manage datasets</a>, then run <code>VACUUM FULL;</code> in the Supabase SQL editor.</p>';
+      document.body.appendChild(pnl);
+      return;   // no edit wiring, no draw, no writes — same posture as the map lock
+    }
     start();
     (function whenReady() {
       if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); loadProjectChrome(); setupInPlaceEditing(); var _mtries = 0; var _miv = setInterval(function () { patchMapsRender(); var sec = document.getElementById('base-maps-section'); var has = sec && sec.querySelector('.layer-list-row'); if (has) { injectMapsChrome(); enhanceMapRows(); } if ((window.__mapsRenderPatched && has) || ++_mtries > 30) clearInterval(_miv); }, 400); }

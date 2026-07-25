@@ -228,6 +228,7 @@
             if (window.MapShare) MapShare.open({ db: db, projectId: m.id, viewUrl: new URL('map/index.html?id=' + m.id, location.href).href, onChange: loadMaps });
           };
           row.querySelector('[data-act=rename]').onclick = async function () {
+            if (locked) { alert('"' + (m.name || 'Untitled Map') + '" is locked — unlock it in the map’s Settings to rename.'); return; }
             var name = prompt('Rename map:', m.name || 'Untitled Map'); if (name == null) return;
             var r = await db.from('projects').update({ name: name }).eq('id', m.id);
             if (!r.error) loadMaps();

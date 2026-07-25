@@ -1,5 +1,5 @@
 # Platform storage alert (7/15): daily check of total MapStructor data vs the Supabase FREE plan
-# (500 MB database). At ≥30% it opens (or updates) a GitHub issue — GitHub then EMAILS the repo
+# (Pro: 8 GB database). At ≥30% it opens (or updates) a GitHub issue — GitHub then EMAILS the repo
 # owner natively, no mail provider needed. The on-site twin is the admin modal in platform/auth.js.
 #
 # ONE-TIME SETUP: repo → Settings → Secrets and variables → Actions → New repository secret
@@ -29,13 +29,13 @@ jobs:
             -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" -H "Content-Type: application/json" -d '{}')
           echo "total bytes: $BYTES"
           case "$BYTES" in ''|*[!0-9]*) echo "RPC did not return a number — skipping"; exit 0;; esac
-          LIMIT=$((500 * 1024 * 1024))
+          LIMIT=$((8 * 1024 * 1024 * 1024))
           PCT=$((BYTES * 100 / LIMIT))
-          echo "usage: ${PCT}% of the Supabase free plan"
-          if [ "$PCT" -lt 30 ]; then echo "below 30% — all good"; exit 0; fi
+          echo "usage: ${PCT}% of the Supabase Pro plan (8 GB)"
+          if [ "$PCT" -lt 50 ]; then echo "below 50% — all good"; exit 0; fi
           MB=$((BYTES / 1024 / 1024))
-          TITLE="⚠ Platform storage at ${PCT}% of the Supabase free plan"
-          BODY="MapStructor total data: **${MB} MB / 500 MB** (${PCT}%). Plan the infra upgrade before it fills — imports and edits stop for everyone at 100%. (Automated daily check: .github/workflows/storage-alert.yml)"
+          TITLE="⚠ Platform storage at ${PCT}% of the Supabase Pro plan (8 GB)"
+          BODY="MapStructor total data: **${MB} MB / 8192 MB** (${PCT}%). Plan the infra upgrade before it fills — imports and edits stop for everyone at 100%. (Automated daily check: .github/workflows/storage-alert.yml)"
           # one open alert issue at a time — update its title/body as the % climbs, reopen if closed while still over
           EXISTING=$(gh issue list --repo "$GH_REPO" --state open --search "Platform storage at in:title" --json number --jq '.[0].number' || true)
           if [ -n "$EXISTING" ]; then
