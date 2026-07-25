@@ -1,0 +1,23 @@
+# MapStructor Worker — the single Cloudflare Worker from the architecture doc.
+# Roles (grows over time): R2 gated reads + uploads now; AI chatbot key + usage
+# proxy + tile-job dispatch later. Deploy: `wrangler deploy` from this folder
+# (needs `wrangler login` once, and the bucket created in the dashboard first).
+
+name = "mapstructor-worker"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# R2 bucket binding. Create the bucket in the Cloudflare dashboard (suggested
+# name below), then this binding gives the Worker direct access — no keys in code.
+[[r2_buckets]]
+binding = "TILES"
+bucket_name = "mapstructor-tiles"
+
+# Secrets (set with `wrangler secret put <NAME>`, never in this file):
+#   SUPABASE_URL          — https://eqpxlwbjqiwfjlsuapvu.supabase.co
+#   SUPABASE_ANON_KEY     — the publishable key (used to validate user tokens)
+# Later: ANTHROPIC_API_KEY, GITHUB_DISPATCH_TOKEN.
+
+# Routes: none yet. First deploy serves on <name>.<account>.workers.dev, which is
+# enough for all testing. Custom domain (e.g. api.mapstructor.com) comes when
+# mapstructor.com DNS moves to Cloudflare — see worker/README.md decision #2.

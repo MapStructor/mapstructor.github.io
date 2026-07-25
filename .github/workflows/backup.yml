@@ -1,0 +1,97 @@
+# Nightly off-provider backups — closes the "Supabase holds the only copy" gap
+# (architecture doc, build step ①). Inert until the repo secrets below exist:
+# each stage checks its secrets and skips gracefully, so committing this is safe.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_DB_URL       — Supavisor SESSION pooler URI (IPv4, port 5432), from
+#                           Supabase dashboard → Connect → Session pooler. The
+#                           direct db host is IPv6-only and unreachable from runners.
+#   R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY — R2 S3 token scoped
+#                           to the mapstructor-tiles bucket.
+#   B2_KEY_ID / B2_APP_KEY — Backblaze B2 application key.
+#
+# What is (and isn't) backed up:
+#   pg_dump of Postgres  → R2 backups/db/  → mirrored to B2.   THE vital copy.
+#   Tiles/sidecars/rasters are NOT dumped — they're disposable projections that
+#   regenerate from Postgres (and later from GeoParquet, which will live on R2
+#   and be covered by the R2→B2 mirror automatically).
+# Retention: 14 daily dumps; older ones pruned after a successful new dump.
+
+name: nightly-backup
+on:
+  schedule:
+    - cron: "17 7 * * *"   # 07:17 UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check secrets
+        id: gate
+        env:
+          DBURL: ${{ secrets.SUPABASE_DB_URL }}
+          R2KEY: ${{ secrets.R2_ACCESS_KEY_ID }}
+          B2KEY: ${{ secrets.B2_KEY_ID }}
+        run: |
+          echo "db=$([ -n "$DBURL" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+          echo "r2=$([ -n "$R2KEY" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+          echo "b2=$([ -n "$B2KEY" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+          [ -z "$DBURL" ] && echo "::notice::SUPABASE_DB_URL not set — backup skipped (scaffold mode)" || true
+
+      - name: Install postgres client 17
+        if: steps.gate.outputs.db == 'yes'
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/trusted.gpg.d/pgdg.asc > /dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Dump database
+        if: steps.gate.outputs.db == 'yes'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          STAMP=$(date -u +%Y%m%d)
+          pg_dump "$SUPABASE_DB_URL" --no-owner --no-privileges -Fc -f "db-$STAMP.dump"
+          ls -lh db-*.dump
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+
+      - name: Upload dump to R2 + prune old
+        if: steps.gate.outputs.db == 'yes' && steps.gate.outputs.r2 == 'yes'
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          sudo apt-get install -y -qq rclone
+          rclone copyto "db-$STAMP.dump" "r2:mapstructor-tiles/backups/db/db-$STAMP.dump"
+          rclone delete --min-age 14d "r2:mapstructor-tiles/backups/db/"
+          rclone ls "r2:mapstructor-tiles/backups/db/"
+
+      - name: Mirror R2 backups to Backblaze B2
+        if: steps.gate.outputs.db == 'yes' && steps.gate.outputs.r2 == 'yes' && steps.gate.outputs.b2 == 'yes'
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          RCLONE_CONFIG_B2_TYPE: b2
+          RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_KEY_ID }}
+          RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APP_KEY }}
+        run: |
+          rclone sync "r2:mapstructor-tiles/backups/" "b2:mapstructor-backups/backups/"
+          rclone ls "b2:mapstructor-backups/backups/" | head -20
+
+      - name: Fallback — dump straight to B2 if R2 isn't set up yet
+        if: steps.gate.outputs.db == 'yes' && steps.gate.outputs.r2 == 'no' && steps.gate.outputs.b2 == 'yes'
+        env:
+          RCLONE_CONFIG_B2_TYPE: b2
+          RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_KEY_ID }}
+          RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APP_KEY }}
+        run: |
+          sudo apt-get install -y -qq rclone
+          rclone copyto "db-$STAMP.dump" "b2:mapstructor-backups/backups/db/db-$STAMP.dump"
+          rclone delete --min-age 14d "b2:mapstructor-backups/backups/db/"
