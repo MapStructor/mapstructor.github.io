@@ -51,6 +51,10 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
+          # the runner preinstalls postgres client 16 and its wrapper wins the PATH —
+          # server is 17.x and pg_dump refuses on version mismatch. Use 17 explicitly.
+          export PATH="/usr/lib/postgresql/17/bin:$PATH"
+          pg_dump --version
           STAMP=$(date -u +%Y%m%d)
           # public schema only — a full-DB dump fails on Supabase (auth/storage/realtime
           # tables are owned by supabase_*_admin roles → permission denied, exit 1).
