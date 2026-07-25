@@ -52,8 +52,13 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           STAMP=$(date -u +%Y%m%d)
-          pg_dump "$SUPABASE_DB_URL" --no-owner --no-privileges -Fc -f "db-$STAMP.dump"
-          ls -lh db-*.dump
+          # public schema only — a full-DB dump fails on Supabase (auth/storage/realtime
+          # tables are owned by supabase_*_admin roles → permission denied, exit 1).
+          # All app data lives in public; auth.users (needed to remap ownership on a
+          # restore) is exported separately below — postgres CAN select it (verified).
+          pg_dump "$SUPABASE_DB_URL" --schema=public --no-owner --no-privileges -Fc -f "db-$STAMP.dump"
+          psql "$SUPABASE_DB_URL" -c "\copy (select id, email, is_anonymous, created_at, last_sign_in_at from auth.users) to 'auth-users-$STAMP.csv' csv header" || echo "::warning::auth.users export failed (non-fatal)"
+          ls -lh db-*.dump auth-users-*.csv || true
           echo "STAMP=$STAMP" >> "$GITHUB_ENV"
 
       - name: Upload dump to R2 + prune old
@@ -67,6 +72,7 @@ jobs:
         run: |
           sudo apt-get install -y -qq rclone
           rclone copyto "db-$STAMP.dump" "r2:mapstructor-tiles/backups/db/db-$STAMP.dump"
+          [ -f "auth-users-$STAMP.csv" ] && rclone copyto "auth-users-$STAMP.csv" "r2:mapstructor-tiles/backups/db/auth-users-$STAMP.csv"
           rclone delete --min-age 14d "r2:mapstructor-tiles/backups/db/"
           rclone ls "r2:mapstructor-tiles/backups/db/"
 
