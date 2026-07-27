@@ -150,11 +150,10 @@ export default {
       var user = await supabaseUser(env, req);
       if (!user || !user.id) return new Response("auth required", { status: 401, headers: cors() });
 
-      // OWNERSHIP (7/27): tile keys are tiles/<projectId>/<file> — the caller must own
-      // <projectId>. Checked with the CALLER'S OWN token (RLS lets anyone SELECT public
-      // projects, so visibility isn't enough — compare user_id). Non-tiles keys have no
-      // owner model yet and stay auth-only.
-      var tm = ukey.match(/^tiles\/([0-9a-f-]{36})\//);
+      // OWNERSHIP (7/27): tiles/<projectId>/<file> and snapshots/<projectId>.json — the
+      // caller must own <projectId>. Checked with the CALLER'S OWN token (RLS lets anyone
+      // SELECT public projects, so visibility isn't enough — compare user_id).
+      var tm = ukey.match(/^tiles\/([0-9a-f-]{36})\//) || ukey.match(/^snapshots\/([0-9a-f-]{36})\.json$/);
       if (tm) {
         try {
           var pr = await fetch(env.SUPABASE_URL + "/rest/v1/projects?id=eq." + tm[1] + "&select=user_id", {

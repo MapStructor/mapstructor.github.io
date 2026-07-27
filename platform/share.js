@@ -81,6 +81,24 @@ var MapShare = (function () {
     rc.visibility = vis;
     var r = await db.from('projects').update({ raw_config: rc, is_public: vis === 'public' }).eq('id', projectId);
     if (r.error) throw new Error(r.error.message);
+    // R2 snapshot sync (7/27, step ②·25): published bundles mirror to the world-readable
+    // tiles.mapstructor.com — a flip to private must remove that copy NOW (the live-row gate
+    // already blocks the page, but the raw JSON must not stay fetchable); a flip away from
+    // private re-mirrors the existing published snapshot so viewers get the fast path without
+    // waiting for the next publish. Best-effort: any failure leaves the Postgres path correct.
+    try {
+      var tok = (await db.auth.getSession()).data.session.access_token;
+      var u = 'https://mapstructor-worker.mapstructor.workers.dev/upload/snapshots/' + projectId + '.json';
+      if (vis === 'private') {
+        await fetch(u, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } });
+      } else {
+        var snap = await db.from('project_snapshots').select('state').eq('project_id', projectId).eq('label', 'published').limit(1).maybeSingle();
+        if (snap.data && snap.data.state) {
+          await fetch(u, { method: 'PUT', body: JSON.stringify(snap.data.state),
+            headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' } });
+        }
+      }
+    } catch (eSnap) { console.warn('share: R2 snapshot sync failed (Postgres path still correct)', eSnap); }
   }
 
   // open({ db, projectId, viewUrl, onChange }) — fetches the fresh row itself, so callers stay dumb

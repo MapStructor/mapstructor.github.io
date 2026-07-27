@@ -2164,9 +2164,33 @@
           showToast('⚠ ' + (sessContainers - dbContainers) + ' group/section(s) shown in this window are NOT in the saved map — the published view will not have them. Refresh this page and re-create them, then publish again.', 12000);
         }
       } catch (eGhost) {}
+      // R2 SNAPSHOT MIRROR (7/27, R2 step ②·25) — viewers read the published bundle from
+      // tiles.mapstructor.com first (free egress, no Postgres compute). Delete-first invariant,
+      // same as tiles: clear the R2 copy BEFORE the Postgres write, re-PUT after — so R2 holds
+      // the CURRENT publish or nothing, and a failed mirror leaves viewers on the Postgres
+      // fallback instead of a stale publish. Private maps only get the DELETE (custom-domain
+      // objects are world-readable; the live-row visibility gate stays authoritative).
+      var snapUrl = 'https://mapstructor-worker.mapstructor.workers.dev/upload/snapshots/' + projectId + '.json';
+      var snapTok = null;
+      try { snapTok = (await db.auth.getSession()).data.session.access_token; } catch (eTok) {}
+      if (snapTok) try {
+        await fetch(snapUrl, { method: 'DELETE', headers: { Authorization: 'Bearer ' + snapTok } });
+      } catch (eDel) { console.warn('snapshot R2 pre-delete failed (fallback still correct)', eDel); }
       await db.from('project_snapshots').delete().eq('project_id', projectId).eq('label', 'published');   // one published snapshot per project
       var r = await db.from('project_snapshots').insert({ project_id: projectId, label: 'published', state: bundle });
       if (r.error) throw new Error(r.error.message);
+      if (snapTok) try {
+        var snapVis = 'link';
+        try {
+          var vr = await db.from('projects').select('is_public, raw_config').eq('id', projectId).single();
+          snapVis = (vr.data && vr.data.raw_config && vr.data.raw_config.visibility) || (vr.data && vr.data.is_public ? 'public' : 'link');
+        } catch (eVis) {}
+        if (snapVis !== 'private') {
+          var sr = await fetch(snapUrl, { method: 'PUT', body: JSON.stringify(bundle),
+            headers: { Authorization: 'Bearer ' + snapTok, 'Content-Type': 'application/json' } });
+          if (!sr.ok) console.warn('snapshot R2 mirror ' + sr.status + ' — viewers fall back to Postgres');
+        }
+      } catch (eSnap) { console.warn('snapshot R2 mirror failed — viewers fall back to Postgres', eSnap); }
       setStatus('Published ✓');
       msClearUnpublished();   // live and public are in sync again
       if (hb) { hb.textContent = 'Published ✓'; setTimeout(function () { hb.textContent = 'Publish'; hb.disabled = false; }, 2500); }

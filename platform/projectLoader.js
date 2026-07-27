@@ -147,10 +147,12 @@ window.msApplyHeaderFeature = function (visible, projectName) {
   try {
     var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
     // ── visibility gate (viewer only — the editor page has its own ownership story) ──
+    var projectGone = false;   // row confirmed absent → never boot from a lingering R2 snapshot
     if (!/editor\.html/i.test(location.pathname)) {
       try {
         var vg = await db.from("projects").select("user_id, is_public, raw_config").eq("id", platformProjectId).maybeSingle();
         var vrow = vg && vg.data;
+        if (!vg.error && !vrow) projectGone = true;
         if (vrow) {
           var vis = (vrow.raw_config && vrow.raw_config.visibility) || (vrow.is_public ? "public" : "link");
           if (vis === "private") {
@@ -166,9 +168,18 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     var live = /editor\.html/i.test(location.pathname) || new URLSearchParams(location.search).has("preview");
     var bundle = null, notPublished = false;
     if (!live) {
-      try {
+      // R2-first (step ②·25, 7/27): publishes mirror the bundle to tiles.mapstructor.com —
+      // read that copy before touching Postgres (free egress, no DB compute). Any failure →
+      // the project_snapshots query below, exactly as before. no-store: a publish must show
+      // on the very next load. Skipped when the project row is confirmed gone (ghost guard —
+      // deletes don't clean R2 snapshots yet).
+      if (!projectGone) try {
+        var rs = await fetch("https://tiles.mapstructor.com/snapshots/" + platformProjectId + ".json", { cache: "no-store" });
+        if (rs.ok) { bundle = await rs.json(); window.__msSnapshotSource = "r2"; }
+      } catch (eR2) {}
+      if (!bundle) try {
         var snap = await db.from("project_snapshots").select("state").eq("project_id", platformProjectId).eq("label", "published").order("created_at", { ascending: false }).limit(1).maybeSingle();
-        if (snap.data && snap.data.state) bundle = snap.data.state;
+        if (snap.data && snap.data.state) { bundle = snap.data.state; window.__msSnapshotSource = "postgres"; }
       } catch (e) {}
       if (!bundle) {
         notPublished = true;
