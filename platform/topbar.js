@@ -30,7 +30,7 @@
   bar.id = 'ms-topbar';
   var isMapPage = location.pathname.indexOf('/map/') > -1;
   bar.innerHTML =
-    '<div id="ms-topbar-left"><a class="ms-tb-home" href="' + (isMapPage ? '../index.html' : 'index.html') + '" title="MapStructor home"><img class="ms-tb-logo" src="' + (isMapPage ? '../images/nittygrittymapping_logo.png' : 'images/nittygrittymapping_logo.png') + '" alt=""/>MapStructor</a></div>' +
+    '<div id="ms-topbar-left"><a class="ms-tb-home" href="' + (isMapPage ? '../index.html' : 'index.html') + '" title="MapStructor home"><img class="ms-tb-logo" src="' + (isMapPage ? '../images/logo-transparent.png' : 'images/logo-transparent.png') + '" alt=""/>MapStructor</a></div>' +
     '<div id="ms-topbar-right"></div>';
 
   // Absorb the page's own <nav> into the bar: right-side links move into the right slot (one

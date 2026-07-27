@@ -58,6 +58,43 @@ export default {
         { headers: cors({ "Content-Type": "application/json" }) });
     }
 
+    /* ── showcase static serving ───────────────────────────────────────── */
+    // /maps/* = frozen public showcases stored in R2 under the same prefix
+    // (e.g. /maps/railways/). At domain-flip time a route sends
+    // mapstructor.com/maps/* here while the rest of the site serves from Pages.
+    // REVERT RULE (owner requirement): every showcase deploy ships a dated zip
+    // to archives/ — and once the mapstructor-showcases repo exists, git is the
+    // source of truth with an auto-sync Action. Never overwrite without one.
+    if (req.method === "GET" && url.pathname.startsWith("/maps/")) {
+      var mpath = decodeURIComponent(url.pathname.slice(1));   // "maps/railways/..."
+      if (mpath.includes("..")) return new Response("bad path", { status: 400, headers: cors() });
+      if (mpath.endsWith("/")) mpath += "index.html";
+      var last = mpath.split("/").pop();
+      if (!last.includes(".")) {
+        // extensionless directory hit — redirect to the slash form so relative URLs resolve
+        return new Response(null, { status: 301, headers: cors({ "Location": url.pathname + "/" }) });
+      }
+      var srange = req.headers.get("Range"), sobj;
+      if (srange) {
+        var sm = srange.match(/bytes=(\d+)-(\d+)?/);
+        if (!sm) return new Response("bad range", { status: 416, headers: cors() });
+        var soff = parseInt(sm[1], 10);
+        sobj = await env.TILES.get(mpath, { range: sm[2] ? { offset: soff, length: parseInt(sm[2], 10) - soff + 1 } : { offset: soff } });
+      } else {
+        sobj = await env.TILES.get(mpath);
+      }
+      if (!sobj) return new Response("not found", { status: 404, headers: cors() });
+      var sh = cors({ "Accept-Ranges": "bytes", "Cache-Control": "public, max-age=300" });
+      if (sobj.httpMetadata && sobj.httpMetadata.contentType) sh["Content-Type"] = sobj.httpMetadata.contentType;
+      sh["ETag"] = sobj.httpEtag;
+      if (srange && sobj.range) {
+        var send = sobj.range.offset + (sobj.range.length != null ? sobj.range.length : sobj.size - sobj.range.offset) - 1;
+        sh["Content-Range"] = "bytes " + sobj.range.offset + "-" + send + "/" + sobj.size;
+        return new Response(sobj.body, { status: 206, headers: sh });
+      }
+      return new Response(sobj.body, { headers: sh });
+    }
+
     /* ── reads ─────────────────────────────────────────────────────────── */
     if (req.method === "GET" && url.pathname.startsWith("/r2/")) {
       var key = decodeURIComponent(url.pathname.slice(4));
@@ -118,6 +155,25 @@ export default {
       });
       return new Response(JSON.stringify({ ok: true, key: ukey }),
         { headers: cors({ "Content-Type": "application/json" }) });
+    }
+
+    /* ── apex coming-soon (interim, until the GitHub Pages swap) ───────── */
+    // Routes mapstructor.com/* and www.mapstructor.com/* land here for any path
+    // not handled above. Serve the coming-soon page from R2 site/index.html.
+    // The old makeamap WordPress page is archived (CLAUDE_OUTPUTS zip) and its
+    // origin DNS is untouched — deleting the zone routes restores it instantly.
+    var host = url.hostname;
+    if (req.method === "GET" && (host === "mapstructor.com" || host === "www.mapstructor.com")) {
+      var spath = decodeURIComponent(url.pathname);
+      if (spath.includes("..")) return new Response("bad path", { status: 400, headers: cors() });
+      var skey = "site" + (spath === "/" ? "/index.html" : spath);
+      var cs = await env.TILES.get(skey);
+      if (!cs && !skey.split("/").pop().includes(".")) cs = await env.TILES.get("site/index.html");   // unknown routes → landing page
+      if (cs) {
+        var csh = cors({ "Cache-Control": "public, max-age=300" });
+        if (cs.httpMetadata && cs.httpMetadata.contentType) csh["Content-Type"] = cs.httpMetadata.contentType;
+        return new Response(cs.body, { headers: csh });
+      }
     }
 
     return new Response("not found", { status: 404, headers: cors() });

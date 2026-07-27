@@ -18,6 +18,9 @@ bucket_name = "mapstructor-tiles"
 #   SUPABASE_ANON_KEY     — the publishable key (used to validate user tokens)
 # Later: ANTHROPIC_API_KEY, GITHUB_DISPATCH_TOKEN.
 
-# Routes: none yet. First deploy serves on <name>.<account>.workers.dev, which is
-# enough for all testing. Custom domain (e.g. api.mapstructor.com) comes when
-# mapstructor.com DNS moves to Cloudflare — see worker/README.md decision #2.
+# Zone route: /maps/* (frozen showcases from R2) intercepts ONLY that path prefix
+# on the live domain — everything else keeps serving from the current origin
+# (WordPress today, GitHub Pages after the flip). Additive and reversible.
+routes = [
+  { pattern = "mapstructor.com/maps/*", zone_id = "e0770d1677077e48d164538f4f938394" }
+]

@@ -11,7 +11,7 @@
   var SB_KEY = 'sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD';
   var KEY = 'home-projects-json';
   var BUCKET = 'feature-images';               // existing public bucket (anon-insert RLS) — thumbs go under site/
-  var LOGO = 'images/nittygrittymapping_logo.png';
+  var LOGO = 'images/logo-transparent.png';
   var DEFAULT_CATEGORIES = ['Featured', 'History', 'Conservation', 'More maps'];
   var SEED_CATEGORY = 'More maps';             // where the config.js seed + un-categorized cards land
 

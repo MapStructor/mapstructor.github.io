@@ -66,7 +66,7 @@
     "engine/vendor/jquery-ui-1.10.3.custom/css/ui-darkness/images/ui-bg_inset-soft_25_000000_1x100.png"
   ];
 
-  var DEFAULT_LOGO = "../images/nittygrittymapping_logo.png";
+  var DEFAULT_LOGO = "../images/logo-transparent.png";
 
   /* ── UI ─────────────────────────────────────────────────────────────────── */
 
@@ -667,8 +667,8 @@
     try {
       var lr = await fetch(logoSrc, { cache: "no-cache" });
       if (!lr.ok) throw new Error("logo " + lr.status);
-      var isDefault = logoSrc.indexOf("nittygrittymapping_logo.png") >= 0;
-      var fname = isDefault ? "nittygrittymapping_logo.png" : ("logo." + extFromType(lr.headers.get("content-type") || ""));
+      var isDefault = logoSrc.indexOf("nittygrittymapping_logo.png") >= 0 || logoSrc.indexOf("logo-transparent.png") >= 0;
+      var fname = isDefault ? "logo-transparent.png" : ("logo." + extFromType(lr.headers.get("content-type") || ""));
       zip.file("images/" + fname, await lr.arrayBuffer());
       faviconHref = logoImgSrc = "../images/" + fname;
     } catch (e) {
@@ -680,8 +680,8 @@
     // 5. the transformed viewer shell
     setStatus("Writing index.html…");
     var html = transformIndexHtml(await fetchText("index.html"), variant);
-    html = html.replace(/href="\.\.\/images\/nittygrittymapping_logo\.png"/, "href=\"" + faviconHref + "\"");
-    html = html.replace(/src="\.\.\/images\/nittygrittymapping_logo\.png"/, "src=\"" + logoImgSrc + "\"");
+    html = html.replace(/href="\.\.\/images\/logo-transparent\.png"/, "href=\"" + faviconHref + "\"");
+    html = html.replace(/src="\.\.\/images\/logo-transparent\.png"/, "src=\"" + logoImgSrc + "\"");
     zip.file("map/index.html", html);
 
     // 6. raw data exports
