@@ -1,14 +1,33 @@
 # Parallel development — the two-window system
 
-*(Design doc — nothing is set up yet. A nicer-to-read version: open `PARALLEL.html` in a browser.)*
+*(Set up 2026-07-27. A nicer-to-read version: open `PARALLEL.html` in a browser.)*
 
-## Activation (when you're ready — or ask Claude "set up parallel dev")
+## ⚠ How to always know you're in B, not A
+
+Three signals, on every surface you touch — you never have to remember:
+
+| Surface | Window A (main) | Window B (side) |
+|---|---|---|
+| **Browser** | green **WINDOW A · master** badge at top-center; URL is **:8000** | **orange WINDOW B · dev-B** badge at top-center; URL is **:8001**; the tab title starts with **🅱** |
+| **Terminal** (the serve window) | green screen titled *WINDOW A* | **yellow screen titled ## WINDOW B ##** |
+| **VS Code** | default title bar | **bright-orange title bar + activity bar**, title starts with **🅱** |
+
+The browser badge is drawn by `platform/topbar.js`, gated to `localhost` by **port** (8000→A, 8001→B) — it never appears on the real domain, so it's safe in the committed code. The VS Code coloring lives in `mapstructor-B/.vscode/settings.json`, which is git-ignored (shared `.git/info/exclude`) so it stays in B and never travels to master.
+
+**The one rule that makes the port reliable:** always start each folder with **its own** serve bat — `serve-8000.bat` in the main folder, `serve-8001.bat` in `mapstructor-B`. Same port ⇒ same window, every time.
+
+## Already set up (2026-07-27)
 
 ```
-git worktree add ../mapstructor-B -b dev-B
+git worktree add ../mapstructor-B -b dev-B     # done — the B worktree exists
 ```
 
-…then drop a `serve-8001.bat` in the new folder (`python -m http.server 8001`) and copy this doc into it. One command undoes it all: `git worktree remove ../mapstructor-B`.
+- `c:\repos\mapstructor-B` — the B worktree on branch `dev-B`
+- `mapstructor-B\serve-8001.bat` and `mapstructor.github.io\serve-8000.bat` — double-click to serve each window
+- `mapstructor-B\.vscode\settings.json` — the orange B chrome (git-ignored)
+- the `platform/topbar.js` badge — in both worktrees
+
+Undo it all: `git worktree remove ../mapstructor-B` (from the main folder), then `git branch -d dev-B` once merged.
 
 ## The two folders
 
