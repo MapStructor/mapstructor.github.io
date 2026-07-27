@@ -38,6 +38,14 @@
     } catch (e) { return ""; }
   }
   function slugOf(lid, cfg) {
+    // standalone copies pre-resolve the slug at download time (embedded sources rewrite the tile
+    // URLs, so the id-in-URL match below can't work there)
+    if (Array.isArray(window.rasterScrubData)) {
+      for (var i = 0; i < window.rasterScrubData.length; i++) {
+        var d = window.rasterScrubData[i];
+        if (d.lid === lid && d.slug) return d.slug;
+      }
+    }
     // converted layers carry their db id inside their tile URL (pmt/{pid}/{lid}/…) — works on
     // viewer AND editor, no dependency on editing.js internals
     try {
@@ -328,9 +336,16 @@
   }
 
   async function load(pid) {
-    var db = MapAuth.db;
-    var r = await db.from("project_layers").select("layers(id, raw_config)").eq("project_id", pid);
-    ((r && r.data) || []).forEach(function (row) {
+    // standalone downloads carry the baked configs as a generated global (URLs point at files
+    // inside the zip) — same rows the platform reads from Supabase, no MapAuth/db needed
+    var rows;
+    if (Array.isArray(window.rasterScrubData)) {
+      rows = window.rasterScrubData.map(function (d) { return { layers: { id: d.lid, raw_config: { rasterYears: d.cfg } } }; });
+    } else {
+      var r = await MapAuth.db.from("project_layers").select("layers(id, raw_config)").eq("project_id", pid);
+      rows = (r && r.data) || [];
+    }
+    rows.forEach(function (row) {
       var L = row.layers, ry = L && L.raw_config && L.raw_config.rasterYears;
       if (ry && (ry.url || ry.levels) && ry.bounds) S.items.push({
         lid: L.id, cfg: ry, color: colorOf(L.id, ry), slug: slugOf(L.id, ry),
@@ -354,8 +369,10 @@
   function boot() {
     tries++;
     var pid = (typeof platformProjectId !== "undefined" && platformProjectId) ? platformProjectId : window.platformProjectId;
-    if (!pid || typeof MapAuth === "undefined" || !MapAuth.db || typeof $ === "undefined" || !$.fn || typeof beforeMap === "undefined" || !beforeMap || !beforeMap.getContainer) {
-      if (tries < 40) setTimeout(boot, 500);   // static maps never qualify — boot gives up quietly
+    var staticData = Array.isArray(window.rasterScrubData);   // standalone copy: no Supabase, no project id
+    var needPlatform = !staticData && (!pid || typeof MapAuth === "undefined" || !MapAuth.db);
+    if (needPlatform || typeof $ === "undefined" || !$.fn || typeof beforeMap === "undefined" || !beforeMap || !beforeMap.getContainer) {
+      if (tries < 40) setTimeout(boot, 500);   // static maps without baked data never qualify — boot gives up quietly
       return;
     }
     load(pid).catch(function (e) { console.warn("rasterScrub: disabled (" + (e && e.message) + ")"); });
