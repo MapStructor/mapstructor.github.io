@@ -12,16 +12,26 @@
                                         This is the write chokepoint from the decisions doc:
                                         every browser write passes here, so a runaway loop
                                         is rate-limitable in exactly one place.
+                                        tiles/<pid>/… keys require OWNERSHIP of <pid> (7/27).
+     DELETE /upload/<key>             — authenticated delete (same ownership rule). Exists for
+                                        the dual-write invariant: publishes DELETE the R2 copy
+                                        before re-uploading, so R2 always holds the CURRENT
+                                        archive or nothing (stale-R2 can never shadow Supabase).
 
-   Not yet built (TODO markers below): ownership check on uploads, per-key rate limit,
-   private-map read gating, AI proxy, tile-job dispatch. */
+   Not yet built (TODO markers below): per-key rate limit, private-map read gating,
+   AI proxy, tile-job dispatch. */
 
 var ALLOW_ORIGIN = "*";   // tighten to the site origins at custom-domain time
+
+// The one admin account. Non-tiles upload keys (site/, maps/, archives/ — the public web
+// surfaces) accept ONLY this user; without the gate any signed-up account could overwrite
+// the landing page or a showcase. Not a secret — it's an identity, verified via the token.
+var ADMIN_EMAIL = "nittyjee@gmail.com";
 
 function cors(extra) {
   var h = {
     "Access-Control-Allow-Origin": ALLOW_ORIGIN,
-    "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Range",
     "Access-Control-Expose-Headers": "ETag, Content-Range, Accept-Ranges"
   };
@@ -133,18 +143,40 @@ export default {
     }
 
     /* ── writes (the chokepoint) ───────────────────────────────────────── */
-    if (req.method === "PUT" && url.pathname.startsWith("/upload/")) {
+    if ((req.method === "PUT" || req.method === "DELETE") && url.pathname.startsWith("/upload/")) {
       var ukey = decodeURIComponent(url.pathname.slice(8));
       if (!ukey || ukey.includes("..")) return new Response("bad key", { status: 400, headers: cors() });
 
       var user = await supabaseUser(env, req);
       if (!user || !user.id) return new Response("auth required", { status: 401, headers: cors() });
 
-      // TODO(ownership): keys are <projectId>/<layerId>.<ext> — verify user owns
-      // <projectId> via a PostgREST lookup before accepting. Skeleton accepts any
-      // authenticated user; do NOT deploy beyond testing without this check.
+      // OWNERSHIP (7/27): tile keys are tiles/<projectId>/<file> — the caller must own
+      // <projectId>. Checked with the CALLER'S OWN token (RLS lets anyone SELECT public
+      // projects, so visibility isn't enough — compare user_id). Non-tiles keys have no
+      // owner model yet and stay auth-only.
+      var tm = ukey.match(/^tiles\/([0-9a-f-]{36})\//);
+      if (tm) {
+        try {
+          var pr = await fetch(env.SUPABASE_URL + "/rest/v1/projects?id=eq." + tm[1] + "&select=user_id", {
+            headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY }
+          });
+          var rows = pr.ok ? await pr.json() : [];
+          if (!rows.length || rows[0].user_id !== user.id) {
+            return new Response("not your project", { status: 403, headers: cors() });
+          }
+        } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
+      } else if ((user.email || "").toLowerCase() !== ADMIN_EMAIL) {
+        // site/, maps/, archives/, anything else = the public web surfaces — admin only
+        return new Response("admin only", { status: 403, headers: cors() });
+      }
       // TODO(rate-limit): per-user upload counter (Workers KV or Durable Object),
       // far above human speed — the R2 write-meter guard from the decisions doc.
+
+      if (req.method === "DELETE") {
+        await env.TILES.delete(ukey);
+        return new Response(JSON.stringify({ ok: true, deleted: ukey }),
+          { headers: cors({ "Content-Type": "application/json" }) });
+      }
 
       var len = parseInt(req.headers.get("Content-Length") || "0", 10);
       if (len > MAX_UPLOAD_BYTES) return new Response("too large — multipart path not built yet", { status: 413, headers: cors() });

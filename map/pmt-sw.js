@@ -1,21 +1,29 @@
-/* pmt-sw.js — service worker that serves auto-converted layers' vector tiles straight from
-   their .pmtiles archives in Supabase Storage. No tile server anywhere: the page requests
-   /map/pmt/<projectId>/<layerId>/{z}/{x}/{y}.pbf (a URL that exists only here), this worker
-   range-reads the archive and answers with the raw tile. mapbox-gl (and its worker thread —
-   controlled pages' dedicated workers route through this SW too) sees an ordinary tile URL.
+/* pmt-sw.js — DUAL-SOURCE tile service worker (LIVE 7/27): R2 first (tiles.mapstructor.com,
+   free egress), Supabase Storage fallback. Serves auto-converted layers' vector tiles straight
+   from their .pmtiles archives — the page requests /map/pmt/<pid>/<lid>/{z}/{x}/{y}.pbf and
+   this worker range-reads the archive and answers with the raw tile.
 
-   PMTiles v3 reading = the same logic as the repo's python server (mapdiag/pmtiles_tile_server.py,
-   proven byte-identical to the production Cloudflare worker): Hilbert tile ids, delta-varint
-   directories, leaf-directory recursion, gzip throughout. Registered by projectLoader only when
-   the map actually has a pmt/ layer. */
+   Source model:
+   - Each layer's archive is tried on R2 first; any failure (404 during a migration window,
+     network error, bad archive) falls back to Supabase Storage. The winning source is
+     remembered per layer so steady-state tiles never double-probe; a later failure of the
+     remembered source clears the memo and re-probes both.
+   - FRESHNESS: publishes dual-write through the Worker chokepoint with a delete-first
+     invariant (tilegen.js) — R2 holds the CURRENT archive or nothing, so a stale R2 copy
+     can never shadow a fresh Supabase one.
+   All ETag staleness / retry-once semantics apply per-URL. */
 
 var SUPABASE_URL = "https://eqpxlwbjqiwfjlsuapvu.supabase.co";
 var BUCKET = "tiles";
 
+/* R2 public read base — the bucket's custom domain; keys mirror the Supabase layout:
+   <base>/<projectId>/<layerId>.pmtiles. Set to null to fall back to Supabase-only. */
+var R2_BASE = "https://tiles.mapstructor.com/tiles";
+
 self.addEventListener("install", function () { self.skipWaiting(); });
 self.addEventListener("activate", function (e) { e.waitUntil(self.clients.claim()); });
 
-/* ── PMTiles v3 reading ─────────────────────────────────────────────────── */
+/* ── PMTiles v3 reading (unchanged from pmt-sw.js) ──────────────────────── */
 
 function readVarints(u8) {
   var out = [], shift = 0, val = 0;
@@ -85,17 +93,19 @@ async function gunzip(buf) {
 // most once a minute.
 var archives = {};
 
-var _lastRangeEtag = null;   // etag of the most recent range response (captured for openArchive)
+// Returns { buf, etag }. The etag rides WITH the response — it was previously a module
+// global (_lastRangeEtag), which raced when several archives opened concurrently at page
+// boot: archive A captured archive B's etag and every later read of A threw a spurious
+// "archive-changed" (surfaced 7/27 when fast R2 responses made the race near-certain).
 async function rangeRead(url, offset, length, expectEtag) {
   var r = await fetch(url, { headers: { Range: "bytes=" + offset + "-" + (offset + length - 1) }, cache: "no-store" });
   if (!(r.status === 206 || r.status === 200)) throw new Error("range read " + r.status);
   var tag = r.headers.get("etag");
-  _lastRangeEtag = tag || _lastRangeEtag;
   if (expectEtag && tag && tag !== expectEtag) throw new Error("archive-changed");
   var buf = new Uint8Array(await r.arrayBuffer());
   // a 200 (no range support) returns the whole object — slice what was asked for
   if (r.status === 200 && buf.length > length) buf = buf.slice(offset, offset + length);
-  return buf;
+  return { buf: buf, etag: tag };
 }
 
 function u64(dv, off) { return dv.getUint32(off, true) + dv.getUint32(off + 4, true) * 4294967296; }
@@ -113,8 +123,8 @@ async function openArchive(url) {
     }
     if (cached) return cached;
   }
-  var head = await rangeRead(url, 0, 16384);
-  var headEtag = _lastRangeEtag;
+  var hr = await rangeRead(url, 0, 16384);
+  var head = hr.buf, headEtag = hr.etag;
   if (!(head[0] === 0x50 && head[1] === 0x4d && head[7] === 3)) throw new Error("not a PMTiles v3 archive");
   var dv = new DataView(head.buffer, head.byteOffset);
   var h = {
@@ -124,44 +134,88 @@ async function openArchive(url) {
     internalGz: head[97] === 2, tileGz: head[98] === 2
   };
   var rootRaw = head.slice(h.rootOff, h.rootOff + h.rootLen);
-  if (rootRaw.length < h.rootLen) rootRaw = await rangeRead(url, h.rootOff, h.rootLen, headEtag);
+  if (rootRaw.length < h.rootLen) rootRaw = (await rangeRead(url, h.rootOff, h.rootLen, headEtag)).buf;
   var root = parseDirectory(h.internalGz ? await gunzip(rootRaw) : rootRaw);
   archives[url] = { header: h, root: root, leaves: {}, etag: headEtag, checkedAt: Date.now() };
   return archives[url];
 }
 
-async function serveTile(pid, lid, z, x, y, retried) {
-  var url = SUPABASE_URL + "/storage/v1/object/public/" + BUCKET + "/" + pid + "/" + lid + ".pmtiles";
-  try {
-    var a = await openArchive(url);
-    var tid = zxyToTileId(z, x, y);
-    var entries = a.root;
-    for (var depth = 0; depth < 4; depth++) {
-      var hit = findEntry(entries, tid);
-      if (!hit) return new Response(null, { status: 204 });
-      if (hit.tile) {
-        var bytes = await rangeRead(url, a.header.dataOff + hit.tile.offset, hit.tile.length, a.etag);
-        if (a.header.tileGz) bytes = await gunzip(bytes);   // synthetic responses aren't content-decoded by the browser — serve raw
-        return new Response(bytes, { headers: { "Content-Type": "application/x-protobuf", "Cache-Control": "public, max-age=300" } });
-      }
-      var key = hit.leaf.offset + "," + hit.leaf.length;
-      if (!a.leaves[key]) {
-        var raw = await rangeRead(url, a.header.leafOff + hit.leaf.offset, hit.leaf.length, a.etag);
-        a.leaves[key] = parseDirectory(a.header.internalGz ? await gunzip(raw) : raw);
-      }
-      entries = a.leaves[key];
+/* ── Dual-source resolution (the only new logic) ────────────────────────── */
+
+// pid/lid → url that most recently served this layer successfully
+var chosenSource = {};
+// url → last error string (debug seam — reported via the ms-sources message)
+var lastErrors = {};
+
+function candidateUrls(pid, lid) {
+  var key = pid + "/" + lid + ".pmtiles";
+  var urls = [];
+  if (R2_BASE) urls.push(R2_BASE.replace(/\/$/, "") + "/" + key);
+  urls.push(SUPABASE_URL + "/storage/v1/object/public/" + BUCKET + "/" + key);
+  return urls;
+}
+
+async function serveTileFrom(url, z, x, y, retried) {
+  var a = await openArchive(url);
+  var tid = zxyToTileId(z, x, y);
+  var entries = a.root;
+  for (var depth = 0; depth < 4; depth++) {
+    var hit = findEntry(entries, tid);
+    if (!hit) return new Response(null, { status: 204 });
+    if (hit.tile) {
+      var bytes = (await rangeRead(url, a.header.dataOff + hit.tile.offset, hit.tile.length, a.etag)).buf;
+      if (a.header.tileGz) bytes = await gunzip(bytes);   // synthetic responses aren't content-decoded by the browser — serve raw
+      return new Response(bytes, { headers: { "Content-Type": "application/x-protobuf", "Cache-Control": "public, max-age=300" } });
     }
-    return new Response(null, { status: 204 });
-  } catch (err) {
-    // archive regenerated mid-session (etag mismatch) or a decode straddled versions — drop the
-    // cached directories and retry ONCE against the fresh file
-    if (!retried) { delete archives[url]; return serveTile(pid, lid, z, x, y, true); }
-    return new Response(String(err), { status: 502 });
+    var key = hit.leaf.offset + "," + hit.leaf.length;
+    if (!a.leaves[key]) {
+      var raw = (await rangeRead(url, a.header.leafOff + hit.leaf.offset, hit.leaf.length, a.etag)).buf;
+      a.leaves[key] = parseDirectory(a.header.internalGz ? await gunzip(raw) : raw);
+    }
+    entries = a.leaves[key];
   }
+  return new Response(null, { status: 204 });
+}
+
+async function serveTile(pid, lid, z, x, y) {
+  var memoKey = pid + "/" + lid;
+  var urls = chosenSource[memoKey] ? [chosenSource[memoKey]] : candidateUrls(pid, lid);
+  var lastErr = null;
+  for (var i = 0; i < urls.length; i++) {
+    var url = urls[i];
+    try {
+      var resp = await serveTileFrom(url, z, x, y);
+      chosenSource[memoKey] = url;
+      return resp;
+    } catch (err) {
+      // archive regenerated mid-session (etag mismatch) or a decode straddled versions — drop
+      // the cached directories and retry ONCE against the fresh file before failing over
+      try {
+        delete archives[url];
+        var resp2 = await serveTileFrom(url, z, x, y);
+        chosenSource[memoKey] = url;
+        return resp2;
+      } catch (err2) { lastErr = err2; lastErrors[url] = String(err2 && err2.message || err2); delete archives[url]; }
+    }
+  }
+  // the remembered source died and there was no alternate in this pass — re-probe everything once
+  if (chosenSource[memoKey]) {
+    delete chosenSource[memoKey];
+    return serveTile(pid, lid, z, x, y);
+  }
+  return new Response(String(lastErr), { status: 502 });
 }
 
 self.addEventListener("fetch", function (e) {
   var m = e.request.url.match(/\/pmt\/([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.pbf(?:\?.*)?$/);
   if (!m) return;   // not ours — the network handles it
   e.respondWith(serveTile(m[1], m[2], parseInt(m[3], 10), parseInt(m[4], 10), parseInt(m[5], 10)));
+});
+
+// debug/verification seam: pages (and the future watchdog) can ask which source each layer
+// is actually serving from — postMessage("ms-sources") → {type:"ms-sources", sources:{pid/lid:url}}
+self.addEventListener("message", function (e) {
+  if (e.data === "ms-sources" && e.source) {
+    e.source.postMessage({ type: "ms-sources", r2Base: R2_BASE, sources: chosenSource, errors: lastErrors });
+  }
 });

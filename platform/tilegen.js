@@ -401,10 +401,23 @@
   // test seam: the E2E injects a service-key uploader; real sessions use the signed-in client
   // (needs the storage policies from mapstructor_docs/sql/setup/tilegen-setup.sql — authenticated INSERT/UPDATE on `tiles`)
   var uploadFn = null;
+  var WORKER_BASE = "https://mapstructor-worker.mapstructor.workers.dev";
   async function upload(db, projectId, layerId, bytes) {
     if (uploadFn) return uploadFn(projectId, layerId, bytes);
     var path = projectId + "/" + layerId + ".pmtiles";
     var blob = new Blob([bytes], { type: "application/octet-stream" });
+
+    // R2 DUAL-WRITE (7/27 — tiles serve from tiles.mapstructor.com first, Supabase fallback).
+    // Invariant: R2 holds the CURRENT archive or NOTHING — a stale R2 copy would shadow the
+    // fresh Supabase one (success never fails over). So: DELETE the R2 key BEFORE the Supabase
+    // upload; re-PUT after it succeeds. Both R2 legs are best-effort (Supabase stays the
+    // publish gate); the Worker enforces ownership of <projectId>.
+    var token = null;
+    try { token = (await db.auth.getSession()).data.session.access_token; } catch (e) {}
+    if (token) try {
+      await fetch(WORKER_BASE + "/upload/tiles/" + path, { method: "DELETE", headers: { Authorization: "Bearer " + token } });
+    } catch (e) { console.warn("tilegen: R2 pre-delete failed (fallback still correct)", e); }
+
     // NEVER upsert:true — storage's upsert path needs SELECT visibility on storage.objects and
     // fails as a bogus "violates row-level security" (the 7/15 all-day mystery: plain insert 200,
     // upsert 403 with identical, correct policies). Plain insert; on "already exists" delete+retry.
@@ -414,6 +427,14 @@
       r = await db.storage.from(BUCKET).upload(path, blob, { upsert: false });
     }
     if (r.error) throw new Error("tile upload failed: " + r.error.message);
+
+    if (token) try {
+      var rw = await fetch(WORKER_BASE + "/upload/tiles/" + path, {
+        method: "PUT", body: blob,
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/octet-stream" }
+      });
+      if (!rw.ok) console.warn("tilegen: R2 mirror write " + rw.status + " — viewers fall back to Supabase for this layer");
+    } catch (e) { console.warn("tilegen: R2 mirror write failed — viewers fall back to Supabase for this layer", e); }
   }
 
   // features (geojson Feature[] with .id = features.feature_id) → archive → storage → the layers
