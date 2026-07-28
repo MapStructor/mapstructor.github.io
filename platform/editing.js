@@ -271,7 +271,7 @@
             try {
               if (ctype === 'section') cnode._dbId = await insertOne(table, sectionRow(cnode, idx));
               else cnode._dbId = await insertOne(table, groupRow(cnode, secId, idx));
-            } catch (e) {}
+            } catch (e) { setStatus('Save failed'); showToast('Undo failed to save: ' + (e && e.message ? e.message : 'error')); }
             kids.forEach(function (k) { removeFromTree(layers, k); });   // pull them back out of wherever they landed
             cnode.children = kids;
             var a = arr || layers; a.splice(Math.min(idx, a.length), 0, cnode);
@@ -313,13 +313,13 @@
         removeFromTree(layers, node);
         (function (n, llid, fields, arr, idx) {
           async function readd() {
-            if (llid) { try { await db.from('project_layers').insert({ project_id: projectId, layer_id: llid, section_id: fields ? fields.section_id : null, group_id: fields ? fields.group_id : null, sort_order: fields ? fields.sort_order : nextSort++ }); } catch (e) {} }
+            if (llid) await saveGuard(db.from('project_layers').insert({ project_id: projectId, layer_id: llid, section_id: fields ? fields.section_id : null, group_id: fields ? fields.group_id : null, sort_order: fields ? fields.sort_order : nextSort++ }), null, 'Undo failed to save').catch(function () {});
             if (arr) arr.splice(Math.min(idx, arr.length), 0, n); else layers.push(n);
             rerender(); await loadFeatures();
             if (isTilesetNode(n)) renderTilesetOnMap(n);   // (large geojson layers re-render on reload)
           }
           async function reremove() {
-            if (llid) { try { await db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', llid); } catch (e) {} }
+            if (llid) await saveGuard(db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', llid), null, 'Undo failed to save').catch(function () {});
             removeMapLayers(n.id); removeFromTree(layers, n); rerender(); await loadFeatures();
           }
           pushUndo(readd, reremove, 'delete ' + (n.label || 'layer'));
@@ -331,10 +331,12 @@
   }
   async function setNodeName(id, name) {
     var node = findNodeById(layers, id); if (!node) return;
-    if (node.type === 'section')      { try { await db.from('layer_sections').update({ name: name }).eq('id', node._dbId); } catch (e) {} }
-    else if (node.type === 'group')   { try { await db.from('layer_groups').update({ name: name }).eq('id', node._dbId); } catch (e) {} }
-    else { var lid = slugToLayerDbId[node.id]; if (lid) { try { await db.from('layers').update({ name: name }).eq('id', lid); } catch (e) {} } }
-    node.label = name; rerender();
+    try {
+      if (node.type === 'section')      await saveGuard(db.from('layer_sections').update({ name: name }).eq('id', node._dbId), null, 'Rename failed');
+      else if (node.type === 'group')   await saveGuard(db.from('layer_groups').update({ name: name }).eq('id', node._dbId), null, 'Rename failed');
+      else { var lid = slugToLayerDbId[node.id]; if (lid) await saveGuard(db.from('layers').update({ name: name }).eq('id', lid), null, 'Rename failed'); }
+      node.label = name; rerender();   // persisted → adopt the new name
+    } catch (e) { rerender(); }        // failed (saveGuard already surfaced it) → revert the panel to the stored name
   }
   async function commitRename(id, name) {
     var node = findNodeById(layers, id); if (!node) return;
@@ -1806,6 +1808,18 @@
     el.textContent = msg; el.style.display = 'block';
     clearTimeout(_toastTimer);
     _toastTimer = setTimeout(function () { el.style.display = 'none'; }, ms || 3200);
+  }
+  // #9f: a DB write must never fail silently. Supabase RESOLVES with {error} rather than throwing, so
+  // an un-checked write drops the error and the UI still reads "Saved". saveGuard awaits the write,
+  // treats {error} OR a throw as failure → prominent toast + the "Save failed" status (which arms the
+  // unsaved-changes guard, since the data is NOT persisted) → re-throws so callers can revert/react.
+  async function saveGuard(op, okMsg, failLabel) {
+    var r;
+    try { r = await (typeof op === 'function' ? op() : op); }
+    catch (e) { setStatus('Save failed'); showToast((failLabel || 'Save failed') + ': ' + (e && e.message ? e.message : 'error')); throw e; }
+    if (r && r.error) { setStatus('Save failed'); showToast((failLabel || 'Save failed') + ': ' + (r.error.message || 'error')); throw new Error(r.error.message || 'write failed'); }
+    if (okMsg) setStatus(okMsg);
+    return r;
   }
   // ── Map settings: rename the map + save the current view as its default (per-project `projects` row) ──
   // ── In-place popup editing: clicking the ℹ "About" button (or a layer/group info button) opens the
@@ -4665,7 +4679,7 @@
     var meta = featureMeta[drawId] || {};
     setStatus('Saving…');
     try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null, start_date: meta.start || null, end_date: meta.end || null, content_id: meta.pageid || null, image_url: meta.image_url || null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
-    catch (e) { console.warn('editing: feature meta save failed', e); setStatus('Save failed'); }
+    catch (e) { console.warn('editing: feature meta save failed', e); setStatus('Save failed'); try { showToast('Save failed: ' + (e && e.message ? e.message : 'error')); } catch (x) {} }
   }
   function updateImagePreview(url) {   // small thumbnail under the URL field in the feature panel
     var img = document.getElementById('efp-image-preview'); if (!img) return;
