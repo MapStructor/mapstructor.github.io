@@ -27,9 +27,25 @@ Some files exist **only in B** and must never be committed to `dev-B` and merged
 | `platform/window-badge.js` | the badge markup/logic, injected by `serve.py` |
 | `.vscode/settings.json` | B's orange editor chrome |
 
-**How they're kept B-only:** each is listed in `.git/info/exclude` (the repo's *local, un-committed* ignore list, shared by both worktrees). Git therefore treats them as untracked in B — they never appear in `git status`, can't be `git add`ed by accident, and never enter a commit. To add a new B-only file, append its path to `.git/info/exclude`.
+**How they're kept B-only:** each is listed in `.git/info/exclude` (the repo's *local, un-committed* ignore list, shared by both worktrees). Git therefore treats them as untracked in B — they never appear in `git status`, can't be `git add`ed by accident, and never enter a commit. To add a new B-only file, append its path to `.git/info/exclude`. The current B-only set: `.claude/`, `CLAUDE.md`, `_B-handoff/`, `serve.py`, `serve-8001.bat`, `platform/window-badge.js`, `.vscode/`.
 
 **Rule of the road:** the badge and any window-identity aid go in `serve.py` / `window-badge.js` (B-only), **never** in shared platform files. That keeps A and production completely unaware they exist.
+
+## B's brain: common memory, permissions, and the docs handoff
+
+B starts blank — a fresh worktree has no memory, no permission config, no secrets. It's set up
+(B-only files, git-ignored) so B inherits everything without polluting master:
+
+- **Common memory.** `mapstructor-B/CLAUDE.md` auto-loads on B's Claude startup and points it at the
+  shared brain: `mapstructor_docs/claude/briefing.md` + `claude/memory/MEMORY.md`. B follows every
+  convention and correction we developed in A — same rules, one brain.
+- **Permission bypass.** `mapstructor-B/.claude/settings.local.json` mirrors A's bypass
+  (`defaultMode: bypassPermissions`) with B's `additionalDirectories` (`mapstructor_docs`,
+  `mapstructor.github.io\secrets`, `Temp\mapdiag`). Without it B would prompt on every action.
+- **Docs are A-only; B hands off via `_B-handoff/`.** The shared docs (`mapstructor_docs`: time-log,
+  todo, memory) have **one writer — A** — so those single files never collide. B never edits them.
+  Anything B wants recorded goes in `mapstructor-B/_B-handoff/`; A reads it when merging `dev-B`,
+  folds it into the real docs, and clears the folder. (A lighter process to be refined later.)
 
 ## Before any git operation in B — check nothing is running
 
@@ -50,7 +66,8 @@ git worktree add ../mapstructor-B -b dev-B     # done — the B worktree exists
 - `c:\repos\mapstructor-B` — the B worktree on branch `dev-B`
 - `mapstructor-B\serve-8001.bat` and `mapstructor.github.io\serve-8000.bat` — double-click to serve each window
 - `mapstructor-B\.vscode\settings.json` — the orange B chrome (git-ignored)
-- the `platform/topbar.js` badge — in both worktrees
+- `mapstructor-B\serve.py` + `platform\window-badge.js` — the B-only browser badge injector
+- `mapstructor-B\CLAUDE.md` + `.claude\settings.local.json` + `_B-handoff\` — B's common-memory loader, permission bypass, and docs-handoff outbox (all B-only)
 
 Undo it all: `git worktree remove ../mapstructor-B` (from the main folder), then `git branch -d dev-B` once merged.
 
