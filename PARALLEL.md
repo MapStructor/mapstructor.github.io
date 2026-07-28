@@ -12,9 +12,34 @@ Three signals, on every surface you touch — you never have to remember:
 | **Terminal** (the serve window) | green screen titled *WINDOW A* | **yellow screen titled ## WINDOW B ##** |
 | **VS Code** | default title bar | **bright-orange title bar + activity bar**, title starts with **🅱** |
 
-The browser badge is drawn by `platform/topbar.js`, gated to `localhost` by **port** (8000→A, 8001→B) — it never appears on the real domain, so it's safe in the committed code. The VS Code coloring lives in `mapstructor-B/.vscode/settings.json`, which is git-ignored (shared `.git/info/exclude`) so it stays in B and never travels to master.
+The browser badge is **injected at serve time by `mapstructor-B/serve.py`** (via `platform/window-badge.js`) — it is **never** in the committed platform code, so it can never reach A or production. The VS Code coloring lives in `mapstructor-B/.vscode/settings.json`. Both are B-only (see below).
 
-**The one rule that makes the port reliable:** always start each folder with **its own** serve bat — `serve-8000.bat` in the main folder, `serve-8001.bat` in `mapstructor-B`. Same port ⇒ same window, every time.
+**The one rule that makes the port reliable:** always start each folder with **its own** serve script — the plain server for A on :8000, `serve-8001.bat` (→ `serve.py`) for B on :8001. Same port ⇒ same window, every time.
+
+## B-only — never travels to master
+
+Some files exist **only in B** and must never be committed to `dev-B` and merged into `master` (they're dev aids / would pollute production):
+
+| B-only file | What it is |
+|---|---|
+| `serve.py` | local dev server that injects the window badge |
+| `serve-8001.bat` | B's launcher (calls `serve.py 8001`) |
+| `platform/window-badge.js` | the badge markup/logic, injected by `serve.py` |
+| `.vscode/settings.json` | B's orange editor chrome |
+
+**How they're kept B-only:** each is listed in `.git/info/exclude` (the repo's *local, un-committed* ignore list, shared by both worktrees). Git therefore treats them as untracked in B — they never appear in `git status`, can't be `git add`ed by accident, and never enter a commit. To add a new B-only file, append its path to `.git/info/exclude`.
+
+**Rule of the road:** the badge and any window-identity aid go in `serve.py` / `window-badge.js` (B-only), **never** in shared platform files. That keeps A and production completely unaware they exist.
+
+## Before any git operation in B — check nothing is running
+
+Git operations that rewrite many files at once (`merge`, `stash`, `checkout <branch>`) can collide with a live server or an open editor mid-write. **Plain file edits are safe anytime; branch-level git ops are not.** Check first:
+
+```
+netstat -ano | findstr ":8001 .*LISTENING"     # a line = B's server is live
+```
+
+If B's server (or a task) is running, finish/stop it before merging or switching. Simple edits and commits are fine.
 
 ## Already set up (2026-07-27)
 

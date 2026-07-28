@@ -6,35 +6,9 @@
   'use strict';
   if (window.__msTopbarBuilt) return;
   window.__msTopbarBuilt = true;
-
-  // ── Parallel-dev window identity (LOCAL ONLY — never shows on the real domain) ──
-  // A loud fixed badge so you always know which window/worktree a browser tab belongs to:
-  //   localhost:8000 → green "WINDOW A · master"   ·   localhost:8001 → orange "WINDOW B · dev-B"
-  // Port is the source of truth (A serves 8000, B serves 8001). Any other localhost port = grey "?".
-  // Safe to commit: gated to localhost, so production (mapstructor.com / github.io) shows nothing.
-  try {
-    var _h = location.hostname, _p = location.port;
-    if (_h === 'localhost' || _h === '127.0.0.1') {
-      var win = _p === '8001' ? { t: 'WINDOW B · dev-B', bg: '#d9822b', fg: '#fff' }
-              : _p === '8000' ? { t: 'WINDOW A · master', bg: '#2e7d32', fg: '#fff' }
-              : { t: 'WINDOW ? · :' + (_p || '80'), bg: '#555', fg: '#fff' };
-      var mk = function () {
-        if (document.getElementById('ms-window-badge')) return;
-        var d = document.createElement('div');
-        d.id = 'ms-window-badge';
-        d.textContent = win.t;
-        d.title = 'Which parallel-dev window this tab is served from (local only). ' + location.origin;
-        d.style.cssText = 'position:fixed;left:50%;top:0;transform:translateX(-50%);z-index:2147483647;' +
-          'background:' + win.bg + ';color:' + win.fg + ';font:700 12px/1 "Source Sans Pro",Arial,sans-serif;' +
-          'letter-spacing:.4px;padding:5px 14px;border-radius:0 0 8px 8px;box-shadow:0 2px 8px rgba(0,0,0,.3);' +
-          'pointer-events:none;user-select:none;';
-        (document.body || document.documentElement).appendChild(d);
-        // also stamp the tab title so it shows even when the tab isn't focused
-        try { if (win.t.indexOf('WINDOW B') === 0 && document.title.indexOf('🅱') !== 0) document.title = '🅱 ' + document.title; } catch (e) {}
-      };
-      if (document.body) mk(); else document.addEventListener('DOMContentLoaded', mk);
-    }
-  } catch (e) {}
+  // NOTE: the parallel-dev "WINDOW A/B" badge is intentionally NOT here. It is a B-only dev aid,
+  // injected at serve time by mapstructor-B/serve.py (+ window-badge.js) so it can NEVER reach
+  // master or production. See PARALLEL.md § "B-only — never travels to master".
 
   var css =
     '#ms-topbar{height:40px;box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:0 12px;background:#f7f7f7;border-bottom:1px solid #ddd;font:600 13px/1 "Source Sans Pro",Arial,sans-serif;color:#444;position:sticky;top:0;z-index:1200;}' +   // sticky: stays on top when content pages scroll (map pages don't scroll — unaffected)
