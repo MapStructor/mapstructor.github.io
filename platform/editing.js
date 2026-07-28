@@ -6622,10 +6622,27 @@
     applyAttrView(nodeByLayerDbId(lid) || findNodeById(layers, slug));
     buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
     if (_attrWin) _attrWin.onMissing = fetchAttrPage;
-    if (foot) foot.textContent = nfmt(N) + ' features · big-data table — rows stream in as you scroll, sorts run in the columnar engine · click a row to highlight it on the map';
+    _attrVirtual.footOk = nfmt(N) + ' features · big-data table — rows stream in as you scroll, sorts run in the columnar engine · click a row to highlight it on the map';
+    if (foot) foot.textContent = _attrVirtual.footOk;
+  }
+  // swap the virtual-table footer between the normal message and a persistent-failure warning + Retry
+  function updateAttrVirtualFoot() {
+    var foot = document.getElementById('editor-attr-foot'); if (!foot) return;
+    var v = _attrVirtual; if (!v) return;
+    if (!v.failed) { foot.textContent = v.footOk || ''; return; }
+    foot.innerHTML = '⚠ Some rows couldn’t load. <a href="#" id="attr-page-retry" style="color:#4ea1ff;">Retry</a>';
+    var a = document.getElementById('attr-page-retry');
+    if (a) a.onclick = function (e) {
+      e.preventDefault();
+      if (!_attrVirtual) return;
+      _attrVirtual.fails = {}; _attrVirtual.failed = false;
+      foot.textContent = 'Retrying…';
+      if (_attrWin) _attrWin.update();   // re-render → onMissing re-fires fetchAttrPage for visible gaps
+    };
   }
   function fetchAttrPage(start, end) {
     var v = _attrVirtual; if (!v) return;
+    if (!v.fails) v.fails = {};
     var ps = Math.max(0, Math.floor(start / 200) * 200);
     var pe = Math.min(v.N, ps + 400);   // the visible page + one ahead
     for (var s = ps; s < pe; s += 200) {
@@ -6634,9 +6651,17 @@
         v.pending[s0] = 1;
         v.prov.range(s0, 200, v.order).then(function (rs) {
           if (_attrVirtual !== v || v.gen !== _attrLoadGen) return;
+          delete v.pending[s0]; delete v.fails[s0];
           for (var i = 0; i < rs.length; i++) { _attrRows[s0 + i] = rs[i]; _attrById[String(rs[i].feature_id)] = rs[i]; }
+          if (v.failed) { v.failed = false; updateAttrVirtualFoot(); }
           if (_attrWin) _attrWin.update();
-        }, function () { delete v.pending[s0]; });   // failed page → retryable on the next scroll
+        }, function (err) {   // failed page: auto-retry a few times with backoff, then surface it
+          if (_attrVirtual !== v || v.gen !== _attrLoadGen) { delete v.pending[s0]; return; }
+          delete v.pending[s0];
+          var n = (v.fails[s0] = (v.fails[s0] || 0) + 1);
+          if (n <= 3) { setTimeout(function () { if (_attrVirtual === v && v.gen === _attrLoadGen) fetchAttrPage(s0, s0 + 1); }, 600 * n); }
+          else { v.failed = true; updateAttrVirtualFoot(); console.warn('attr page ' + s0 + ' failed', err); }
+        });
       })(s);
     }
   }

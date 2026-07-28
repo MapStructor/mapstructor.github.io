@@ -41,17 +41,24 @@
 
   /* ── engine ────────────────────────────────────────────────────────────── */
   var _engine = null;   // Promise<{duckdb, adb, conn}>
+  var ENGINE_INIT_MS = 15000;   // a hung init never rejects — treat as wedged past this, and self-heal
   function ensureEngine() {
     if (_engine) return _engine;
+    var worker = null;
     _engine = (async function () {
       var duckdb = await import(VENDOR + "duckdb-browser.mjs?v=1.32.0");
-      var worker = new Worker(VENDOR + "duckdb-browser-eh.worker.js?v=1.32.0");
+      worker = new Worker(VENDOR + "duckdb-browser-eh.worker.js?v=1.32.0");
       var adb = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
       await adb.instantiate(VENDOR + "duckdb-eh.wasm?v=1.32.0");
       var conn = await adb.connect();
       return { duckdb: duckdb, adb: adb, conn: conn };
     })();
-    _engine.catch(function () { _engine = null; });   // failed load → next call retries
+    // a HUNG init (worker never answers) never rejects, so the memoized promise would wedge the
+    // engine for the whole session — every reopen awaits the same dead promise. Race a timeout so
+    // it rejects, then drop the memo (+ terminate the dead worker) so the next open re-inits fresh.
+    _engine = Promise.race([_engine,
+      new Promise(function (_r, rej) { setTimeout(function () { rej(new Error("duckdb init timed out")); }, ENGINE_INIT_MS); })]);
+    _engine.catch(function () { _engine = null; try { if (worker) worker.terminate(); } catch (e) {} });
     return _engine;
   }
   var _prefetched = false;
