@@ -742,7 +742,7 @@
           // NEAREST candidate wins — render order picks the wrong line at crossings/parallels
           var hit = (typeof nearestFeature === 'function' && nearestFeature(found, e.point)) || found[0];
           var node = findNodeById(layers, hit.layer.id.replace(/-(left|right)$/, ''));
-          if (node) onEngineFeatureClick(node, { features: [hit].concat(found.filter(function (f) { return f !== hit; })), lngLat: e.lngLat });
+          if (node) onEngineFeatureClick(node, { features: [hit].concat(found.filter(function (f) { return f !== hit; })), lngLat: e.lngLat, ctrl: !!(e.originalEvent && (e.originalEvent.ctrlKey || e.originalEvent.metaKey)) });
         });
       });
     }
@@ -750,6 +750,9 @@
   function onEngineFeatureClick(node, e) {
     if (!e.features || !e.features.length) return;
     var fid = e.features[0].id; if (fid == null) { engineViewerPanel(node, e); return; }   // no tile id → can't edit, but the click still shows the viewer's panel
+    // 9e: ctrl/⌘-click builds a working SET — toggles the star in the open table + the map highlight
+    // (collect features by clicking, sort them to the top, then zoom/delete the group) — no edit.
+    if (e.ctrl && _attrSlug === node.id) { selectAttrRow(String(fid), true); setStatus(_attrSel.length + ' selected — ctrl-click to add/remove'); return; }
     enterEngineEdit(node, fid, e);
   }
   // Editor = viewer + tools: when a clicked feature can't be pulled into edit (its data isn't in the
@@ -1471,7 +1474,33 @@
     var lb = e.target && e.target.closest && e.target.closest('#layers-panel-content .layer-list-row label');
     if (lb && !lb.title) lb.title = (lb.textContent || '').trim();
   });
-  function importStatus(m) { var s = document.getElementById('editor-import-status'); if (s) s.textContent = m; else setStatus(m); }
+  // 9c: import progress as a persistent STEP CHECKLIST (not a mutating one-liner). Every stage flows
+  // through here, so we diff the message: a new stage (different leading phrase) checks off (✓) the
+  // previous one and appends an active row (◐); the SAME stage updates its text in place (live counts);
+  // failures mark the active row ✗. Zero call-site changes — honors the 7/15 "make the existing line
+  // better, nothing separate" note. Renders into the same #editor-import-status element.
+  var _impRows = [];
+  function importStatus(m) {
+    var s = document.getElementById('editor-import-status');
+    if (!s) { setStatus(m); return; }
+    m = String(m == null ? '' : m);
+    if (!m) { _impRows = []; s.textContent = ''; return; }
+    var isErr = /\b(fail|error|cancel|couldn|could not|limit is)\b/i.test(m);
+    var isDone = /^(Imported|Done)\b/i.test(m);
+    var key = isErr ? '__err' : (m.toLowerCase().split(/[\d:…]/)[0].trim() || m.toLowerCase());   // leading phrase, minus counts
+    var last = _impRows[_impRows.length - 1];
+    if (last && (last.state === 'done' || last.state === 'error') && !isErr && !isDone) { _impRows = []; last = null; }   // new run after a finished one → fresh checklist
+    if (isErr) { if (last && last.state === 'active') last.state = 'error'; _impRows.push({ key: '__err', text: m, state: 'error' }); }
+    else if (last && last.key === key) { last.text = m; }                                   // same stage → update count/text in place
+    else { if (last && last.state === 'active') last.state = 'done'; _impRows.push({ key: key, text: m, state: 'active' }); }
+    if (isDone) _impRows.forEach(function (r) { if (r.state === 'active') r.state = 'done'; });
+    s.innerHTML = _impRows.map(function (r) {
+      var icon = r.state === 'done' ? '✓' : r.state === 'error' ? '✗' : '◐';
+      var col = r.state === 'done' ? '#3d9a72' : r.state === 'error' ? '#b4453a' : '#5b458f';
+      var safe = String(r.text).replace(/[<>&"]/g, function (c) { return { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]; });
+      return '<div style="display:flex;gap:6px;align-items:baseline;color:' + col + ';font-weight:' + (r.state === 'active' ? 700 : 500) + ';line-height:1.5;"><span style="flex:0 0 auto;width:12px;text-align:center;">' + icon + '</span><span style="word-break:break-word;">' + safe + '</span></div>';
+    }).join('');
+  }
   // KML/KMZ → parsed XML DOM (KMZ = a ZIP wrapping a .kml + optional assets).
   async function kmlDomFromFile(file, ext) {
     await loadScript(LIB.togeojson);
