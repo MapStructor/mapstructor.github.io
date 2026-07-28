@@ -4501,6 +4501,7 @@
     document.getElementById('efp-end').addEventListener('change', function () { onFeatureField('end', this.value); });
   }
   function showFeaturePanel(drawId) {
+    if (drawId !== selectedDrawId) flushFeatureMeta();   // switching features → persist the outgoing one's pending edit first
     selectedDrawId = drawId;
     attrStarFromMap(drawNodeFor(drawId), featureToDb[drawId]);   // map-select ⇄ table: star the row (user 7/23)
     injectFeaturePanel();
@@ -4529,6 +4530,7 @@
     p.style.display = 'block';
   }
   function hideFeaturePanel() {
+    flushFeatureMeta();   // closing the panel → persist any pending edit before we lose the selection
     selectedDrawId = null;
     undockEditor();   // #11: pull the editor box back out of the info panel + restore its fixed styles (also hides it)
     var p = document.getElementById('editor-feature-panel'); if (p) p.style.display = 'none';
@@ -4648,7 +4650,15 @@
       clearTimeout(_lblLiveTimer); _lblLiveTimer = setTimeout(function () { try { applyLabelLayers(_ln); } catch (e) {} }, 400);
     }
     clearTimeout(_featTimer);
-    _featTimer = setTimeout(function () { saveFeatureMeta(selectedDrawId); }, 600);
+    var _saveId = selectedDrawId;   // capture the EDITED feature's id — NOT the live global (which may
+    _featTimer = setTimeout(function () { _featTimer = null; saveFeatureMeta(_saveId); }, 600);   // point at another feature 600ms later → this edit would save to the wrong row / be lost)
+  }
+  // persist any pending debounced feature-meta edit NOW — called before the selection changes or the
+  // panel closes, so a fast feature-switch (or a reload) inside the 600ms window can't drop the last edit
+  function flushFeatureMeta() {
+    if (!_featTimer) return;
+    clearTimeout(_featTimer); _featTimer = null;
+    if (selectedDrawId) saveFeatureMeta(selectedDrawId);
   }
   async function saveFeatureMeta(drawId) {
     var fid = featureToDb[drawId]; if (!fid) return;
@@ -5200,39 +5210,68 @@
   //    via labels.js); here we persist + rebuild them live on BOTH maps. Anchors come from the freshest
   //    in-memory geometry (draw copies), falling back to the engine source for large layers.
   function labelFeaturesFor(node) {
-    var lid = slugToLayerDbId[node.id], out = [];
+    var lid = slugToLayerDbId[node.id];
+    // the freshest in-memory edits for THIS layer (drawn/edited features), keyed by feature_id;
+    // brand-new unsaved features (no id yet) are collected separately
+    var editByFid = {}, fresh = [];
     Object.keys(featureLayer).forEach(function (did) {
       if (featureLayer[did] !== lid) return;
       var g = _geomSnap[did]; if (!g) return;
       var m = featureMeta[did] || {};
       var props = { label: m.label || null };
       if (m.custom) Object.keys(m.custom).forEach(function (k) { if (!(k in props)) props[k] = m.custom[k]; });
-      out.push({ type: 'Feature', geometry: g, properties: props });
+      var fid = featureToDb[did];
+      if (fid != null) { props.feature_id = fid; editByFid[String(fid)] = { type: 'Feature', geometry: g, properties: props }; }
+      else fresh.push({ type: 'Feature', geometry: g, properties: props });
     });
-    if (!out.length) { try { out = (node.source && node.source.data && node.source.data.features) || []; } catch (e) {} }
-    // last resort: the engine's LIVE source (large engine-rendered layers never enter _geomSnap, and
-    // node.source.data is empty until deferred hydration lands) — whatever the map is drawing, label it
-    if (!out.length) { try { var es = beforeMap.getSource(node.id + '-left'); var ed = es && es.serialize && es.serialize().data; out = (ed && ed.features) || []; } catch (e) {} }
-    return out;
+    // the FULL feature set — geojson data, else the engine's LIVE source (large layers hydrate lazily,
+    // so node.source.data can be empty). We label the WHOLE set and OVERLAY edits on top; the old code
+    // returned only the touched subset, so editing one feature blanked every other label (bug 7/28).
+    var base = [];
+    try { base = (node.source && node.source.data && node.source.data.features) || []; } catch (e1) {}
+    if (!base.length) { try { var es = beforeMap.getSource(node.id + '-left'); var ed = es && es.serialize && es.serialize().data; base = (ed && ed.features) || []; } catch (e2) {} }
+    if (!base.length) return Object.keys(editByFid).map(function (k) { return editByFid[k]; }).concat(fresh);   // pure drawn layer not yet in a source → the in-memory features ARE the full set
+    // source features carry the feature_id as the TOP-LEVEL id (editing.js:1661), some paths as
+    // properties.feature_id — try both. No id anywhere → can't overlay safely; show the full set
+    // unchanged (all labels stay; the edit lands on the next full rebuild) rather than risk doubles.
+    function _bfid(bf) { return bf.id != null ? String(bf.id) : (bf.properties && bf.properties.feature_id != null ? String(bf.properties.feature_id) : null); }
+    if (_bfid(base[0]) == null) return base.concat(fresh);
+    var merged = base.map(function (bf) {
+      var key = _bfid(bf);
+      if (key != null && editByFid[key]) { var e = editByFid[key]; delete editByFid[key]; return e; }   // replace with the fresh edit → live preview
+      return bf;
+    });
+    Object.keys(editByFid).forEach(function (k) { merged.push(editByFid[k]); });   // edits not present in base (rare) still show
+    return merged.concat(fresh);
   }
   function applyLabelLayers(node) {
     if (typeof msLabelLayerFor !== 'function') return;
     [[beforeMap, 'left'], [typeof afterMap !== 'undefined' ? afterMap : null, 'right']].forEach(function (pair) {
       var m = pair[0], side = pair[1]; if (!m) return;
       var lyrId = node.id + '-label-' + side, srcId = node.id + '-labels-' + side;
-      try { if (m.getLayer(lyrId)) m.removeLayer(lyrId); } catch (e) {}
-      try { if (m.getSource(srcId)) m.removeSource(srcId); } catch (e) {}
-      if (!node.labels || !node.labels.field) return;
+      function teardown() { try { if (m.getLayer(lyrId)) m.removeLayer(lyrId); } catch (e) {} try { if (m.getSource(srcId)) m.removeSource(srcId); } catch (e) {} }
+      if (!node.labels || !node.labels.field) { teardown(); return; }
       // TILESET lines: labels ride the vector source (labels.js needs the REAL node's source/source-layer);
       // the geojson-anchor proxy is only for drawn/imported layers
       var isVecLine = node.type === 'line' && node.source && node.source.type === 'vector';
       var proxy = isVecLine ? node : { id: node.id, type: node.type, labels: node.labels,
         source: { type: 'geojson', data: { type: 'FeatureCollection', features: labelFeaturesFor(node) } } };
       var ll = msLabelLayerFor(proxy, side, 'visible', m);   // m → fonts the style's glyph server actually has
-      if (!ll) return;
+      if (!ll) { teardown(); return; }
       try {
-        if (ll.sourceId && !m.getSource(ll.sourceId)) m.addSource(ll.sourceId, ll.source);
-        if (!m.getLayer(ll.layer.id)) m.addLayer(ll.layer);   // line labels reuse the engine source (slug-side), which exists even when its layer is hidden
+        // if WE already own a geojson label source, update it IN PLACE (setData + re-apply style) —
+        // remove/re-add made every OTHER label flash off/on on each edit (7/28)
+        var own = (ll.source && ll.source.type === 'geojson' && ll.sourceId === srcId) ? m.getSource(srcId) : null;
+        if (own && own.setData && m.getLayer(lyrId)) {
+          own.setData(ll.source.data);
+          var L = ll.layer;
+          if (L.layout) Object.keys(L.layout).forEach(function (k) { try { m.setLayoutProperty(lyrId, k, L.layout[k]); } catch (e) {} });
+          if (L.paint) Object.keys(L.paint).forEach(function (k) { try { m.setPaintProperty(lyrId, k, L.paint[k]); } catch (e) {} });
+        } else {
+          teardown();
+          if (ll.sourceId && !m.getSource(ll.sourceId)) m.addSource(ll.sourceId, ll.source);
+          if (!m.getLayer(ll.layer.id)) m.addLayer(ll.layer);   // line labels reuse the engine source (slug-side), which exists even when its layer is hidden
+        }
       } catch (e) { console.warn('label apply failed', e); }
     });
   }
