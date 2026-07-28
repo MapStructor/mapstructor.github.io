@@ -23,6 +23,8 @@
 
   var SUPABASE_URL = "https://eqpxlwbjqiwfjlsuapvu.supabase.co";
   var BUCKET = "tiles";
+  var WORKER_BASE = "https://mapstructor-worker.mapstructor.workers.dev";   // R2 write chokepoint (auth + <pid> ownership)
+  var R2_TILES = "https://tiles.mapstructor.com/tiles/";                    // R2 read side (free egress), same key as the Worker /upload path
   var BIG_ROWS = 20000;     // past this, a layer earns a sidecar
   var BAKE_MAX = 300000;    // client-side bake ceiling (beyond this a server-side bake is needed — future GitHub Action, like the remote tippecanoe)
   var CF = "c:";            // custom_fields keys live in the parquet as "c:<key>" (never collides with std columns)
@@ -133,6 +135,16 @@
       status("Uploading sidecar (" + (buf.length / 1048576).toFixed(1) + " MB)…");
       var path = projectId + "/" + layerId + ".attr.parquet";
       var blob = new Blob([buf], { type: "application/octet-stream" });
+      // R2 DUAL-WRITE (7/27, R2 step ②·5 — same shape as tilegen.upload / the snapshot mirror).
+      // Invariant: R2 holds the CURRENT sidecar or NOTHING — a stale R2 copy would shadow the
+      // fresh Supabase one (success never fails over). So: DELETE the R2 key BEFORE the Supabase
+      // upload; re-PUT after it succeeds. Both R2 legs best-effort (Supabase stays the source of
+      // truth); the Worker enforces ownership of <projectId> on the tiles/<pid>/… key.
+      var r2tok = null;
+      try { r2tok = (await db.auth.getSession()).data.session.access_token; } catch (eTok) {}
+      if (r2tok) try {
+        await fetch(WORKER_BASE + "/upload/tiles/" + path, { method: "DELETE", headers: { Authorization: "Bearer " + r2tok } });
+      } catch (eDel) { console.warn("bigtable: R2 pre-delete failed (fallback still correct)", eDel); }
       // NEVER upsert:true (storage upsert 403s under RLS — see tilegen.js): insert, on exists delete+retry
       var up = await db.storage.from(BUCKET).upload(path, blob, { upsert: false });
       if (up.error && /exist|duplicate/i.test(up.error.message || "")) {
@@ -140,6 +152,13 @@
         up = await db.storage.from(BUCKET).upload(path, blob, { upsert: false });
       }
       if (up.error) throw new Error("sidecar upload: " + up.error.message);
+      if (r2tok) try {
+        var rw = await fetch(WORKER_BASE + "/upload/tiles/" + path, {
+          method: "PUT", body: blob,
+          headers: { Authorization: "Bearer " + r2tok, "Content-Type": "application/octet-stream" }
+        });
+        if (!rw.ok) console.warn("bigtable: R2 sidecar mirror " + rw.status + " — reads fall back to Supabase for this layer");
+      } catch (ePut) { console.warn("bigtable: R2 sidecar mirror failed — reads fall back to Supabase for this layer", ePut); }
       var url = SUPABASE_URL + "/storage/v1/object/public/" + BUCKET + "/" + path;
       var cur = await db.from("layers").select("raw_config").eq("id", layerId).single();
       var rc = (cur.data && cur.data.raw_config) || {};
@@ -193,13 +212,33 @@
   }
 
   /* ── read: sidecar → rows ──────────────────────────────────────────────── */
-  async function registerSidecar(layerId, url, ver) {
+  // R2-FIRST READ (7/27, step ②·5 — same shape as projectLoader/pmt-sw): the bake mirrors the
+  // sidecar to tiles.mapstructor.com; resolve the Supabase rc.attrParquet URL to its R2 twin and
+  // probe it with a 1-byte range GET (the exact read DuckDB performs). ANY probe failure → the
+  // Supabase URL, exactly as before. no-store on the probe: a re-bake must show on the next load.
+  function r2SidecarUrl(url) {
+    var m = /\/object\/public\/tiles\/(.+\.attr\.parquet)$/.exec(String(url || ""));
+    return m ? R2_TILES + m[1] : null;
+  }
+  var _sidecarSource = {};   // layerId → "r2" | "supabase" (last resolution — debug/tests)
+  async function resolveSidecarUrl(layerId, url) {
+    var r2 = r2SidecarUrl(url);
+    if (r2) try {
+      var probe = await fetch(r2, { headers: { Range: "bytes=0-0" }, cache: "no-store" });
+      if (probe.ok) { _sidecarSource[layerId] = "r2"; return r2; }
+    } catch (e) {}
+    _sidecarSource[layerId] = "supabase";
+    return url;
+  }
+  async function registerSidecar(layerId, url, ver, forceSupabase) {
     var e = await ensureEngine();
+    var src = forceSupabase ? url : await resolveSidecarUrl(layerId, url);
+    if (forceSupabase) _sidecarSource[layerId] = "supabase";
     var name = "attr_" + layerId + ".parquet";
     try { await e.adb.dropFile(name); } catch (e1) {}
     // ?v= makes each bake a distinct URL — the browser/CDN can cache hard without ever serving a stale bake
-    await e.adb.registerFileURL(name, url + "?v=" + encodeURIComponent(ver || "0"), e.duckdb.DuckDBDataProtocol.HTTP, false);
-    return { e: e, name: name };
+    await e.adb.registerFileURL(name, src + "?v=" + encodeURIComponent(ver || "0"), e.duckdb.DuckDBDataProtocol.HTTP, false);
+    return { e: e, name: name, r2: _sidecarSource[layerId] === "r2" };
   }
   function resultRows(res) {
     var out = new Array(res.numRows), i = 0;
@@ -210,13 +249,27 @@
   // materialize the WHOLE sidecar (≤ cap rows) as plain attr-table rows
   async function loadAll(layerId, url, ver) {
     var s = await registerSidecar(layerId, url, ver);
-    var res = await s.e.conn.query("SELECT * FROM read_parquet(" + sq(s.name) + ")");
-    return resultRows(res);
+    try {
+      var res = await s.e.conn.query("SELECT * FROM read_parquet(" + sq(s.name) + ")");
+      return resultRows(res);
+    } catch (err) {
+      if (!s.r2) throw err;   // already on Supabase — the pre-existing failure mode, unchanged
+      // R2 answered the probe but died mid-read → re-register the Supabase original, retry once
+      s = await registerSidecar(layerId, url, ver, true);
+      var res2 = await s.e.conn.query("SELECT * FROM read_parquet(" + sq(s.name) + ")");
+      return resultRows(res2);
+    }
   }
   // VIRTUAL provider (> cap rows): pages + SQL sorts, memory stays bounded
   async function openProvider(layerId, url, ver, count) {
     var s = await registerSidecar(layerId, url, ver);
-    var head = await s.e.conn.query("SELECT * FROM read_parquet(" + sq(s.name) + ") LIMIT 0");
+    var head;
+    try { head = await s.e.conn.query("SELECT * FROM read_parquet(" + sq(s.name) + ") LIMIT 0"); }
+    catch (errH) {
+      if (!s.r2) throw errH;
+      s = await registerSidecar(layerId, url, ver, true);   // R2 died mid-read → Supabase, once
+      head = await s.e.conn.query("SELECT * FROM read_parquet(" + sq(s.name) + ") LIMIT 0");
+    }
     var customKeys = head.schema.fields.map(function (f) { return f.name; })
       .filter(function (n) { return n.indexOf(CF) === 0; })
       .map(function (n) { return n.slice(CF.length); });
@@ -238,7 +291,14 @@
             ob = " ORDER BY (" + col + " IS NULL OR CAST(" + col + " AS VARCHAR) = '') ASC, " + col + " " + (order.dir === "desc" ? "DESC" : "ASC");
           }
         }
-        var res = await s.e.conn.query("SELECT * FROM read_parquet(" + sq(s.name) + ")" + ob + " LIMIT " + (len | 0) + " OFFSET " + (start | 0));
+        var q = "SELECT * FROM read_parquet(" + sq(s.name) + ")" + ob + " LIMIT " + (len | 0) + " OFFSET " + (start | 0);
+        var res;
+        try { res = await s.e.conn.query(q); }
+        catch (errR) {
+          if (!s.r2) throw errR;
+          s = await registerSidecar(layerId, url, ver, true);   // R2 died mid-session → Supabase for the rest
+          res = await s.e.conn.query(q);
+        }
         return resultRows(res);
       }
     };
@@ -254,6 +314,8 @@
     noteDirty: noteDirty,
     loadAll: loadAll,
     openProvider: openProvider,
+    resolveSidecarUrl: resolveSidecarUrl,   // queryWindow shares the R2-first resolution
+    sidecarSource: function (lid, set) { if (set) _sidecarSource[lid] = set; return _sidecarSource[lid] || null; },
     isBaking: function (lid) { return !!_baking[lid]; }
   };
 })();

@@ -462,9 +462,25 @@
       // sidecar columns: std as-is + custom fields as "c:<key>" — alias them back to bare names
       // so the SQL you'd write for either mode is identical (SELECT "InOpBy", not "c:InOpBy")
       var fname = "qw_" + lid + ".parquet";
-      try { await d.db.dropFile(fname); } catch (e0) {}
-      await d.db.registerFileURL(fname, sc.url + "?v=" + encodeURIComponent(sc.ver || "0"), d.duckdb.DuckDBDataProtocol.HTTP, false);
-      var head = await d.conn.query("SELECT * FROM read_parquet('" + fname + "') LIMIT 0");
+      // R2-first (7/27, step ②·5): the bake mirrors the sidecar to tiles.mapstructor.com —
+      // resolve through MSBigTable (1-byte range probe, no-store). Any failure at resolve OR
+      // at the schema read below → the Supabase sc.url, exactly the pre-R2 behavior.
+      var scUrl = sc.url;
+      try { scUrl = await MSBigTable.resolveSidecarUrl(lid, sc.url); } catch (eR2) {}
+      async function regSidecar(u) {
+        try { await d.db.dropFile(fname); } catch (e0) {}
+        await d.db.registerFileURL(fname, u + "?v=" + encodeURIComponent(sc.ver || "0"), d.duckdb.DuckDBDataProtocol.HTTP, false);
+      }
+      await regSidecar(scUrl);
+      var head;
+      try { head = await d.conn.query("SELECT * FROM read_parquet('" + fname + "') LIMIT 0"); }
+      catch (eHead) {
+        if (scUrl === sc.url) throw eHead;   // already on Supabase — the pre-existing failure mode
+        scUrl = sc.url;                      // R2 answered the probe but died on the read → Supabase, once
+        try { MSBigTable.sidecarSource(lid, "supabase"); } catch (eSrc) {}
+        await regSidecar(scUrl);
+        head = await d.conn.query("SELECT * FROM read_parquet('" + fname + "') LIMIT 0");
+      }
       var fields = head.schema.fields.map(function (f) { return f.name; });
       var std = ["feature_id", "label", "description", "start_date", "end_date", "content_id"];
       var sel = [];
