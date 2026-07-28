@@ -436,6 +436,8 @@
          already-rendered UI and never alters how the viewer renders.
          ------------------------------------------------------------------- -->
     <!-- cache-bust: editing.js changes often during dev; ?v=now forces a fresh load every reload (no stale code) -->
+    <!-- selection.js = the selection store (single writer of the selected-feature set) — must load BEFORE editing.js -->
+    <script>document.write('<script src="../platform/selection.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
     <script>document.write('<script src="../platform/editing.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
 
     <!-- Save-to-account: anonymous maps live only at their URL; claim them via the shared MapAuth modal (dev plan Step 6 funnel).

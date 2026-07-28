@@ -747,12 +747,62 @@
       });
     }
   }
+  var _selClickLock = false;   // one DOM click can reach BOTH the map-level (745) and per-layer (875) handlers
+  function engineFeatureAt(pt) {   // any ENGINE data feature within the grab corridor? (empty-ground test — basemap roads/labels don't count)
+    var bx = 10, hit = false;
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
+      if (hit) return; var mm = pr[1], sd = pr[0]; if (!mm) return;
+      var lids = [];
+      (function walk(arr) { (arr || []).forEach(function (n) { try { if (mm.getLayer(n.id + '-' + sd)) lids.push(n.id + '-' + sd); if (mm.getLayer(n.id + '-edited-' + sd)) lids.push(n.id + '-edited-' + sd); } catch (e) {} if (n.children) walk(n.children); }); })(layers);
+      if (!lids.length) return;
+      try { var fs = mm.queryRenderedFeatures([[pt.x - bx, pt.y - bx], [pt.x + bx, pt.y + bx]], { layers: lids }); if (fs && fs.length) hit = true; } catch (e) {}
+    });
+    return hit;
+  }
   function onEngineFeatureClick(node, e) {
     if (!e.features || !e.features.length) return;
+    // 9e (final model, 7/28): CTRL/⌘-click = pure select/deselect toggle — no editing, works with or
+    // without a ▦ open. PLAIN click = the edit flow (arm + panel) AND the feature JOINS the selection
+    // (attrStarFromMap below — "clicking things selects them", table open or not). Read the modifier
+    // from EITHER handler path; the lock stops the same DOM click toggling twice (both handlers fire).
+    var ctrl = e.ctrl || !!(e.originalEvent && (e.originalEvent.ctrlKey || e.originalEvent.metaKey));
+    if (ctrl) {
+      if (_selClickLock) return;
+      _selClickLock = true; setTimeout(function () { _selClickLock = false; }, 0);   // clears after both synchronous handlers have run
+      // With a ▦ open, ONLY its layer joins the set — prefer that layer's candidate inside the grab
+      // corridor (a nearer rail line must not hijack a depot click); none there → ignore the ctrl-click
+      // entirely (never edit-arm a foreign feature on ctrl). Bare map: nearest candidate wins.
+      var targetSlug = _attrSlug || null, cf = null;
+      for (var ci = 0; ci < e.features.length; ci++) {
+        var f0 = e.features[ci]; if (f0.id == null) continue;
+        var s0 = f0.layer && f0.layer.id ? f0.layer.id.replace(/(-edited)?-(left|right)$/, '') : null;   // -edited overlay (folded engine edits) belongs to its layer
+        if (!targetSlug || s0 === targetSlug) { cf = f0; break; }
+      }
+      if (!cf) {
+        // Nothing togglable on the TILES — the clicked feature may be DRAW-resident (pulled for edit:
+        // its tile copy is filter-hidden, it renders via gl-draw on top). Toggle it HERE; same
+        // open-table layer scoping as everywhere else (7/28 — the "ctrl does nothing on an
+        // edit-pulled feature" hole).
+        var dHit = null; try { dHit = drawFeatureAt(e.point); } catch (eD) {}
+        if (dHit) {
+          var dfid = featureToDb[dHit] != null ? String(featureToDb[dHit]) : (String(dHit).indexOf('db-') === 0 ? String(dHit).slice(3) : null);
+          var dLyr = featureLayer[dHit], tLyr = _attrSlug ? slugToLayerDbId[_attrSlug] : null;
+          if (dfid != null && (!tLyr || dLyr == null || dLyr === tLyr)) {
+            if (!MSSel.has(dfid)) { try { var df0 = draw && draw.get ? draw.get(dHit) : null; if (df0 && df0.geometry) _selGeom[dfid] = df0.geometry; } catch (eG2) {} }
+            MSSel.toggle(dfid); setStatus(MSSel.count() + ' selected — ctrl-click to add/remove');
+            return;
+          }
+        }
+        _selClickLock = false;   // nothing consumed — release so the draw-side/right-side handlers can act on this same click
+        return;
+      }
+      var cfid = String(cf.id);
+      // cache the CLICKED geometry → the highlight paints INSTANTLY (no waiting on the row stream/geom fetch)
+      if (cf.geometry) _selGeom[cfid] = cf.geometry;
+      MSSel.toggle(cfid); setStatus(MSSel.count() + ' selected — ctrl-click to add/remove');
+      return;
+    }
     var fid = e.features[0].id; if (fid == null) { engineViewerPanel(node, e); return; }   // no tile id → can't edit, but the click still shows the viewer's panel
-    // 9e: ctrl/⌘-click builds a working SET — toggles the star in the open table + the map highlight
-    // (collect features by clicking, sort them to the top, then zoom/delete the group) — no edit.
-    if (e.ctrl && _attrSlug === node.id) { selectAttrRow(String(fid), true); setStatus(_attrSel.length + ' selected — ctrl-click to add/remove'); return; }
     enterEngineEdit(node, fid, e);
   }
   // Editor = viewer + tools: when a clicked feature can't be pulled into edit (its data isn't in the
@@ -791,15 +841,18 @@
   function attrStarFromMap(node, fid) {
     try {
       if (fid == null || !node) return;
-      if (!_attrSlug || node.id !== _attrSlug) return;   // table not open, or open on a different layer
+      if (_attrSlug && node.id !== _attrSlug) return;   // a ▦ is open on a DIFFERENT layer → not part of that working set
       var f = String(fid);
-      if (_attrSel.indexOf(f) === -1) selectAttrRow(f, true);
-      window.__msAttrStar = { fid: f, len: _attrSel.length };   // observability (tests + debugging)
+      MSSel.add(f);   // add-if-absent — a plain click never UN-selects (MSSel.add is a no-op on members)
+      if (!_attrSlug) return;   // bare map (7/28): the feature still joins the selection — there's just no table row to star/scroll
+      window.__msAttrStar = { fid: f, len: MSSel.count() };   // observability (tests + debugging)
       var tr = document.querySelector('#editor-attr-tbody tr[data-fid="' + f.replace(/"/g, '') + '"]');
       if (tr && tr.scrollIntoView) tr.scrollIntoView({ block: 'nearest' });
     } catch (e) {}
   }
   async function enterEngineEdit(node, fid, clickEvt) {
+    // cache the clicked geometry FIRST so the selection highlight the star-add triggers paints instantly
+    try { if (clickEvt && clickEvt.features && clickEvt.features[0] && clickEvt.features[0].geometry) _selGeom[String(fid)] = clickEvt.features[0].geometry; } catch (eG) {}
     attrStarFromMap(node, fid);
     var drawId = 'db-' + fid;
     if (draw && draw.get(drawId)) {   // already pulled into draw (re-click via the edited overlay) → stage 1 unless mid-geometry-edit
@@ -3251,8 +3304,11 @@
     beforeMap.on('draw.update', onDrawUpdate);
     beforeMap.on('draw.delete', onDrawDelete);
     beforeMap.on('draw.selectionchange', onSelectionChange);
-    // modifier state at the moment of the click, for the multi-select bypass (selectionchange carries no originalEvent)
-    try { beforeMap.getCanvasContainer().addEventListener('mousedown', function (ev) { window._msModClick = !!(ev.shiftKey || ev.ctrlKey || ev.metaKey); }, true); } catch (e) {}
+    // modifier state at the moment of the click, for the multi-select bypass (selectionchange carries no
+    // originalEvent). DOCUMENT-level capture (7/28): the old beforeMap-canvas listener never saw clicks
+    // that land on the RIGHT swipe map, so _msModClick went stale and right-side ctrl-clicks ran the
+    // plain-click model — with the swipe far left, that was EVERY click.
+    try { document.addEventListener('mousedown', function (ev) { window._msModClick = !!(ev.shiftKey || ev.ctrlKey || ev.metaKey); }, true); } catch (e) {}
     injectFeaturePanel();
     loadFeatures();
     wireDrawPopups();
@@ -3446,7 +3502,12 @@
           _editingDraw = null;
           hideFeaturePanel();
           closeClickPops(); closeHoverPops();
-          syncAttrRowsFromMap([]);
+        }
+        // 9e round 2 (7/28): clicking truly EMPTY ground — no draw feature, no engine data feature,
+        // not mid-draw-mode — clears the whole working selection (map highlight + table stars together).
+        if (!did && MSSel.count() && !engineFeatureAt(e.point)) {
+          var dmode = ''; try { dmode = draw && draw.getMode ? draw.getMode() : ''; } catch (eM) {}
+          if (!/^draw_/.test(dmode)) clearAttrHighlight();
         }
         // the RIGHT swipe map has no MapboxDraw — run the same two-stage click model programmatically
         // there (stage 1 = panel/highlight, stage 2 = geometry), so both sides feel identical.
@@ -3458,16 +3519,27 @@
         })();
         if (m !== beforeMap && draw && rightOfSwipe) {
           if (did && did !== _editingDraw) {
-            if (_armedSet.indexOf(did) > -1) {   // stage 2: geometry editable (selection lives in draw on the left; the mirror shows it)
-              _editingDraw = did; _armedSet = []; setArmedHl(null);
-              try { draw.changeMode('simple_select', { featureIds: [did] }); } catch (err) {}
-            } else {                              // stage 1: highlight + panel, geometry NOT editable
-              _editingDraw = null; _armedSet = [did];
-              try { draw.changeMode('simple_select', { featureIds: [] }); } catch (err) {}
-              updateArmedHl();
+            if (window._msModClick) {
+              // ctrl = pure TOGGLE here too (7/28) — and one click mutates the selection ONCE: when an
+              // engine feature overlaps the drawn one, the engine handler already consumed this click
+              // (shared _selClickLock) → skip. No arm, no panel — selection only, like everywhere else.
+              if (!_selClickLock) {
+                _selClickLock = true; setTimeout(function () { _selClickLock = false; }, 0);
+                var tfR = featureToDb[did] != null ? String(featureToDb[did]) : (did.indexOf('db-') === 0 ? did.slice(3) : null);
+                syncAttrRowsFromMap([{ id: did }], { remove: tfR != null && MSSel.has(tfR) });
+              }
+            } else {
+              if (_armedSet.indexOf(did) > -1) {   // stage 2: geometry editable (selection lives in draw on the left; the mirror shows it)
+                _editingDraw = did; _armedSet = []; setArmedHl(null);
+                try { draw.changeMode('simple_select', { featureIds: [did] }); } catch (err) {}
+              } else {                              // stage 1: highlight + panel, geometry NOT editable
+                _editingDraw = null; _armedSet = [did];
+                try { draw.changeMode('simple_select', { featureIds: [] }); } catch (err) {}
+                updateArmedHl();
+              }
+              showFeaturePanel(did);
+              syncAttrRowsFromMap([{ id: did }]);
             }
-            showFeaturePanel(did);
-            syncAttrRowsFromMap([{ id: did }]);
           } else if (!did) {
             // panel/highlight/bubble clears happened in the unified empty-click block above; only draw's
             // selection lives here (draw can't see right-side clicks). Guarded so an active draw MODE
@@ -4398,17 +4470,28 @@
     _groupHoverVal = gv.val;
     setGroupActive(gv.node, gv.raw);
   }
-  function syncAttrRowsFromMap(feats) {   // clicking feature(s) on the MAP selects their row(s) in the open attribute table
-    if (!_attrSlug) return;
-    if (!feats || !feats.length) { _attrSel = []; applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn(); return; }
+  function syncAttrRowsFromMap(feats, opts) {   // clicking feature(s) on the MAP selects their row(s) in the open attribute table
+    // Empty NO LONGER means "wipe the selection" (7/28 carve-out) — draw deselects also fire on mode
+    // changes and saves, and wholesale wipes from here were selection-bug cause #5. The only full clear
+    // is the explicit empty-ground click (map click handler → clearAttrHighlight → MSSel.clear).
+    if (!feats || !feats.length) return;
+    // MERGE, never replace (7/28 final model: clicking features accumulates the working set). All
+    // mutations go through MSSel — the subscriber repaints every surface. opts.remove → take fids OUT.
+    // No table open (7/28): the selection still updates — there's just no row to scope against or scroll to.
+    var lyr = _attrSlug ? slugToLayerDbId[_attrSlug] : null;
     var fids = feats.map(function (f2) {
       var did = String(f2.id);
       var n = featureToDb[did] != null ? featureToDb[did] : (did.indexOf('db-') === 0 ? did.slice(3) : null);
-      return n != null ? String(n) : null;
-    }).filter(function (x) { return x && _attrById[x]; });
-    if (!fids.length) return;   // table open for a different layer
-    _attrSel = fids;
-    applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn();
+      if (n == null) return null;
+      var fl = featureLayer[did];   // scope by the REAL layer when a table is open; unknown → require an indexed row
+      if (fl != null && lyr != null && fl !== lyr) return null;
+      if (fl == null && _attrSlug && !_attrById[String(n)]) return null;
+      return String(n);
+    }).filter(Boolean);
+    if (!fids.length) return;   // clicked feature(s) belong to a different layer
+    fids.forEach(function (fid) { if (opts && opts.remove) MSSel.remove(fid); else MSSel.add(fid); });
+    if (window._msModClick) setStatus(MSSel.count() + ' selected — ctrl-click to add/remove');
+    if (!_attrSlug || (opts && opts.remove)) return;   // no table → nothing to scroll; removals → nothing to scroll to
     // windowed body: the row may not be in the DOM at all — scroll the WINDOW to its index,
     // which renders it, then the usual into-view nudge applies
     var lastFid = fids[fids.length - 1];
@@ -4431,7 +4514,7 @@
   function clearArmedSet() { _armedSet = []; setArmedHl(null); updateGroupHl(null); }
   function armedIdsToRows() { syncAttrRowsFromMap(_armedSet.map(function (i3) { return { id: i3 }; })); }
   function onSelectionChange(e) {
-    if (!e.features || !e.features.length) { _skipArmOnce = false; _editingDraw = null; _armedSet = []; setArmedHl(null); updateGroupHl(null); hideFeaturePanel(); syncAttrRowsFromMap([]); return; }
+    if (!e.features || !e.features.length) { _skipArmOnce = false; _editingDraw = null; _armedSet = []; setArmedHl(null); updateGroupHl(null); hideFeaturePanel(); return; }   // draw deselect ≠ clear the selection (empty-ground clicks clear via the map click handler)
     if (_skipArmOnce) {   // a JUST-DRAWN feature: skip stage 1 — it stays selected (stage 2) with the panel open
       var f0 = e.features[0];
       _skipArmOnce = false; _editingDraw = String(f0.id); _armedSet = []; setArmedHl(null);
@@ -4444,11 +4527,12 @@
     var id = String(fc.id);
     if (id === _editingDraw && e.features.length === 1) return;   // events from the feature being edited (drag etc.)
     var mod = !!window._msModClick;
+    if (mod && _selClickLock) { deferDrawSel([]); return; }   // an engine handler already consumed THIS ctrl-click (overlapping engine+drawn features) — one click, one mutation
     if (_armedSet.indexOf(id) > -1) {
-      if (mod) {   // modifier-click a highlighted feature → remove it from the set
+      if (mod) {   // modifier-click a highlighted feature → remove it from the set (and the selection)
         _armedSet = _armedSet.filter(function (x) { return x !== id; });
         deferDrawSel([]);
-        updateArmedHl(); armedIdsToRows();
+        updateArmedHl(); syncAttrRowsFromMap([{ id: id }], { remove: true });
         return;
       }
       // stage 2: plain click on the already-highlighted feature → geometry becomes editable
@@ -4462,6 +4546,14 @@
     }
     // clicked an un-highlighted feature
     if (mod) {   // modifier-click GATHERS highlights (multi-select set, nothing editable)
+      // …but if this feature is ALREADY in the selection (e.g. engine-side ctrl-selected earlier),
+      // ctrl = TOGGLE everywhere: remove it instead of re-gathering (7/28 unified model)
+      var tfid = featureToDb[id] != null ? String(featureToDb[id]) : (id.indexOf('db-') === 0 ? id.slice(3) : null);
+      if (tfid != null && MSSel.has(tfid)) {
+        deferDrawSel([]);
+        syncAttrRowsFromMap([{ id: id }], { remove: true });
+        return;
+      }
       if (_editingDraw) _armedSet.push(_editingDraw);   // leaving edit mode via modifier keeps that feature highlighted
       _armedSet.push(id);
       _editingDraw = null;
@@ -4591,7 +4683,8 @@
     hideFeaturePanel();
     if (!fid) { try { if (draw && draw.get(did)) draw.delete(did); } catch (e) {} return; }   // never-saved feature: just drop it
     var n = await deleteDrawnByFids([fid], 'delete feature');
-    if (_attrSlug) { delete _attrById[String(fid)]; _attrRows = _attrRows.filter(function (r) { return String(r.feature_id) !== String(fid); }); _attrSel = _attrSel.filter(function (s) { return s !== String(fid); }); if (document.getElementById('editor-attr-modal') && document.getElementById('editor-attr-modal').style.display !== 'none') { buildAttrHead(); renderAttrBody(true); } }   // keep an open table in sync (hold scroll position)
+    MSSel.remove(String(fid));   // a deleted feature leaves the selection, table open or not
+    if (_attrSlug) { delete _attrById[String(fid)]; _attrRows = _attrRows.filter(function (r) { return String(r.feature_id) !== String(fid); }); if (document.getElementById('editor-attr-modal') && document.getElementById('editor-attr-modal').style.display !== 'none') { buildAttrHead(); renderAttrBody(true); } }   // keep an open table in sync (hold scroll position)
     setStatus(n ? 'Feature deleted' : 'Delete failed');
   }
   // ── encyclopedia info panel (editor): renders into the engine's REAL #rightInfoBar / .infoLayerElem so the
@@ -6597,7 +6690,50 @@
     }, 400);
   }
   var _attrCustom = {};   // fid → its custom_fields object, so a single-cell edit rewrites the whole jsonb
-  var _attrRows = [], _attrCols = [], _attrSort = null, _attrSel = [];   // loaded rows + column model + {idx,dir} + selected feature_ids (highlighted on the map)
+  var _attrRows = [], _attrCols = [], _attrSort = null, _attrSel = [], _selGeom = {};   // loaded rows + column model + {idx,dir} + READ-ONLY MIRROR of MSSel (see below) + fid→geometry cache from map-clicks (instant highlight without a DB fetch)
+  // ── selection store (7/28 carve-out → platform/selection.js) ──────────────────────────────────
+  // MSSel owns the selected-feature set; _attrSel is a read-only mirror kept fresh by the ONE
+  // subscriber below, which also refreshes every selection surface (table row classes, map
+  // highlight, zoom/delete buttons, features list). NEVER assign or splice _attrSel directly —
+  // five stacked selection bugs came from exactly that (multiple writers, different semantics).
+  if (!window.MSSel) (function () {   // selection.js failed to load → same-contract inline fallback
+    var _ids = [], _subs = [];
+    function emit(reason, changed) { for (var i = 0; i < _subs.length; i++) { try { _subs[i]({ ids: _ids.slice(), reason: reason, changed: changed }); } catch (e) {} } }
+    window.MSSel = {
+      ids: function () { return _ids.slice(); }, count: function () { return _ids.length; },
+      has: function (fid) { return _ids.indexOf(String(fid)) > -1; },
+      add: function (fid) { fid = String(fid); if (_ids.indexOf(fid) > -1) return false; _ids.push(fid); emit('add', [fid]); return true; },
+      remove: function (fid) { fid = String(fid); var i = _ids.indexOf(fid); if (i < 0) return false; _ids.splice(i, 1); emit('remove', [fid]); return true; },
+      toggle: function (fid) { return this.has(fid) ? (this.remove(fid), false) : (this.add(fid), true); },
+      select: function (list) { var next = (list || []).map(String); if (next.length === _ids.length && next.every(function (f, i) { return f === _ids[i]; })) return false; var prev = _ids; _ids = next; emit('select', prev.concat(next)); return true; },
+      clear: function () { if (!_ids.length) return false; var gone = _ids; _ids = []; emit('clear', gone); return true; },
+      onChange: function (cb) { if (typeof cb === 'function') _subs.push(cb); }
+    };
+  })();
+  MSSel.onChange(function (ev) {
+    _attrSel = MSSel.ids();
+    applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn();
+    syncFlistSel(); updateFlistZoom();
+    if (ev && ev.reason === 'add' && ev.changed && ev.changed.length) scrollSelRowIntoView(ev.changed[ev.changed.length - 1]);   // a map-side add must be VISIBLE in an open windowed list/table
+  });
+  function scrollSelRowIntoView(fid) {   // windowed DOM: the selected row may not exist until its window scrolls into range
+    fid = String(fid);
+    try {
+      var modal = document.getElementById('editor-attr-modal');
+      if (modal && modal.style.display !== 'none') {
+        var row = document.querySelector('#editor-attr-tbody tr[data-fid="' + fid.replace(/"/g, '') + '"]');
+        if (!row && _attrWin) { for (var ri = 0; ri < _attrRows.length; ri++) { if (String(_attrRows[ri].feature_id) === fid) { _attrWin.scrollToIndex(ri); break; } } }
+        else if (row && !_attrWin) row.scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      var fl = document.getElementById('editor-flist');
+      if (fl && fl.style.display !== 'none' && _flistWin) {
+        var frow = document.querySelector('#editor-flist-tbody tr[data-fid="' + fid.replace(/"/g, '') + '"]');
+        if (!frow) { for (var fi = 0; fi < _attrRows.length; fi++) { if (String(_attrRows[fi].feature_id) === fid) { _flistWin.scrollToIndex(fi); break; } } }
+      }
+    } catch (e) {}
+  }
+  window.__msSelRows = function () { try { var ids = MSSel.ids(); return _attrRows.filter(function (r) { return ids.indexOf(String(r.feature_id)) > -1; }).length; } catch (e) { return -1; } };   // observability (tests): selection members that have rows in the open list/table
   var _attrLoadGen = 0;        // bump = abort any in-flight attribute load (close/reopen mid-load of a huge layer)
   var ATTR_LOAD_CAP = 100000;  // tier-1 guardrail: rows STREAMED into memory — past this, a layer needs the big-data tier (Parquet sidecar) instead of a full fetch; rendering is windowed (MSAttrWindow) so DOM size never depends on row count
   var _attrWin = null;         // MSAttrWindow instance for the (single, for now) attribute panel
@@ -6762,7 +6898,7 @@
     var thead = document.getElementById('editor-attr-thead'), tbody = document.getElementById('editor-attr-tbody'), foot = document.getElementById('editor-attr-foot');
     thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">Loading…</td></tr>'; foot.textContent = '';
     modal.style.display = 'block';
-    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = false; _attrVirtual = null; clearAttrHighlight();
+    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = false; _attrVirtual = null;   // selection PERSISTS across open (map ⇄ table sync always) — rows render pre-starred
     if (_attrWin) _attrWin.onMissing = null;   // virtual-mode page fetcher — re-attached only by openVirtualAttr
     // STREAMED load (7/15, after 78k rows hung the page): the FIRST page renders immediately — the
     // table is usable (sort/edit/drag/close) while the rest loads behind it. Closing the modal bumps
@@ -7088,11 +7224,10 @@
     tbody.addEventListener('mouseleave', function () { setAttrHover(null, false); });
   }
   // ---- row selection ↔ map highlight + zoom ----
-  function selectAttrRow(fid, additive) {
+  function selectAttrRow(fid, additive) {   // row/★ click → the ONE store; every surface repaints via the MSSel subscriber
     fid = String(fid);
-    if (additive) { var i = _attrSel.indexOf(fid); if (i > -1) _attrSel.splice(i, 1); else _attrSel.push(fid); }
-    else { _attrSel = [fid]; }
-    applyAttrSelClasses(); updateAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn();
+    if (additive) MSSel.toggle(fid);
+    else MSSel.select([fid]);
   }
   function applyAttrSelClasses() {
     var tbody = document.getElementById('editor-attr-tbody'); if (!tbody) return;
@@ -7106,15 +7241,15 @@
     b.disabled = !_attrSel.length;
   }
   async function deleteAttrSelected() {
-    if (!_attrSel.length) return;
-    var fids = _attrSel.slice(), n = fids.length;
+    if (!MSSel.count()) return;
+    var fids = MSSel.ids(), n = fids.length;
     if (!window.confirm('Delete ' + n + ' feature' + (n > 1 ? 's' : '') + ' from this layer? You can undo this.')) return;
     await deleteDrawnByFids(fids, 'delete ' + n + ' feature' + (n > 1 ? 's' : ''));
     if (_attrVirtual) { setStatus('Deleted ' + n + ' feature' + (n > 1 ? 's' : '')); openAttributeTable(_attrSlug); return; }   // sparse rows can't be filtered in place — reopen (count mismatch → fresh stream + rebake)
     fids.forEach(function (fid) { delete _attrById[String(fid)]; });
     _attrRows = _attrRows.filter(function (r) { return fids.indexOf(String(r.feature_id)) < 0; });
-    _attrSel = [];
-    buildAttrHead(); renderAttrBody(true); updateAttrZoomBtn(); updateAttrDelBtn(); updateAttrHighlight();
+    MSSel.clear();
+    buildAttrHead(); renderAttrBody(true);
     scheduleAttrRebake();   // sidecar'd layer: row count changed — refresh the bake in the background
     setStatus('Deleted ' + n + ' feature' + (n > 1 ? 's' : ''));
   }
@@ -7125,8 +7260,14 @@
       try {
         m.addSource('editor-attr-hl-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
         m.addLayer({ id: 'editor-attr-hl-fill', type: 'fill', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#ffd400', 'fill-opacity': 0.3 } });
-        m.addLayer({ id: 'editor-attr-hl-line', type: 'line', source: 'editor-attr-hl-src', paint: { 'line-color': '#ff8c00', 'line-width': 3 } });
-        m.addLayer({ id: 'editor-attr-hl-pt', type: 'circle', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#ffd400', 'circle-stroke-color': '#ff8c00', 'circle-stroke-width': 3 } });
+        // selection lines: dark casing + bright yellow core — must be unmistakable over ANY layer color
+        // (the old single orange 3px line was INVISIBLE on orange layers — the rail-lines "selection
+        // doesn't stick" bug 7/28: the set was right, the paint was camouflaged; hover stays cyan)
+        m.addLayer({ id: 'editor-attr-hl-line-casing', type: 'line', source: 'editor-attr-hl-src', paint: { 'line-color': '#1f1f1f', 'line-width': 9, 'line-opacity': 0.85 } });
+        m.addLayer({ id: 'editor-attr-hl-line', type: 'line', source: 'editor-attr-hl-src', paint: { 'line-color': '#ffd400', 'line-width': 4 } });
+        // selected points: yellow with a DARK ring (same language as the line casing) — the old orange
+        // ring was identical to the single-feature ARMED ring, so selection and arming were indistinguishable
+        m.addLayer({ id: 'editor-attr-hl-pt', type: 'circle', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 10, 'circle-color': '#ffd400', 'circle-stroke-color': '#1f1f1f', 'circle-stroke-width': 3 } });
         // hover overlay (cyan) — rides ABOVE the yellow selection so the brushed feature reads clearly
         m.addSource('editor-attr-hover-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
         m.addLayer({ id: 'editor-attr-hover-fill', type: 'fill', source: 'editor-attr-hover-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#00e5ff', 'fill-opacity': 0.25 } });
@@ -7136,17 +7277,31 @@
       } catch (e) {}
     });
   }
+  // Paint the CURRENT selection from whatever geometry is on hand (fetched row geoms + clicked-tile
+  // fragments). Reads live _attrSel, so a late repaint can never show a stale set.
+  function paintAttrHighlight() {
+    var feats = _attrSel.map(function (fid) { var r = findAttrRow(fid); var g = (r && r.geom) || _selGeom[String(fid)]; return g ? { type: 'Feature', geometry: g, properties: {} } : null; }).filter(Boolean);
+    attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {} });
+  }
+  var _attrHlSeq = 0;
   function updateAttrHighlight() {
     ensureAttrHlLayers();
-    var want = _attrSel.slice();
-    ensureAttrGeoms(want).then(function () {
-      if (want.join(',') !== _attrSel.join(',')) return;   // selection moved on while geoms were in flight
-      var feats = _attrSel.map(function (fid) { var r = findAttrRow(fid); return (r && r.geom) ? { type: 'Feature', geometry: r.geom, properties: {} } : null; }).filter(Boolean);
-      attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {} });
-    });
+    // PAINT NOW — never wait on the network to show a selection. (The old code awaited a per-click
+    // geom fetch and DISCARDED the paint if the selection changed meanwhile: once table rows had
+    // streamed in (real usage pace), every click waited on a slow/failable DB roundtrip → the
+    // highlight lagged clicks or never came → features "looked unselected" → re-clicks toggled them
+    // OUT → the alternating-selection bug, 7/28. Headless tests clicked before rows streamed, so
+    // the fetch was skipped and it "passed".)
+    paintAttrHighlight();
+    var missing = _attrSel.filter(function (fid) { var r = findAttrRow(fid); return !(r && r.geom); });
+    if (!missing.length) return;
+    var seq = ++_attrHlSeq;   // latest-wins: only the newest enrichment triggers a repaint
+    ensureAttrGeoms(missing).then(
+      function () { if (seq === _attrHlSeq) paintAttrHighlight(); },      // upgrade fragments → full geometries
+      function () { if (seq === _attrHlSeq) paintAttrHighlight(); });     // even on fetch failure, repaint what we have
   }
-  function clearAttrHighlight() {
-    _attrSel = [];
+  function clearAttrHighlight() {   // the ONE explicit wipe (empty-ground click) — subscriber repaints; direct setData covers pre-boot callers
+    MSSel.clear();
     attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: [] }); } catch (e) {} });
   }
   // ---- hover brushing: row ↔ map feature light up together ----
@@ -7356,7 +7511,7 @@
       openAttributeTable(slug9);
     } catch (e9) { st9.textContent = 'Failed: ' + e9.message; }
   }
-  function hideAttrModal() { _attrLoadGen++; var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); clearAttrHighlight(); updateAttrZoomBtn(); updateAttrDelBtn(); }   // gen bump ABORTS an in-flight load — Close always works, even mid-load of a huge layer
+  function hideAttrModal() { _attrLoadGen++; var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); }   // gen bump ABORTS an in-flight load — Close always works, even mid-load of a huge layer. Selection persists (close hides the VIEW, not the working set — empty-ground click clears)
 
   /* ── FEATURES LIST (Rung 1) ───────────────────────────────────────────────
      A docked, lightweight list of a layer's features (icon + label). Opens from the ▦ icon;
@@ -7404,8 +7559,7 @@
     var tb = document.getElementById('editor-flist-tbody');
     tb.addEventListener('click', function (e) {
       var tr = e.target.closest('tr[data-fid]'); if (!tr) return;
-      selectAttrRow(tr.getAttribute('data-fid'), e.ctrlKey || e.metaKey);   // shared: updates _attrSel + map highlight
-      syncFlistSel(); updateFlistZoom();
+      selectAttrRow(tr.getAttribute('data-fid'), e.ctrlKey || e.metaKey);   // shared: MSSel updates → the subscriber repaints list + map together
     });
     tb.addEventListener('mouseover', function (e) { var tr = e.target.closest('tr[data-fid]'); setAttrHover(tr ? tr.getAttribute('data-fid') : null, false); });
     tb.addEventListener('mouseleave', function () { setAttrHover(null, false); });
@@ -7444,7 +7598,7 @@
     _attrLoadGen++;   // aborts an in-flight list load
     var el = document.getElementById('editor-flist'); if (el) el.style.display = 'none';
     _flistSlug = null; _attrSlug = null;
-    setAttrHover(null, false); clearAttrHighlight();
+    setAttrHover(null, false);   // selection persists — closing the list only hides the view
   }
   async function loadFlistRows(lid, gen) {
     // fast path: reuse the tier-2 Parquet sidecar if it's fresh (instant for big layers)
@@ -7495,8 +7649,8 @@
     document.getElementById('flist-title').textContent = node.label || 'Features';
     _flistSlug = slug; _attrSlug = slug; _attrReadonly = false;
     _flistIcon = flistLayerIcon(node);
-    _attrSel = []; _attrById = {}; _attrRows = [];
-    clearAttrHighlight(); ensureAttrHlLayers(); ensureAttrMapHover();
+    _attrById = {}; _attrRows = [];   // selection PERSISTS across open (map ⇄ table sync always)
+    ensureAttrHlLayers(); ensureAttrMapHover();
     el.style.display = 'flex'; dockFeaturesList();
     document.getElementById('editor-flist-tbody').innerHTML = '<tr><td style="padding:12px;color:#999999;">Loading…</td></tr>';
     document.getElementById('editor-flist-foot').textContent = '';
@@ -7512,6 +7666,7 @@
       return;
     }
     renderFlist();
+    if (MSSel.count()) { var selIds0 = MSSel.ids(); for (var si = 0; si < _attrRows.length; si++) { if (selIds0.indexOf(String(_attrRows[si].feature_id)) > -1) { if (_flistWin) _flistWin.scrollToIndex(si); break; } } }   // an existing map selection is visible the moment the list opens
     document.getElementById('editor-flist-foot').textContent = nfmt(rows.length) + ' feature' + (rows.length === 1 ? '' : 's');
   }
   async function saveAttrCustomCell(fid, key, value) {
