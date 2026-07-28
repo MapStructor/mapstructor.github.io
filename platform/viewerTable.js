@@ -10,15 +10,19 @@
       indented category checkboxes as the editor. Toggles are session-only in view: opacity
       expressions go to the map, nothing is persisted.
 
-   Feature rows come from the features table (anonymous reads work on public projects — the same
-   RLS path hydration uses); list rendering is windowed via MSAttrWindow (attrGrid.js), so DOM
-   size never depends on row count. Standalone downloads ship without platform/, so none of this
-   exists there and viewer rows render exactly as before. */
+   Feature rows PREFER the layer's Parquet attribute sidecar when one is baked (bigtable.js —
+   one ~1–3 MB columnar read from R2/Supabase instead of paging tens of thousands of rows out of
+   Postgres); no sidecar, stale bake, or ANY sidecar/R2 failure → the features-table stream below,
+   exactly as before (anonymous reads work on public projects — the same RLS path hydration uses).
+   List rendering is windowed via MSAttrWindow (attrGrid.js), so DOM size never depends on row
+   count. Standalone downloads ship without platform/, so none of this exists there and viewer
+   rows render exactly as before. */
 (function () {
   "use strict";
   if (window.MSViewerTable) return;
   window.__msViewerAttr = true;   // generateLayers renders the ▦ on viewer rows when set
   var CAP = 100000, PAGE = 1000;  // same tier-1 guardrail as the editor
+  var OWN_SRC = (document.currentScript && document.currentScript.src) || "";   // carries the page's ?v= buster
 
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
   function findNode(a, id) { for (var i = 0; i < (a || []).length; i++) { if (a[i].id === id) return a[i]; var c = findNode(a[i].children, id); if (c) return c; } return null; }
@@ -113,6 +117,59 @@
     } catch (e) {}
   }
 
+  /* ── sidecar-first rows (7/27, ②·5 follow-up) ──
+     Big layers bake a Parquet attribute sidecar (bigtable.js) that the EDITOR's table already
+     opens R2-first; the viewer list now reads the same sidecar instead of re-paging Postgres.
+     index.html doesn't ship bigtable.js in its script tags, so it's injected on demand — only
+     when a sidecar-stamped layer's list is actually opened (its ~34 MB DuckDB engine stays lazy
+     inside bigtable.js as ever). Every exit here is fail-safe: return null (or throw) and the
+     caller runs the Postgres stream unchanged. */
+  var _srcByLid = {};   // lid → "sidecar" | "postgres" (last list load — debug/tests)
+  var _bigP = null;
+  function ensureBigTable() {   // resolves window.MSBigTable or null — never rejects
+    if (window.MSBigTable) return Promise.resolve(window.MSBigTable);
+    if (_bigP) return _bigP;
+    _bigP = new Promise(function (res) {
+      var s = document.createElement("script");
+      s.src = OWN_SRC ? OWN_SRC.replace(/viewerTable\.js/, "bigtable.js") : "../platform/bigtable.js";
+      s.onload = function () { res(window.MSBigTable || null); };
+      s.onerror = function () { _bigP = null; res(null); };   // next open retries the inject
+      document.head.appendChild(s);
+    });
+    return _bigP;
+  }
+  async function sidecarRows(db, node, lid, gen) {   // rows [{feature_id,label}] or null → stream
+    // meta: the LIVE raw_config stamp first (sees re-bakes newer than the viewer's published
+    // snapshot, and an INSTANCE's source-layer stamp); anon viewers may not read the layers
+    // table under RLS → fall back to the node itself (configLoader spreads the snapshot's
+    // raw_config keys straight onto the leaf, attrParquet* included)
+    var rc = null;
+    try {
+      var q = await db.from("layers").select("raw_config").eq("id", lid).maybeSingle();
+      if (q && !q.error && q.data) rc = q.data.raw_config;
+    } catch (e0) {}
+    if (gen !== _gen) return null;
+    if (!rc || !rc.attrParquet) rc = node.attrParquet ? node : null;
+    if (!rc || !rc.attrParquet || rc.attrParquetDirty) return null;
+    // > CAP: loadAll would materialize more rows than the list ever shows — the capped stream
+    // (first 100,000 + footer note) stays the better behavior there
+    if (!(rc.attrParquetRows > 0) || rc.attrParquetRows > CAP) return null;
+    // freshness (the editor's 7/23 rule): a failed/timed-out count TRUSTS the sidecar —
+    // attrParquetDirty catches real edits; a count mismatch means edited since the bake
+    var live = null;
+    try {
+      var cq = await db.from("features").select("feature_id", { count: "exact", head: true }).eq("layer_id", lid);
+      if (cq && !cq.error && cq.count != null) live = cq.count;
+    } catch (e1) {}
+    if (gen !== _gen) return null;
+    if (live != null && live !== rc.attrParquetRows) return null;
+    var BT = await ensureBigTable();
+    if (!BT || gen !== _gen) return null;
+    document.getElementById("ms-vl-foot").textContent = "loading (fast sidecar)…";
+    var all = await BT.loadAll(lid, rc.attrParquet, rc.attrParquetAt);   // R2-first, Supabase retry inside; throws → stream
+    return all.map(function (r) { return { feature_id: r.feature_id, label: r.label }; });
+  }
+
   async function openList(node) {
     ensureUi(); dock();
     var gen = ++_gen;
@@ -125,19 +182,25 @@
     document.getElementById("ms-vl-tbody").innerHTML = "";
     if (_win) { _win.destroy(); _win = null; }
     if (!lid || typeof MapAuth === "undefined" || !MapAuth.db) { document.getElementById("ms-vl-foot").textContent = "No list available for this layer."; return; }
-    var db = MapAuth.db, from = 0, rows = [];
-    try {
-      while (from < CAP) {
-        var r = await db.from("features").select("feature_id, label").eq("layer_id", lid).order("feature_id").range(from, from + PAGE - 1);
-        if (gen !== _gen) return;   // closed / another layer opened mid-load
-        if (r.error) throw new Error(r.error.message);
-        var got = r.data || [];
-        rows = rows.concat(got);
-        document.getElementById("ms-vl-foot").textContent = rows.length.toLocaleString() + " features…";
-        if (got.length < PAGE) break;
-        from += PAGE;
-      }
-    } catch (e) { document.getElementById("ms-vl-foot").textContent = "Load failed: " + (e && e.message); return; }
+    var db = MapAuth.db, from = 0, rows = null;
+    try { rows = await sidecarRows(db, node, lid, gen); } catch (eSc) { rows = null; }   // ANY sidecar/R2 failure → the stream below
+    if (gen !== _gen) return;
+    _srcByLid[lid] = rows ? "sidecar" : "postgres";
+    if (!rows) {   // no (fresh) sidecar, or it failed → the original paged stream, unchanged
+      rows = [];
+      try {
+        while (from < CAP) {
+          var r = await db.from("features").select("feature_id, label").eq("layer_id", lid).order("feature_id").range(from, from + PAGE - 1);
+          if (gen !== _gen) return;   // closed / another layer opened mid-load
+          if (r.error) throw new Error(r.error.message);
+          var got = r.data || [];
+          rows = rows.concat(got);
+          document.getElementById("ms-vl-foot").textContent = rows.length.toLocaleString() + " features…";
+          if (got.length < PAGE) break;
+          from += PAGE;
+        }
+      } catch (e) { document.getElementById("ms-vl-foot").textContent = "Load failed: " + (e && e.message); return; }
+    }
     if (gen !== _gen) return;
     _rows = rows;
     document.getElementById("ms-vl-foot").textContent = rows.length.toLocaleString() + " feature" + (rows.length === 1 ? "" : "s") + (from >= CAP ? " (first " + CAP.toLocaleString() + ")" : "");
@@ -253,5 +316,6 @@
     injectStyleRows();
   })();
 
-  window.MSViewerTable = { open: openList, close: close, injectStyleRows: injectStyleRows };
+  window.MSViewerTable = { open: openList, close: close, injectStyleRows: injectStyleRows,
+    rowSource: function (lid) { return _srcByLid[lid] || null; } };   // "sidecar" | "postgres" — debug/tests
 })();
