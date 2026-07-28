@@ -809,13 +809,13 @@
     // migrated feature on another layer and "edit" (and hide) the wrong thing — the vanishing-feature bug.
     var EB = getEditBackend(node);   // Phase 2a: read from this layer's edit backend (platform `features` unless the tileset declared its own)
     var wantCustom = EB.table === 'features';   // custom_fields is a platform column — foreign edit backends may not have it
-    var res; try { res = await EB.db.from(EB.table).select(EB.idCol + ', ' + EB.layerCol + ', ' + EB.geomCol + ', label, description, start_date, end_date, content_id' + (wantCustom ? ', custom_fields' : '')).eq(EB.idCol, fid).eq(EB.layerCol, lyrId).single(); } catch (e) { res = { error: e }; }
+    var res; try { res = await EB.db.from(EB.table).select(EB.idCol + ', ' + EB.layerCol + ', ' + EB.geomCol + ', label, description, start_date, end_date, content_id' + (wantCustom ? ', custom_fields, image_url' : '')).eq(EB.idCol, fid).eq(EB.layerCol, lyrId).single(); } catch (e) { res = { error: e }; }
     if (res.error || !res.data || !res.data[EB.geomCol]) { engineViewerPanel(node, clickEvt); return; }   // display-only feature (not in the edit backend) → no edit, but the viewer's panel still opens
     var row = res.data, rowGeom = row[EB.geomCol], origGeom = { type: rowGeom.type, coordinates: rowGeom.coordinates };
     if (origGeom.type === 'MultiPolygon') { _engineWasMulti[drawId] = true; _engineOrigMulti[drawId] = origGeom; }
     var geom = toDrawPolygon(origGeom);   // mapbox-gl-draw needs a Polygon
     featureToDb[drawId] = fid; featureLayer[drawId] = row[EB.layerCol]; _engineEditNode[drawId] = node;
-    featureMeta[drawId] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '', custom: row.custom_fields || null };
+    featureMeta[drawId] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '', image_url: row.image_url || '', custom: row.custom_fields || null };
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
     var epProps = featureProps(node) || {};
     // colorBy layers: the editable copy keeps the FEATURE's own category color (not the layer default)
@@ -4472,7 +4472,7 @@
       '<div id="efp-notes" contenteditable="true" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;min-height:54px;max-height:160px;overflow:auto;background:#fff;"></div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Image</label>' +
       '<input id="efp-image" type="text" placeholder="https://…/photo.jpg" style="width:100%;box-sizing:border-box;margin-bottom:4px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
-      '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;"><button id="efp-image-upload" type="button" style="flex:0 0 auto;padding:4px 8px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:11px;">Upload…</button><span id="efp-image-status" style="font-size:10px;color:#888888;"></span></div>' +
+      '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;"><button id="efp-image-upload" type="button" style="flex:0 0 auto;padding:4px 8px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:11px;">Upload…</button><button id="efp-image-remove" type="button" style="flex:0 0 auto;padding:4px 8px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:11px;">Remove</button><span id="efp-image-status" style="font-size:10px;color:#888888;"></span></div>' +
       '<img id="efp-image-preview" alt="" style="display:none;max-width:100%;max-height:90px;border-radius:4px;margin-bottom:8px;border:1px solid #e0e0e0;" />' +
       '<input id="efp-image-file" type="file" accept="image/*" style="display:none;" />' +
       '<div style="display:flex;gap:8px;">' +
@@ -4511,6 +4511,11 @@
     document.getElementById('efp-image').addEventListener('input', function () { onFeatureField('image_url', this.value); updateImagePreview(this.value); });
     document.getElementById('efp-image-upload').addEventListener('click', function () { document.getElementById('efp-image-file').click(); });
     document.getElementById('efp-image-file').addEventListener('change', function () { if (this.files && this.files[0]) uploadFeatureImage(this.files[0]); this.value = ''; });
+    document.getElementById('efp-image-remove').addEventListener('click', function () {   // clear the image → saves image_url=null; the stored object is harmless to leave
+      var inp = document.getElementById('efp-image'); if (inp) inp.value = '';
+      onFeatureField('image_url', ''); updateImagePreview('');
+      var st = document.getElementById('efp-image-status'); if (st) st.textContent = 'Removed';
+    });
     document.getElementById('efp-start').addEventListener('change', function () { onFeatureField('start', this.value); });
     document.getElementById('efp-end').addEventListener('change', function () { onFeatureField('end', this.value); });
   }
