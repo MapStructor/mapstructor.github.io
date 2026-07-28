@@ -82,6 +82,7 @@
     </div>
 
     <div id="maps-list"><p class="sub">Loading your maps…</p></div>
+    <div id="trash-section" style="margin-top:16px;"></div>
     <button class="btn" id="btn-new-map" style="margin-top:8px;">+ Create a map</button>
 
     <section id="storage-section">
@@ -195,7 +196,9 @@
       function fmtDate(d) { try { return d ? new Date(d).toLocaleDateString() : ''; } catch (e) { return ''; } }
 
       async function loadMaps() {
-        var res = await db.from('projects').select('id,name,updated_at,is_public,visibility:raw_config->>visibility,editLock:raw_config->>editLock').eq('user_id', user.id).order('updated_at', { ascending: false });   // only THIS user's maps (RLS is still permissive — tighten at Step 25)
+        var sel = 'id,name,updated_at,is_public,visibility:raw_config->>visibility,editLock:raw_config->>editLock';   // only THIS user's maps (RLS still permissive — tighten at Step 25)
+        var res = await db.from('projects').select(sel).eq('user_id', user.id).is('deleted_at', null).order('updated_at', { ascending: false });   // ACTIVE maps (trashed = deleted_at set)
+        if (res.error) res = await db.from('projects').select(sel).eq('user_id', user.id).order('updated_at', { ascending: false });   // deleted_at not migrated yet → show all (run trash-soft-delete-setup.sql to enable Trash)
         if (res.error) { listEl.innerHTML = '<p class="msg err">Could not load your maps.</p>'; return; }
         render(res.data || []);
       }
@@ -237,14 +240,53 @@
             // a LOCKED map cannot be deleted from here — deletion must happen deliberately inside
             // the map itself (unlock in its Settings first). (user 7/22)
             if (locked) { alert('"' + (m.name || 'Untitled Map') + '" is locked. Open the map and unlock it in Settings before deleting.'); return; }
-            if (!confirm('Delete "' + (m.name || 'Untitled Map') + '"? This removes the map. (Trash/restore is coming.)')) return;
-            var r = await db.from('projects').delete().eq('id', m.id);
-            if (!r.error) loadMaps();
+            if (!confirm('Move "' + (m.name || 'Untitled Map') + '" to Trash? You can restore it — or delete it permanently from Trash.')) return;
+            var r = await db.from('projects').update({ deleted_at: new Date().toISOString() }).eq('id', m.id);   // soft-delete (9i) — recoverable from Trash
+            if (r.error) { alert('Could not move to Trash: ' + r.error.message); return; }
+            try { await db.from('project_snapshots').delete().eq('project_id', m.id).eq('label', 'published'); } catch (e) {}   // a trashed map must not stay publicly viewable
+            removeR2Snapshot(m.id);
+            loadMaps(); loadTrash();
           };
           listEl.appendChild(row);
         });
       }
+      // ── Trash (9i): a deleted map is soft-deleted (projects.deleted_at) — recoverable here, or
+      //    permanently removed. The publish snapshots are cleared on trash so it stops being viewable.
+      async function removeR2Snapshot(pid) {
+        try {
+          var s = await db.auth.getSession();
+          var tok = s && s.data && s.data.session && s.data.session.access_token;
+          if (tok) await fetch('https://mapstructor-worker.mapstructor.workers.dev/upload/snapshots/' + pid + '.json', { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } });
+        } catch (e) {}
+      }
+      async function loadTrash() {
+        var el = document.getElementById('trash-section'); if (!el) return;
+        var res = await db.from('projects').select('id,name,deleted_at').eq('user_id', user.id).not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
+        var rows = (res && res.data) || [];
+        if ((res && res.error) || !rows.length) { el.innerHTML = ''; return; }
+        el.innerHTML = '<h3 class="sub" style="margin:14px 0 6px;">🗑 Trash <span style="font-weight:400;color:#999;">(' + rows.length + ' — restorable)</span></h3>';
+        rows.forEach(function (m) {
+          var row = document.createElement('div'); row.className = 'map-row';
+          row.innerHTML = '<span class="map-name" style="opacity:.65;">' + esc(m.name || 'Untitled Map') + '</span>'
+            + '<span class="map-meta">trashed ' + fmtDate(m.deleted_at) + '</span>'
+            + '<div class="row-actions"><button class="btn btn-light" data-act="restore">Restore</button>'
+            + '<button class="btn btn-danger" data-act="purge">Delete forever</button></div>';
+          row.querySelector('[data-act=restore]').onclick = async function () {
+            var r = await db.from('projects').update({ deleted_at: null }).eq('id', m.id);
+            if (r.error) { alert('Could not restore: ' + r.error.message); return; }
+            loadMaps(); loadTrash();
+          };
+          row.querySelector('[data-act=purge]').onclick = async function () {
+            if (!confirm('Permanently delete "' + (m.name || 'Untitled Map') + '"? This CANNOT be undone.')) return;
+            var r = await db.from('projects').delete().eq('id', m.id);
+            if (r.error) { alert('Could not delete: ' + r.error.message); return; }
+            loadTrash();
+          };
+          el.appendChild(row);
+        });
+      }
       loadMaps();
+      loadTrash();
 
       // ---- Storage usage ----
       // Precise tracking (profiles.storage_used_bytes / an RPC) needs a one-time SQL migration — see
