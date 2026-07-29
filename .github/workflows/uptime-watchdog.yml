@@ -1,0 +1,62 @@
+# UPTIME WATCHDOG (launch-path #4) — "auto-detect if a showcase breaks, message me."
+# Probes every public surface every 30 minutes. Any failure opens (or comments on)
+# a single 🔴 watchdog issue — repo watchers get the email. Zero secrets needed.
+#
+# Surfaces guarded:
+#   apex coming-soon · /maps/railways showcase · tiles custom domain ·
+#   Worker /health · the AHM encyclopedia chain (Worker route → gray DNS record →
+#   GoDaddy origin → Drupal) · the platform on github.io
+
+name: uptime-watchdog
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe all public surfaces
+        id: probe
+        run: |
+          FAILS=""
+          check () {  # check <name> <url> <expected-substring>
+            BODY=$(curl -sL -m 25 --retry 2 --retry-delay 5 "$2" || true)
+            if echo "$BODY" | grep -q "$3"; then
+              echo "OK   $1"
+            else
+              echo "FAIL $1  ($2)"
+              FAILS="$FAILS- **$1** — $2 (expected \`$3\`)\n"
+            fi
+          }
+          check "apex coming-soon"      "https://mapstructor.com/"                                                            "MapStructor"
+          check "railways showcase"     "https://mapstructor.com/maps/railways/"                                              "<html"
+          check "tiles custom domain"   "https://tiles.mapstructor.com/snapshots/f914d5e6-7aad-477d-8613-5bd4aac350d5.json"   "layers"
+          check "worker health"         "https://mapstructor-worker.mapstructor.workers.dev/health"                           '"ok":true'
+          check "AHM encyclopedia"      "https://mapstructor.com/ames/encyclopedia/rendered-export-single?nid=45894"          "rendered_entity"
+          check "platform (github.io)"  "https://mapstructor.github.io/"                                                      "MapStructor"
+          if [ -n "$FAILS" ]; then
+            printf "fails<<EOF\n%b\nEOF\n" "$FAILS" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Open or update the watchdog issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="🔴 Uptime watchdog: a public surface is DOWN"
+          BODY=$(printf "Failing checks at %s UTC:\n\n%b\nRun: %s/%s/actions/runs/%s" \
+            "$(date -u '+%Y-%m-%d %H:%M')" "${{ steps.probe.outputs.fails }}" \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title Uptime watchdog" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$BODY"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"
+          fi

@@ -37,11 +37,13 @@
   <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
   <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="../map/project/lists/restrictedToken.js"></script>
   <script>
   // ────────────────────────────────────────────────────────────────────────────
   // Config — the only data-specific bits. Point these at any feature dataset.
   // ────────────────────────────────────────────────────────────────────────────
-  mapboxgl.accessToken = "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21uZXlzbjMzMDRuejJvb2w0NzVld2RpbCJ9.qdyZm3Y7xasNkoEa537CmA";
+  // ONE committed token for the whole repo (rotation touches exactly one file): lists/restrictedToken.js
+  mapboxgl.accessToken = (typeof restrictedToken !== "undefined") ? restrictedToken : "";
   var TILES     = "https://ames-tiles.mapstructor.workers.dev/buildings/{z}/{x}/{y}.pbf"; // vector tile source
   var SRC_LAYER = "buildings";              // source-layer name inside those tiles
   var TABLE     = "ames_buildings_2026";    // Supabase table holding the canonical geometry

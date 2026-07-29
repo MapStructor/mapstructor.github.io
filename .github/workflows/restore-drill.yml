@@ -1,0 +1,118 @@
+# RESTORE DRILL (launch-path #2) — "an untested backup isn't a backup."
+# Pulls the NEWEST nightly dump from R2 (B2 fallback) and restores it into a
+# disposable PostGIS container inside the runner, then asserts the data is real:
+# table count, row-count floors on the core tables, and a live PostGIS geometry
+# query. Touches NOTHING outside the runner. Fails loud: opens a GitHub issue
+# (repo watchers get the email) exactly like storage-alert.yml.
+#
+# Uses the SAME secrets nightly-backup already has: R2_ACCOUNT_ID,
+# R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY (and B2_KEY_ID/B2_APP_KEY for fallback).
+# Runs monthly + on demand (Actions → restore-drill → Run workflow).
+
+name: restore-drill
+on:
+  schedule:
+    - cron: "47 8 1 * *"   # 08:47 UTC on the 1st — after that morning's backup
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgis/postgis:17-3.5   # plain postgres:17 lacks PostGIS — the dump needs it
+        env:
+          POSTGRES_PASSWORD: drill
+          POSTGRES_DB: drill
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check secrets
+        id: gate
+        env:
+          R2KEY: ${{ secrets.R2_ACCESS_KEY_ID }}
+        run: |
+          echo "r2=$([ -n "$R2KEY" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+          [ -z "$R2KEY" ] && echo "::warning::R2 secrets not set — drill skipped" || true
+
+      - name: Fetch newest dump from R2 (B2 fallback)
+        if: steps.gate.outputs.r2 == 'yes'
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+          RCLONE_CONFIG_B2_TYPE: b2
+          RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_KEY_ID }}
+          RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APP_KEY }}
+        run: |
+          sudo apt-get install -y -qq rclone
+          NEWEST=$(rclone lsf "r2:mapstructor-db-backups/db/" --include "db-*.dump" | sort | tail -1)
+          if [ -z "$NEWEST" ] && [ -n "${{ secrets.B2_KEY_ID }}" ]; then
+            echo "::warning::R2 empty — falling back to B2"
+            NEWEST=$(rclone lsf "b2:mapstructor-backups/backups/db/" --include "db-*.dump" | sort | tail -1)
+            rclone copyto "b2:mapstructor-backups/backups/db/$NEWEST" "restore.dump"
+          else
+            rclone copyto "r2:mapstructor-db-backups/db/$NEWEST" "restore.dump"
+          fi
+          [ -s restore.dump ] || { echo "::error::no dump fetched"; exit 1; }
+          # freshness: the newest dump must be from the last 3 days (else backups are silently dead)
+          STAMP=$(echo "$NEWEST" | grep -oE '[0-9]{8}')
+          AGE_DAYS=$(( ( $(date -u +%s) - $(date -u -d "$STAMP" +%s) ) / 86400 ))
+          echo "newest dump: $NEWEST (${AGE_DAYS}d old, $(du -h restore.dump | cut -f1))"
+          [ "$AGE_DAYS" -le 3 ] || { echo "::error::newest dump is ${AGE_DAYS} days old — nightly backup is broken"; exit 1; }
+
+      - name: Restore into the disposable container
+        if: steps.gate.outputs.r2 == 'yes'
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/trusted.gpg.d/pgdg.asc > /dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17
+          export PATH="/usr/lib/postgresql/17/bin:$PATH"
+          export PGPASSWORD=drill
+          psql -h localhost -U postgres -d drill -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+          # --no-owner/--no-privileges mirror how the dump was taken; a clean empty DB restore
+          pg_restore -h localhost -U postgres -d drill --no-owner --no-privileges restore.dump
+          echo "restore completed with exit $?"
+
+      - name: Assert the restored data is real
+        if: steps.gate.outputs.r2 == 'yes'
+        run: |
+          export PGPASSWORD=drill
+          q() { psql -h localhost -U postgres -d drill -tAc "$1"; }
+          TABLES=$(q "select count(*) from information_schema.tables where table_schema='public'")
+          PROJECTS=$(q "select count(*) from projects" || echo 0)
+          LAYERS=$(q "select count(*) from layers" || echo 0)
+          FEATURES=$(q "select count(*) from features" || echo 0)
+          GEOM_OK=$(q "select count(*) from (select geom from features where geom is not null limit 5) s" || echo 0)
+          echo "tables=$TABLES projects=$PROJECTS layers=$LAYERS features=$FEATURES geomSample=$GEOM_OK"
+          {
+            echo "## Restore drill — restored + verified"
+            echo "- public tables: **$TABLES**"
+            echo "- projects: **$PROJECTS** · layers: **$LAYERS** · features: **$FEATURES**"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # floors, not exact counts — the point is "the backup contains the real database"
+          [ "$TABLES"   -ge 15 ]     || { echo "::error::too few tables restored"; exit 1; }
+          [ "$PROJECTS" -ge 10 ]     || { echo "::error::projects table implausibly small"; exit 1; }
+          [ "$FEATURES" -ge 100000 ] || { echo "::error::features table implausibly small"; exit 1; }
+          [ "$GEOM_OK"  -ge 1 ]      || { echo "::error::no readable geometries"; exit 1; }
+
+      - name: Open an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "🔴 RESTORE DRILL FAILED — $(date -u +%Y-%m-%d)" \
+            --body "The monthly backup restore drill failed. A backup that cannot restore is NOT a backup — treat as urgent. Run log: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
