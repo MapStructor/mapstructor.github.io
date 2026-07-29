@@ -22,6 +22,11 @@
     // ...but never as an EMPTY pill: the !important display above beats a chip\'s inline display:none,
     // so a not-yet-filled account chip painted as a blank bordered box. Empty = hidden until it has text.
     '#ms-topbar-right > *:empty{display:none !important;}' +
+    // ...and never as a chip the page HID: an adopted link carrying inline display:none (e.g. the
+    // dashboard\'s owner-only Admin link) must stay hidden — the standard-size rule above would
+    // otherwise force it visible for everyone. Un-hiding via JS rewrites the style attribute
+    // ("display: inline"), so this selector stops matching and the chip shows normally.
+    '#ms-topbar-right > [style*="display:none"], #ms-topbar-right > [style*="display: none"]{display:none !important;}' +
     '#ms-topbar .ms-tb-home{gap:7px;font-size:14px !important;font-weight:700 !important;letter-spacing:.3px;color:#b0691d;padding:6px 4px !important;border:none !important;}' +
     '#ms-topbar .ms-tb-logo{height:24px;width:auto;display:block;flex-shrink:0;}' +
     '#ms-topbar .ms-tb-home:hover{color:#8a5216;}';

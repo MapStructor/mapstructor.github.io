@@ -567,6 +567,10 @@
         else if (parent && parent.type === 'section') { sId = parent._dbId; }
         var layerId = await insertOne('layers', leafRow(node));
         slugToLayerDbId[node.id] = layerId;
+        // a NEW drawn layer is MapboxDraw-resident from feature #1 — the registry is otherwise only
+        // built by loadFeatures' boot pass, so without this a mid-session layer is treated as
+        // engine-rendered until reload (style preview no-ops, per-feature delete hides, labels skip)
+        if (node.source_type === 'geojson-supabase') _drawLayerSlugs[node.id] = true;
         await insertOne('project_layers', { project_id: projectId, layer_id: layerId, sort_order: sort, section_id: sId, group_id: gId });
       }
       // persisted OK → show it in the tree
@@ -3939,6 +3943,7 @@
     }
 
     setStatus('Saving…');
+    featureLayer[f.id] = lid;   // OPTIMISTIC: a restyle during the save round-trip repaints this feature too (confirmed below, removed in catch)
     try {
       var ins = await db.from('features').insert({ layer_id: lid, geom: f.geometry }).select('feature_id').single();
       if (ins.error) throw new Error(ins.error.message);
@@ -3957,7 +3962,10 @@
           'draw ' + (TYPE_TO_GEOM[node.type] || 'feature'));
       })(f.id, JSON.parse(JSON.stringify(f.geometry)), lid, node.iconColor);
       setStatus('Saved');
-    } catch (err) { console.warn('editing: feature save failed', err); setStatus('Draw save failed: ' + err.message); }
+    } catch (err) {
+      if (featureToDb[f.id] == null) delete featureLayer[f.id];   // insert never landed — drop the optimistic mapping
+      console.warn('editing: feature save failed', err); setStatus('Draw save failed: ' + err.message);
+    }
   }
   async function onDrawUpdate(e) {
     for (var i = 0; i < (e.features || []).length; i++) {

@@ -38,6 +38,15 @@
   }
   async function signOut() { if (db) return await db.auth.signOut(); }
 
+  // Bounced-from-a-gated-page flow (7/28): a gated page (dashboard) with no session redirects to
+  // index.html?login=1&next=<page> — the front page auto-opens the login modal and returns to the
+  // page after login, so the visit's intent survives the bounce. `next` is allow-listed to a bare
+  // site page name (no slashes/protocols) so it can never become an open redirect.
+  function bounceNext() {
+    var m = location.search.match(/[?&]next=([A-Za-z0-9_.-]+)/);
+    return (m && /^[A-Za-z0-9_-]+\.html$/.test(m[1])) ? m[1] : null;
+  }
+
   // Fires the callback with the current user (or null) on every auth change.
   function onChange(cb) { if (db) db.auth.onAuthStateChange(function (_e, s) { cb(s && s.user ? s.user : null); }); }
 
@@ -89,11 +98,28 @@
       if (mode === 'signup' && res && res.data && !res.data.session) { msg.textContent = 'Check your email to confirm your account.'; msg.className = 'mapauth-msg ok'; return; }
       msg.textContent = (mode === 'login') ? 'Welcome back.' : 'Account created.'; msg.className = 'mapauth-msg ok';
       setTimeout(closeM, 700);
+      // came here via a gated-page bounce → carry on to where they were headed (login, or a signup
+      // that produced a session — anon upgrade / confirmations off)
+      var nx = bounceNext();
+      if (nx && (mode === 'login' || (res && res.data && res.data.session))) setTimeout(function () { location.href = nx; }, 750);
     };
   }
   function openAuthModal(mode) { ensureAuthModal(); var ov = document.getElementById('mapauth-overlay'); ov._setMode(mode || 'login'); ov.classList.add('open'); setTimeout(function () { var e = document.getElementById('mapauth-email'); if (e) e.focus(); }, 50); }
 
   window.MapAuth = { db: db, currentUser: currentUser, isReal: isReal, signUp: signUp, signIn: signIn, signOut: signOut, onChange: onChange, openAuthModal: openAuthModal };
+
+  // ?login=1 (the gated-page bounce above): pop the login modal on arrival — or, if a session
+  // already exists, skip straight back to the page the visitor was headed to.
+  if (/[?&]login=1/.test(location.search)) {
+    (function () {
+      var nx = bounceNext();
+      Promise.resolve(currentUser()).then(function (u) {
+        if (isReal(u)) { if (nx) location.replace(nx); return; }
+        var open = function () { openAuthModal('login'); };
+        if (document.body) open(); else document.addEventListener('DOMContentLoaded', open);
+      }).catch(function () {});
+    })();
+  }
 
   // ── Platform storage guard (7/15, rethresholded 7/23): the platform rides Supabase PRO (8 GB
   // database; the spend cap keeps that hard). Policy (user 7/23): stay under 50% in general —

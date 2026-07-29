@@ -188,10 +188,28 @@ function fetchAndRender(layer, props, clickedId, lngLat, popupHTML, append) {
   var $el = $("#" + state.divId);
   var nid = props[panel.nidProp];
 
+  // Encyclopedia unreachable / non-JSON / empty → still open the panel with what the feature's own
+  // props can render (empty f()). Without this the fetch died UNCAUGHT and the click looked dead —
+  // exactly what happened when the domain pivot took mapstructor.com/ames away (7/28). In "both"
+  // mode the notes half is already on screen, so the fallback is a quiet no-op there.
+  var encFallback = function() {
+    if (append) return;
+    try {
+      var rendered = document.createElement("div");
+      rendered.innerHTML = panel.render(props, function() { return ""; });
+      $el.html(rendered.innerHTML);
+      floatPanelToTop(state.divId);
+      openSidebarIfHidden();
+      state.isOpen = true;
+      setPanelHighlight(layer, clickedId, true);
+      showPanelPopups(state, lngLat, popupHTML);
+      $el.slideDown();
+    } catch (e) {}
+  };
   fetch(panel.encyclopediaBase + "/rendered-export-single?nid=" + nid)
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (!data || !data[0] || !data[0].rendered_entity) { return; }
+        if (!data || !data[0] || !data[0].rendered_entity) { encFallback(); return; }
         var docEl = document.createElement("div");
         docEl.innerHTML = processEncyclopediaHtml(data[0].rendered_entity, panel.encyclopediaBase);
         var $doc = $(docEl);
@@ -244,7 +262,8 @@ function fetchAndRender(layer, props, clickedId, lngLat, popupHTML, append) {
         setPanelHighlight(layer, clickedId, true);
         showPanelPopups(state, lngLat, popupHTML);
         $el.slideDown();
-      });
+      })
+    .catch(encFallback);
 }
 
 function closePanelInfo(layer) {
