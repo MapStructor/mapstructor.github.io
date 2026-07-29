@@ -30,6 +30,8 @@
     this._start = -1; this._end = -1;           // row range currently in the DOM
     this._measured = false;
     this._syncingBar = false;
+    this._missingT = null;                      // debounce handle for onMissing (see _render)
+    this.missingDebounceMs = opts.missingDebounceMs || 120;
     var self = this;
 
     this.scrollEl.style.overflowY = 'hidden';   // vertical scrolling is ours now
@@ -143,9 +145,20 @@
     }
     this._start = start; this._end = end;
     // VIRTUAL row sets (big-data tier): rows may be a sparse array — undefined entries render
-    // as the caller's placeholder; tell the provider which range to fetch, it re-renders on arrival
+    // as the caller's shimmer placeholder (recycled/repainted every tick, same as any other row —
+    // that part was never the bottleneck). Fetching is DEBOUNCED to the scroll LANDING position
+    // (7/29): a fast scrollbar drag calls _render() on every native scroll tick, and each tick
+    // used to fire an immediate page fetch for wherever it was passing through — dozens of
+    // requests queued for positions the user scrolled straight past, so rows "caught up" slowly
+    // after the drag ended. Only the last gap seen within a short quiet window is requested.
     if (this.onMissing) {
-      for (var m = start; m < end; m++) if (this.rows[m] === undefined) { this.onMissing(start, end); break; }
+      var gap = false;
+      for (var m = start; m < end; m++) if (this.rows[m] === undefined) { gap = true; break; }
+      if (gap) {
+        var self2 = this, ms = start, me = end;
+        if (this._missingT) clearTimeout(this._missingT);
+        this._missingT = setTimeout(function () { self2._missingT = null; if (self2.onMissing) self2.onMissing(ms, me); }, this.missingDebounceMs);
+      } else if (this._missingT) { clearTimeout(this._missingT); this._missingT = null; }   // landed fully-loaded — drop any stale pending ask
     }
     if (!this._measured) {
       var tr = t.querySelector('tr[data-fid]');
@@ -170,6 +183,7 @@
 
   MSAttrWindow.prototype.destroy = function () {
     if (this._ro) this._ro.disconnect();
+    if (this._missingT) { clearTimeout(this._missingT); this._missingT = null; }
     this.scrollEl.removeEventListener('wheel', this._onWheel);
     this.vbar.removeEventListener('scroll', this._onBar);
     if (this.vbar.parentNode) this.vbar.parentNode.removeChild(this.vbar);
