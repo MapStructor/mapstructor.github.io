@@ -24,13 +24,13 @@
     // IDs here AND in supabase/functions/stripe-webhook/index.ts (PRICE_TO_TIER).
     steps: [
       { key: "free",  label: "Free",   priceMonthly: 0,  quotaBytes: 1 * GB,   stripePriceId: null },
-      { key: "20gb",  label: "20 GB",  priceMonthly: 1,  quotaBytes: 20 * GB,  stripePriceId: null /* TODO */ },
-      { key: "50gb",  label: "50 GB",  priceMonthly: 2,  quotaBytes: 50 * GB,  stripePriceId: null /* TODO */ },
-      { key: "100gb", label: "100 GB", priceMonthly: 4,  quotaBytes: 100 * GB, stripePriceId: null /* TODO */ },
-      { key: "250gb", label: "250 GB", priceMonthly: 8,  quotaBytes: 250 * GB, stripePriceId: null /* TODO */ },
-      { key: "500gb", label: "500 GB", priceMonthly: 15, quotaBytes: 500 * GB, stripePriceId: null /* TODO */ },
-      { key: "1tb",   label: "1 TB",   priceMonthly: 25, quotaBytes: 1 * TB,   stripePriceId: null /* TODO */ },
-      { key: "2tb",   label: "2 TB",   priceMonthly: 45, quotaBytes: 2 * TB,   stripePriceId: null /* TODO */ },
+      { key: "20gb",  label: "20 GB",  priceMonthly: 1,  quotaBytes: 20 * GB,  stripePriceId: "price_1TyfdDLiMJ4gksrjvk7Pq4H9" },  // TEST mode
+      { key: "50gb",  label: "50 GB",  priceMonthly: 2,  quotaBytes: 50 * GB,  stripePriceId: "price_1TyfcrLiMJ4gksrjTYBnOSmY" },  // TEST mode
+      { key: "100gb", label: "100 GB", priceMonthly: 4,  quotaBytes: 100 * GB, stripePriceId: "price_1TyfcrLiMJ4gksrj7La8hSx5" },  // TEST mode
+      { key: "250gb", label: "250 GB", priceMonthly: 8,  quotaBytes: 250 * GB, stripePriceId: "price_1TyfcsLiMJ4gksrjQ5dryqtl" },  // TEST mode
+      { key: "500gb", label: "500 GB", priceMonthly: 15, quotaBytes: 500 * GB, stripePriceId: "price_1TyfctLiMJ4gksrjUkNCEhz3" },  // TEST mode
+      { key: "1tb",   label: "1 TB",   priceMonthly: 25, quotaBytes: 1 * TB,   stripePriceId: "price_1TyfcuLiMJ4gksrj1lisLpi3" },  // TEST mode
+      { key: "2tb",   label: "2 TB",   priceMonthly: 45, quotaBytes: 2 * TB,   stripePriceId: "price_1TyfcuLiMJ4gksrjN2OMgPVH" },  // TEST mode
     ],
     // Legacy named tiers (test-mode era, superseded 2026-07-27). Every alias resolves to a step
     // with MORE storage at a LOWER price, so a profile still carrying an old key only gains:
