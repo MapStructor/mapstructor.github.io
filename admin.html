@@ -126,11 +126,10 @@
         rows.forEach(function (r) { profById[r.id] = r; });
         document.getElementById('s-users').textContent = rows.length;
         if (hasTier) {
-          P.order.forEach(function (k) { tierCounts[k] = 0; });
-          rows.forEach(function (r) { var t = r.subscription_tier || 'free'; tierCounts[t] = (tierCounts[t] || 0) + 1; });
-          document.getElementById('tiers').innerHTML = P.order.map(function (k) {
-            var t = P.tierFor(k);
-            return '<div class="stat"><div class="n">' + (tierCounts[k] || 0) + '</div><div class="l">' + t.name + ' ($' + t.priceMonthly + '/mo)</div></div>';
+          // count by RESOLVED step (stepFor folds legacy plus/pro/institutional keys in)
+          rows.forEach(function (r) { var k = P.stepFor(r.subscription_tier).key; tierCounts[k] = (tierCounts[k] || 0) + 1; });
+          document.getElementById('tiers').innerHTML = P.steps.map(function (t) {
+            return '<div class="stat"><div class="n">' + (tierCounts[t.key] || 0) + '</div><div class="l">' + t.label + ' ($' + t.priceMonthly + '/mo)</div></div>';
           }).join('');
         } else { document.getElementById('tiers-note').style.display = 'block'; }
 

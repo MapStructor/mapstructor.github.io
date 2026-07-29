@@ -3872,7 +3872,7 @@
       try { var pr = await db.from('profiles').select('subscription_tier').eq('id', uid).maybeSingle(); if (pr.data && pr.data.subscription_tier) tierKey = pr.data.subscription_tier; } catch (e) {}
       var used = 0;
       try { var rpc = await db.rpc('mapstructor_user_storage'); if (!rpc.error && typeof rpc.data === 'number') used = rpc.data; } catch (e) {}
-      var quota = P.tierFor(tierKey).quotaBytes;
+      var quota = P.stepFor(tierKey).quotaBytes;
       _storageInfo = { used: used, quota: quota, tierKey: tierKey, frac: quota ? used / quota : 0 };
       _storageOver = used >= quota;
       if (location.search.indexOf('storagefull=1') > -1) { _storageOver = true; _storageInfo = { used: quota, quota: quota, tierKey: tierKey, frac: 1 }; }   // test seam
@@ -6611,6 +6611,9 @@
       // their natural spot), so pin-stickiness is DISABLED (ms-nopin, tbody only — the thead preview
       // row must keep its top-sticky) until the table is actually h-scrolled.
       '#editor-attr-table.ms-nopin tbody td.attr-pin-cell{position:static;box-shadow:none;}' +
+      // shimmer placeholder (7/29): a not-yet-fetched virtual row reads as LOADING, not broken.
+      '@keyframes attrShimmer{0%{background-position:-160px 0;}100%{background-position:160px 0;}}' +
+      '#editor-attr-table tr.attr-row-ghost td{padding:5px 7px;background-image:linear-gradient(90deg,#f0f0f0 25%,#e4e4e4 37%,#f0f0f0 63%);background-size:320px 100%;animation:attrShimmer 1.2s ease-in-out infinite;}' +
       '#editor-attr-foot{padding:8px 16px;border-top:1px solid #cccccc;font-size:12px;color:#888888;}';
     document.head.appendChild(st);
     var m = document.createElement('div'); m.id = 'editor-attr-modal';
@@ -7169,9 +7172,11 @@
   // blank. Rows now render as text; the SELECTED row(s) materialize real inputs — identical
   // UX to the existing two-click model (inputs were click-blocked until selected anyway).
   function attrRowHtml(r) {
-    // virtual (big-data) mode: a not-yet-fetched row renders as a ghost of the same height —
-    // no data-fid, so clicks/hover/measure all skip it; the page fetch replaces it in ~100ms
-    if (!r) return '<tr class="attr-row-ghost" style="height:' + ((_attrWin && _attrWin.rowH) || 30) + 'px;"><td colspan="' + (_attrCols.length || 1) + '" style="padding:5px 7px;color:#a5a5a5;">…</td></tr>';
+    // virtual (big-data) mode: a not-yet-fetched row renders as a shimmering ghost of the same
+    // height — no data-fid, so clicks/hover/measure all skip it; the debounced page fetch
+    // (attrGrid.js) replaces it once the scroll position settles. The shimmer (CSS, injectAttrModal)
+    // reads as "loading", not "broken" — a static "…" looked like a stuck/failed row.
+    if (!r) return '<tr class="attr-row-ghost" style="height:' + ((_attrWin && _attrWin.rowH) || 30) + 'px;"><td colspan="' + (_attrCols.length || 1) + '"></td></tr>';
     var isSel = _attrSel.indexOf(String(r.feature_id)) > -1;
     return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + (isSel ? ' class="attr-row-sel"' : '') + '>' + _attrCols.map(function (c) {
       var stick = c._left != null ? ' class="attr-pin-cell" style="left:' + c._left + 'px;"' : '';

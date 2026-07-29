@@ -17,8 +17,19 @@ const stripe = new Stripe(Deno.env.get("STRIPE_SECRET_KEY")!, {
 });
 const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-// Map a Stripe price → our tier. Keep in sync with platform/pricing.js.
+// Map a Stripe price → our storage step key. Keep in sync with platform/pricing.js (steps[].key).
+// TODO(user): create one Stripe price per paid step (20gb $1 · 50gb $2 · 100gb $4 · 250gb $8 ·
+// 500gb $15 · 1tb $25 · 2tb $45, all monthly) and paste the IDs below AND into pricing.js.
 const PRICE_TO_TIER: Record<string, string> = {
+  // "price_XXXXXXXXXXXXXXXX": "20gb",
+  // "price_XXXXXXXXXXXXXXXX": "50gb",
+  // "price_XXXXXXXXXXXXXXXX": "100gb",
+  // "price_XXXXXXXXXXXXXXXX": "250gb",
+  // "price_XXXXXXXXXXXXXXXX": "500gb",
+  // "price_XXXXXXXXXXXXXXXX": "1tb",
+  // "price_XXXXXXXXXXXXXXXX": "2tb",
+  // retired TEST-mode prices (named-tier era) — left resolving so any lingering test
+  // subscription still lands on a step via pricing.js's legacy aliases:
   "price_1TluYTLiMJ4gksrj28JlFQU6": "plus",
   "price_1TluYULiMJ4gksrju0vPRXHr": "pro",
   "price_1TluYVLiMJ4gksrjAsOIjG0A": "institutional",

@@ -49,9 +49,6 @@
     .pprice a:hover { text-decoration: underline; }
     .pbadge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; letter-spacing: .02em; }
     .pbadge.free { background: #e6f6ea; color: #2d7a2d; }
-    .pbadge.pop { background: var(--p); color: #fff; }
-    .prow.hot { background: #f6f2fe; }
-    .prow.hot:hover { background: #f1ebfd; }
     .pnote { font-size: 13px; color: #9a93ad; margin: 12px 2px 0; }
     /* ── tiny rich-text editors (public profile / private notes) ── */
     .rt-toolbar { display: flex; gap: 4px; margin-bottom: 6px; }
@@ -108,10 +105,10 @@
         <p class="sub">Building maps and adding features is always free. You only pay for <b>storage</b> — and only if you need a lot of it.</p>
         <div class="ptable">
           <div class="prow phead"><div>Storage</div><div>Price</div></div>
-          <div class="prow"><div class="pstore">500&nbsp;MB <span class="pbadge free">Free</span></div><div class="pprice">$0</div></div>
+          <div class="prow"><div class="pstore">1&nbsp;GB <span class="pbadge free">Free</span></div><div class="pprice">$0</div></div>
           <div class="prow"><div class="pstore">20&nbsp;GB</div><div class="pprice">$1<span>/mo</span></div></div>
           <div class="prow"><div class="pstore">50&nbsp;GB</div><div class="pprice">$2<span>/mo</span></div></div>
-          <div class="prow hot"><div class="pstore">100&nbsp;GB <span class="pbadge pop">Popular</span></div><div class="pprice">$4<span>/mo</span></div></div>
+          <div class="prow"><div class="pstore">100&nbsp;GB</div><div class="pprice">$4<span>/mo</span></div></div>
           <div class="prow"><div class="pstore">250&nbsp;GB</div><div class="pprice">$8<span>/mo</span></div></div>
           <div class="prow"><div class="pstore">500&nbsp;GB</div><div class="pprice">$15<span>/mo</span></div></div>
           <div class="prow"><div class="pstore">1&nbsp;TB</div><div class="pprice">$25<span>/mo</span></div></div>
@@ -304,41 +301,43 @@
         } catch (e) { return 0; }
       }
       function renderStorage(P, tierKey, used, approx) {
-        var tier = P.tierFor(tierKey), frac = P.fraction(used, tierKey), pct = Math.round(frac * 100), next = P.nextTier(tierKey);
+        var step = P.stepFor(tierKey), frac = P.fraction(used, tierKey), pct = Math.round(frac * 100);
+        // no overages: the suggestion is the smallest step that HOLDS current usage (may be
+        // several rungs up), not just "one step higher"; past 2 TB → contact
+        var fits = P.stepForUsage(used);
+        var next = (fits && fits.quotaBytes > step.quotaBytes) ? fits : P.nextStep(step.key);
         document.getElementById('storage-used').textContent = (approx ? '≈ ' : '') + P.fmtBytes(used);
-        document.getElementById('storage-quota').textContent = P.fmtBytes(tier.quotaBytes);
-        document.getElementById('storage-tier').textContent = tier.name;
+        document.getElementById('storage-quota').textContent = P.fmtBytes(step.quotaBytes);
+        document.getElementById('storage-tier').textContent = step.label;
         document.getElementById('storage-pct').textContent = pct + '%';
         var bar = document.getElementById('storage-bar');
         bar.style.width = Math.max(2, frac * 100) + '%';
         bar.style.background = pct >= 100 ? '#b4453a' : pct >= 80 ? '#d98a00' : '#2d7a2d';
         var note = document.getElementById('storage-note');
-        if (pct >= 100) note.innerHTML = '<b style="color:#b4453a;">You’re out of space.</b> ' + (next ? ('Upgrade to ' + next.name + ' (' + P.fmtBytes(next.quotaBytes) + ', $' + next.priceMonthly + '/mo).') : 'Contact us about a larger plan.');
-        else if (pct >= 80) note.innerHTML = 'You’re using ' + pct + '% of your storage.' + (next ? ' Consider upgrading to ' + next.name + '.' : '');
+        if (pct >= 100) note.innerHTML = '<b style="color:#b4453a;">You’re out of space.</b> ' + (next ? ('Upgrade to ' + next.label + ' ($' + next.priceMonthly + '/mo).') : 'Contact us about a larger plan.');
+        else if (pct >= 80) note.innerHTML = 'You’re using ' + pct + '% of your storage.' + (next ? ' Consider upgrading to ' + next.label + '.' : '');
         else note.textContent = approx ? 'Estimated from your map data.' : '';
-        // upgrade buttons (higher tiers) + manage-billing for paid users
+        // upgrade buttons (every step above the current one) + manage-billing for paying users
         var actions = document.getElementById('storage-actions'); actions.innerHTML = '';
-        P.order.forEach(function (k) {
-          if (P.order.indexOf(k) > P.order.indexOf(tierKey)) {
-            var t = P.tierFor(k), btn = document.createElement('button');
-            btn.className = 'btn btn-light'; btn.style.fontSize = '13px';
-            btn.textContent = 'Upgrade to ' + t.name + ' — $' + t.priceMonthly + '/mo';
-            btn.onclick = function () { startCheckout(k, btn); };
-            actions.appendChild(btn);
-          }
+        P.upgradesFrom(step.key).forEach(function (t) {
+          var btn = document.createElement('button');
+          btn.className = 'btn btn-light'; btn.style.fontSize = '13px';
+          btn.textContent = 'Upgrade to ' + t.label + ' — $' + t.priceMonthly + '/mo';
+          btn.onclick = function () { startCheckout(t.key, btn); };
+          actions.appendChild(btn);
         });
-        if (tierKey !== 'free') {
+        if (step.priceMonthly > 0) {
           var mb = document.createElement('button'); mb.className = 'btn btn-light'; mb.style.fontSize = '13px';
           mb.textContent = 'Manage billing'; mb.onclick = function () { openPortal(mb); }; actions.appendChild(mb);
         }
       }
       // ---- Stripe checkout / portal (via Supabase Edge Functions) ----
-      async function startCheckout(tierKey, btn) {
-        var P = window.MapStructorPricing, tier = P.tierFor(tierKey);
-        if (!tier.stripePriceId) return;
+      async function startCheckout(stepKey, btn) {
+        var P = window.MapStructorPricing, step = P.stepFor(stepKey);
+        if (!step.stripePriceId) { alert('Checkout for ' + step.label + ' isn’t set up yet — check back soon.'); return; }
         if (btn) { btn.disabled = true; btn.textContent = 'Redirecting…'; }
         try {
-          var r = await db.functions.invoke('create-checkout-session', { body: { priceId: tier.stripePriceId, tier: tierKey, successUrl: location.href, cancelUrl: location.href } });
+          var r = await db.functions.invoke('create-checkout-session', { body: { priceId: step.stripePriceId, tier: step.key, successUrl: location.href, cancelUrl: location.href } });
           if (r.data && r.data.url) { location.href = r.data.url; return; }
           alert('Could not start checkout: ' + ((r.error && r.error.message) || (r.data && r.data.error) || 'unknown'));
         } catch (e) { alert('Checkout error: ' + (e && e.message)); }
