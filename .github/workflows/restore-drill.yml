@@ -81,10 +81,34 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17
           export PATH="/usr/lib/postgresql/17/bin:$PATH"
           export PGPASSWORD=drill
-          psql -h localhost -U postgres -d drill -c "CREATE EXTENSION IF NOT EXISTS postgis;"
-          # --no-owner/--no-privileges mirror how the dump was taken; a clean empty DB restore
-          pg_restore -h localhost -U postgres -d drill --no-owner --no-privileges restore.dump
-          echo "restore completed with exit $?"
+          # The dump is PUBLIC-SCHEMA-ONLY from Supabase — it references cluster-level things a
+          # bare Postgres lacks: the anon/authenticated/service_role ROLES (RLS policies name
+          # them), the auth SCHEMA, auth.uid() (policy expressions), and auth.users (FKs).
+          # Scaffold those first or CREATE TABLE/POLICY statements cascade-fail (run #1: 14 errors).
+          psql -h localhost -U postgres -d drill -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon')          THEN CREATE ROLE anon NOLOGIN;          END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='service_role')  THEN CREATE ROLE service_role NOLOGIN;  END IF;
+          END $$;
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY, email text, is_anonymous boolean, created_at timestamptz, last_sign_in_at timestamptz);
+          CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS 'select null::uuid';
+          CREATE OR REPLACE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$select 'anon'::text$$;
+          SQL
+          # pg_restore exits 1 whenever ANY statement errored, even benign ones — capture the
+          # ignored-error count and allow a small floor of noise (CREATE SCHEMA public /
+          # CREATE EXTENSION postgis already existing). The NEXT step's row-count + geometry
+          # assertions are the real pass/fail; this step only fails on WHOLESALE breakage.
+          set +e
+          pg_restore -h localhost -U postgres -d drill --no-owner --no-privileges restore.dump 2> restore-errors.log
+          RC=$?
+          set -e
+          IGNORED=$(grep -oE "errors ignored on restore: [0-9]+" restore-errors.log | grep -oE "[0-9]+" || echo 0)
+          echo "pg_restore exit=$RC, ignored errors=$IGNORED"
+          tail -40 restore-errors.log || true
+          if [ "$IGNORED" -gt 5 ]; then echo "::error::too many restore errors ($IGNORED) — see log above"; exit 1; fi
 
       - name: Assert the restored data is real
         if: steps.gate.outputs.r2 == 'yes'
