@@ -3,7 +3,7 @@
   // ── Config ──────────────────────────────────────────────────────────────────
   var MAPBOX_TOKEN  = mapboxToken;
   var SUPABASE_URL  = 'https://padavlcmwidjnhxzkhyb.supabase.co';
-  var SUPABASE_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBhZGF2bGNtd2lkam5oeHpraHliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NzMzODEsImV4cCI6MjA5MjM0OTM4MX0.me5DqJgtSHBHKnZowf2AFIWqof-oydvly40Aeo6wC9o';
+  var SUPABASE_KEY  = 'sb_publishable_jseMNQXnPRoeAMSj1t_lhQ_vYTj-FVi';
 
   // Layer colours — cycle through these for new layers
   var LAYER_COLORS = ['#4a9eff','#ff6b4a','#4aff9e','#ff4adb','#ffe04a','#4af0ff','#ff9e4a'];

@@ -804,6 +804,18 @@
     btn.disabled = false;
   }
 
+  // Free-storage size comes from the pricing ladder, never a literal — the free step only
+  // ever grows, and a hardcoded number silently becomes a lie the next time it does.
+  function freeStep() {
+    var P = window.MapStructorPricing;
+    return (P && P.steps && P.steps[0]) || null;
+  }
+  function freeQuotaBytes() { var s = freeStep(); return s ? s.quotaBytes : 1073741824; }
+  function freeQuotaLabel() {
+    var P = window.MapStructorPricing, s = freeStep();
+    return (P && s) ? P.fmtBytes(s.quotaBytes) : "1 GB";
+  }
+
   function showStats(st) {
     var d = document.getElementById("msq-op-stats");
     var top = (st.sample || []).map(function (s) { return s.k + " (" + nfmt(s.eras) + " eras)"; }).slice(0, 6).join(", ");
@@ -813,7 +825,7 @@
       (st.passthrough ? " + " + nfmt(st.passthrough) + " pass-through" : "") + ")" +
       "<br>Geometry copies: <b>" + nfmt(st.geometryCopies) + "</b> (×" + st.dupFactor + " the source — eras duplicate geometry by design)" +
       (st.projBytes ? "<br>Projected result size: <b>~" + fmtBytes(st.projBytes) + "</b> before simplify" +
-        (st.projBytes > 250e6 ? " — <b style='color:#a33d3d'>⚠ that can blow the free 500 MB database.</b> Set the simplify option (10 m is usually invisible on a map), or merge → Publish to tiles → delete the merged layer." : "") : "") +
+        (st.projBytes > freeQuotaBytes() / 2 ? " — <b style='color:#a33d3d'>⚠ that's a large share of the " + freeQuotaLabel() + " free storage.</b> Set the simplify option (10 m is usually invisible on a map), or merge → Publish to tiles → delete the merged layer." : "") : "") +
       (st.resumed || st.skippedCompanies ? "<br><span class='msq-note'>Resumed — " + nfmt(st.skippedCompanies) + " companies were already done from the earlier run (totals above cover this run only).</span>" : "") +
       (st.only ? "<br><span class='msq-note'>Test mode: only \"" + st.only + "\" (pass-through skipped)</span>" : "") +
       (top ? "<br><span class='msq-note'>Most eras: " + top + "</span>" : "");
