@@ -61,8 +61,12 @@ Deno.serve(async (req) => {
       case "customer.subscription.updated": {
         const sub = event.data.object as Stripe.Subscription;
         const priceId = sub.items?.data?.[0]?.price?.id ?? "";
-        const active = sub.status === "active" || sub.status === "trialing";
-        await setTierByCustomer(sub.customer as string, active ? (PRICE_TO_TIER[priceId] || "free") : "free");
+        // Honor Stripe's dunning window: a failed renewal goes `past_due` while Stripe retries
+        // (~2 weeks by default) — the user KEEPS their storage during that grace. Only drop to
+        // free on terminal states (unpaid = retries exhausted, canceled, incomplete_expired,
+        // paused). A real cancellation also fires subscription.deleted → free.
+        const keepTier = sub.status === "active" || sub.status === "trialing" || sub.status === "past_due";
+        await setTierByCustomer(sub.customer as string, keepTier ? (PRICE_TO_TIER[priceId] || "free") : "free");
         break;
       }
       case "customer.subscription.deleted": {
