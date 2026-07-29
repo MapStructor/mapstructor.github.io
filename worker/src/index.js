@@ -68,6 +68,31 @@ export default {
         { headers: cors({ "Content-Type": "application/json" }) });
     }
 
+    /* ── AHM Drupal encyclopedia pass-through (2026-07-28) ─────────────── */
+    // The domain pivot pointed the apex at this Worker, which buried the Drupal
+    // still living on the old GoDaddy box at /ames/* (box 23.229.233.102, port 80
+    // only — 443 is dead there). Proxy the path through so EVERY stored
+    // encyclopediaBase URL keeps working unchanged (AHM1 + AHM2 + any map).
+    // cf.resolveOverride escapes the zone loop; it requires the same-zone gray
+    // A record  origin.mapstructor.com → 23.229.233.102  (DNS only).
+    if (url.pathname.startsWith("/ames/")) {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        return new Response("read-only through this proxy", { status: 405, headers: cors() });
+      }
+      try {
+        var enc = await fetch("http://mapstructor.com" + url.pathname + url.search, {
+          method: req.method,
+          cf: { resolveOverride: "origin.mapstructor.com", cacheTtl: 300, cacheEverything: true }
+        });
+        var encH = new Headers(enc.headers);
+        encH.set("Access-Control-Allow-Origin", "*");     // set (not append) — never doubles Drupal's own ACAO
+        encH.delete("Set-Cookie");                        // public content only — never relay origin sessions
+        return new Response(enc.body, { status: enc.status, headers: encH });
+      } catch (e) {
+        return new Response("encyclopedia origin unreachable", { status: 502, headers: cors() });
+      }
+    }
+
     /* ── showcase static serving ───────────────────────────────────────── */
     // /maps/* = frozen public showcases stored in R2 under the same prefix
     // (e.g. /maps/railways/). At domain-flip time a route sends
