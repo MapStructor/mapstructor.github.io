@@ -17,9 +17,14 @@
                                         the dual-write invariant: publishes DELETE the R2 copy
                                         before re-uploading, so R2 always holds the CURRENT
                                         archive or nothing (stale-R2 can never shadow Supabase).
+     POST /fold                       — The Fold (C3, 7/29): dispatch the retile/fold GitHub
+                                        Action for a layer the caller owns. The GitHub token
+                                        lives here as the GITHUB_DISPATCH_TOKEN secret — the
+                                        browser never sees it. Body: {projectId, layerId,
+                                        mode: retile|fold-rows|fold-raw, rawKey?, maxZoom?}.
 
    Not yet built (TODO markers below): per-key rate limit, private-map read gating,
-   AI proxy, tile-job dispatch. */
+   AI proxy. */
 
 var ALLOW_ORIGIN = "*";   // tighten to the site origins at custom-domain time
 
@@ -31,7 +36,7 @@ var ADMIN_EMAIL = "nittyjee@gmail.com";
 function cors(extra) {
   var h = {
     "Access-Control-Allow-Origin": ALLOW_ORIGIN,
-    "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Range",
     "Access-Control-Expose-Headers": "ETag, Content-Range, Accept-Ranges"
   };
@@ -165,6 +170,57 @@ export default {
         return new Response(obj.body, { status: 206, headers: headers });
       }
       return new Response(obj.body, { headers: headers });
+    }
+
+    /* ── The Fold: dispatch the retile/fold Action (C3, 7/29) ──────────── */
+    // The import client can't hold a GitHub token; this is the one place that can.
+    // Ownership is checked exactly like /upload (caller's own token → projects.user_id),
+    // then the workflow_dispatch fires with the Worker-held PAT. 503 until the
+    // GITHUB_DISPATCH_TOKEN secret is set (clients fall back to a normal row import).
+    if (req.method === "POST" && url.pathname === "/fold") {
+      var fuser = await supabaseUser(env, req);
+      if (!fuser || !fuser.id) return new Response("auth required", { status: 401, headers: cors() });
+      var fb = null;
+      try { fb = await req.json(); } catch (e) { return new Response("bad json", { status: 400, headers: cors() }); }
+      var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      var fMode = fb && fb.mode ? String(fb.mode) : "fold-raw";
+      if (!fb || !UUID.test(fb.projectId || "") || !UUID.test(fb.layerId || "") ||
+          ["retile", "fold-rows", "fold-raw"].indexOf(fMode) < 0) {
+        return new Response("bad request", { status: 400, headers: cors() });
+      }
+      var fRawKey = fb.rawKey ? String(fb.rawKey) : "";
+      // fold-raw sources must live under the caller's own project prefix (no path games)
+      if (fMode === "fold-raw" && fRawKey.indexOf("tiles/" + fb.projectId + "/") !== 0) {
+        return new Response("rawKey must be under tiles/<projectId>/", { status: 400, headers: cors() });
+      }
+      try {
+        var fpr = await fetch(env.SUPABASE_URL + "/rest/v1/projects?id=eq." + fb.projectId + "&select=user_id", {
+          headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY }
+        });
+        var frows = fpr.ok ? await fpr.json() : [];
+        if (!frows.length || frows[0].user_id !== fuser.id) {
+          return new Response("not your project", { status: 403, headers: cors() });
+        }
+      } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
+      if (!env.GITHUB_DISPATCH_TOKEN) return new Response("fold dispatch not configured", { status: 503, headers: cors() });
+      var gh = await fetch("https://api.github.com/repos/MapStructor/mapstructor.github.io/actions/workflows/retile-tippecanoe.yml/dispatches", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + env.GITHUB_DISPATCH_TOKEN,
+          "Accept": "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "mapstructor-worker",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          ref: "master",
+          inputs: { project_id: fb.projectId, layer_id: fb.layerId, mode: fMode, raw_key: fRawKey, max_zoom: fb.maxZoom ? String(fb.maxZoom) : "" }
+        })
+      });
+      if (gh.status === 204) {
+        return new Response(JSON.stringify({ ok: true, dispatched: fMode }), { status: 202, headers: cors({ "Content-Type": "application/json" }) });
+      }
+      return new Response("dispatch failed: " + gh.status + " " + (await gh.text()).slice(0, 200), { status: 502, headers: cors() });
     }
 
     /* ── writes (the chokepoint) ───────────────────────────────────────── */

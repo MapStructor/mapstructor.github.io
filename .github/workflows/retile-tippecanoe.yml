@@ -1,9 +1,18 @@
-# Remote "deep re-tile" tier: real tippecanoe on a free GitHub runner.
-# The browser tiler (platform/tilegen.js) remains the instant default; run this manually
-# (Actions tab → Retile with tippecanoe → Run workflow) for big datasets that deserve
-# tippecanoe's per-zoom feature dropping/coalescing. No paid server anywhere.
+# Remote tiler + FOLD engine: real tippecanoe on a free GitHub runner (The Fold C2, 7/29).
+# The browser tiler (platform/tilegen.js) remains the instant default. Run manually
+# (Actions tab → Run workflow), via the Worker's POST /fold (imports), or the API:
+#   POST /repos/MapStructor/mapstructor.github.io/actions/workflows/retile-tippecanoe.yml/dispatches
+#     {"ref":"master","inputs":{"project_id":"…","layer_id":"…","mode":"fold-raw","raw_key":"tiles/…/….source.geojson"}}
 #
-# ONE-TIME SETUP: repo secret SUPABASE_SERVICE_KEY (same secret storage-alert.yml uses).
+# Modes (scripts/retile-tippecanoe.mjs): retile (default — tiles only, now dual-written
+# to R2 with label + dirty-tracking stamps) · fold-rows (rows → full artifact set,
+# stamps folded; rows NOT deleted — C6 soft-first) · fold-raw (import reroute: reads the
+# client-uploaded FC from R2, mints ids, inserts ZERO Postgres rows).
+#
+# ONE-TIME SETUP: repo secrets SUPABASE_SERVICE_KEY (same as storage-alert.yml) and, for
+# fold modes, R2_ACCOUNT_ID + a key pair that can write the mapstructor-tiles bucket —
+# R2_TILES_ACCESS_KEY_ID/R2_TILES_SECRET_ACCESS_KEY if the backup pair (R2_ACCESS_KEY_ID/
+# R2_SECRET_ACCESS_KEY, used by backup.yml) is scoped to the backups bucket only.
 
 name: Retile with tippecanoe
 
@@ -20,10 +29,24 @@ on:
         description: "Max zoom (empty = tippecanoe decides via -zg)"
         required: false
         default: ""
+      mode:
+        description: "retile | fold-rows | fold-raw"
+        required: false
+        default: "retile"
+      raw_key:
+        description: "R2 key of the source FeatureCollection (fold-raw only)"
+        required: false
+        default: ""
+
+# two dispatches for the same layer would race on the same storage keys + layer row
+concurrency:
+  group: retile-${{ github.event.inputs.layer_id }}
+  cancel-in-progress: false
 
 jobs:
   retile:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -36,10 +59,19 @@ jobs:
           sudo make -C /tmp/tippecanoe install
           tippecanoe --version
 
-      - name: Fetch features, tile, upload, re-point layer
+      - name: Install duckdb (fold parquet artifacts)
+        if: ${{ inputs.mode == 'fold-rows' || inputs.mode == 'fold-raw' }}
+        run: pip install --quiet duckdb
+
+      - name: Fetch, tile, bake artifacts, upload, stamp
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           PROJECT_ID: ${{ inputs.project_id }}
           LAYER_ID: ${{ inputs.layer_id }}
           MAX_ZOOM: ${{ inputs.max_zoom }}
+          MODE: ${{ inputs.mode }}
+          RAW_KEY: ${{ inputs.raw_key }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_TILES_ACCESS_KEY_ID || secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_TILES_SECRET_ACCESS_KEY || secrets.R2_SECRET_ACCESS_KEY }}
         run: node scripts/retile-tippecanoe.mjs

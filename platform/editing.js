@@ -71,6 +71,16 @@
       nextSort = maxSort + 1;
       loaded = true;
       rerender();   // re-render so enhanceRows wires toggle/draw for now-typed drawn layers
+      // THE FOLD (C3): a reload mid-fold would orphan the watch — resume polling any layer
+      // still marked 'folding' so it appears live the moment the Action stamps it.
+      try {
+        (function scanF(arr) {
+          (arr || []).forEach(function (n) {
+            if (n.fold_state === 'folding' && slugToLayerDbId[n.id]) pollFoldDone(n, slugToLayerDbId[n.id]);
+            if (n.children) scanF(n.children);
+          });
+        })(typeof layers !== 'undefined' ? layers : []);
+      } catch (eFw) {}
     } catch (e) { console.warn('editing: could not load project ids', e); }
   }
   // Stamp the db id onto each existing container node so we can nest under it.
@@ -430,6 +440,7 @@
       // 7/21: editing-only badge + italic name — this layer is stripped from VIEW mode
       // (raw_config.editorOnly); the sidebar marks it so the owner can spot it at a glance.
       if (enNode && enNode.editorOnly) updateEditorOnlyRow(enNode, row);
+      if (enNode) updateFoldingRow(enNode, row);   // amber cloud badge while a fold is processing
       // Checkbox toggles are SESSION-ONLY (defaults are set explicitly in each item's panel — see
       // elp-default-vis). Drawn layers need their MapboxDraw copies toggled by hand; group/section
       // checkboxes must cascade to them too (the engine only flips child checkbox props — no events).
@@ -1691,6 +1702,79 @@
     rerender();
     setStatus('Batch done — ' + ok + '/' + files.length + ' imported into "Untitled batch"' + (failed.length ? ' · failed: ' + failed.join(', ') : ''));
   }
+  // ── THE FOLD · import reroute (C3, 7/29) ──────────────────────────────────
+  // Imports past the tile thresholds stop bulk-inserting rows: the FeatureCollection goes to
+  // R2 (Worker /upload, ownership-checked), the Worker's POST /fold dispatches the GitHub
+  // Action (fold-raw), and Postgres keeps ONLY the layer row (fold_state='folding' → 'folded'
+  // when the Action stamps tiles + sidecar + parquet + export FC). EVERY failure on this path
+  // falls back to today's row import — deploy-safe even before the Worker secret exists.
+  var FOLD_WORKER_BASE = 'https://mapstructor-worker.mapstructor.workers.dev';
+  var CLOUD_FOLD_IMPORTS = true;             // kill-switch (also: window.__msForceRowImport for tests)
+  var _foldWatch = [];                       // {node, layerId} queued by the import loop, drained into polls
+  function foldSleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  // upload the per-layer FC + dispatch the Action. true = cloud fold is underway; false = fall back.
+  async function foldImportDispatch(layerId, node, feats) {
+    try {
+      var rawKey = 'tiles/' + projectId + '/' + layerId + '.source.geojson';
+      var tok = (await db.auth.getSession()).data.session.access_token;
+      importStatus('Uploading "' + (node.label || 'layer') + '" for cloud processing…');
+      var blob = new Blob([JSON.stringify({ type: 'FeatureCollection', features: feats })], { type: 'application/geo+json' });
+      var putR = await fetch(FOLD_WORKER_BASE + '/upload/' + rawKey, { method: 'PUT', body: blob, headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/geo+json' } });
+      if (!putR.ok) throw new Error('source upload HTTP ' + putR.status);
+      var dR = await fetch(FOLD_WORKER_BASE + '/fold', {
+        method: 'POST', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: projectId, layerId: layerId, mode: 'fold-raw', rawKey: rawKey })
+      });
+      if (!dR.ok) throw new Error('fold dispatch HTTP ' + dR.status);
+      importStatus('Folding "' + (node.label || 'layer') + '" in the cloud (' + nfmt(feats.length) + ' features) — it appears here when ready…');
+      return true;
+    } catch (e) {
+      console.warn('cloud fold unavailable — importing normally', e);
+      importStatus('Cloud fold unavailable — importing "' + (node.label || 'layer') + '" normally…');
+      return false;
+    }
+  }
+  // watch the layer row until the Action stamps it (or leaves raw_config.foldError)
+  async function pollFoldDone(node, layerId) {
+    var POLL_MS = 8000, MAX = 90;   // ~12 min ceiling — a cold Action run compiles tippecanoe (~3-4 min)
+    for (var i = 0; i < MAX; i++) {
+      await foldSleep(POLL_MS);
+      var r = null;
+      try { r = await db.from('layers').select('*').eq('id', layerId).single(); } catch (e) { continue; }
+      if (!r || r.error || !r.data) continue;
+      var rc = r.data.raw_config || {};
+      if (rc.foldError) { importStatus('Cloud fold failed for "' + (node.label || 'layer') + '": ' + rc.foldError + ' — delete the layer row or re-import.'); return; }
+      if (r.data.fold_state === 'folded') { applyFoldedRow(node, r.data); return; }
+    }
+    importStatus('Cloud fold is taking unusually long for "' + (node.label || 'layer') + '" — it finishes in the background; reload later to see it.');
+  }
+  // the Action stamped the layer: rebuild the tree node from the row and add it to the maps LIVE
+  // (addMapLayer skips ids that already exist, so addLayers() only adds this layer's new pieces).
+  function applyFoldedRow(node, row) {
+    try {
+      var fresh = (typeof ConfigLoader !== 'undefined' && ConfigLoader.leafFromRow) ? ConfigLoader.leafFromRow(row) : null;
+      if (fresh) {
+        var keepId = node.id, keepTop = node.topLayerClass;
+        Object.keys(node).forEach(function (k) { delete node[k]; });
+        Object.assign(node, fresh);
+        node.id = keepId; if (keepTop) node.topLayerClass = keepTop;
+      } else { node.fold_state = 'folded'; }
+      // drop the empty placeholder layers/sources so the tile versions can take their ids
+      ['-left', '-right'].forEach(function (sfx) {
+        ['', '-highlighted', '-stroke'].forEach(function (mid) {
+          [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
+            if (!m) return; try { var lid3 = node.id + mid + sfx; if (m.getLayer(lid3)) m.removeLayer(lid3); } catch (e) {}
+          });
+        });
+        [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
+          if (!m) return; try { if (m.getSource(node.id + sfx)) m.removeSource(node.id + sfx); } catch (e) {}
+        });
+      });
+      try { if (typeof addLayers === 'function') addLayers(); } catch (eAdd) { console.warn('fold live-add failed — the layer appears on next load', eAdd); }
+      rerender();
+      importStatus('"' + (node.label || 'layer') + '" is ready — ' + nfmt((row.raw_config || {}).tilesFeatureCount || 0) + ' features, folded to cloud storage.');
+    } catch (e) { console.warn('applyFoldedRow failed', e); importStatus('"' + (node.label || 'layer') + '" folded — reload to see it.'); }
+  }
   // Split a FeatureCollection by geometry type (one type per layer) → persist layers + features.
   async function importFeatureCollection(fc, baseName, parent) {
     if (typeof layers === 'undefined') return;
@@ -1723,10 +1807,21 @@
         importStatus('Saving ' + groups[type].length + ' ' + TYPE_LABEL[type] + '…');
         var node = makeNode('layer', kinds.length > 1 ? baseName + ' (' + TYPE_LABEL[type] + ')' : baseName);
         node.type = type; node.iconType = TILESET_ICON[type] || 'square';
-        var layerId = await insertOne('layers', leafRow(node));
+        // THE FOLD (C3): past the tile thresholds the data goes to R2 + the cloud Action —
+        // Postgres gets the layer row only. foldImportDispatch flips wantsFold off on ANY
+        // failure and the classic row import below runs instead.
+        var wantsFold = CLOUD_FOLD_IMPORTS && !window.__msForceRowImport &&
+          groups[type].length > (type === 'circle' ? 2000 : 500);
+        var lrow = leafRow(node); if (wantsFold) lrow.fold_state = 'folding';
+        var layerId = await insertOne('layers', lrow);
         slugToLayerDbId[node.id] = layerId;
         await insertOne('project_layers', { project_id: projectId, layer_id: layerId, sort_order: nextSort++, section_id: sId, group_id: gId });
-        await batchInsertFeatures(layerId, groups[type]);
+        if (wantsFold) wantsFold = await foldImportDispatch(layerId, node, groups[type]);
+        if (wantsFold) { node.fold_state = 'folding'; _foldWatch.push({ node: node, layerId: layerId }); }
+        else {
+          if (lrow.fold_state === 'folding') { node.fold_state = null; try { await db.from('layers').update({ fold_state: 'live' }).eq('id', layerId); } catch (eFs) {} }
+          await batchInsertFeatures(layerId, groups[type]);
+        }
         if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; if (parent.type === 'group') node.topLayerClass = parent.id; }
         else layers.push(node);
         made.push(node);
@@ -1737,11 +1832,14 @@
       if (made.length) setActiveLayer(made[0].id);
       showButtons();
       setStatus('Imported ' + total + ' feature' + (total !== 1 ? 's' : ''));
+      // cloud folds run remotely — watch each layer row until the Action stamps it (fire-and-forget)
+      _foldWatch.splice(0).forEach(function (w) { pollFoldDone(w.node, w.layerId); });
       // auto-convert: layers past the tile thresholds become PMTiles now (no-lag viewing from the
       // NEXT load + for every visitor; this session keeps its live geojson). Fire-and-await so the
       // status line reflects real progress; a failure leaves the layer working as plain geojson.
       try {
         var bigOnes = made.filter(function (n) {
+          if (n.fold_state === 'folding' || n.fold_state === 'folded') return false;   // cloud fold — the Action bakes these tiles
           var feats = groups[n.type] || [];   // import groups are keyed by the same kinds as node.type (circle/line/fill)
           return feats.length > (n.type === 'circle' ? 2000 : 500);
         });
@@ -1781,6 +1879,7 @@
       // in the background — the fast attribute table works immediately after import, no Publish needed
       try {
         if (window.MSBigTable) made.forEach(function (nB) {
+          if (nB.fold_state === 'folding' || nB.fold_state === 'folded') return;   // the Action bakes the fold sidecar
           var featsB = groups[nB.type] || [], lidB = slugToLayerDbId[nB.id];
           if (lidB && featsB.length > MSBigTable.BIG_ROWS) MSBigTable.bakeFromDb(db, projectId, lidB, importStatus).catch(function (eB2) { console.warn('sidecar bake skipped', eB2); });
         });
@@ -6076,6 +6175,23 @@
       if (lbl) lbl.style.fontStyle = '';
       if (badge) badge.remove();
     }
+  }
+  // THE FOLD (C3): amber cloud badge while a layer is processing remotely (fold_state='folding').
+  // Same surgical pattern as the editing-only badge — never a full rerender from here.
+  function updateFoldingRow(node, rowEl) {
+    var row = rowEl || document.querySelector('.layer-list-row[data-node-id="' + node.id + '"]'); if (!row) return;
+    var lbl = row.querySelector('label');
+    var badge = row.querySelector('.ms-folding-badge');
+    if (node.fold_state === 'folding') {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'ms-folding-badge';
+        badge.title = 'Processing in the cloud — this layer is being folded to cloud storage';
+        badge.innerHTML = '<i class="fas fa-cloud-arrow-up"></i>';
+        badge.setAttribute('style', 'display:inline-block;margin-left:5px;font-size:10px;color:#b98317;vertical-align:middle;cursor:default;');
+        if (lbl) lbl.appendChild(badge); else row.appendChild(badge);
+      }
+    } else if (badge) badge.remove();
   }
   async function onEditorOnly(on) {
     if (!activeLayerId) return;

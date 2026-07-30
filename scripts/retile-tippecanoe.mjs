@@ -1,13 +1,34 @@
-/* retile-tippecanoe.mjs — the REMOTE "deep re-tile" tier (runs in GitHub Actions, node 20+).
+/* retile-tippecanoe.mjs — the REMOTE tiler + fold engine (GitHub Actions, node 20+).
    The browser tiler (platform/tilegen.js) stays the instant, default path; this pass re-cuts a
-   layer with real tippecanoe (feature dropping/coalescing per zoom) for big datasets, then
-   uploads the archive to the same Supabase Storage slot the service worker already serves.
+   layer with real tippecanoe for big datasets — and, since The Fold (C2, 7/29), can also FOLD a
+   layer: bake all four R2 artifacts and stamp the layer as R2-backed.
 
-   Env: SUPABASE_SERVICE_KEY (repo secret), PROJECT_ID, LAYER_ID, optional MAX_ZOOM ('' = -zg).
-   Needs `tippecanoe` on PATH (the workflow builds felt/tippecanoe).
+   MODE (env, default 'retile'):
+     retile     today's behavior + the 7/29 fixes: R2 dual-write (delete-first), label columns
+                baked into tiles, tilesFeatureCount/tilesMaxFid stamps (Publish no longer silently
+                re-bakes in-browser), keyset paging (OFFSET silently truncated 302k rows, NTAD 7/23).
+     fold-rows  same sources (Postgres rows) but bakes the FULL fold artifact set and stamps
+                fold_state='folded' + parquet_key + r2_bytes. Rows are NOT deleted here —
+                soft-first (C6 deletes after a soak).
+     fold-raw   no rows exist: reads the FeatureCollection the import client uploaded to R2
+                (RAW_KEY), mints feature ids 1..N, applies the import path's exact label/
+                custom_fields semantics (editing.js importLabel/importCustomFields), bakes
+                everything. Dates are null on import → tiles are dateless (0/99999999), same
+                as a live import.
 
-   Tiles are SKINNY by design (same contract as the browser tiler, 7/16): feature id +
-   DayStart/DayEnd only — attributes stay in the DB and are fetched by id on click. */
+   Artifacts on a fold (keys under the tiles bucket / R2):
+     {pid}/{lid}.pmtiles        tiles         — Supabase + R2 (existing readers, dual-read)
+     {pid}/{lid}.attr.parquet   attr sidecar  — Supabase + R2 (bigtable.js schema, EXACT mirror)
+     tiles/{pid}/{lid}.parquet  GeoParquet    — R2 only (source of truth for future folds/merges)
+     tiles/{pid}/{lid}.geojson  export FC     — R2 only (exportLayer's exact FeatureCollection —
+                                                folded exports read this file verbatim)
+
+   Env: SUPABASE_SERVICE_KEY, PROJECT_ID, LAYER_ID, MODE, RAW_KEY (fold-raw), MAX_ZOOM ('' = -zg),
+        R2_ACCOUNT_ID + R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY (aws CLI, endpoint *.r2.cloudflarestorage.com).
+   Needs `tippecanoe` on PATH; fold modes also need `python3 -c "import duckdb"` (workflow installs it).
+
+   Tiles stay SKINNY (7/16 contract): id + DayStart/DayEnd + label (+ the raw_config.labels.field
+   column) — full attributes live in the sidecar / parquet / export FC. */
 
 import { execFileSync } from "node:child_process";
 import { writeFileSync, readFileSync, statSync } from "node:fs";
@@ -16,97 +37,277 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "https://eqpxlwbjqiwfjlsuapvu.s
 const KEY = process.env.SUPABASE_SERVICE_KEY;
 const PROJECT_ID = process.env.PROJECT_ID;
 const LAYER_ID = process.env.LAYER_ID;
+const MODE = (process.env.MODE || "retile").trim();
+const RAW_KEY = (process.env.RAW_KEY || "").trim();
 const MAX_ZOOM = (process.env.MAX_ZOOM || "").trim();
 const LAYER_NAME = "features";   // every archive uses this source-layer name
-const BUCKET = "tiles";
+const BUCKET = "tiles";          // Supabase Storage bucket
+const R2_BUCKET = process.env.R2_BUCKET || "mapstructor-tiles";
+const R2_ENDPOINT = process.env.R2_ACCOUNT_ID ? `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null;
+const R2_PUBLIC = "https://tiles.mapstructor.com";   // bucket custom domain (public reads)
+const FOLD = MODE === "fold-rows" || MODE === "fold-raw";
 
-if (!KEY || !PROJECT_ID || !LAYER_ID) {
-  console.error("need SUPABASE_SERVICE_KEY, PROJECT_ID, LAYER_ID");
-  process.exit(1);
-}
+if (!KEY || !PROJECT_ID || !LAYER_ID) { console.error("need SUPABASE_SERVICE_KEY, PROJECT_ID, LAYER_ID"); process.exit(1); }
+if (!["retile", "fold-rows", "fold-raw"].includes(MODE)) { console.error("bad MODE " + MODE); process.exit(1); }
+if (MODE === "fold-raw" && !RAW_KEY) { console.error("fold-raw needs RAW_KEY"); process.exit(1); }
+if (FOLD && !R2_ENDPOINT) { console.error("fold modes need R2_ACCOUNT_ID (+ key pair)"); process.exit(1); }
 
 const H = { apikey: KEY, Authorization: "Bearer " + KEY };
 const nfmt = (n) => Number(n).toLocaleString("en-US");
 
 async function rest(path, opts = {}) {
   const r = await fetch(SUPABASE_URL + path, { ...opts, headers: { ...H, ...(opts.headers || {}) } });
-  if (!r.ok) throw new Error(path + " -> " + r.status + " " + (await r.text()).slice(0, 300));
+  if (!r.ok) throw new Error(path.split("?")[0] + " -> " + r.status + " " + (await r.text()).slice(0, 300));
   return r;
 }
+function day(d, fallback) { return d ? +String(d).slice(0, 10).replace(/-/g, "") || fallback : fallback; }
 
-function day(d, fallback) {
-  return d ? +String(d).slice(0, 10).replace(/-/g, "") || fallback : fallback;
+/* ── R2 via the aws CLI (preinstalled on ubuntu-latest; same pattern as the AHM
+      regenerate-tiles workflow). Delete-first invariant: R2 holds the CURRENT artifact or
+      NOTHING — a stale R2 copy would shadow fresh Supabase (pmt-sw reads R2 first and
+      success never fails over). The *_CHECKSUM_* env vars stop aws v2's newer default
+      CRC32 headers from tripping R2's S3 shim. ── */
+const AWS_ENV = {
+  ...process.env,
+  AWS_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID || "",
+  AWS_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY || "",
+  AWS_DEFAULT_REGION: "auto",
+  AWS_REQUEST_CHECKSUM_CALCULATION: "when_required",
+  AWS_RESPONSE_CHECKSUM_VALIDATION: "when_required",
+};
+function r2(args) { execFileSync("aws", ["--endpoint-url", R2_ENDPOINT, "s3api", ...args], { env: AWS_ENV, stdio: ["ignore", "inherit", "inherit"] }); }
+function r2del(key, must) {
+  try { r2(["delete-object", "--bucket", R2_BUCKET, "--key", key]); }
+  catch (e) { if (must) throw new Error("R2 delete " + key + " failed — aborting before Supabase is overwritten (stale-shadow invariant)"); console.warn("R2 delete " + key + " failed (best-effort)"); }
+}
+function r2put(key, file, contentType, must) {
+  try { r2(["put-object", "--bucket", R2_BUCKET, "--key", key, "--body", file, "--content-type", contentType]); }
+  catch (e) { if (must) throw new Error("R2 put " + key + " failed"); console.warn("R2 put " + key + " failed — readers fall back to Supabase for this artifact"); }
 }
 
-// ── 1. pull the layer's features (paged) ─────────────────────────────────────
-console.log("Fetching features for layer " + LAYER_ID + "…");
-const feats = [];
-for (let from = 0; ; from += 1000) {
-  const r = await rest(
-    `/rest/v1/features?layer_id=eq.${LAYER_ID}&select=feature_id,geom,start_date,end_date&order=feature_id&limit=1000&offset=${from}`
-  );
-  const rows = await r.json();
-  for (const f of rows) {
-    feats.push({
-      type: "Feature",
-      id: f.feature_id,
-      properties: { DayStart: day(f.start_date, 0), DayEnd: day(f.end_date, 99999999) },
-      geometry: f.geom,
-    });
+/* Supabase Storage upload: plain POST; on exists DELETE + retry — never x-upsert (7/15 trap). */
+async function supaUpload(path, bytes, contentType) {
+  const objPath = `/storage/v1/object/${BUCKET}/${path}`;
+  const put = () => fetch(SUPABASE_URL + objPath, { method: "POST", headers: { ...H, "Content-Type": contentType }, body: bytes });
+  let up = await put();
+  if (!up.ok && /exist|duplicate/i.test(await up.clone().text())) { await rest(objPath, { method: "DELETE" }); up = await put(); }
+  if (!up.ok) throw new Error("upload " + path + " failed: " + up.status + " " + (await up.text()).slice(0, 300));
+}
+
+/* ── import-path mirrors (editing.js) — fold-raw must shape data EXACTLY like a live import ── */
+const LABEL_KEYS = ["name", "Name", "NAME", "label", "Label", "LABEL", "title", "Title", "TITLE"];
+function importLabelKey(props) {
+  if (!props) return null;
+  for (const k of LABEL_KEYS) if (props[k] != null && props[k] !== "") return k;
+  return null;
+}
+function importLabel(props) { const k = importLabelKey(props); return k ? String(props[k]).slice(0, 250) : null; }
+function importCustomFields(props) {
+  if (!props || typeof props !== "object") return null;
+  const labelKey = importLabelKey(props), out = {}; let n = 0;
+  for (const k of Object.keys(props)) {
+    if (k === labelKey) continue;
+    let v = props[k];
+    if (v == null || v === "") continue;
+    if (typeof v === "object") { try { v = JSON.stringify(v); } catch (e) { continue; } }
+    out[k] = v; n++;
   }
-  if (rows.length < 1000) break;
-  if (feats.length % 10000 < 1000) console.log("  " + nfmt(feats.length) + " so far…");
+  return n ? out : null;
 }
-if (!feats.length) { console.error("layer has no features"); process.exit(1); }
-writeFileSync("layer.geojson", JSON.stringify({ type: "FeatureCollection", features: feats }));
-console.log(nfmt(feats.length) + " features, source " + (statSync("layer.geojson").size / 1048576).toFixed(1) + " MB");
 
-// ── 2. tippecanoe → PMTiles ──────────────────────────────────────────────────
-const zoomArgs = MAX_ZOOM ? ["-z" + MAX_ZOOM] : ["-zg"];   // -zg = tippecanoe picks the max zoom
-const args = [
-  "-o", "layer.pmtiles", "--force",
-  "-l", LAYER_NAME,
-  ...zoomArgs,
-  "--drop-densest-as-needed",        // the low-zoom diet the browser tiler approximates
-  "--extend-zooms-if-still-dropping",
-  "--read-parallel",
-  "layer.geojson",
-];
-console.log("tippecanoe " + args.join(" "));
-execFileSync("tippecanoe", args, { stdio: "inherit" });
-const bytes = readFileSync("layer.pmtiles");
-const achievedMaxZoom = bytes[101];   // PMTiles v3 header: max_zoom byte
-console.log("archive " + (bytes.length / 1048576).toFixed(1) + " MB, maxzoom z" + achievedMaxZoom);
-
-// ── 3. upload (plain POST; on exists DELETE + retry — never x-upsert, the 7/15 trap) ──
-const objPath = `/storage/v1/object/${BUCKET}/${PROJECT_ID}/${LAYER_ID}.pmtiles`;
-const put = () =>
-  fetch(SUPABASE_URL + objPath, { method: "POST", headers: { ...H, "Content-Type": "application/octet-stream" }, body: bytes });
-let up = await put();
-if (!up.ok && /exist|duplicate/i.test(await up.clone().text())) {
-  await rest(objPath, { method: "DELETE" });
-  up = await put();
+/* ── export-FC mirror (editing.js exportLayer) — folded exports serve this file verbatim,
+      so its shape must match what the same layer would export live. ── */
+function orderAttrKeys(keys) {   // msid FIRST, ms_* style columns LAST (editing.js:6865)
+  const style = ["ms_color", "ms_linecolor", "ms_opacity", "ms_thickness", "ms_labelsize"].filter((k) => keys.includes(k));
+  const msid = keys.includes("msid") ? ["msid"] : [];
+  const mid = keys.filter((k) => k !== "msid" && !style.includes(k));
+  return msid.concat(mid).concat(style);
 }
-if (!up.ok) { console.error("upload failed: " + up.status + " " + (await up.text()).slice(0, 300)); process.exit(1); }
-console.log("uploaded to " + BUCKET + "/" + PROJECT_ID + "/" + LAYER_ID + ".pmtiles");
+function buildExportFC(rows, attrView) {
+  const custKeys = [];
+  for (const r of rows) if (r.custom_fields) for (const k of Object.keys(r.custom_fields)) if (!custKeys.includes(k)) custKeys.push(k);
+  const ordKeys = (attrView && attrView.order && attrView.order.length)
+    ? attrView.order
+    : ["label", "start_date", "end_date", "description", "content_id"].concat(orderAttrKeys(custKeys));
+  const feats = rows.filter((r) => r.geom).map((r) => {
+    const raw = { feature_id: r.feature_id };
+    if (r.label) raw.label = r.label;
+    if (r.description) raw.description = r.description;
+    if (r.start_date) raw.start_date = r.start_date;
+    if (r.end_date) raw.end_date = r.end_date;
+    if (r.content_id != null) raw.content_id = r.content_id;
+    if (r.image_url) raw.image_url = r.image_url;
+    if (r.custom_fields && typeof r.custom_fields === "object") for (const k of Object.keys(r.custom_fields)) if (!(k in raw)) raw[k] = r.custom_fields[k];
+    const props = { feature_id: raw.feature_id };
+    for (const k of ordKeys) if (k in raw && !(k in props)) props[k] = raw[k];
+    for (const k of Object.keys(raw)) if (!(k in props)) props[k] = raw[k];
+    return { type: "Feature", id: r.feature_id, geometry: r.geom, properties: props };
+  });
+  return { type: "FeatureCollection", features: feats };
+}
 
-// ── 4. point the layer at its tiles (same stamps as the browser tiler) ───────
-const cur = await (await rest(`/rest/v1/layers?id=eq.${LAYER_ID}&select=raw_config,source_type`)).json();
-const rc = (cur[0] && cur[0].raw_config) || {};
-rc.pmtiles = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${PROJECT_ID}/${LAYER_ID}.pmtiles`;
-rc.convertedFrom = rc.convertedFrom || (cur[0] && cur[0].source_type) || "geojson-supabase";
-rc.tilesGeneratedAt = new Date().toISOString();
-rc.tilesBytes = bytes.length;
-rc.tiler = "tippecanoe";   // vs the browser default — surfaces in comparisons
-await rest(`/rest/v1/layers?id=eq.${LAYER_ID}`, {
-  method: "PATCH",
-  headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
-  body: JSON.stringify({
-    source_type: "vector-tiles-url",
-    source_url: `pmt/${PROJECT_ID}/${LAYER_ID}/{z}/{x}/{y}.pbf`,
-    source_layer: LAYER_NAME,
-    source_maxzoom: achievedMaxZoom,
-    raw_config: rc,
-  }),
-});
-console.log("layer re-pointed — done. Viewers pick up the new archive within a minute (service-worker ETag revalidation).");
+/* ── on failure: leave a readable trace on the layer so the importing client can react ── */
+async function stampFailure(msg) {
+  try {
+    const cur = await (await rest(`/rest/v1/layers?id=eq.${LAYER_ID}&select=raw_config`)).json();
+    const rc = (cur[0] && cur[0].raw_config) || {};
+    rc.foldError = String(msg).slice(0, 300);
+    const patch = { raw_config: rc };
+    if (MODE === "fold-rows") patch.fold_state = "live";   // rows still exist — revert cleanly
+    await rest(`/rest/v1/layers?id=eq.${LAYER_ID}`, { method: "PATCH", headers: { "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(patch) });
+  } catch (e) { console.error("could not stamp foldError:", e.message); }
+}
+
+try {
+  /* ── 0. the layer row (config drives labels + export column order) ─────────── */
+  const layerRow = (await (await rest(`/rest/v1/layers?id=eq.${LAYER_ID}&select=*`)).json())[0];
+  if (!layerRow) throw new Error("layer not found");
+  const rc0 = layerRow.raw_config || {};
+  let lblField = (rc0.labels && rc0.labels.field) || null;
+  if (lblField === "label") lblField = null;
+
+  /* ── 1. acquire rows (full attributes — artifacts need them; retile ignores extras) ── */
+  let rows = [];
+  let sourceBytes = 0;   // fold-raw: the uploaded source FC stays on R2 and counts toward r2_bytes
+  if (MODE === "fold-raw") {
+    console.log("Fetching source FC from R2: " + RAW_KEY);
+    let fr = null;
+    for (let a = 1; a <= 3 && !fr; a++) {
+      const r = await fetch(`${R2_PUBLIC}/${RAW_KEY}`, { cache: "no-store" });
+      if (r.ok) fr = await r.json();
+      else { console.warn("source fetch " + r.status + " (try " + a + ")"); await new Promise((rs) => setTimeout(rs, 3000)); }
+    }
+    if (!fr || !fr.features || !fr.features.length) throw new Error("source FC unavailable or empty at " + RAW_KEY);
+    sourceBytes = JSON.stringify(fr).length;
+    rows = fr.features.map((f, i) => ({
+      feature_id: i + 1,                                  // minted — tiles/sidecar/export all agree on it
+      geom: f.geometry,
+      label: importLabel(f.properties),
+      description: null, start_date: null, end_date: null, content_id: null, image_url: null,
+      custom_fields: importCustomFields(f.properties),
+    }));
+  } else {
+    console.log("Fetching features for layer " + LAYER_ID + " (keyset)…");
+    let lastFid = null, retried = false;
+    for (;;) {
+      const gt = lastFid != null ? `&feature_id=gt.${lastFid}` : "";
+      let batch;
+      try {
+        batch = await (await rest(`/rest/v1/features?layer_id=eq.${LAYER_ID}${gt}&select=feature_id,geom,label,description,start_date,end_date,content_id,image_url,custom_fields&order=feature_id&limit=1000`)).json();
+        retried = false;
+      } catch (e) {
+        if (retried) throw new Error("row fetch failed at " + rows.length + ": " + e.message);   // ABORT LOUDLY — a partial archive must never look like a bake
+        retried = true; console.warn("row fetch hiccup — retrying…"); await new Promise((rs) => setTimeout(rs, 2000)); continue;
+      }
+      if (!batch.length) break;
+      rows.push(...batch);
+      lastFid = batch[batch.length - 1].feature_id;
+      if (rows.length % 10000 < 1000) console.log("  " + nfmt(rows.length) + " so far…");
+      if (batch.length < 1000) break;
+    }
+  }
+  if (!rows.length) throw new Error("layer has no features");
+  console.log(nfmt(rows.length) + " features (" + MODE + ")");
+
+  /* ── 2. skinny tile FC (sewUpLayer's exact contract) → tippecanoe → PMTiles ── */
+  const skinny = rows.map((r) => {
+    const props = { DayStart: day(r.start_date, 0), DayEnd: day(r.end_date, 99999999) };
+    if (r.label != null && r.label !== "") props.label = r.label;
+    if (lblField && r.custom_fields && r.custom_fields[lblField] != null && r.custom_fields[lblField] !== "") props[lblField] = String(r.custom_fields[lblField]);
+    return { type: "Feature", id: r.feature_id, properties: props, geometry: r.geom };
+  });
+  writeFileSync("layer.geojson", JSON.stringify({ type: "FeatureCollection", features: skinny }));
+  const zoomArgs = MAX_ZOOM ? ["-z" + MAX_ZOOM] : ["-zg"];
+  const args = ["-o", "layer.pmtiles", "--force", "-l", LAYER_NAME, ...zoomArgs,
+    "--drop-densest-as-needed", "--extend-zooms-if-still-dropping", "--read-parallel", "layer.geojson"];
+  console.log("tippecanoe " + args.join(" "));
+  execFileSync("tippecanoe", args, { stdio: "inherit" });
+  const pmBytes = readFileSync("layer.pmtiles");
+  const achievedMaxZoom = pmBytes[101];   // PMTiles v3 header: max_zoom byte
+  console.log("archive " + (pmBytes.length / 1048576).toFixed(1) + " MB, maxzoom z" + achievedMaxZoom);
+
+  /* ── 3. fold artifacts: export FC + the two parquets (python duckdb) ───────── */
+  let exportBytes = null, attrBytes = 0, geoBytes = 0;
+  if (FOLD) {
+    const exportFC = buildExportFC(rows, rc0.attrView);
+    exportBytes = Buffer.from(JSON.stringify(exportFC));
+    writeFileSync("layer_export.geojson", exportBytes);
+    writeFileSync("rows_attr.json", JSON.stringify(rows.map((r) => ({
+      feature_id: r.feature_id, label: r.label, description: r.description,
+      start_date: r.start_date, end_date: r.end_date, content_id: r.content_id,
+      custom_fields: r.custom_fields,
+    }))));
+    console.log("Baking parquet artifacts (duckdb)…");
+    execFileSync("python3", ["scripts/fold-parquet.py", "rows_attr.json", "layer_export.geojson", "layer.attr.parquet", "layer.geo.parquet"], { stdio: "inherit" });
+    attrBytes = statSync("layer.attr.parquet").size;
+    geoBytes = statSync("layer.geo.parquet").size;
+  }
+
+  /* ── 4. uploads — per artifact: R2 DELETE (hard) → Supabase (where dual-read) → R2 PUT ── */
+  const pmKey = `tiles/${PROJECT_ID}/${LAYER_ID}.pmtiles`;
+  const attrKey = `tiles/${PROJECT_ID}/${LAYER_ID}.attr.parquet`;
+  const geoKey = `tiles/${PROJECT_ID}/${LAYER_ID}.parquet`;
+  const exportKey = `tiles/${PROJECT_ID}/${LAYER_ID}.geojson`;
+  const r2ok = !!(R2_ENDPOINT && process.env.R2_ACCESS_KEY_ID);
+
+  if (r2ok) r2del(pmKey, true); else if (FOLD) throw new Error("fold needs R2 credentials");
+  await supaUpload(`${PROJECT_ID}/${LAYER_ID}.pmtiles`, pmBytes, "application/octet-stream");
+  if (r2ok) r2put(pmKey, "layer.pmtiles", "application/octet-stream", FOLD);
+  console.log("tiles uploaded (" + (r2ok ? "Supabase + R2" : "Supabase only — no R2 creds") + ")");
+
+  if (FOLD) {
+    r2del(attrKey, true);
+    await supaUpload(`${PROJECT_ID}/${LAYER_ID}.attr.parquet`, readFileSync("layer.attr.parquet"), "application/octet-stream");
+    r2put(attrKey, "layer.attr.parquet", "application/octet-stream", true);
+    r2del(geoKey, true);   r2put(geoKey, "layer.geo.parquet", "application/octet-stream", true);
+    r2del(exportKey, true); r2put(exportKey, "layer_export.geojson", "application/geo+json", true);
+    console.log("fold artifacts on R2: attr " + nfmt(attrBytes) + " B · parquet " + nfmt(geoBytes) + " B · geojson " + nfmt(exportBytes.length) + " B");
+  }
+
+  /* ── 5. stamp the layer (same stamps as the browser tiler, + fold columns) ─── */
+  const cur = await (await rest(`/rest/v1/layers?id=eq.${LAYER_ID}&select=raw_config,source_type`)).json();
+  const rc = (cur[0] && cur[0].raw_config) || {};
+  rc.pmtiles = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${PROJECT_ID}/${LAYER_ID}.pmtiles`;
+  rc.convertedFrom = rc.convertedFrom || (cur[0] && cur[0].source_type) || "geojson-supabase";
+  rc.tilesGeneratedAt = new Date().toISOString();
+  rc.tilesBytes = pmBytes.length;
+  rc.tilesFeatureCount = rows.length;                                        // dirty-tracking stamps (7/21):
+  rc.tilesMaxFid = rows.reduce((m, r) => (Number(r.feature_id) > m ? Number(r.feature_id) : m), 0) || null;   // without these Publish silently re-baked in-browser
+  rc.tiler = "tippecanoe";
+  const patch = { source_type: "vector-tiles-url", source_url: `pmt/${PROJECT_ID}/${LAYER_ID}/{z}/{x}/{y}.pbf`, source_layer: LAYER_NAME, source_maxzoom: achievedMaxZoom, raw_config: rc };
+  if (FOLD) {
+    rc.attrParquet = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${PROJECT_ID}/${LAYER_ID}.attr.parquet`;
+    rc.attrParquetRows = rows.length;
+    rc.attrParquetAt = new Date().toISOString();
+    delete rc.attrParquetDirty;
+    delete rc.foldError;
+    patch.fold_state = "folded";
+    patch.parquet_key = geoKey;
+    patch.r2_bytes = pmBytes.length + attrBytes + geoBytes + exportBytes.length + sourceBytes;
+  }
+  await rest(`/rest/v1/layers?id=eq.${LAYER_ID}`, { method: "PATCH", headers: { "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(patch) });
+
+  /* ── 6. instrumentation — folded imports insert no rows, so the stats triggers never see
+        them; keep item-3's numbers honest via the definer RPCs (fold-raw = new data only). ── */
+  if (MODE === "fold-raw") {
+    try {
+      const bump = (fn, body) => rest(`/rest/v1/rpc/${fn}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      await bump("ms_stat_bump", { p_metric: "features_inserted", p_delta: rows.length });
+      await bump("ms_stat_bump", { p_metric: "bytes_added", p_delta: sourceBytes });
+      await bump("ms_stat_max", { p_metric: "max_statement_rows", p_value: rows.length });
+      const pr = await (await rest(`/rest/v1/projects?id=eq.${PROJECT_ID}&select=user_id`)).json();
+      if (pr[0] && pr[0].user_id) await rest(`/rest/v1/ms_editor_days?on_conflict=day,user_id`, {
+        method: "POST", headers: { "Content-Type": "application/json", Prefer: "resolution=ignore-duplicates,return=minimal" },
+        body: JSON.stringify([{ day: new Date().toISOString().slice(0, 10), user_id: pr[0].user_id }]),
+      });
+    } catch (e) { console.warn("stats bump failed (non-fatal):", e.message); }
+  }
+
+  console.log(FOLD
+    ? `layer FOLDED — ${nfmt(rows.length)} features, r2_bytes ${nfmt(pmBytes.length + attrBytes + geoBytes + (exportBytes ? exportBytes.length : 0) + sourceBytes)}.`
+    : "layer re-pointed — done. Viewers pick up the new archive within a minute (service-worker ETag revalidation).");
+} catch (e) {
+  console.error("FAILED: " + (e && e.message ? e.message : e));
+  await stampFailure(e && e.message ? e.message : String(e));
+  process.exit(1);
+}
