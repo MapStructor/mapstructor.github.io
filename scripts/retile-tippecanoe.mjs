@@ -61,9 +61,16 @@ const H = { apikey: KEY, Authorization: "Bearer " + KEY };
 const nfmt = (n) => Number(n).toLocaleString("en-US");
 
 async function rest(path, opts = {}) {
-  const r = await fetch(SUPABASE_URL + path, { ...opts, headers: { ...H, ...(opts.headers || {}) } });
-  if (!r.ok) throw new Error(path.split("?")[0] + " -> " + r.status + " " + (await r.text()).slice(0, 300));
-  return r;
+  // retry 5xx/timeouts: a concurrent heavy statement (quota recompute, bulk cleanup) can starve
+  // service-role reads into 57014 for a few seconds — one such blip killed a whole merge run (7/30)
+  for (let a = 1; ; a++) {
+    const r = await fetch(SUPABASE_URL + path, { ...opts, headers: { ...H, ...(opts.headers || {}) } });
+    if (r.ok) return r;
+    const body = (await r.text()).slice(0, 300);
+    if (a >= 4 || r.status < 500) throw new Error(path.split("?")[0] + " -> " + r.status + " " + body);
+    console.warn("rest " + r.status + " (try " + a + "): " + body.slice(0, 100));
+    await new Promise((rs) => setTimeout(rs, 8000));
+  }
 }
 function day(d, fallback) { return d ? +String(d).slice(0, 10).replace(/-/g, "") || fallback : fallback; }
 

@@ -60,7 +60,7 @@ jobs:
           tippecanoe --version
 
       - name: Install duckdb (fold parquet artifacts)
-        if: ${{ inputs.mode == 'fold-rows' || inputs.mode == 'fold-raw' }}
+        if: ${{ inputs.mode != 'retile' && inputs.mode != '' }}   # every fold mode bakes parquets
         run: pip install --quiet duckdb
 
       - name: Fetch, tile, bake artifacts, upload, stamp
