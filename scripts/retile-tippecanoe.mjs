@@ -236,8 +236,10 @@ try {
     }
     console.log(`merge: ${rows.length} artifact features · ${applied} deltas applied · ${orphans} unmarked rows untouched`);
     try {   // the fold-raw source file (if any) still occupies R2 — keep counting it in r2_bytes
-      const h = await fetch(`${R2_PUBLIC}/tiles/${PROJECT_ID}/${LAYER_ID}.source.geojson`, { method: "HEAD" });
-      if (h.ok) sourceBytes = +(h.headers.get("content-length") || 0);
+      // s3api, not a public HEAD: the bucket custom domain refuses HEAD, which silently
+      // under-billed merged layers by the source-file size (caught by the v5 trigger, 7/30)
+      const out = execFileSync("aws", ["--endpoint-url", R2_ENDPOINT, "s3api", "head-object", "--bucket", R2_BUCKET, "--key", `tiles/${PROJECT_ID}/${LAYER_ID}.source.geojson`], { env: AWS_ENV, encoding: "utf8" });
+      sourceBytes = JSON.parse(out).ContentLength || 0;
     } catch (e) {}
   } else if (MODE === "fold-raw") {
     console.log("Fetching source FC from R2: " + RAW_KEY);
