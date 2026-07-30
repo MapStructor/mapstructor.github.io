@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy — MapStructor</title>
+  <link rel="icon" type="image/png" href="images/logo-transparent.png">
+  <style>
+    :root { --p: #7c5cbf; --ink: #1e1b2e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Source Sans Pro', system-ui, Arial, sans-serif; color: var(--ink); background: #faf9fd; }
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 14px 26px; border-bottom: 1px solid #eae6f3; background: #fff; }
+    nav a.brand { font-weight: 800; font-size: 18px; color: var(--ink); text-decoration: none; }
+    nav .nav-right { display: flex; gap: 16px; font-size: 14px; }
+    nav .nav-right a { color: var(--p); text-decoration: none; }
+    main { max-width: 740px; margin: 0 auto; padding: 44px 24px 90px; }
+    h1 { font-size: 30px; margin: 0 0 6px; }
+    .updated { color: #8b84a3; font-size: 13px; margin: 0 0 26px; }
+    h2 { font-size: 19px; margin: 32px 0 8px; }
+    .content { font-size: 16px; line-height: 1.65; color: #3a3550; }
+    .content p, .content li { margin: 0 0 12px; }
+    .content ul { padding-left: 22px; }
+    .content a { color: var(--p); }
+    footer { padding: 24px clamp(20px,5vw,64px); border-top: 1px solid #ece9f5; font-size: 11px; color: #b8b0d4; }
+    footer a { color: #b8b0d4; text-decoration: none; margin-right: 14px; }
+    footer a:hover { color: var(--p); }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js?v=20260730a"></script>
+  <script src="platform/topbar.js?v=20260730a"></script>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="index.html">MapStructor</a>
+    <div class="nav-right"><a href="terms.html">Terms</a><a href="about.html">About</a><a href="index.html">Home</a></div>
+  </nav>
+  <main>
+    <h1 data-edit="privacy-title">Privacy</h1>
+    <p class="updated">Last updated 30 July 2026</p>
+    <div class="content" data-edit="privacy-body">
+
+      <p>The short version: MapStructor collects what it needs to run your account and your
+      maps, and nothing else. There is no advertising, no tracking pixels, and your data is
+      never sold or handed to data brokers.</p>
+
+      <h2>What is collected</h2>
+      <ul>
+        <li><strong>Your account</strong> — email address and login credentials, handled by
+            Supabase Auth. Passwords are stored hashed; nobody at MapStructor can read them.</li>
+        <li><strong>Your maps and data</strong> — everything you draw, upload, import or
+            type into a map, plus any images you attach.</li>
+        <li><strong>Your profile</strong> — whatever you choose to put on it. A profile is
+            only public if you make it so.</li>
+        <li><strong>Operational counts</strong> — how much storage you use, how many edits
+            and imports happen per day, and whether an account was active in a month. These
+            are numbers used to keep the service running and priced honestly, not a record
+            of what your maps say.</li>
+        <li><strong>Payment records</strong> — if you subscribe, Stripe holds your payment
+            details. MapStructor stores only a customer reference and which plan you're on.
+            Card numbers never touch this service.</li>
+      </ul>
+
+      <h2>What is not collected</h2>
+      <p>No advertising or analytics trackers, no third-party cookies, no location tracking,
+      no scraping of your map contents for any purpose other than serving them back to you.</p>
+
+      <h2>Cookies and local storage</h2>
+      <p>Your browser stores a login session so you stay signed in, plus small preferences
+      like which map you last had open. That's it — no advertising cookies.</p>
+
+      <h2>Who else touches your data</h2>
+      <p>Running the service means using a few infrastructure providers. Each one only
+      processes what it needs to:</p>
+      <ul>
+        <li><strong>Supabase</strong> — database, authentication and file storage.</li>
+        <li><strong>Cloudflare</strong> — serving map tiles and files, and the website itself.</li>
+        <li><strong>Backblaze B2</strong> — encrypted off-site backups.</li>
+        <li><strong>Stripe</strong> — payments, if you subscribe.</li>
+        <li><strong>GitHub</strong> — hosting the site's code and running data-processing jobs
+            for large imports.</li>
+        <li><strong>Mapbox and open basemap providers</strong> — the background maps. Loading a
+            map means your browser requests tiles from them.</li>
+        <li><strong>An email provider</strong> — for account emails such as password resets.</li>
+      </ul>
+
+      <h2>Public versus private</h2>
+      <p>New maps are private. A map becomes visible to others only when you publish it or
+      share a link. If you make a map public, assume it can be seen, copied and indexed by
+      search engines. Making it private again removes it from the site, but doesn't recall
+      copies other people already made.</p>
+
+      <h2>Backups</h2>
+      <p>Encrypted backups run nightly and rotate out after 14 days. This means deleted data
+      can persist in a backup for up to two weeks before it's gone for good.</p>
+
+      <h2>Getting your data out, or deleting it</h2>
+      <p>Every layer can be exported from the editor at any time, and a whole project can be
+      downloaded as a standalone copy. To have your account and its data deleted, email
+      <a href="mailto:contact@mapstructor.com">contact@mapstructor.com</a> and it will be done —
+      subject to the backup window above. If you're in a place with a legal right of access,
+      correction or erasure, that same address is how to exercise it.</p>
+
+      <h2>Children</h2>
+      <p>MapStructor isn't directed at children under 13, and accounts aren't knowingly
+      created for them. If you believe a child has an account, write and it'll be removed.</p>
+
+      <h2>Where data lives</h2>
+      <p>Servers are in the United States. Using the service means your data is processed
+      there.</p>
+
+      <h2>Security</h2>
+      <p>Connections are encrypted, backups are encrypted, and payment details never reach
+      this service. No small service can promise perfect security; if a breach ever affects
+      your data, you'll be told what happened and when.</p>
+
+      <h2>Changes</h2>
+      <p>If this policy changes in a way that matters, it'll be announced on the site before
+      it takes effect, and the date at the top will change.</p>
+
+      <h2>Contact</h2>
+      <p><a href="mailto:contact@mapstructor.com">contact@mapstructor.com</a></p>
+
+    </div>
+  </main>
+  <footer>
+    <a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="report.html">Report a map</a><a href="https://github.com/MapStructor" target="_blank">github.com/MapStructor</a>
+  </footer>
+  <script src="platform/pageEditor.js"></script>
+</body>
+</html>

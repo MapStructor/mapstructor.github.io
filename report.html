@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Report a map — MapStructor</title>
+  <link rel="icon" type="image/png" href="images/logo-transparent.png">
+  <style>
+    :root { --p: #7c5cbf; --ink: #1e1b2e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Source Sans Pro', system-ui, Arial, sans-serif; color: var(--ink); background: #faf9fd; }
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 14px 26px; border-bottom: 1px solid #eae6f3; background: #fff; }
+    nav a.brand { font-weight: 800; font-size: 18px; color: var(--ink); text-decoration: none; }
+    nav .nav-right { display: flex; gap: 16px; font-size: 14px; }
+    nav .nav-right a { color: var(--p); text-decoration: none; }
+    main { max-width: 640px; margin: 0 auto; padding: 44px 24px 90px; }
+    h1 { font-size: 28px; margin: 0 0 10px; }
+    p.lede { font-size: 16px; line-height: 1.6; color: #3a3550; margin: 0 0 24px; }
+    label { display: block; font-size: 13px; font-weight: 700; color: #4a4463; margin: 18px 0 5px; }
+    input, select, textarea { width: 100%; padding: 10px 12px; border: 1px solid #d9d3e8; border-radius: 8px;
+      font-family: inherit; font-size: 15px; color: var(--ink); background: #fff; }
+    textarea { min-height: 130px; resize: vertical; line-height: 1.5; }
+    .hint { font-size: 12px; color: #8b84a3; margin-top: 4px; }
+    button.send { margin-top: 22px; padding: 11px 22px; border: none; border-radius: 9px; background: var(--p);
+      color: #fff; font-weight: 700; font-size: 15px; cursor: pointer; font-family: inherit; }
+    button.send:disabled { opacity: .6; cursor: default; }
+    .note { margin-top: 20px; font-size: 14px; line-height: 1.6; padding: 14px 16px; border-radius: 10px; display: none; }
+    .note.ok { display: block; background: #e8f6ec; color: #24603a; border: 1px solid #c6e6d1; }
+    .note.warn { display: block; background: #fdf3e3; color: #7a5a15; border: 1px solid #f0e0bd; }
+    .note a { color: inherit; font-weight: 700; }
+    .note textarea { margin-top: 10px; background: #fff; font-size: 13px; }
+    footer { padding: 24px clamp(20px,5vw,64px); border-top: 1px solid #ece9f5; font-size: 11px; color: #b8b0d4; }
+    footer a { color: #b8b0d4; text-decoration: none; margin-right: 14px; }
+    footer a:hover { color: var(--p); }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js?v=20260730a"></script>
+  <script src="platform/topbar.js?v=20260730a"></script>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="index.html">MapStructor</a>
+    <div class="nav-right"><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="index.html">Home</a></div>
+  </nav>
+  <main>
+    <h1>Report a map or dataset</h1>
+    <p class="lede">Use this for anything that infringes your rights, breaks the
+      <a href="terms.html">terms</a>, or shouldn't be here. Reports go straight to the person who
+      runs MapStructor. If it's a rights claim, say who you are and what you hold the rights to —
+      that's what makes it actionable.</p>
+
+    <label for="r-kind">What's the problem?</label>
+    <select id="r-kind">
+      <option value="copyright">Copyright or data-licence infringement</option>
+      <option value="privacy">Private or personal information</option>
+      <option value="harmful">Harmful, harassing or dangerous content</option>
+      <option value="illegal">Illegal content</option>
+      <option value="other">Something else</option>
+    </select>
+
+    <label for="r-url">Link to the map or dataset</label>
+    <input id="r-url" type="text" placeholder="https://mapstructor.com/map/index.html?id=…">
+    <div class="hint">Paste the address from your browser's bar, if you have it.</div>
+
+    <label for="r-details">What's wrong with it?</label>
+    <textarea id="r-details" placeholder="Describe the problem. For a rights claim, include what you hold the rights to and how you know it's yours."></textarea>
+
+    <label for="r-email">Your email</label>
+    <input id="r-email" type="email" placeholder="so you can be reached about it">
+    <div class="hint">Required for rights claims, so the outcome can be sent to you.</div>
+
+    <button class="send" id="r-send">Send report</button>
+
+    <div class="note" id="r-note"></div>
+  </main>
+  <footer>
+    <a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="https://github.com/MapStructor" target="_blank">github.com/MapStructor</a>
+  </footer>
+
+  <script>
+  (function () {
+    var EMAIL = "contact@mapstructor.com";
+    var q = new URLSearchParams(location.search);
+    // arriving from a map's ⚑ Report link: pre-fill the address being reported
+    if (q.get("url")) document.getElementById("r-url").value = q.get("url");
+    else if (q.get("map")) document.getElementById("r-url").value = location.origin + "/map/index.html?id=" + q.get("map");
+
+    var btn = document.getElementById("r-send"), note = document.getElementById("r-note");
+
+    function payload() {
+      return {
+        kind: document.getElementById("r-kind").value,
+        target_url: document.getElementById("r-url").value.trim().slice(0, 500),
+        details: document.getElementById("r-details").value.trim().slice(0, 4000),
+        reporter_email: document.getElementById("r-email").value.trim().slice(0, 200)
+      };
+    }
+    // If the report can't be stored, the report must not be lost: show the address and a
+    // ready-made message the person can paste into their own mail client.
+    function fallback(p, why) {
+      if (why) try { console.warn("report filing failed:", why); } catch (e) {}   // detail for us, not the visitor
+      var body = "Report type: " + p.kind + "\nMap: " + (p.target_url || "(not given)") +
+                 "\nFrom: " + (p.reporter_email || "(not given)") + "\n\n" + p.details;
+      note.className = "note warn";
+      note.innerHTML = "This report couldn't be filed automatically" +
+        ". Please email it to <a href=\"mailto:" + EMAIL + "?subject=" +
+        encodeURIComponent("MapStructor report: " + p.kind) + "&body=" + encodeURIComponent(body) +
+        "\">" + EMAIL + "</a> — here is the message, ready to copy:" +
+        "<textarea readonly rows=\"7\"></textarea>";
+      note.querySelector("textarea").value = body;
+      btn.disabled = false;
+    }
+
+    btn.addEventListener("click", async function () {
+      var p = payload();
+      if (!p.details) { note.className = "note warn"; note.textContent = "Please describe the problem first."; return; }
+      btn.disabled = true;
+      note.className = "note"; note.textContent = "";
+      var db = window.MapAuth && MapAuth.db;
+      if (!db) return fallback(p, "the site's connection isn't available");
+      try {
+        var u = null;
+        try { u = await MapAuth.currentUser(); } catch (e) {}
+        if (u && u.id && MapAuth.isReal && MapAuth.isReal(u)) p.reporter_id = u.id;
+        var r = await db.from("reports").insert(p);
+        if (r.error) return fallback(p, r.error.message);
+        note.className = "note ok";
+        note.innerHTML = "<strong>Report received.</strong> It goes to the person who runs MapStructor" +
+          (p.reporter_email ? " and you'll hear back at " + p.reporter_email.replace(/[<>&]/g, "") + "." :
+           ". Add an email above if you'd like a reply.");
+        document.getElementById("r-details").value = "";
+      } catch (e) { fallback(p, e && e.message); }
+    });
+  })();
+  </script>
+</body>
+</html>

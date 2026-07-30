@@ -94,6 +94,11 @@
     <table><thead><tr><th data-label="Day">Day</th><th data-label="Added">Added</th><th data-label="Edited">Edited</th><th data-label="Deleted">Deleted</th><th data-label="Data in">Data in</th><th data-label="Data out">Data out</th><th data-label="Biggest job">Biggest job</th><th data-label="Editors">Editors</th></tr></thead><tbody id="instr-days"><tr><td colspan="8" style="color:#9a93ad;">Loading…</td></tr></tbody></table>
     <div class="note" id="instr-note" style="display:none;">Edit/storage instrumentation appears after you run <b>mapstructor_docs/sql/setup/instrumentation.sql</b>.</div>
 
+    <h2>Reports <span id="reports-badge" style="display:none;font-size:12px;font-weight:600;color:#fff;background:#b4453a;border-radius:999px;padding:2px 9px;vertical-align:middle;margin-left:8px;"></span></h2>
+    <!-- Launch item 3: the takedown inbox. report.html files here; only this account can read it. -->
+    <table><thead><tr><th data-label="When">When</th><th data-label="Type">Type</th><th data-label="Map">Map</th><th data-label="Details">What they said</th><th data-label="From">From</th><th data-label="Status">Status</th></tr></thead><tbody id="reports"><tr><td colspan="6" style="color:#9a93ad;">Loading…</td></tr></tbody></table>
+    <div class="note" id="reports-note" style="display:none;">The report inbox appears after you run <b>mapstructor_docs/sql/setup/reports-setup.sql</b>. Until then <a href="report.html" style="color:#7c5cbf;">report.html</a> falls back to emailing contact@mapstructor.com.</div>
+
     <h2>Services &amp; external resources</h2>
     <table><tbody id="services"></tbody></table>
     <div class="note">Bandwidth/egress, API request counts, monthly-active auth users, and Edge-Function/CDN usage are <b>not stored in Postgres</b> — they're billing metrics. See them in <a href="https://supabase.com/dashboard/project/_/reports" target="_blank" style="color:#7c5cbf;">Supabase → Reports/Usage</a> and (for the map CDN / Workers) your Cloudflare dashboard. The numbers above are everything queryable from the database itself.</div>
@@ -252,6 +257,36 @@
         } catch (e2) {
           document.getElementById('instr-days').innerHTML = '';
           document.getElementById('instr-note').style.display = 'block';
+        }
+
+        // Reports (item 3) — the takedown inbox. Open ones first; clicking a row's status
+        // resolves it, so a report can't sit "open" forever without a decision.
+        try {
+          var rp = await db.from('reports').select('*').order('status').order('created_at', { ascending: false }).limit(50);
+          if (rp.error) throw 0;
+          var R = rp.data || [], open = R.filter(function (x) { return x.status === 'open'; }).length;
+          if (open) { var rb = document.getElementById('reports-badge'); rb.textContent = open + ' open'; rb.style.display = 'inline-block'; }
+          document.getElementById('reports').innerHTML = R.map(function (x) {
+            var when = new Date(x.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            var map = x.target_url ? '<a href="' + esc(x.target_url) + '" target="_blank" style="color:#7c5cbf;">open</a>' : '—';
+            return '<tr' + (x.status === 'open' ? ' style="font-weight:600;"' : ' style="color:#8b84a3;"') + '>' +
+              '<td>' + when + '</td><td>' + esc(x.kind) + '</td><td>' + map + '</td>' +
+              '<td style="max-width:38ch;">' + esc(String(x.details || '').slice(0, 300)) + '</td>' +
+              '<td>' + esc(x.reporter_email || '—') + '</td>' +
+              '<td><button data-rid="' + x.id + '" data-rst="' + esc(x.status) + '" class="rstat" style="font:inherit;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid #d9d3e8;background:#fff;cursor:pointer;">' + esc(x.status) + '</button></td></tr>';
+          }).join('') || '<tr><td colspan="6" style="color:#9a93ad;">No reports — the quiet state.</td></tr>';
+          [].forEach.call(document.querySelectorAll('button.rstat'), function (btn) {
+            btn.onclick = async function () {
+              var next = { open: 'actioned', actioned: 'dismissed', dismissed: 'open' }[btn.dataset.rst] || 'open';
+              btn.disabled = true;
+              var up = await db.from('reports').update({ status: next, handled_at: new Date().toISOString() }).eq('id', btn.dataset.rid);
+              btn.disabled = false;
+              if (!up.error) { btn.textContent = next; btn.dataset.rst = next; }
+            };
+          });
+        } catch (eRep) {
+          document.getElementById('reports').innerHTML = '';
+          document.getElementById('reports-note').style.display = 'block';
         }
 
         // services & external resources — what's queryable vs. where to look

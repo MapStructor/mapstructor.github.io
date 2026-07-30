@@ -288,6 +288,10 @@
         <div id="zoom-buttons-section"></div>
         <br />
         <div id="sketch-content"></div>
+        <!-- takedown path (launch item 3): every public map carries a way to report it -->
+        <div id="viewer-report" style="margin-top:22px;padding-top:12px;border-top:1px solid #e6e2f0;font-size:11px;color:#a9a3bd;">
+          <a href="#" id="viewer-report-link" style="color:#a9a3bd;text-decoration:none;" title="Report this map">&#9873; Report this map</a>
+        </div>
       </div>
     </div>
 
@@ -388,5 +392,16 @@
       }
     </script>
     <script src="../platform/init.js" onerror="void(0)"></script>
+    <script>
+      // ⚑ Report — carries the exact map being viewed to the report form. Hidden in
+      // standalone downloads (no site to report to) and while editing your own map.
+      (function () {
+        var box = document.getElementById("viewer-report"), a = document.getElementById("viewer-report-link");
+        if (!box || !a) return;
+        var id = (new URLSearchParams(location.search)).get("id");
+        if (!id || /\/editor\.html/.test(location.pathname)) { box.style.display = "none"; return; }
+        a.href = "../report.html?url=" + encodeURIComponent(location.href);
+      })();
+    </script>
   </body>
 </html>

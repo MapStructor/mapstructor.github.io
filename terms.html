@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terms of Service — MapStructor</title>
+  <link rel="icon" type="image/png" href="images/logo-transparent.png">
+  <style>
+    :root { --p: #7c5cbf; --ink: #1e1b2e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Source Sans Pro', system-ui, Arial, sans-serif; color: var(--ink); background: #faf9fd; }
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 14px 26px; border-bottom: 1px solid #eae6f3; background: #fff; }
+    nav a.brand { font-weight: 800; font-size: 18px; color: var(--ink); text-decoration: none; }
+    nav .nav-right { display: flex; gap: 16px; font-size: 14px; }
+    nav .nav-right a { color: var(--p); text-decoration: none; }
+    main { max-width: 740px; margin: 0 auto; padding: 44px 24px 90px; }
+    h1 { font-size: 30px; margin: 0 0 6px; }
+    .updated { color: #8b84a3; font-size: 13px; margin: 0 0 26px; }
+    h2 { font-size: 19px; margin: 32px 0 8px; }
+    .content { font-size: 16px; line-height: 1.65; color: #3a3550; }
+    .content p, .content li { margin: 0 0 12px; }
+    .content ul { padding-left: 22px; }
+    .content a { color: var(--p); }
+    footer { padding: 24px clamp(20px,5vw,64px); border-top: 1px solid #ece9f5; font-size: 11px; color: #b8b0d4; }
+    footer a { color: #b8b0d4; text-decoration: none; margin-right: 14px; }
+    footer a:hover { color: var(--p); }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js?v=20260730a"></script>
+  <script src="platform/topbar.js?v=20260730a"></script>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="index.html">MapStructor</a>
+    <div class="nav-right"><a href="privacy.html">Privacy</a><a href="about.html">About</a><a href="index.html">Home</a></div>
+  </nav>
+  <main>
+    <h1 data-edit="terms-title">Terms of Service</h1>
+    <p class="updated">Last updated 30 July 2026</p>
+    <div class="content" data-edit="terms-body">
+
+      <p>MapStructor is a tool for making, storing and sharing maps, run by an independent
+      developer in Iowa, USA. By using it you agree to what's below. It's written plainly on
+      purpose — if something here seems unfair, write and say so.</p>
+
+      <h2>Your account</h2>
+      <p>You need an account to create maps. Keep your login details to yourself; you're
+      responsible for what happens under your account. You must be old enough to agree to
+      these terms where you live (13 at minimum, or older where local law requires it).</p>
+
+      <h2>Your maps and data stay yours</h2>
+      <p>Anything you draw, upload or write stays your property. You give MapStructor only
+      the permission it needs to run the service: to store your data, process it into map
+      tiles and other formats, back it up, and show it to the people you choose to show it
+      to. If you make a map public, you're granting the public permission to view it.</p>
+      <p>You can export your data at any time, in the formats the editor offers.</p>
+
+      <h2>Data you import is your responsibility</h2>
+      <p>MapStructor lets you import files and connect to outside data sources. You are
+      responsible for having the right to use anything you import, and for honouring its
+      licence — including attribution requirements. Don't upload data you aren't allowed to
+      use. If you publish someone else's data, credit it.</p>
+
+      <h2>What you may not do</h2>
+      <ul>
+        <li>Upload content that is illegal, infringing, or that you have no right to share.</li>
+        <li>Use the service to harass, endanger or deceive people.</li>
+        <li>Attempt to break, overload or circumvent the service's limits and protections,
+            or access other people's private data.</li>
+        <li>Resell the service itself as though it were yours.</li>
+      </ul>
+      <p>Accounts doing these things can be suspended. Where it's reasonable, you'll be told
+      what happened and given a chance to fix it first.</p>
+
+      <h2>Reporting a problem or a rights claim</h2>
+      <p>If a map or dataset infringes your rights or breaks these terms,
+      <a href="report.html">report it here</a> or email
+      <a href="mailto:contact@mapstructor.com">contact@mapstructor.com</a>. Include a link to
+      the map, what the problem is, and how to reach you. Valid claims are acted on promptly —
+      content may be made private or removed while a claim is reviewed. If you believe your
+      content was removed in error, reply to the same address and it will be reconsidered.</p>
+
+      <h2>Storage, plans and payment</h2>
+      <ul>
+        <li>A free amount of storage is included. Beyond it, storage is paid — the current
+            steps are listed on the pricing page.</li>
+        <li>You are never charged automatically for going over. You'll be shown a limit and
+            can choose to upgrade.</li>
+        <li>Subscriptions renew monthly until you cancel. Payments are handled by Stripe;
+            MapStructor never sees your card number.</li>
+        <li>If a renewal fails, your plan isn't cut off instantly — there's a grace period
+            while the payment is retried.</li>
+        <li>The price you signed up at stays your price for as long as your subscription
+            runs continuously.</li>
+        <li>Cancel any time. Cancelling stops future charges; it doesn't refund the current
+            month.</li>
+      </ul>
+
+      <h2>If you go over your limit or stop paying</h2>
+      <p>Your data is <strong>not</strong> silently deleted. It stays readable and
+      downloadable; what stops is your ability to add more. You'll be warned on a schedule
+      before anything else happens, and you'll always have a way to export first.</p>
+
+      <h2>Deleting your account</h2>
+      <p>You can ask for your account and its data to be deleted by emailing
+      <a href="mailto:contact@mapstructor.com">contact@mapstructor.com</a>. Deletion removes
+      your maps, uploaded data and profile. Two honest caveats: encrypted backups keep a copy
+      for up to 14 days before rotating out, and anything you published publicly may have been
+      copied by others while it was public.</p>
+
+      <h2>Availability</h2>
+      <p>This is a small, independent service. It's offered as-is, without a guarantee of
+      uptime or that it will never lose data. Keep your own copies of anything you can't
+      afford to lose — the editor's export button exists for exactly this. Planned changes
+      that would affect your maps will be announced ahead of time where possible.</p>
+
+      <h2>Liability</h2>
+      <p>To the extent the law allows, MapStructor isn't liable for indirect or consequential
+      losses, and total liability for any claim is limited to what you paid in the twelve
+      months before it arose. Nothing here removes rights you have that can't be waived under
+      your local consumer law.</p>
+
+      <h2>Changes to these terms</h2>
+      <p>These terms may change as the service grows. Meaningful changes will be announced on
+      the site before they take effect; the date at the top always shows the current version.
+      Continuing to use the service after a change means you accept it.</p>
+
+      <h2>Contact</h2>
+      <p><a href="mailto:contact@mapstructor.com">contact@mapstructor.com</a></p>
+
+    </div>
+  </main>
+  <footer>
+    <a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="report.html">Report a map</a><a href="https://github.com/MapStructor" target="_blank">github.com/MapStructor</a>
+  </footer>
+  <script src="platform/pageEditor.js"></script>
+</body>
+</html>
