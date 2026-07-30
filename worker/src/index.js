@@ -185,7 +185,7 @@ export default {
       var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       var fMode = fb && fb.mode ? String(fb.mode) : "fold-raw";
       if (!fb || !UUID.test(fb.projectId || "") || !UUID.test(fb.layerId || "") ||
-          ["retile", "fold-rows", "fold-raw"].indexOf(fMode) < 0) {
+          ["retile", "fold-rows", "fold-raw", "fold-merge"].indexOf(fMode) < 0) {
         return new Response("bad request", { status: 400, headers: cors() });
       }
       var fRawKey = fb.rawKey ? String(fb.rawKey) : "";

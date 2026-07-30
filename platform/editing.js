@@ -73,10 +73,12 @@
       rerender();   // re-render so enhanceRows wires toggle/draw for now-typed drawn layers
       // THE FOLD (C3): a reload mid-fold would orphan the watch — resume polling any layer
       // still marked 'folding' so it appears live the moment the Action stamps it.
+      // (C4): folded layers with delta rows re-show their edits (overlay + tile-hide) after reload.
       try {
         (function scanF(arr) {
           (arr || []).forEach(function (n) {
             if (n.fold_state === 'folding' && slugToLayerDbId[n.id]) pollFoldDone(n, slugToLayerDbId[n.id]);
+            if (n.fold_state === 'folded' && slugToLayerDbId[n.id]) restoreFoldDeltas(n);
             if (n.children) scanF(n.children);
           });
         })(typeof layers !== 'undefined' ? layers : []);
@@ -868,6 +870,70 @@
       if (tr && tr.scrollIntoView) tr.scrollIntoView({ block: 'nearest' });
     } catch (e) {}
   }
+  // ── THE FOLD · C4: click-to-edit on a FOLDED layer ────────────────────────
+  // No live rows — the clicked feature is pulled from the raw R2 artifact (the export FC the
+  // fold wrote) and materialized as a DELTA row in `features`, marked custom_fields.ms_foldsrc
+  // = its artifact feature id. From there the NORMAL pulled-edit machinery runs against that
+  // row (geometry saves, meta saves, undo). Publish's re-fold (C5) merges deltas back into the
+  // artifacts and clears them. Re-clicks find the existing delta by ms_foldsrc — one delta per
+  // artifact feature, ever.
+  var _foldRawCache = {};   // layerDbId → {ver, byId} — the artifact FC indexed by feature id
+  async function foldRawIndex(node, lid) {
+    var ver = String(node.tilesGeneratedAt || node.attrParquetAt || '0');
+    var c = _foldRawCache[lid];
+    if (c && c.ver === ver) return c.byId;
+    var r = await fetch('https://tiles.mapstructor.com/tiles/' + projectId + '/' + lid + '.geojson?v=' + encodeURIComponent(ver), { cache: 'no-store' });
+    if (!r.ok) throw new Error('layer archive HTTP ' + r.status);
+    var fc = await r.json(), byId = {};
+    (fc.features || []).forEach(function (f) { var k = f.id != null ? f.id : (f.properties || {}).feature_id; if (k != null) byId[String(k)] = f; });
+    _foldRawCache[lid] = { ver: ver, byId: byId };
+    return byId;
+  }
+  async function foldDeltaFor(node, lid, tileFid) {
+    // an existing delta wins (it is the newer truth than the artifact)
+    var ex = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url').eq('layer_id', lid).eq('custom_fields->>ms_foldsrc', String(tileFid)).limit(1);
+    if (!ex.error && ex.data && ex.data.length) return ex.data[0];
+    var byId = await foldRawIndex(node, lid);
+    var af = byId[String(tileFid)];
+    if (!af || !af.geometry) return null;
+    var p = af.properties || {}, cf = {}, STDK = { feature_id: 1, label: 1, description: 1, start_date: 1, end_date: 1, content_id: 1, image_url: 1 };
+    Object.keys(p).forEach(function (k) { if (!STDK[k]) cf[k] = p[k]; });
+    cf.ms_foldsrc = String(tileFid);
+    var ins = await db.from('features').insert({
+      layer_id: lid, geom: af.geometry,
+      label: p.label != null ? String(p.label) : null,
+      description: p.description != null ? String(p.description) : null,
+      start_date: p.start_date || null, end_date: p.end_date || null,
+      content_id: p.content_id != null ? p.content_id : null,
+      image_url: p.image_url || null, custom_fields: cf,
+    }).select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url').single();
+    if (ins.error) throw new Error(ins.error.message);
+    return ins.data;
+  }
+  // boot restore: a folded layer's deltas re-hide their artifact renders + re-show as the
+  // edited overlay, so pre-Publish edits stay visible across reloads (editor only — the viewer
+  // stays artifact-pure until Publish re-folds, per the model).
+  async function restoreFoldDeltas(node) {
+    var lid = slugToLayerDbId[node.id]; if (!lid) return;
+    try {
+      await foldSleep(4000);   // let the maps finish booting
+      var r = await db.from('features').select('feature_id, geom, custom_fields').eq('layer_id', lid).limit(500);
+      if (r.error || !r.data || !r.data.length) return;
+      var eo = (_engineEdited[node.id] = _engineEdited[node.id] || {});
+      var hid = (_engineEditIds[node.id] = _engineEditIds[node.id] || []);
+      var found = 0;
+      r.data.forEach(function (d) {
+        var src = d.custom_fields && d.custom_fields.ms_foldsrc;
+        if (src == null) return;
+        if (hid.indexOf(Number(src)) < 0) hid.push(Number(src));
+        if (d.geom) { eo[d.feature_id] = d.geom; found++; }
+      });
+      if (!found) return;
+      applyEngineEditFilter(node);
+      ensureEditedOverlay(node);
+      refreshEditedOverlay(node);
+    } catch (e) {}
+  }
   async function enterEngineEdit(node, fid, clickEvt) {
     // cache the clicked geometry FIRST so the selection highlight the star-add triggers paints instantly
     try { if (clickEvt && clickEvt.features && clickEvt.features[0] && clickEvt.features[0].geometry) _selGeom[String(fid)] = clickEvt.features[0].geometry; } catch (eG) {}
@@ -879,29 +945,41 @@
     }
     var lyrId = (typeof slugToLayerDbId !== 'undefined') ? slugToLayerDbId[node.id] : null;
     if (!lyrId) { engineViewerPanel(node, clickEvt); return; }   // this layer's data isn't in our `features` table → not editable, but still show the panel
-    if (node.fold_state === 'folded') {   // The Fold: no row to pull — the viewer panel still opens, editing waits for the delta editor (C4)
-      engineViewerPanel(node, clickEvt);
-      setStatus('This layer is folded (R2-backed) — its features aren\'t individually editable here yet.');
-      return;
+    var foldedEdit = node.fold_state === 'folded';
+    var row = null, rowGeom = null;
+    if (foldedEdit) {
+      // The Fold (C4): pull from the raw artifact → delta row; the rest is the normal machinery.
+      setStatus('Pulling feature from the layer archive…');
+      try { row = await foldDeltaFor(node, lyrId, fid); } catch (eFp) { console.warn('fold delta pull failed', eFp); row = null; }
+      if (!row || !row.geom) { engineViewerPanel(node, clickEvt); setStatus('This folded layer\'s archive is unavailable — try again.'); return; }
+      drawId = 'db-' + row.feature_id;   // the DRAW copy tracks the DELTA row; the tile still hides by its own (artifact) id below
+      if (draw && draw.get(drawId)) {   // delta already pulled this session — stage 1, same as the live re-click path
+        if (_editingDraw !== drawId) { _editingDraw = null; _armedSet = [drawId]; try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {} updateArmedHl(); }
+        showFeaturePanel(drawId); updateGroupHl(drawId); return;
+      }
+      rowGeom = row.geom;
+    } else {
+      // Scope to THIS layer's id. feature_id alone is GLOBAL, so a tile id can collide with an unrelated
+      // migrated feature on another layer and "edit" (and hide) the wrong thing — the vanishing-feature bug.
+      var EB = getEditBackend(node);   // Phase 2a: read from this layer's edit backend (platform `features` unless the tileset declared its own)
+      var wantCustom = EB.table === 'features';   // custom_fields is a platform column — foreign edit backends may not have it
+      var res; try { res = await EB.db.from(EB.table).select(EB.idCol + ', ' + EB.layerCol + ', ' + EB.geomCol + ', label, description, start_date, end_date, content_id' + (wantCustom ? ', custom_fields, image_url' : '')).eq(EB.idCol, fid).eq(EB.layerCol, lyrId).single(); } catch (e) { res = { error: e }; }
+      if (res.error || !res.data || !res.data[EB.geomCol]) { engineViewerPanel(node, clickEvt); return; }   // display-only feature (not in the edit backend) → no edit, but the viewer's panel still opens
+      row = res.data; rowGeom = row[EB.geomCol];
     }
-    // Scope to THIS layer's id. feature_id alone is GLOBAL, so a tile id can collide with an unrelated
-    // migrated feature on another layer and "edit" (and hide) the wrong thing — the vanishing-feature bug.
-    var EB = getEditBackend(node);   // Phase 2a: read from this layer's edit backend (platform `features` unless the tileset declared its own)
-    var wantCustom = EB.table === 'features';   // custom_fields is a platform column — foreign edit backends may not have it
-    var res; try { res = await EB.db.from(EB.table).select(EB.idCol + ', ' + EB.layerCol + ', ' + EB.geomCol + ', label, description, start_date, end_date, content_id' + (wantCustom ? ', custom_fields, image_url' : '')).eq(EB.idCol, fid).eq(EB.layerCol, lyrId).single(); } catch (e) { res = { error: e }; }
-    if (res.error || !res.data || !res.data[EB.geomCol]) { engineViewerPanel(node, clickEvt); return; }   // display-only feature (not in the edit backend) → no edit, but the viewer's panel still opens
-    var row = res.data, rowGeom = row[EB.geomCol], origGeom = { type: rowGeom.type, coordinates: rowGeom.coordinates };
+    var origGeom = { type: rowGeom.type, coordinates: rowGeom.coordinates };
     if (origGeom.type === 'MultiPolygon') { _engineWasMulti[drawId] = true; _engineOrigMulti[drawId] = origGeom; }
     var geom = toDrawPolygon(origGeom);   // mapbox-gl-draw needs a Polygon
-    featureToDb[drawId] = fid; featureLayer[drawId] = row[EB.layerCol]; _engineEditNode[drawId] = node;
+    var rowFid = foldedEdit ? row.feature_id : fid;   // folded: the DELTA row's id (all writers target it)
+    featureToDb[drawId] = rowFid; featureLayer[drawId] = foldedEdit ? row.layer_id : row[EB.layerCol]; _engineEditNode[drawId] = node;
     featureMeta[drawId] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '', image_url: row.image_url || '', custom: row.custom_fields || null };
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
     var epProps = featureProps(node) || {};
     // colorBy layers: the editable copy keeps the FEATURE's own category color (not the layer default)
     try { if (node.colorBy && node.colorBy.mapping && row.custom_fields) { var cbv2 = row.custom_fields[node.colorBy.prop]; var mc2 = cbv2 != null ? node.colorBy.mapping[String(cbv2)] : null; if (mc2) epProps.color = mc2; } } catch (e) {}
     try { draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: epProps }); } catch (e) { setStatus('Edit failed'); return; }
-    (_engineEditIds[node.id] = _engineEditIds[node.id] || []); if (_engineEditIds[node.id].indexOf(fid) < 0) _engineEditIds[node.id].push(fid);
-    if (_engineEdited[node.id] && _engineEdited[node.id][fid] != null) { delete _engineEdited[node.id][fid]; refreshEditedOverlay(node); }   // pull it back off the overlay while editing
+    (_engineEditIds[node.id] = _engineEditIds[node.id] || []); if (_engineEditIds[node.id].indexOf(fid) < 0) _engineEditIds[node.id].push(fid);   // hide the TILE copy by its own id (folded: the artifact id)
+    if (_engineEdited[node.id] && _engineEdited[node.id][rowFid] != null) { delete _engineEdited[node.id][rowFid]; refreshEditedOverlay(node); }   // pull it back off the overlay while editing (keyed by the row id finishEngineEdit uses)
     applyEngineEditFilter(node);   // hide the read-only render of just this feature, so only the editable copy shows
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {   // clear any stuck hover-highlight: the tile copy is now filtered out, so the engine's mouseleave won't fire to un-green it (otherwise every clicked feature stays glowing)
       var m = pair[1]; if (!m) return; var tgt = { source: node.id + '-' + pair[0], id: Number(fid) }; if (node['source-layer']) tgt.sourceLayer = node['source-layer'];
@@ -949,8 +1027,14 @@
       try {
         map.addSource(sid, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
         var orig = (map.getStyle().layers || []).filter(function (l) { return l.id === node.id + '-' + pair[0]; })[0];
-        var paint = (orig && orig.paint) || node.paint || { 'fill-color': '#ffb255', 'fill-outline-color': '#ff0000' };
-        map.addLayer({ id: sid, type: 'fill', source: sid, paint: paint });   // styled like the layer, above the tile copy
+        // match the LAYER's own type — the old hardcoded 'fill' made line/circle overlays invisible
+        // (line geometries render nothing in a fill layer), which surfaced with folded line layers (C4)
+        var oType = (node.type === 'line' || node.type === 'circle') ? node.type : 'fill';
+        var oDefault = oType === 'line' ? { 'line-color': '#ffb255', 'line-width': 2 }
+          : oType === 'circle' ? { 'circle-color': '#ffb255', 'circle-radius': 6 }
+          : { 'fill-color': '#ffb255', 'fill-outline-color': '#ff0000' };
+        var paint = (orig && orig.paint) || node.paint || oDefault;
+        map.addLayer({ id: sid, type: oType, source: sid, paint: paint });   // styled like the layer, above the tile copy
         map.on('click', sid, (function (n) { return function (e) { onEngineFeatureClick(n, e); }; })(node));   // re-click → re-edit
       } catch (e) { console.warn('editing: edited overlay', e); }
     });
@@ -1712,6 +1796,17 @@
   var CLOUD_FOLD_IMPORTS = true;             // kill-switch (also: window.__msForceRowImport for tests)
   var _foldWatch = [];                       // {node, layerId} queued by the import loop, drained into polls
   function foldSleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  // projectLoader registers pmt-sw ONLY when the boot config already has a /pmt/ layer — a map
+  // whose FIRST tiled layer arrives via a cloud fold has no service worker, so the new source's
+  // pmt/ requests would fall through to the static host and 404 (blank layer until reload).
+  // Register on demand; pmt-sw skipWaiting+claim lets it control this page mid-life.
+  async function ensurePmtSw() {
+    try {
+      if (!('serviceWorker' in navigator)) return;
+      await navigator.serviceWorker.register('pmt-sw.js').then(function () { return navigator.serviceWorker.ready; });
+      await foldSleep(300);   // claim settle beat (same trick as projectLoader's boot wait)
+    } catch (e) {}
+  }
   // upload the per-layer FC + dispatch the Action. true = cloud fold is underway; false = fall back.
   async function foldImportDispatch(layerId, node, feats) {
     try {
@@ -1726,6 +1821,7 @@
         body: JSON.stringify({ projectId: projectId, layerId: layerId, mode: 'fold-raw', rawKey: rawKey })
       });
       if (!dR.ok) throw new Error('fold dispatch HTTP ' + dR.status);
+      ensurePmtSw();   // fire-and-forget — the worker is claimed long before the tiles are needed
       importStatus('Folding "' + (node.label || 'layer') + '" in the cloud (' + nfmt(feats.length) + ' features) — it appears here when ready…');
       return true;
     } catch (e) {
@@ -1749,28 +1845,30 @@
     importStatus('Cloud fold is taking unusually long for "' + (node.label || 'layer') + '" — it finishes in the background; reload later to see it.');
   }
   // the Action stamped the layer: rebuild the tree node from the row and add it to the maps LIVE
-  // (addMapLayer skips ids that already exist, so addLayers() only adds this layer's new pieces).
-  function applyFoldedRow(node, row) {
+  // through the platform's own in-session tileset path (same recipe as onApplySource).
+  async function applyFoldedRow(node, row) {
     try {
+      await ensurePmtSw();   // resume-on-load pages never registered it either (no tiled layer at boot)
       var fresh = (typeof ConfigLoader !== 'undefined' && ConfigLoader.leafFromRow) ? ConfigLoader.leafFromRow(row) : null;
       if (fresh) {
         var keepId = node.id, keepTop = node.topLayerClass;
         Object.keys(node).forEach(function (k) { delete node[k]; });
         Object.assign(node, fresh);
         node.id = keepId; if (keepTop) node.topLayerClass = keepTop;
+        node.source_type = row.source_type;   // the COLUMN, not raw_config's stale import-time copy (attachIds does the same at boot)
       } else { node.fold_state = 'folded'; }
-      // drop the empty placeholder layers/sources so the tile versions can take their ids
+      // drop any placeholder layers (incl. the -highlighted companion removeMapLayers skips),
+      // then render through the platform's own in-session tileset path — the SAME recipe
+      // onApplySource uses to repoint a source live: render + re-wire clicks + refreshLayers.
       ['-left', '-right'].forEach(function (sfx) {
-        ['', '-highlighted', '-stroke'].forEach(function (mid) {
-          [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
-            if (!m) return; try { var lid3 = node.id + mid + sfx; if (m.getLayer(lid3)) m.removeLayer(lid3); } catch (e) {}
-          });
-        });
         [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null].forEach(function (m) {
-          if (!m) return; try { if (m.getSource(node.id + sfx)) m.removeSource(node.id + sfx); } catch (e) {}
+          if (!m) return; try { var hid = node.id + '-highlighted' + sfx; if (m.getLayer(hid)) m.removeLayer(hid); } catch (e) {}
         });
       });
-      try { if (typeof addLayers === 'function') addLayers(); } catch (eAdd) { console.warn('fold live-add failed — the layer appears on next load', eAdd); }
+      try { removeMapLayers(node.id); } catch (e) {}
+      try { renderTilesetOnMap(node); } catch (eAdd) { console.warn('fold live-add failed — the layer appears on next load', eAdd); }
+      try { _engineEditWired[node.id] = false; wireEngineEditClicks(); } catch (e) {}
+      try { if (typeof refreshLayers === 'function') refreshLayers(); } catch (e) {}
       rerender();
       importStatus('"' + (node.label || 'layer') + '" is ready — ' + nfmt((row.raw_config || {}).tilesFeatureCount || 0) + ' features, folded to cloud storage.');
     } catch (e) { console.warn('applyFoldedRow failed', e); importStatus('"' + (node.label || 'layer') + '" folded — reload to see it.'); }
@@ -2373,6 +2471,34 @@
         await loadScript('../platform/tilegen.js?v=' + Date.now());   // ALWAYS fresh — a cached old tiler re-runs the 891k-tile mistake
         if (window.MSTileGen) await MSTileGen.sewUpProject(db, projectId, function (m) { setStatus(m); msProgress(m); });   // publish regeneration shows in the prominent sidebar line too
       } catch (eTiles) { console.warn('tile sew-up skipped', eTiles); }
+      // THE FOLD (C5): Publish = the fold. sewUpProject SKIPS folded layers (no rows to bake) —
+      // any folded layer holding DELTA rows re-folds in the cloud instead: dispatch fold-merge
+      // (artifact + deltas → new artifacts under the same ids → deltas cleared). Fire-and-forget:
+      // the snapshot ships now with the current artifacts; viewers pick up the merged tiles when
+      // the Action lands (the pmt service worker revalidates by ETag). Failures leave the deltas
+      // in place — the next Publish simply retries the same merge.
+      try {
+        (function scanFold(arr) {
+          (arr || []).forEach(function (n) {
+            if (n.children) return scanFold(n.children);
+            if (n.fold_state !== 'folded') return;
+            var lidF = slugToLayerDbId[n.id]; if (!lidF) return;
+            db.from('features').select('feature_id').eq('layer_id', lidF).limit(1).then(function (rF) {
+              if (rF.error || !rF.data || !rF.data.length) return;   // no deltas — nothing to re-fold
+              db.auth.getSession().then(function (sF) {
+                var tokF = sF.data && sF.data.session && sF.data.session.access_token; if (!tokF) return;
+                fetch(FOLD_WORKER_BASE + '/fold', {
+                  method: 'POST', headers: { Authorization: 'Bearer ' + tokF, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ projectId: projectId, layerId: lidF, mode: 'fold-merge' })
+                }).then(function (dF) {
+                  msProgress(dF.ok ? ('"' + (n.label || 'layer') + '" is re-folding its edits in the cloud — viewers see them shortly.')
+                    : ('Cloud re-fold unavailable for "' + (n.label || 'layer') + '" — its edits stay pending until the next Publish.'));
+                }).catch(function () {});
+              });
+            });
+          });
+        })(typeof layers !== 'undefined' ? layers : []);
+      } catch (eFm) {}
       setStatus('Publishing…');
       var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);   // snapshot the current live config
       // GHOST GUARD (7/22): a long-lived tab can display groups/sections that no longer exist in

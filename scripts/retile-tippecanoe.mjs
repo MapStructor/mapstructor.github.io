@@ -15,6 +15,11 @@
                 custom_fields semantics (editing.js importLabel/importCustomFields), bakes
                 everything. Dates are null on import → tiles are dateless (0/99999999), same
                 as a live import.
+     fold-merge Publish = the fold (C5): reads the CURRENT raw artifact from R2, overlays the
+                layer's DELTA rows (features rows carrying custom_fields.ms_foldsrc = the
+                artifact feature id they shadow), rebuilds every artifact under the SAME
+                feature ids, then DELETES the merged delta rows. Artifact ids stay stable
+                across folds so tiles/sidecar/export/click-to-edit keys never drift.
 
    Artifacts on a fold (keys under the tiles bucket / R2):
      {pid}/{lid}.pmtiles        tiles         — Supabase + R2 (existing readers, dual-read)
@@ -45,10 +50,10 @@ const BUCKET = "tiles";          // Supabase Storage bucket
 const R2_BUCKET = process.env.R2_BUCKET || "mapstructor-tiles";
 const R2_ENDPOINT = process.env.R2_ACCOUNT_ID ? `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null;
 const R2_PUBLIC = "https://tiles.mapstructor.com";   // bucket custom domain (public reads)
-const FOLD = MODE === "fold-rows" || MODE === "fold-raw";
+const FOLD = MODE === "fold-rows" || MODE === "fold-raw" || MODE === "fold-merge";
 
 if (!KEY || !PROJECT_ID || !LAYER_ID) { console.error("need SUPABASE_SERVICE_KEY, PROJECT_ID, LAYER_ID"); process.exit(1); }
-if (!["retile", "fold-rows", "fold-raw"].includes(MODE)) { console.error("bad MODE " + MODE); process.exit(1); }
+if (!["retile", "fold-rows", "fold-raw", "fold-merge"].includes(MODE)) { console.error("bad MODE " + MODE); process.exit(1); }
 if (MODE === "fold-raw" && !RAW_KEY) { console.error("fold-raw needs RAW_KEY"); process.exit(1); }
 if (FOLD && !R2_ENDPOINT) { console.error("fold modes need R2_ACCOUNT_ID (+ key pair)"); process.exit(1); }
 
@@ -169,7 +174,65 @@ try {
   /* ── 1. acquire rows (full attributes — artifacts need them; retile ignores extras) ── */
   let rows = [];
   let sourceBytes = 0;   // fold-raw: the uploaded source FC stays on R2 and counts toward r2_bytes
-  if (MODE === "fold-raw") {
+  let mergedDeltaIds = [];   // fold-merge: delta rows to DELETE after a successful stamp
+  if (MODE === "fold-merge") {
+    const exKey = `tiles/${PROJECT_ID}/${LAYER_ID}.geojson`;
+    console.log("Fetching current artifact from R2: " + exKey);
+    let afc = null;
+    for (let a = 1; a <= 3 && !afc; a++) {
+      const r = await fetch(`${R2_PUBLIC}/${exKey}`, { cache: "no-store" });
+      if (r.ok) afc = await r.json();
+      else { console.warn("artifact fetch " + r.status + " (try " + a + ")"); await new Promise((rs) => setTimeout(rs, 3000)); }
+    }
+    if (!afc || !afc.features || !afc.features.length) throw new Error("current artifact unavailable at " + exKey);
+    // artifact features → row shape (props back to columns; ARTIFACT ids preserved — id stability
+    // across folds is the contract that keeps tiles/sidecar/export/click-to-edit keys aligned)
+    const STDK = { feature_id: 1, label: 1, description: 1, start_date: 1, end_date: 1, content_id: 1, image_url: 1 };
+    const byId = new Map();
+    rows = afc.features.map((f) => {
+      const p = f.properties || {}, cf = {};
+      for (const k of Object.keys(p)) if (!STDK[k]) cf[k] = p[k];
+      const row = {
+        feature_id: f.id != null ? f.id : p.feature_id, geom: f.geometry,
+        label: p.label != null ? p.label : null, description: p.description != null ? p.description : null,
+        start_date: p.start_date || null, end_date: p.end_date || null,
+        content_id: p.content_id != null ? p.content_id : null, image_url: p.image_url || null,
+        custom_fields: Object.keys(cf).length ? cf : null,
+      };
+      byId.set(String(row.feature_id), row);
+      return row;
+    });
+    // delta rows (keyset) — only rows MARKED ms_foldsrc merge; anything else is left untouched
+    let lastD = null; const deltas = [];
+    for (;;) {
+      const gt = lastD != null ? `&feature_id=gt.${lastD}` : "";
+      const batch = await (await rest(`/rest/v1/features?layer_id=eq.${LAYER_ID}${gt}&select=feature_id,geom,label,description,start_date,end_date,content_id,image_url,custom_fields&order=feature_id&limit=1000`)).json();
+      if (!batch.length) break;
+      deltas.push(...batch); lastD = batch[batch.length - 1].feature_id;
+      if (batch.length < 1000) break;
+    }
+    let applied = 0, orphans = 0;
+    for (const d of deltas) {
+      const src = d.custom_fields && d.custom_fields.ms_foldsrc;
+      if (src == null) { orphans++; continue; }
+      const t = byId.get(String(src));
+      const cf2 = { ...(d.custom_fields || {}) }; delete cf2.ms_foldsrc;
+      const merged = {
+        feature_id: t ? t.feature_id : Number(src), geom: d.geom, label: d.label, description: d.description,
+        start_date: d.start_date, end_date: d.end_date, content_id: d.content_id, image_url: d.image_url,
+        custom_fields: Object.keys(cf2).length ? cf2 : null,
+      };
+      if (t) rows[rows.indexOf(t)] = merged; else rows.push(merged);   // vanished target → the edit survives as its own feature
+      byId.set(String(merged.feature_id), merged);
+      mergedDeltaIds.push(d.feature_id);
+      applied++;
+    }
+    console.log(`merge: ${rows.length} artifact features · ${applied} deltas applied · ${orphans} unmarked rows untouched`);
+    try {   // the fold-raw source file (if any) still occupies R2 — keep counting it in r2_bytes
+      const h = await fetch(`${R2_PUBLIC}/tiles/${PROJECT_ID}/${LAYER_ID}.source.geojson`, { method: "HEAD" });
+      if (h.ok) sourceBytes = +(h.headers.get("content-length") || 0);
+    } catch (e) {}
+  } else if (MODE === "fold-raw") {
     console.log("Fetching source FC from R2: " + RAW_KEY);
     let fr = null;
     for (let a = 1; a <= 3 && !fr; a++) {
@@ -217,7 +280,10 @@ try {
     return { type: "Feature", id: r.feature_id, properties: props, geometry: r.geom };
   });
   writeFileSync("layer.geojson", JSON.stringify({ type: "FeatureCollection", features: skinny }));
-  const zoomArgs = MAX_ZOOM ? ["-z" + MAX_ZOOM] : ["-zg"];
+  // fold modes match the browser tiler's depth (points 13, else 15 — tilegen.js convertLayer):
+  // -zg guessed z8 for a sparse metro layer and every deeper view rode ~75m-quantized geometry.
+  // retile keeps -zg (its existing deep-retile behavior for huge datasets); MAX_ZOOM overrides both.
+  const zoomArgs = MAX_ZOOM ? ["-z" + MAX_ZOOM] : FOLD ? ["-z" + (layerRow.type === "circle" ? 13 : 15)] : ["-zg"];
   const args = ["-o", "layer.pmtiles", "--force", "-l", LAYER_NAME, ...zoomArgs,
     "--drop-densest-as-needed", "--extend-zooms-if-still-dropping", "--read-parallel", "layer.geojson"];
   console.log("tippecanoe " + args.join(" "));
@@ -286,6 +352,16 @@ try {
     patch.r2_bytes = pmBytes.length + attrBytes + geoBytes + exportBytes.length + sourceBytes;
   }
   await rest(`/rest/v1/layers?id=eq.${LAYER_ID}`, { method: "PATCH", headers: { "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(patch) });
+
+  /* ── 5b. fold-merge: clear the merged deltas (ONLY after the stamp landed — a failed run
+        leaves them in place and the next merge re-applies identically, so this is idempotent) ── */
+  if (MODE === "fold-merge" && mergedDeltaIds.length) {
+    for (let i = 0; i < mergedDeltaIds.length; i += 100) {
+      const chunk = mergedDeltaIds.slice(i, i + 100);
+      await rest(`/rest/v1/features?feature_id=in.(${chunk.join(",")})`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+    }
+    console.log("cleared " + mergedDeltaIds.length + " merged delta rows");
+  }
 
   /* ── 6. instrumentation — folded imports insert no rows, so the stats triggers never see
         them; keep item-3's numbers honest via the definer RPCs (fold-raw = new data only). ── */
