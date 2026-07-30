@@ -878,11 +878,19 @@
   // artifacts and clears them. Re-clicks find the existing delta by ms_foldsrc — one delta per
   // artifact feature, ever.
   var _foldRawCache = {};   // layerDbId → {ver, byId} — the artifact FC indexed by feature id
+  // C7: a pointer copy's artifacts live at the SOURCE layer's keys — parquet_key is authoritative
+  // for WHERE the fold's files are; a normally-folded layer's parquet_key is simply its own key.
+  function foldArtifactUrl(node, lid) {
+    var base = (node && node.parquet_key && /\.parquet$/.test(node.parquet_key))
+      ? node.parquet_key.replace(/\.parquet$/, '')
+      : 'tiles/' + projectId + '/' + lid;
+    return 'https://tiles.mapstructor.com/' + base + '.geojson';
+  }
   async function foldRawIndex(node, lid) {
     var ver = String(node.tilesGeneratedAt || node.attrParquetAt || '0');
     var c = _foldRawCache[lid];
     if (c && c.ver === ver) return c.byId;
-    var r = await fetch('https://tiles.mapstructor.com/tiles/' + projectId + '/' + lid + '.geojson?v=' + encodeURIComponent(ver), { cache: 'no-store' });
+    var r = await fetch(foldArtifactUrl(node, lid) + '?v=' + encodeURIComponent(ver), { cache: 'no-store' });
     if (!r.ok) throw new Error('layer archive HTTP ' + r.status);
     var fc = await r.json(), byId = {};
     (fc.features || []).forEach(function (f) { var k = f.id != null ? f.id : (f.properties || {}).feature_id; if (k != null) byId[String(k)] = f; });
@@ -1183,7 +1191,7 @@
         // time (the same FeatureCollection this function builds from rows, so every format matches).
         if (status) status.textContent = 'Fetching the layer\'s data file…';
         var rver = node.tilesGeneratedAt || node.attrParquetAt || '0';
-        var rres = await fetch('https://tiles.mapstructor.com/tiles/' + projectId + '/' + lid + '.geojson?v=' + encodeURIComponent(rver), { cache: 'no-store' });
+        var rres = await fetch(foldArtifactUrl(node, lid) + '?v=' + encodeURIComponent(rver), { cache: 'no-store' });
         if (!rres.ok) throw new Error('the layer\'s data file is unavailable (HTTP ' + rres.status + ')');
         var rfc = await rres.json();
         feats = (rfc && rfc.features) || [];
@@ -2353,10 +2361,11 @@
     function strip(row, extra) { var o = {}; Object.keys(row).forEach(function (k) { if (k === 'id' || k === 'created_at' || k === 'updated_at' || (extra && extra.indexOf(k) > -1)) return; o[k] = row[k]; }); return o; }
     try {
       var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);
-      // The Fold: strip() would clone fold_state/parquet_key/r2_bytes onto a copy that has no
-      // rows of its own — broken half-copies. Blocked until copies go copy-on-write (C7).
-      if ((bundle.projectLayers || []).some(function (pl) { return pl.layers && pl.layers.fold_state === 'folded'; }))
-        throw new Error('this map contains a folded (R2-backed) layer — copying folded layers isn\'t available yet');
+      // The Fold (C7): folded layers copy as POINTERS — parquet_key keeps naming the SOURCE
+      // layer's artifacts (tiles/sidecar/raw/export URLs all ride the carried stamps), zero
+      // feature rows are cloned except deltas, and r2_bytes starts 0 (the copy owns no bytes).
+      // Copy-on-write: the copy's first Publish-with-deltas fold-merges into ITS OWN keys and
+      // re-points parquet_key at itself — the source's artifacts are never rewritten.
       var src = bundle.project;
       // 1 — the project row (private, owned by me)
       var np = strip(src); np.name = (src.name || 'Untitled Map') + ' (copy)'; np.user_id = u.id; np.is_public = false;
@@ -2389,7 +2398,13 @@
         // map's archives — same pixels, shared files, fully independent after one publish)
         if (nl.raw_config) {
           nl.raw_config = JSON.parse(JSON.stringify(nl.raw_config));
-          delete nl.raw_config.tilesGeneratedAt; delete nl.raw_config.tilesFeatureCount; delete nl.raw_config.tilesMaxFid;
+          if (L.fold_state !== 'folded') { delete nl.raw_config.tilesGeneratedAt; delete nl.raw_config.tilesFeatureCount; delete nl.raw_config.tilesMaxFid; }
+        }
+        if (L.fold_state === 'folded') {
+          // C7 pointer copy: stamps stay (they carry the source-keyed artifact URLs the copy
+          // renders from) and the copy bills nothing until it materializes at first fold-merge.
+          nl.r2_bytes = 0;
+          delete nl.raw_config.foldError;
         }
         var rl = await db.from('layers').insert(nl).select('id').single(); if (rl.error) throw new Error(rl.error.message);
         var newLid = rl.data.id;
@@ -2403,7 +2418,24 @@
         // (raw_config.pmtiles) keep their features in the DB as the editable source of truth —
         // skipping them left copies with EMPTY attribute tables/feature lists, and a re-bake on
         // the copy would have baked zero-feature tiles (user 7/22, copy be897684).
-        if (L.source_type === 'geojson-supabase' || (L.raw_config && L.raw_config.pmtiles)) {
+        if (L.fold_state === 'folded') {
+          // C7: a folded layer's only meaningful rows are DELTAS (ms_foldsrc). Anything else is
+          // soak-period dead weight (C6 keeps pre-fold rows until their hard-delete) — cloning
+          // those would re-inflate the copy with rows nothing reads.
+          var dLast = null;
+          for (;;) {
+            var dq = db.from('features').select('*').eq('layer_id', L.id).not('custom_fields->>ms_foldsrc', 'is', null).order('feature_id').limit(1000);
+            if (dLast != null) dq = dq.gt('feature_id', dLast);
+            var dr = await dq;
+            if (dr.error) throw new Error('delta copy read: ' + dr.error.message);
+            if (!dr.data || !dr.data.length) break;
+            dLast = dr.data[dr.data.length - 1].feature_id;
+            var dRows = dr.data.map(function (f) { var nf = strip(f, ['feature_id']); nf.layer_id = newLid; return nf; });
+            var dIns = await db.from('features').insert(dRows); if (dIns.error) throw new Error(dIns.error.message);
+            featTotal += dRows.length;
+            if (dr.data.length < 1000) break;
+          }
+        } else if (L.source_type === 'geojson-supabase' || (L.raw_config && L.raw_config.pmtiles)) {
           // FAST PATH (7/22): one server-side INSERT…SELECT copies the whole layer in seconds with
           // zero client transfer — needs ms_copy_layer_features (query-ops-setup.sql v8). Falls
           // back to client-side keyset paging when the RPC isn't installed yet.

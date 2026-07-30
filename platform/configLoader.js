@@ -151,6 +151,8 @@ var ConfigLoader = (function () {
     // The Fold (C1): a folded layer's rows are gone — R2 holds tiles + sidecar + parquet.
     // Carried explicitly: leaves inherit raw_config keys, but fold_state is a real column.
     if (row.fold_state != null) leaf.fold_state = row.fold_state;
+    // C7: pointer copies read artifacts at the SOURCE layer's keys — parquet_key is the pointer.
+    if (row.parquet_key != null) leaf.parquet_key = row.parquet_key;
 
     if (row.source_type === "vector-tiles-url") {
       var tUrl = row.source_url;

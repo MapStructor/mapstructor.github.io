@@ -183,7 +183,13 @@ try {
   let sourceBytes = 0;   // fold-raw: the uploaded source FC stays on R2 and counts toward r2_bytes
   let mergedDeltaIds = [];   // fold-merge: delta rows to DELETE after a successful stamp
   if (MODE === "fold-merge") {
-    const exKey = `tiles/${PROJECT_ID}/${LAYER_ID}.geojson`;
+    // C7 pointer copies: parquet_key names WHERE the current artifacts live — for a copy that
+    // has never folded, that is the SOURCE layer's key space. Outputs always land under THIS
+    // layer's own keys + the success stamp re-points parquet_key here (copy-on-write moment).
+    const pk = layerRow.parquet_key;
+    const exKey = (pk && pk.endsWith(".parquet"))
+      ? pk.slice(0, -".parquet".length) + ".geojson"
+      : `tiles/${PROJECT_ID}/${LAYER_ID}.geojson`;
     console.log("Fetching current artifact from R2: " + exKey);
     let afc = null;
     for (let a = 1; a <= 3 && !afc; a++) {
@@ -325,14 +331,25 @@ try {
   const exportKey = `tiles/${PROJECT_ID}/${LAYER_ID}.geojson`;
   const r2ok = !!(R2_ENDPOINT && process.env.R2_ACCESS_KEY_ID);
 
+  // Big folds can exceed the Supabase bucket's per-object cap (413 killed the 78k-row C6
+  // folds, 7/30). R2 is the authoritative store — on 413 the dual goes R2-ONLY: DELETE the
+  // stale Supabase copy so the fallback path 404s instead of quietly serving pre-fold tiles.
+  async function supaDual(pathTail, bytes, contentType) {
+    try { await supaUpload(pathTail, bytes, contentType); }
+    catch (e) {
+      if (!(FOLD && /413|too large/i.test(String(e.message || e)))) throw e;
+      console.warn("Supabase dual refused " + pathTail + " (bucket size cap) — R2-only; clearing the stale dual");
+      await rest(`/storage/v1/object/${BUCKET}/${pathTail}`, { method: "DELETE" }).catch(() => {});
+    }
+  }
   if (r2ok) r2del(pmKey, true); else if (FOLD) throw new Error("fold needs R2 credentials");
-  await supaUpload(`${PROJECT_ID}/${LAYER_ID}.pmtiles`, pmBytes, "application/octet-stream");
+  await supaDual(`${PROJECT_ID}/${LAYER_ID}.pmtiles`, pmBytes, "application/octet-stream");
   if (r2ok) r2put(pmKey, "layer.pmtiles", "application/octet-stream", FOLD);
   console.log("tiles uploaded (" + (r2ok ? "Supabase + R2" : "Supabase only — no R2 creds") + ")");
 
   if (FOLD) {
     r2del(attrKey, true);
-    await supaUpload(`${PROJECT_ID}/${LAYER_ID}.attr.parquet`, readFileSync("layer.attr.parquet"), "application/octet-stream");
+    await supaDual(`${PROJECT_ID}/${LAYER_ID}.attr.parquet`, readFileSync("layer.attr.parquet"), "application/octet-stream");
     r2put(attrKey, "layer.attr.parquet", "application/octet-stream", true);
     r2del(geoKey, true);   r2put(geoKey, "layer.geo.parquet", "application/octet-stream", true);
     r2del(exportKey, true); r2put(exportKey, "layer_export.geojson", "application/geo+json", true);
