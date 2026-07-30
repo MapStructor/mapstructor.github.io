@@ -85,7 +85,10 @@
 
   // ── config → db (mirror of tools/seed/seed.js) ──────────────────────────────
   function val(v) { return v === undefined ? null : v; }
-  var LEAF_CONSUMED = ["id","label","iconColor","checked","type","source","layout","source-layer","paint","highlight","popupStyle","prop","click","infoId","zoomCenter","zoomLevel","zoomLevelLeft","zoomLevelRight","panel"];
+  // fold_state is consumed-but-unmapped: the client READS it (configLoader puts it on the leaf)
+  // but must never write it back — not as a column, and not echoed into raw_config. Only the
+  // fold itself (harness/Action/SQL) writes fold_state/parquet_key/r2_bytes.
+  var LEAF_CONSUMED = ["id","label","iconColor","checked","type","source","layout","source-layer","paint","highlight","popupStyle","prop","click","infoId","zoomCenter","zoomLevel","zoomLevelLeft","zoomLevelRight","panel","fold_state"];
   var GROUP_CONSUMED = ["type","id","label","children","zoomCenter","zoomLevel","infoId","collapsed","checked"];
   var SECTION_CONSUMED = ["type","id","label","children"];
   var PANEL_CONSUMED = ["encyclopediaBase","nidProp","color","render"];
@@ -865,6 +868,11 @@
     }
     var lyrId = (typeof slugToLayerDbId !== 'undefined') ? slugToLayerDbId[node.id] : null;
     if (!lyrId) { engineViewerPanel(node, clickEvt); return; }   // this layer's data isn't in our `features` table → not editable, but still show the panel
+    if (node.fold_state === 'folded') {   // The Fold: no row to pull — the viewer panel still opens, editing waits for the delta editor (C4)
+      engineViewerPanel(node, clickEvt);
+      setStatus('This layer is folded (R2-backed) — its features aren\'t individually editable here yet.');
+      return;
+    }
     // Scope to THIS layer's id. feature_id alone is GLOBAL, so a tile id can collide with an unrelated
     // migrated feature on another layer and "edit" (and hide) the wrong thing — the vanishing-feature bug.
     var EB = getEditBackend(node);   // Phase 2a: read from this layer's edit backend (platform `features` unless the tileset declared its own)
@@ -1074,8 +1082,20 @@
     var status = document.getElementById('editor-export-status'), btn = document.getElementById('editor-export-ok');
     if (btn) btn.disabled = true;
     try {
+      var feats = null;
+      if (node && node.fold_state === 'folded') {
+        // The Fold (C1): rows are gone — fetch the export-ready GeoJSON written to R2 at fold
+        // time (the same FeatureCollection this function builds from rows, so every format matches).
+        if (status) status.textContent = 'Fetching the layer\'s data file…';
+        var rver = node.tilesGeneratedAt || node.attrParquetAt || '0';
+        var rres = await fetch('https://tiles.mapstructor.com/tiles/' + projectId + '/' + lid + '.geojson?v=' + encodeURIComponent(rver), { cache: 'no-store' });
+        if (!rres.ok) throw new Error('the layer\'s data file is unavailable (HTTP ' + rres.status + ')');
+        var rfc = await rres.json();
+        feats = (rfc && rfc.features) || [];
+        if (status) status.textContent = 'Fetched ' + feats.length + ' features…';
+      }
       var rows = [];
-      for (var from = 0; from < 1000000; from += 1000) {   // paginate — Supabase caps each request at 1000 rows
+      if (!feats) for (var from = 0; from < 1000000; from += 1000) {   // paginate — Supabase caps each request at 1000 rows
         var res = await db.from('features').select('feature_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url').eq('layer_id', lid).order('feature_id').range(from, from + 999);
         if (res.error) throw new Error(res.error.message);
         var batch = res.data || []; rows = rows.concat(batch);
@@ -1089,7 +1109,7 @@
       var _ordKeys = (node && node.attrView && node.attrView.order && node.attrView.order.length)
         ? node.attrView.order
         : ['label', 'start_date', 'end_date', 'description', 'content_id'].concat(orderAttrKeys(_custKeys));
-      var feats = rows.filter(function (r) { return r.geom; }).map(function (r) {
+      if (!feats) feats = rows.filter(function (r) { return r.geom; }).map(function (r) {
         var raw = { feature_id: r.feature_id };
         if (r.label) raw.label = r.label;
         if (r.description) raw.description = r.description;
@@ -2136,6 +2156,10 @@
     function strip(row, extra) { var o = {}; Object.keys(row).forEach(function (k) { if (k === 'id' || k === 'created_at' || k === 'updated_at' || (extra && extra.indexOf(k) > -1)) return; o[k] = row[k]; }); return o; }
     try {
       var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);
+      // The Fold: strip() would clone fold_state/parquet_key/r2_bytes onto a copy that has no
+      // rows of its own — broken half-copies. Blocked until copies go copy-on-write (C7).
+      if ((bundle.projectLayers || []).some(function (pl) { return pl.layers && pl.layers.fold_state === 'folded'; }))
+        throw new Error('this map contains a folded (R2-backed) layer — copying folded layers isn\'t available yet');
       var src = bundle.project;
       // 1 — the project row (private, owned by me)
       var np = strip(src); np.name = (src.name || 'Untitled Map') + ' (copy)'; np.user_id = u.id; np.is_public = false;
@@ -5799,9 +5823,10 @@
   // 7/21: allowConvert lets the BUTTON first-time bake a live geojson layer to tiles (same proven path);
   // the Timeline-dates auto-rebake passes false — live layers animate without any bake, never convert them.
   async function rebakeLayerTiles(lid, verb, allowConvert) {
-    var lrow = await db.from('layers').select('id,name,type,source_type,raw_config').eq('id', lid).single();
+    var lrow = await db.from('layers').select('*').eq('id', lid).single();   // * so fold_state rides along pre/post C0
     var L = lrow.data;
     if (!L) return false;
+    if (L.fold_state === 'folded') { msProgress('“' + (L.name || 'layer') + '” is folded (R2-backed) — re-baking from rows is disabled.'); return false; }
     var isTiled = !!(L.raw_config && L.raw_config.pmtiles);
     if (!isTiled && !(allowConvert && L.source_type === 'geojson-supabase')) return false;
     await loadScript('../platform/tilegen.js?v=' + Date.now());   // MSTileGen isn't on the page until loaded
@@ -6867,6 +6892,21 @@
         (res.data || []).forEach(function (r) { var row = _attrById[String(r.feature_id)]; if (row) row.geom = r.geom; });
       } catch (e) { return; }
     }
+    // FOLDED layers have no rows — fill still-missing geometries from the loaded vector tiles
+    // (best-effort: only features inside loaded tiles resolve; others just skip the zoom/glow).
+    var nodeF = _attrSlug ? findNodeById(layers, _attrSlug) : null;
+    if (nodeF && nodeF.fold_state === 'folded') {
+      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+        var m = pair[1]; if (!m) return;
+        try {
+          var q = nodeF['source-layer'] ? { sourceLayer: nodeF['source-layer'] } : {};
+          (m.querySourceFeatures(nodeF.id + '-' + pair[0], q) || []).forEach(function (f) {
+            var row = f.id != null && _attrById[String(f.id)];
+            if (row && !row.geom && f.geometry) row.geom = f.geometry;
+          });
+        } catch (eQ) {}
+      });
+    }
   }
   /* ── big-data tier plumbing (7/18) — see platform/bigtable.js ─────────── */
   function attrBakeStatus(m) { try { setStatus(m); } catch (e) {} }
@@ -7025,26 +7065,29 @@
     // mismatch falls through to the plain stream, whose tail re-bakes the sidecar. ──
     if (window.MSBigTable) {
       try {
-        var rcq = await db.from('layers').select('raw_config').eq('id', lid).single();
+        var rcq = await db.from('layers').select('*').eq('id', lid).single();   // * so fold_state rides along pre/post C0
         if (gen !== _attrLoadGen) return;
         var arc = (rcq.data && rcq.data.raw_config) || {};
+        var foldedA = (rcq.data && rcq.data.fold_state === 'folded') || (node && node.fold_state === 'folded');
         if (arc.attrParquet) {
           // freshness (7/23 rules): the exact count TIMES OUT on the very layers that need the
           // sidecar — a failed count must TRUST the sidecar (attrParquetDirty catches real edits).
           // And a cap-sized sidecar (BAKE_MAX rows) can never equal a bigger live count — accept it
-          // and let the footer say "first N of…".
-          var cq = null; try { cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid); } catch (eCq) {}
+          // and let the footer say "first N of…". FOLDED layers skip the count: their rows are
+          // gone by design (0 would read as stale) — the sidecar IS the table until a re-fold.
+          var cq = null; if (!foldedA) { try { cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid); } catch (eCq) {} }
           if (gen !== _attrLoadGen) return;
           var live = (cq && !cq.error && cq.count != null) ? cq.count : null;
           var capMax = (window.MSBigTable && MSBigTable.BAKE_MAX) || 300000;
           var capped = arc.attrParquetRows >= capMax;
-          var fresh = !arc.attrParquetDirty && (live == null || live === arc.attrParquetRows || (capped && live >= arc.attrParquetRows));
+          var fresh = !arc.attrParquetDirty && (foldedA || live == null || live === arc.attrParquetRows || (capped && live >= arc.attrParquetRows));
           if (fresh && arc.attrParquetRows <= ATTR_LOAD_CAP) {
             foot.textContent = 'Opening (fast columnar sidecar)…';
             try {
               var srows = await MSBigTable.loadAll(lid, arc.attrParquet, arc.attrParquetAt);
               if (gen !== _attrLoadGen) return;
               rows = srows; total = srows.length;
+              if (foldedA) _attrReadonly = true;   // folded: cell edits would UPDATE missing rows (silent no-op) — read-only until the delta editor (C4)
               buildTable(true);
               return;
             } catch (eSc) { console.warn('sidecar load failed — falling back to stream', eSc); }
@@ -7699,18 +7742,20 @@
     // fast path: reuse the tier-2 Parquet sidecar if it's fresh (instant for big layers)
     if (window.MSBigTable) {
       try {
-        var rcq = await db.from('layers').select('raw_config').eq('id', lid).single();
+        var rcq = await db.from('layers').select('*').eq('id', lid).single();   // * so fold_state rides along pre/post C0
         if (gen !== _attrLoadGen) return null;
         var rc = (rcq.data && rcq.data.raw_config) || {};
+        var foldedF = rcq.data && rcq.data.fold_state === 'folded';
         if (rc.attrParquet && !rc.attrParquetDirty && rc.attrParquetRows <= ATTR_LOAD_CAP) {
-          var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid);
+          var cq = foldedF ? null : await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid);
           if (gen !== _attrLoadGen) return null;
-          if (((cq && cq.count) || 0) === rc.attrParquetRows) {
+          if (foldedF || ((cq && cq.count) || 0) === rc.attrParquetRows) {   // folded: rows are gone by design — trust the sidecar
             var srows = await MSBigTable.loadAll(lid, rc.attrParquet, rc.attrParquetAt);
             if (gen !== _attrLoadGen) return null;
             return srows;
           }
         }
+        if (foldedF) return [];   // folded with no usable sidecar: a Postgres stream would just spin on zero rows
       } catch (e) {}
     }
     // fallback: stream just feature_id + label (light — no geometry, no custom fields)

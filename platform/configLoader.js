@@ -148,6 +148,9 @@ var ConfigLoader = (function () {
     // them a beat later (the "shows everything, then turns off" load flash). refreshLayers still toggles.
     if (leaf.checked === false) { leaf.layout = leaf.layout || {}; if (leaf.layout.visibility == null) leaf.layout.visibility = "none"; }
     if (row.type != null) leaf.type = row.type;
+    // The Fold (C1): a folded layer's rows are gone — R2 holds tiles + sidecar + parquet.
+    // Carried explicitly: leaves inherit raw_config keys, but fold_state is a real column.
+    if (row.fold_state != null) leaf.fold_state = row.fold_state;
 
     if (row.source_type === "vector-tiles-url") {
       var tUrl = row.source_url;

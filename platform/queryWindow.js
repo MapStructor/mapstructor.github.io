@@ -75,6 +75,20 @@
   // full layer → FeatureCollection (paged; props flattened: label/dates + custom fields)
   async function fetchLayerFC(lid, status) {
     status = status || function () {};
+    // The Fold (C1): a folded layer's rows are gone — its full FeatureCollection (geometry +
+    // flattened props, the same shape this loop builds) lives on R2, written at fold time.
+    try {
+      var lq = await db().from("layers").select("*").eq("id", lid).single();
+      if (lq.data && lq.data.fold_state === "folded") {
+        status("Fetching the layer's data file…");
+        var rc0 = lq.data.raw_config || {};
+        var rres = await fetch("https://tiles.mapstructor.com/tiles/" + pid() + "/" + lid + ".geojson?v=" + encodeURIComponent(rc0.tilesGeneratedAt || rc0.attrParquetAt || "0"), { cache: "no-store" });
+        if (!rres.ok) throw new Error("the layer's data file is unavailable (HTTP " + rres.status + ")");
+        var rfc = await rres.json();
+        if (rfc && rfc.type === "FeatureCollection") return rfc;
+        throw new Error("the layer's data file is malformed");
+      }
+    } catch (eF) { if (eF && /data file/.test(String(eF.message || ""))) throw eF; }   // folded + no file = loud; a transient layers-read hiccup falls through to the stream
     var feats = [], from = 0;
     for (;;) {
       var r = await db().from("features").select("feature_id, geom, label, description, start_date, end_date, custom_fields").eq("layer_id", lid).order("feature_id").range(from, from + 999);
@@ -447,9 +461,10 @@
   async function sidecarMeta(lid) {   // {url, ver, rows} when a fresh, count-matching sidecar exists, else null
     if (!window.MSBigTable) return null;
     try {
-      var q = await db().from("layers").select("raw_config").eq("id", lid).single();
+      var q = await db().from("layers").select("*").eq("id", lid).single();   // * so fold_state rides along pre/post C0
       var rc = (q.data && q.data.raw_config) || {};
       if (!rc.attrParquet || rc.attrParquetDirty) return null;
+      if (q.data && q.data.fold_state === "folded") return { url: rc.attrParquet, ver: rc.attrParquetAt, rows: rc.attrParquetRows };   // folded: rows are gone by design — the sidecar IS the table
       var cq = await db().from("features").select("feature_id", { count: "exact", head: true }).eq("layer_id", lid);
       if (((cq && cq.count) || 0) !== rc.attrParquetRows) return null;   // edited since the bake → not fresh
       return { url: rc.attrParquet, ver: rc.attrParquetAt, rows: rc.attrParquetRows };

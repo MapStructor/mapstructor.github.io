@@ -566,9 +566,11 @@
   // to discover nothing changed; only actually-dirty layers then bake, one at a time.
   async function sewUpProject(db, projectId, statusFn) {
     var status = statusFn || function () {};
-    var pl = await db.from("project_layers").select("layer_id, layers(id, name, type, source_type, raw_config)").eq("project_id", projectId);
+    var pl = await db.from("project_layers").select("layer_id, layers(*)").eq("project_id", projectId);   // * so fold_state rides along pre/post C0
     if (pl.error || !pl.data) return 0;
-    var todo = pl.data.map(function (r) { return r.layers; }).filter(function (l) { return l && l.raw_config && l.raw_config.pmtiles; });
+    // FOLDED layers are excluded: their rows are gone by design, so a "dirty" verdict here would
+    // re-bake from zero rows. Re-folding them is Publish's job once deltas exist (fold-plan C5).
+    var todo = pl.data.map(function (r) { return r.layers; }).filter(function (l) { return l && l.raw_config && l.raw_config.pmtiles && l.fold_state !== "folded"; });
     if (!todo.length) return 0;
     status("Checking " + todo.length + " tiled layer" + (todo.length === 1 ? "" : "s") + " for changes…");
     var clean = new Array(todo.length), next = 0;

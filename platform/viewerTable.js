@@ -107,6 +107,21 @@
   async function zoomToFeature(fid) {
     try {
       var g = _geomCache[fid];
+      if (!g && _node && _node.fold_state === "folded") {   // folded: no row — read the geometry from the loaded vector tiles
+        maps().forEach(function (m) {
+          if (g) return;
+          ["-left", "-right"].forEach(function (side) {
+            if (g) return;
+            try {
+              var q = _node["source-layer"] ? { sourceLayer: _node["source-layer"] } : {};
+              (m.querySourceFeatures(_node.id + side, q) || []).some(function (f) {
+                if (String(f.id) === String(fid) && f.geometry) { g = f.geometry; return true; }
+              });
+            } catch (eT) {}
+          });
+        });
+        if (g) _geomCache[fid] = g;
+      }
       if (!g) {
         var r = await MapAuth.db.from("features").select("geom").eq("feature_id", fid).single();
         g = r.data && r.data.geom;
@@ -125,6 +140,7 @@
      inside bigtable.js as ever). Every exit here is fail-safe: return null (or throw) and the
      caller runs the Postgres stream unchanged. */
   var _srcByLid = {};   // lid → "sidecar" | "postgres" (last list load — debug/tests)
+  var _node = null;     // the open list's layer node (folded layers: tile-based zoom fallback)
   var _bigP = null;
   function ensureBigTable() {   // resolves window.MSBigTable or null — never rejects
     if (window.MSBigTable) return Promise.resolve(window.MSBigTable);
@@ -143,10 +159,10 @@
     // snapshot, and an INSTANCE's source-layer stamp); anon viewers may not read the layers
     // table under RLS → fall back to the node itself (configLoader spreads the snapshot's
     // raw_config keys straight onto the leaf, attrParquet* included)
-    var rc = null;
+    var rc = null, folded = node && node.fold_state === "folded";   // select * so fold_state rides along pre/post C0
     try {
-      var q = await db.from("layers").select("raw_config").eq("id", lid).maybeSingle();
-      if (q && !q.error && q.data) rc = q.data.raw_config;
+      var q = await db.from("layers").select("*").eq("id", lid).maybeSingle();
+      if (q && !q.error && q.data) { rc = q.data.raw_config; if (q.data.fold_state === "folded") folded = true; }
     } catch (e0) {}
     if (gen !== _gen) return null;
     if (!rc || !rc.attrParquet) rc = node.attrParquet ? node : null;
@@ -155,14 +171,18 @@
     // (first 100,000 + footer note) stays the better behavior there
     if (!(rc.attrParquetRows > 0) || rc.attrParquetRows > CAP) return null;
     // freshness (the editor's 7/23 rule): a failed/timed-out count TRUSTS the sidecar —
-    // attrParquetDirty catches real edits; a count mismatch means edited since the bake
+    // attrParquetDirty catches real edits; a count mismatch means edited since the bake.
+    // FOLDED layers skip the count entirely: their rows are gone by design (0 would read
+    // as "stale"), the sidecar IS the source of truth until Publish re-folds it.
     var live = null;
-    try {
-      var cq = await db.from("features").select("feature_id", { count: "exact", head: true }).eq("layer_id", lid);
-      if (cq && !cq.error && cq.count != null) live = cq.count;
-    } catch (e1) {}
-    if (gen !== _gen) return null;
-    if (live != null && live !== rc.attrParquetRows) return null;
+    if (!folded) {
+      try {
+        var cq = await db.from("features").select("feature_id", { count: "exact", head: true }).eq("layer_id", lid);
+        if (cq && !cq.error && cq.count != null) live = cq.count;
+      } catch (e1) {}
+      if (gen !== _gen) return null;
+      if (live != null && live !== rc.attrParquetRows) return null;
+    }
     var BT = await ensureBigTable();
     if (!BT || gen !== _gen) return null;
     document.getElementById("ms-vl-foot").textContent = "loading (fast sidecar)…";
@@ -178,7 +198,7 @@
     el.style.display = "flex";
     document.getElementById("ms-vl-title").textContent = node.label || "Features";
     document.getElementById("ms-vl-foot").textContent = "loading…";
-    _rows = []; _selFid = null; _icon = layerGlyph(node);
+    _rows = []; _selFid = null; _icon = layerGlyph(node); _node = node;
     document.getElementById("ms-vl-tbody").innerHTML = "";
     if (_win) { _win.destroy(); _win = null; }
     if (!lid || typeof MapAuth === "undefined" || !MapAuth.db) { document.getElementById("ms-vl-foot").textContent = "No list available for this layer."; return; }
@@ -186,6 +206,10 @@
     try { rows = await sidecarRows(db, node, lid, gen); } catch (eSc) { rows = null; }   // ANY sidecar/R2 failure → the stream below
     if (gen !== _gen) return;
     _srcByLid[lid] = rows ? "sidecar" : "postgres";
+    if (!rows && node.fold_state === "folded") {   // folded layer: rows are gone by design — a Postgres stream would show a misleading empty list
+      document.getElementById("ms-vl-foot").textContent = "List unavailable — this layer's data file didn't load. Try again.";
+      return;
+    }
     if (!rows) {   // no (fresh) sidecar, or it failed → the original paged stream, unchanged
       rows = [];
       try {
