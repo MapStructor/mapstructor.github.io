@@ -43,3 +43,32 @@ jobs:
           else
             gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
           fi
+
+      # Item 3: the OTHER alert lines (MAU, runaway edit volume, daily growth) from
+      # mapstructor_alerts() — sql/setup/instrumentation.sql. db_size is excluded here
+      # (the step above owns it). Silence = no issue = no email.
+      - name: Check instrumentation alert lines
+        env:
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$SB_KEY" ]; then echo "SUPABASE_SERVICE_KEY secret not set — skipping"; exit 0; fi
+          ALERTS=$(curl -s -X POST "https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/rpc/mapstructor_alerts" \
+            -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" -H "Content-Type: application/json" -d '{}')
+          echo "alerts: $ALERTS"
+          echo "$ALERTS" | jq -e 'type == "array"' >/dev/null 2>&1 || { echo "rpc missing or invalid — run instrumentation.sql"; exit 0; }
+          OTHERS=$(echo "$ALERTS" | jq '[.[] | select(.line != "db_size")]')
+          N=$(echo "$OTHERS" | jq 'length')
+          if [ "$N" -eq 0 ]; then echo "no other lines crossed — all quiet"; exit 0; fi
+          BODY=$(echo "$OTHERS" | jq -r '.[] | "- **" + .line + "** — " + .msg')
+          BODY="$BODY
+
+          (Automated daily check: .github/workflows/storage-alert.yml → mapstructor_alerts())"
+          TITLE="⚠ Platform alert: ${N} line(s) crossed (instrumentation)"
+          EXISTING=$(gh issue list --repo "$GH_REPO" --state open --search "Platform alert: in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          else
+            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          fi

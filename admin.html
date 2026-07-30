@@ -55,6 +55,14 @@
     <h2>Plans</h2>
     <div class="cards" id="tiers"></div>
     <div class="note" id="tiers-note" style="display:none;">Plan breakdown + exact storage appear after you run <b>mapstructor_docs/sql/setup/pricing-storage.sql</b>.</div>
+    <!-- Reconciliation: the webhook is the only tier-granter — this re-checks every
+         Stripe-linked profile against Stripe's records and fixes drift (paid-got-nothing
+         or canceled-kept-paid). -->
+    <div style="margin-top:10px;">
+      <button id="reconcile-btn" style="padding:7px 14px;border:1px solid #cdbff0;border-radius:6px;background:#f2ecff;color:#5b4b9a;font:600 13px 'Source Sans Pro',Arial,sans-serif;cursor:pointer;">↺ Reconcile with Stripe</button>
+      <span id="reconcile-out" style="margin-left:10px;font-size:13px;color:#6b6680;"></span>
+      <div id="reconcile-detail" style="display:none;margin-top:8px;font-size:13px;color:#4a4460;background:#f6f4fb;border:1px solid #e0d8f0;border-radius:6px;padding:8px 12px;"></div>
+    </div>
 
     <h2>Database &amp; infrastructure</h2>
     <div class="cards">
@@ -72,6 +80,19 @@
     <h2 style="font-size:15px;margin:18px 0 8px;color:#6b6680;">Biggest tables</h2>
     <table><thead><tr><th data-label="Table">Table</th><th data-label="Size">Size</th></tr></thead><tbody id="top-tables"><tr><td colspan="2" style="color:#9a93ad;">Loading…</td></tr></tbody></table>
     <div class="note" id="dbstats-note" style="display:none;">Database &amp; infrastructure stats appear after you run <b>mapstructor_docs/sql/setup/pricing-storage.sql</b>.</div>
+
+    <h2>Instrumentation</h2>
+    <!-- Item 3: the numbers pricing decisions come from. Normal state = the alert strip
+         is hidden (silence); daily email arm = .github/workflows/storage-alert.yml. -->
+    <div id="instr-alerts" style="display:none;margin:10px 0;padding:9px 12px;border-radius:8px;font-size:13px;color:#fff;background:#b4453a;"></div>
+    <div class="cards">
+      <div class="stat"><div class="n" id="i-mau">—</div><div class="l">Monthly active users (of 100k)</div></div>
+      <div class="stat"><div class="n" id="i-editors">—</div><div class="l">Creators this month</div></div>
+      <div class="stat"><div class="n" id="i-ins">—</div><div class="l">Features added today</div></div>
+      <div class="stat"><div class="n" id="i-job">—</div><div class="l">Biggest job today (rows)</div></div>
+    </div>
+    <table><thead><tr><th data-label="Day">Day</th><th data-label="Added">Added</th><th data-label="Edited">Edited</th><th data-label="Deleted">Deleted</th><th data-label="Data in">Data in</th><th data-label="Data out">Data out</th><th data-label="Biggest job">Biggest job</th><th data-label="Editors">Editors</th></tr></thead><tbody id="instr-days"><tr><td colspan="8" style="color:#9a93ad;">Loading…</td></tr></tbody></table>
+    <div class="note" id="instr-note" style="display:none;">Edit/storage instrumentation appears after you run <b>mapstructor_docs/sql/setup/instrumentation.sql</b>.</div>
 
     <h2>Services &amp; external resources</h2>
     <table><tbody id="services"></tbody></table>
@@ -105,6 +126,29 @@
         if (!user || !user.email || ADMIN_EMAILS.indexOf(user.email) === -1) { document.getElementById('deny').style.display = 'block'; return; }
         document.getElementById('main').style.display = 'block';
         document.getElementById('sub').textContent = 'Signed in as ' + user.email;
+
+        // Plans → Reconcile with Stripe: re-check every Stripe-linked profile against
+        // Stripe's records (the truth) and fix drift. The Edge Function is admin-gated.
+        var rbtn = document.getElementById('reconcile-btn');
+        if (rbtn) rbtn.onclick = async function () {
+          var out = document.getElementById('reconcile-out'), det = document.getElementById('reconcile-detail');
+          rbtn.disabled = true; out.textContent = 'Checking with Stripe…'; det.style.display = 'none';
+          try {
+            var r = await db.functions.invoke('stripe-reconcile', { body: {} });
+            var rep = r.data;
+            if (!rep || rep.error) throw new Error((rep && rep.error) || (r.error && r.error.message) || 'unknown');
+            var bits = [];
+            rep.fixed.forEach(function (f) { bits.push('<b>fixed</b> ' + esc(f.email || '?') + ': ' + esc(f.from) + ' → ' + esc(f.to)); });
+            rep.errors.forEach(function (e2) { bits.push('<b style="color:#b4453a;">error</b> ' + esc(e2.email || '?') + ': ' + esc(e2.error)); });
+            rep.flagged.forEach(function (fl) { bits.push('<b style="color:#d98a00;">flagged</b> ' + esc(fl.email || '?') + ' — ' + esc(fl.note)); });
+            out.textContent = rep.checked + ' Stripe-linked profile' + (rep.checked === 1 ? '' : 's') + ' checked · ' +
+              (rep.fixed.length ? rep.fixed.length + ' fixed' : 'all in sync') +
+              (rep.errors.length ? ' · ' + rep.errors.length + ' errors' : '') +
+              (rep.flagged.length ? ' · ' + rep.flagged.length + ' flagged' : '');
+            if (bits.length) { det.innerHTML = bits.join('<br>'); det.style.display = 'block'; }
+          } catch (e) { out.textContent = 'Reconcile failed: ' + (e && e.message || e); }
+          rbtn.disabled = false;
+        };
 
         // maps
         var pr = await db.from('projects').select('id,name,user_id,is_public,updated_at,created_at');
@@ -161,11 +205,11 @@
             document.getElementById('db-bar').style.width = Math.min(100, Math.round(frac * 100)) + '%';
             document.getElementById('db-bar').style.background = frac >= 0.8 ? '#b4453a' : frac >= 0.5 ? '#d98a00' : '#7c5cbf';
             document.getElementById('db-bar-label').textContent = P.fmtBytes(A.database_bytes || 0) + ' / ' + P.fmtBytes(FREE_DB_BYTES) + ' · ' + Math.round(frac * 100) + '%';
-            document.getElementById('s-db-frac').textContent = '(' + Math.round(frac * 100) + '% of free)';
+            document.getElementById('s-db-frac').textContent = '(' + Math.round(frac * 100) + '% of Pro 8 GB)';
             if (frac >= 0.3) {
               var al = document.createElement('div');
               al.style.cssText = 'margin:10px 0;padding:9px 12px;border-radius:8px;font-size:13px;color:#fff;background:' + (frac >= 0.8 ? '#b4453a' : '#d98a00') + ';';
-              al.innerHTML = '<b>Database at ' + Math.round(frac * 100) + '%</b> of the Supabase free plan (' + P.fmtBytes(A.database_bytes) + ' / ' + P.fmtBytes(FREE_DB_BYTES) + '). Clean up junk layers (⚡ Query → Delete) or plan the infra upgrade.';
+              al.innerHTML = '<b>Database at ' + Math.round(frac * 100) + '%</b> of the Supabase Pro plan (' + P.fmtBytes(A.database_bytes) + ' / ' + P.fmtBytes(FREE_DB_BYTES) + '). Clean up junk layers (⚡ Query → Delete) or plan the infra upgrade.';
               var host = document.getElementById('main');
               host.insertBefore(al, host.children[2]);
             }
@@ -182,6 +226,32 @@
           document.getElementById('s-storage').textContent = '—';
           document.getElementById('dbstats-note').style.display = 'block';
           document.getElementById('top-tables').innerHTML = '';
+        }
+
+        // Instrumentation (item 3) — one RPC returns the 14-day series + MAU +
+        // monthly creators + crossed alert lines. Silence = the strip stays hidden.
+        try {
+          var ir = await db.rpc('mapstructor_instrumentation');
+          if (ir.error || !ir.data) throw 0;
+          var I = ir.data, S = I.series || [];
+          var todayKey = new Date().toISOString().slice(0, 10);
+          var today = S.filter(function (d) { return d.day === todayKey; })[0] || {};
+          document.getElementById('i-mau').textContent = Number(I.mau || 0).toLocaleString();
+          document.getElementById('i-editors').textContent = Number(I.month_editors || 0).toLocaleString();
+          document.getElementById('i-ins').textContent = Number(today.ins || 0).toLocaleString();
+          document.getElementById('i-job').textContent = Number(today.biggest_job || 0).toLocaleString();
+          document.getElementById('instr-days').innerHTML = S.map(function (d) {
+            return '<tr><td>' + esc(d.day) + '</td><td>' + Number(d.ins || 0).toLocaleString() + '</td><td>' + Number(d.upd || 0).toLocaleString() + '</td><td>' + Number(d.del || 0).toLocaleString() + '</td><td>' + P.fmtBytes(d.bytes_in || 0) + '</td><td>' + P.fmtBytes(d.bytes_out || 0) + '</td><td>' + Number(d.biggest_job || 0).toLocaleString() + '</td><td>' + Number(d.editors || 0).toLocaleString() + '</td></tr>';
+          }).join('') || '<tr><td colspan="8" style="color:#9a93ad;">No activity recorded yet — counters start with the next edit.</td></tr>';
+          var alerts = I.alerts || [];
+          if (alerts.length) {
+            var strip = document.getElementById('instr-alerts');
+            strip.innerHTML = alerts.map(function (a) { return '⚠ ' + esc(a.msg); }).join('<br>');
+            strip.style.display = 'block';
+          }
+        } catch (e2) {
+          document.getElementById('instr-days').innerHTML = '';
+          document.getElementById('instr-note').style.display = 'block';
         }
 
         // services & external resources — what's queryable vs. where to look

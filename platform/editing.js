@@ -3863,11 +3863,14 @@
     try {
       var P = window.MapStructorPricing; if (!P) return;
       var u = await db.auth.getUser(); var uid = u && u.data && u.data.user && u.data.user.id;
-      if (!uid) { if (_storageTries++ < 10) setTimeout(checkStorage, 1500); return; }   // session not ready yet — retry
+      if (!uid) { if (_storageTries++ < 40) setTimeout(checkStorage, 1500); return; }   // session not ready yet — retry (slow boots can take a while; the DB trigger is the hard backstop regardless)
       // the ADMIN account is quota-exempt (for now) — no banner, no gate; the platform-wide
-      // free-infra alert lives on admin.html instead (30% of the Supabase free plan)
+      // free-infra alert lives on admin.html instead (30% of the Supabase free plan).
+      // The ?storagefull=1 test seam OVERRIDES the exemption (it exists to force the full
+      // state for ANY logged-in account, and the harness logs in as admin).
+      var force = location.search.indexOf('storagefull=1') > -1;
       var uEmail = u.data.user.email || '';
-      if (MS_ADMINS.indexOf(uEmail) > -1) { _storageOver = false; _storageInfo = null; _storageLast = Date.now(); updateStorageBanner(); return; }
+      if (!force && MS_ADMINS.indexOf(uEmail) > -1) { _storageOver = false; _storageInfo = null; _storageLast = Date.now(); updateStorageBanner(); return; }
       var tierKey = 'free';
       try { var pr = await db.from('profiles').select('subscription_tier').eq('id', uid).maybeSingle(); if (pr.data && pr.data.subscription_tier) tierKey = pr.data.subscription_tier; } catch (e) {}
       var used = 0;
@@ -3875,7 +3878,7 @@
       var quota = P.stepFor(tierKey).quotaBytes;
       _storageInfo = { used: used, quota: quota, tierKey: tierKey, frac: quota ? used / quota : 0 };
       _storageOver = used >= quota;
-      if (location.search.indexOf('storagefull=1') > -1) { _storageOver = true; _storageInfo = { used: quota, quota: quota, tierKey: tierKey, frac: 1 }; }   // test seam
+      if (force) { _storageOver = true; _storageInfo = { used: quota, quota: quota, tierKey: tierKey, frac: 1 }; }   // test seam
       _storageLast = Date.now();
       updateStorageBanner();
     } catch (e) {} finally { _storageBusy = false; }
@@ -3886,14 +3889,90 @@
     if (!_storageInfo || !P || _storageInfo.frac < 0.8) { if (el && el.parentNode) el.parentNode.removeChild(el); return; }
     if (!el) { el = document.createElement('div'); el.id = 'editor-storage-banner'; el.style.cssText = 'position:fixed;top:54px;left:50%;transform:translateX(-50%);z-index:3000;padding:9px 16px;border-radius:8px;color:#fff;font-family:Source Sans Pro,Arial,sans-serif;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,0.2);'; document.body.appendChild(el); }
     el.style.background = _storageOver ? '#b4453a' : '#d98a00';
-    el.innerHTML = (_storageOver ? '<b>Storage full</b> — ' : 'Storage ' + Math.round(_storageInfo.frac * 100) + '% — ') + P.fmtBytes(_storageInfo.used) + ' / ' + P.fmtBytes(_storageInfo.quota) + '. <a href="../dashboard.html" target="_blank" style="color:#fff;text-decoration:underline;">Manage / upgrade ↗</a>';
+    el.innerHTML = (_storageOver ? '<b>Storage full</b> — ' : 'Storage ' + Math.round(_storageInfo.frac * 100) + '% — ') + P.fmtBytes(_storageInfo.used) + ' / ' + P.fmtBytes(_storageInfo.quota) + '. '
+      + (_storageOver ? '<a href="#" id="esb-upgrade" style="color:#fff;text-decoration:underline;font-weight:700;">Upgrade</a> · ' : '')
+      + '<a href="../dashboard.html" target="_blank" style="color:#fff;text-decoration:underline;">Dashboard ↗</a>';
+    var up = document.getElementById('esb-upgrade'); if (up) up.onclick = function (ev) { ev.preventDefault(); showStorageModal(); };
   }
   function storageGate() {   // returns true if a new feature should be BLOCKED (and tells the user)
+    maybeRecheckStorage();   // fire-and-forget freshness: if this session never got a check (slow boot), the NEXT gate call sees the truth — the DB quota trigger is the hard backstop meanwhile
     if (!_storageOver) return false;
-    var P = window.MapStructorPricing;
-    window.alert('You’ve hit your storage limit' + (_storageInfo && P ? ' (' + P.fmtBytes(_storageInfo.used) + ' / ' + P.fmtBytes(_storageInfo.quota) + ')' : '') + '. Upgrade your plan (Dashboard → Storage) or remove some data to keep adding features.');
+    showStorageModal();
     updateStorageBanner();
     return true;
+  }
+  // ── Storage-limit modal — the friendly wall at 100%: shows usage, every step above the
+  // current one with its price (Stripe checkout inline, same Edge Function the dashboard
+  // uses), a Dashboard door, and a "clear space" dismiss. NO overages, nothing auto-charges,
+  // and existing data is never touched — the modal only blocks ADDING more. ──
+  function closeStorageModal() {
+    var ov = document.getElementById('ms-storage-modal'); if (!ov || ov.style.display === 'none') return;
+    ov.style.display = 'none';
+    window.__msModalLock = ov._prevLock || false;   // restore, don't clear — the feature-edit modal may also hold the lock
+    if (ov._esc) { document.removeEventListener('keydown', ov._esc, true); ov._esc = null; }
+  }
+  function showStorageModal() {
+    var P = window.MapStructorPricing; if (!P) return;
+    var info = _storageInfo || { used: P.stepFor('free').quotaBytes, quota: P.stepFor('free').quotaBytes, tierKey: 'free', frac: 1 };
+    var ov = document.getElementById('ms-storage-modal');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'ms-storage-modal';
+      // created display:NONE — the open block below flips it to flex. (Creating it already-flex
+      // made the "am I opening?" check a no-op on first show → lock + Escape never attached.)
+      ov.style.cssText = 'position:fixed;inset:0;z-index:7000;background:rgba(24,20,38,0.45);display:none;align-items:center;justify-content:center;font-family:Source Sans Pro,Arial,sans-serif;';
+      document.body.appendChild(ov);
+      // backdrop closes ONLY if the press also STARTED on the backdrop — a drag that merely
+      // ENDS there (e.g. out of a button) must not dismiss (same guard as the feature-edit modal)
+      ov.addEventListener('mousedown', function (e) { ov._downOnBackdrop = e.target === ov; });
+      ov.addEventListener('click', function (e) { if (e.target === ov && ov._downOnBackdrop) closeStorageModal(); });
+    }
+    var upgrades = P.upgradesFrom(info.tierKey);
+    var rec = upgrades.filter(function (s) { return s.quotaBytes > info.used; })[0] || upgrades[0];   // smallest step that HOLDS current usage
+    var rows = upgrades.map(function (s) {
+      var main = rec && s.key === rec.key;
+      return '<button class="ms-sm-step" data-step="' + s.key + '" style="display:flex;justify-content:space-between;align-items:center;width:100%;box-sizing:border-box;margin:0 0 6px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:14px;'
+        + (main ? 'border:1px solid #7c5cbf;background:#7c5cbf;color:#fff;font-weight:700;' : 'border:1px solid #d7d3e4;background:#fff;color:#333;') + '">'
+        + '<span>' + s.label + (main ? ' <span style="font-weight:400;opacity:0.85;">(fits your data)</span>' : '') + '</span><span>$' + s.priceMonthly + '/mo</span></button>';
+    }).join('');
+    ov.innerHTML =
+      '<div style="width:min(400px,calc(100vw - 40px));max-height:calc(100vh - 60px);overflow-y:auto;background:#fff;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,0.35);padding:18px 20px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;"><b style="font-size:18px;color:#2b2540;">Storage full</b>'
+      + '<button id="ms-sm-close" title="Close" style="border:none;background:none;font-size:22px;color:#8a84a0;cursor:pointer;line-height:1;padding:2px 4px;">&times;</button></div>'
+      + '<div style="font-size:13px;color:#555;">' + P.fmtBytes(info.used) + ' of ' + P.fmtBytes(info.quota) + ' used</div>'
+      + '<div style="height:8px;border-radius:4px;background:#eee9f6;margin:7px 0 12px;overflow:hidden;"><div style="height:100%;width:' + Math.min(100, Math.round((info.frac || 0) * 100)) + '%;background:#b4453a;"></div></div>'
+      + '<div style="font-size:13px;color:#444;margin-bottom:12px;">Your maps and data are safe — nothing is removed, nothing auto-charges. To keep adding, pick more storage or clear some space.</div>'
+      + (upgrades.length ? rows : '<div style="font-size:13px;color:#444;margin-bottom:10px;">You&rsquo;re at the top step — email <a href="mailto:' + P.contactEmail + '" style="color:#7c5cbf;">' + P.contactEmail + '</a> and we&rsquo;ll set you up with more.</div>')
+      + '<div id="ms-sm-status" style="display:none;font-size:12px;color:#b4453a;margin:2px 0 6px;"></div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:13px;">'
+      + '<a href="../dashboard.html" target="_blank" style="color:#7c5cbf;text-decoration:underline;">Open Dashboard ↗</a>'
+      + '<button id="ms-sm-later" style="border:none;background:none;color:#8a84a0;cursor:pointer;font-size:13px;text-decoration:underline;padding:0;">Not now — I&rsquo;ll clear space</button>'
+      + '</div></div>';
+    Array.prototype.forEach.call(ov.querySelectorAll('.ms-sm-step'), function (btn) {
+      btn.onclick = function () { startStorageCheckout(btn.getAttribute('data-step'), btn); };
+    });
+    document.getElementById('ms-sm-close').onclick = closeStorageModal;
+    document.getElementById('ms-sm-later').onclick = closeStorageModal;
+    if (ov.style.display !== 'flex') {   // opening (not a re-render while already open)
+      ov._prevLock = window.__msModalLock || false;
+      window.__msModalLock = true;   // editor hotkeys + engine backdrop stand down while this is up
+      ov._esc = function (e) { if (e.key === 'Escape') { e.stopPropagation(); closeStorageModal(); } };
+      document.addEventListener('keydown', ov._esc, true);
+      ov.style.display = 'flex';
+    }
+  }
+  async function startStorageCheckout(stepKey, btn) {
+    var P = window.MapStructorPricing, step = P.stepFor(stepKey);
+    var st = document.getElementById('ms-sm-status');
+    function fail(msg) { if (st) { st.style.display = 'block'; st.textContent = msg; } }
+    if (!step.stripePriceId) { fail('Checkout for ' + step.label + ' isn’t set up yet — use the Dashboard.'); return; }
+    var old = btn.innerHTML; btn.disabled = true; btn.innerHTML = 'Opening checkout…';
+    try {   // same call the dashboard makes — Stripe-hosted page, back here on success/cancel
+      var r = await db.functions.invoke('create-checkout-session', { body: { priceId: step.stripePriceId, tier: step.key, successUrl: location.href, cancelUrl: location.href } });
+      if (r.data && r.data.url) { location.href = r.data.url; return; }
+      fail('Could not start checkout: ' + ((r.error && r.error.message) || (r.data && r.data.error) || 'unknown'));
+    } catch (e) { fail('Could not start checkout: ' + ((e && e.message) || e)); }
+    btn.disabled = false; btn.innerHTML = old;
   }
 
   async function onDrawCreate(e) {
@@ -3908,7 +3987,10 @@
       try { draw.delete(f.id); } catch (e) {}              // remove the MapboxDraw copy (it lives on the display layer now)
       return;
     }
-    if (storageGate()) { try { if (draw) draw.delete(f.id); } catch (e) {} return; }   // hard-stop at 100% storage
+    // hard-stop at 100% storage. The discard is DEFERRED a tick: deleting inside the create
+    // handler while the draw mode is still finishing doesn't stick (the mode re-adds it) —
+    // the old blocking alert() masked this by freezing JS until the mode had settled.
+    if (storageGate()) { var gid = f.id; setTimeout(function () { try { if (draw) { draw.changeMode('simple_select'); draw.delete(gid); } } catch (e) {} }, 0); return; }
     var lid = activeLayerDbId();
     var node = activeLayerId ? findNodeById(layers, activeLayerId) : null;
     // Need a drawn layer that accepts this geometry. If nothing is selected, OR the selected layer already
