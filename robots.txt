@@ -1,0 +1,8 @@
+# Pre-launch (2026-07-30). The site is open — anyone with a link can use it — but it
+# shouldn't be indexed until launch day, when this file's Disallow comes off (path item 26).
+# This is not access control; it only asks well-behaved crawlers to stay out of the index.
+User-agent: *
+Disallow: /
+
+# The frozen showcases and the museum encyclopedia are served by the Worker on their own
+# paths and are unaffected by this file.
