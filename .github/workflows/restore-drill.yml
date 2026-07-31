@@ -77,6 +77,13 @@ jobs:
           [ -s restore.dump ] || { echo "::error::no dump fetched"; exit 1; }
           # freshness: the newest dump must be from the last 3 days (else backups are silently dead)
           STAMP=$(echo "$NEWEST" | grep -oE '[0-9]{8}')
+          # The accounts travel separately: a full-DB dump is impossible on Supabase (the auth
+          # tables belong to supabase_*_admin, so pg_dump exits 1), so the nightly job exports the
+          # identity columns of auth.users as a CSV next to the dump. Fetch it too — restoring the
+          # REAL account rows is what turns "the rows came back" into "the owners came back".
+          rclone copyto "r2:mapstructor-db-backups/db/auth-users-$STAMP.csv" "auth-users.csv" \
+            || echo "::warning::no auth-users CSV beside this dump — accounts will be synthesised from the data"
+          [ -s auth-users.csv ] && echo "accounts file: $(wc -l < auth-users.csv) lines"
           AGE_DAYS=$(( ( $(date -u +%s) - $(date -u -d "$STAMP" +%s) ) / 86400 ))
           echo "newest dump: $NEWEST (${AGE_DAYS}d old, $(du -h restore.dump | cut -f1))"
           [ "$AGE_DAYS" -le 3 ] || { echo "::error::newest dump is ${AGE_DAYS} days old — nightly backup is broken"; exit 1; }
@@ -124,6 +131,13 @@ jobs:
           tail -20 restore-data.log || true
           if [ "$IG1" -gt 5 ]; then echo "::error::too many errors restoring the DATA ($IG1)"; exit 1; fi
 
+          # real accounts first, if the nightly job exported them…
+          if [ -s auth-users.csv ]; then
+            psql -h localhost -U postgres -d drill -v ON_ERROR_STOP=1 \
+              -c "\copy auth.users(id,email,is_anonymous,created_at,last_sign_in_at) from 'auth-users.csv' csv header"
+            echo "restored accounts from the CSV: $(psql -h localhost -U postgres -d drill -tAc 'select count(*) from auth.users')"
+          fi
+          # …then anything the data references that the CSV didn't cover, so the FKs can be created
           psql -h localhost -U postgres -d drill -v ON_ERROR_STOP=1 <<'SQL'
           DO $$
           DECLARE r record;
@@ -170,13 +184,14 @@ jobs:
           # that what came back is coherent and not just row-shaped
           FKS=$(q "select count(*) from pg_constraint c join pg_namespace n on n.oid=c.connamespace where n.nspname='public' and c.contype='f'" || echo 0)
           ACCOUNTS=$(q "select count(*) from auth.users" || echo 0)
+          EMAILED=$(q "select count(*) from auth.users where email is not null and email <> ''" || echo 0)
           echo "tables=$TABLES projects=$PROJECTS layers=$LAYERS features=$FEATURES geomSample=$GEOM_OK fks=$FKS"
           {
             echo "## Restore drill — restored + verified"
             echo "- public tables: **$TABLES** · foreign keys created and satisfied: **$FKS**"
             echo "- projects: **$PROJECTS** · layers: **$LAYERS** · features: **$FEATURES**"
-            echo "- accounts referenced by the data: **$ACCOUNTS** (seeded — the dump is public-schema-only,"
-            echo "  so \`auth.users\` itself is NOT in this backup; Supabase's own daily backups cover accounts)"
+            echo "- accounts: **$ACCOUNTS** restored, **$EMAILED** with an email address"
+            echo "  (identity columns only — password hashes stay in Supabase, deliberately)"
           } >> "$GITHUB_STEP_SUMMARY"
           # floors, not exact counts — the point is "the backup contains the real database"
           [ "$TABLES"   -ge 15 ]     || { echo "::error::too few tables restored"; exit 1; }
@@ -184,6 +199,7 @@ jobs:
           [ "$FEATURES" -ge 100000 ] || { echo "::error::features table implausibly small"; exit 1; }
           [ "$GEOM_OK"  -ge 1 ]      || { echo "::error::no readable geometries"; exit 1; }
           [ "$FKS"      -ge 10 ]     || { echo "::error::constraints did not restore — the data may not be coherent"; exit 1; }
+          [ "$EMAILED"  -ge 50 ]     || { echo "::error::accounts did not restore — the auth-users CSV is missing or empty"; exit 1; }
 
       - name: Open an issue on failure
         if: failure()
