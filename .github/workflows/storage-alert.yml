@@ -18,6 +18,44 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - name: Map-load meter — warn at the owner's alert line
+        # Mapbox bills per map load and exposes no API to read the count, so the platform keeps
+        # its own tally (guard.js → ms_map_load). This is the part that means you don't have to
+        # visit a dashboard to find out: at the alert line you get an issue, and GitHub emails it.
+        # The FREEZE is automatic and lives in the database — this step only warns.
+        env:
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$SB_KEY" ]; then echo "no service key — skipping"; exit 0; fi
+          JSON=$(curl -s -X POST "https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/rpc/ms_service_state"             -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" -H "Content-Type: application/json" -d '{}')
+          echo "$JSON"
+          LOADS=$(echo "$JSON" | grep -o '"map_loads":[0-9]*' | grep -o '[0-9]*' | head -1)
+          ALERT=$(echo "$JSON" | grep -o '"map_load_alert":[0-9]*' | grep -o '[0-9]*' | head -1)
+          CAP=$(echo "$JSON"   | grep -o '"map_load_cap":[0-9]*'   | grep -o '[0-9]*' | head -1)
+          FROZEN=$(echo "$JSON" | grep -o '"frozen":[a-z]*' | cut -d: -f2 | head -1)
+          case "$LOADS" in ''|*[!0-9]*) echo "guard not installed yet — skipping"; exit 0;; esac
+          echo "map loads this month: $LOADS (alert $ALERT, freeze $CAP, frozen=$FROZEN)"
+          echo "- Map loads this month: **$LOADS** / freeze at $CAP" >> "$GITHUB_STEP_SUMMARY"
+          [ "$LOADS" -lt "$ALERT" ] && { echo "under the alert line"; exit 0; }
+          PCT=$((LOADS * 100 / CAP))
+          TITLE="⚠ Map loads at $LOADS this month (${PCT}% of the freeze line)"
+          BODY="**$LOADS map loads** so far this month. Your alert line is $ALERT; maps freeze automatically at **$CAP** (Mapbox's free tier is 50,000/month).
+
+          Frozen right now: **$FROZEN**
+
+          This is the meter the MapLibre migration retires — until then, the freeze is what keeps it
+          from becoming a bill. Adjust the lines with \`select public.ms_service_set_map_caps(cap, alert);\`
+
+          (Automated daily check: .github/workflows/storage-alert.yml)"
+          EXISTING=$(gh issue list --repo "$GH_REPO" --state open --search "Map loads at in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            gh issue edit "$EXISTING" --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          else
+            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          fi
+
       - name: Check storage and alert
         env:
           SB_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}

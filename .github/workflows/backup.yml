@@ -25,6 +25,10 @@ on:
     - cron: "17 7 * * *"   # 07:17 UTC daily
   workflow_dispatch: {}
 
+permissions:
+  issues: write        # the free-tier watcher opens an issue when B2 nears its ceiling
+  contents: read
+
 jobs:
   backup:
     runs-on: ubuntu-latest
@@ -100,6 +104,38 @@ jobs:
         run: |
           rclone sync "r2:mapstructor-db-backups/" "b2:mapstructor-backups/backups/"
           rclone ls "b2:mapstructor-backups/backups/" | head -20
+
+      - name: Watch the free-tier ceilings (B2 + R2 backups)
+        # Backblaze will not let you set a spend cap without a credit card on file — and with NO
+        # card it cannot charge you at all, so the deliberate choice is: no card, and watch the
+        # numbers instead. B2's free tier is 10 GB stored and 1 GB/day downloaded. If the backups
+        # ever approach that, the failure mode without this warning is silent: B2 starts refusing
+        # writes and the nightly backup quietly stops being a backup.
+        if: steps.gate.outputs.b2 == 'yes'
+        env:
+          RCLONE_CONFIG_B2_TYPE: b2
+          RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_KEY_ID }}
+          RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APP_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BYTES=$(rclone size "b2:mapstructor-backups/" --json 2>/dev/null | grep -o '"bytes":[0-9]*' | grep -o '[0-9]*' || echo 0)
+          FREE=$((10 * 1024 * 1024 * 1024))
+          PCT=$((BYTES * 100 / FREE))
+          echo "B2 backups: $((BYTES / 1024 / 1024)) MB — ${PCT}% of the 10 GB free tier"
+          echo "- B2 backups: **$((BYTES / 1024 / 1024)) MB** (${PCT}% of the 10 GB free tier)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$PCT" -ge 70 ]; then
+            TITLE="⚠ Backups approaching the Backblaze free tier (${PCT}%)"
+            BODY="B2 holds **$((BYTES / 1024 / 1024)) MB**, which is ${PCT}% of the 10 GB free tier.
+
+          Past 100% B2 starts refusing writes — the backup would keep 'succeeding' while storing
+          nothing. Options, cheapest first: shorten the 14-day retention, prune old dumps, or accept
+          a small B2 bill (which needs a card on file, and a card is also what unlocks their caps).
+
+          (Automated check: .github/workflows/backup.yml)"
+            EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "Backups approaching in:title" --json number --jq '.[0].number // empty')
+            if [ -n "$EXISTING" ]; then gh issue edit "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$BODY";
+            else gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"; fi
+          fi
 
       - name: Fallback — dump straight to B2 if R2 isn't set up yet
         if: steps.gate.outputs.db == 'yes' && steps.gate.outputs.r2 == 'no' && steps.gate.outputs.b2 == 'yes'
