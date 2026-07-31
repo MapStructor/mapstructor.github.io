@@ -129,19 +129,25 @@ window.msApplyHeaderFeature = function (visible, projectName) {
   // WHICH saved state they see. Resolved from the LIVE project row (never the snapshot, so flipping a map
   // private takes effect immediately). Maps from before the Share panel have no visibility key and resolve
   // to link/public (their actual old behavior); NEW maps are created private. Client-side gate until RLS.
+  // ownerId null = we couldn't read the row at all. Since the RLS lockdown (7/30) that is the
+  // NORMAL case for a private map seen by a stranger: the row is invisible, so the browser can't
+  // tell "private and not yours" from "deleted". Say both, which is also the honest answer — the
+  // database deliberately won't reveal which one it is.
   function showPrivateBlock(ownerId) {
     var d = document.createElement("div");
     d.id = "ms-private-block";
     d.style.cssText = "position:fixed;inset:0;z-index:100000;background:#faf9fd;display:flex;align-items:center;justify-content:center;font-family:'Source Sans Pro',Arial,sans-serif;";
     d.innerHTML = "<div style=\"text-align:center;max-width:360px;padding:30px;\">" +
       "<div style=\"font-size:42px;\">🔒</div>" +
-      "<h2 style=\"margin:10px 0 6px;color:#1e1b2e;\">This map is private</h2>" +
-      "<p style=\"color:#6b6680;font-size:14px;margin:0 0 16px;\">Only its owner can view it. If this is your map, log in.</p>" +
+      "<h2 style=\"margin:10px 0 6px;color:#1e1b2e;\">" + (ownerId ? "This map is private" : "This map isn’t available") + "</h2>" +
+      "<p style=\"color:#6b6680;font-size:14px;margin:0 0 16px;\">" + (ownerId
+        ? "Only its owner can view it. If this is your map, log in."
+        : "It’s private, or it no longer exists. If it’s yours, log in to open it.") + "</p>" +
       "<button id=\"ms-private-login\" style=\"padding:9px 18px;border:none;border-radius:8px;background:#7c5cbf;color:#fff;font-weight:700;cursor:pointer;font-size:14px;\">Log in</button></div>";
     document.body.appendChild(d);
     var b = document.getElementById("ms-private-login");
     if (b) b.addEventListener("click", function () { try { MapAuth.openAuthModal("login"); } catch (e) {} });
-    try { if (window.MapAuth && MapAuth.onChange) MapAuth.onChange(async function () { var u = await MapAuth.currentUser(); if (u && ownerId && u.id === ownerId) location.reload(); }); } catch (e) {}
+    try { if (window.MapAuth && MapAuth.onChange) MapAuth.onChange(async function () { var u = await MapAuth.currentUser(); if (u && (!ownerId || u.id === ownerId)) location.reload(); }); } catch (e) {}
   }
 
   try {
@@ -152,7 +158,14 @@ window.msApplyHeaderFeature = function (visible, projectName) {
       try {
         var vg = await db.from("projects").select("user_id, is_public, raw_config").eq("id", platformProjectId).maybeSingle();
         var vrow = vg && vg.data;
-        if (!vg.error && !vrow) projectGone = true;
+        if (!vg.error && !vrow) {
+          // Before RLS this meant "deleted" and the page just came up empty. Now it also means
+          // "private, and you aren't the owner" — so a stranger following a private link used to
+          // get a blank map with no explanation. Tell them, and reload if they log in.
+          projectGone = true;
+          showPrivateBlock(null);
+          return;
+        }
         if (vrow) {
           var vis = (vrow.raw_config && vrow.raw_config.visibility) || (vrow.is_public ? "public" : "link");
           if (vis === "private") {

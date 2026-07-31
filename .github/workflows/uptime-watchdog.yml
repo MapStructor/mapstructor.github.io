@@ -3,9 +3,14 @@
 # a single 🔴 watchdog issue — repo watchers get the email. Zero secrets needed.
 #
 # Surfaces guarded:
-#   apex coming-soon · /maps/railways showcase · tiles custom domain ·
-#   Worker /health · the AHM encyclopedia chain (Worker route → gray DNS record →
-#   GoDaddy origin → Drupal) · the platform on github.io
+#   the site itself · /maps/railways showcase · tiles custom domain · Worker /health ·
+#   the AHM encyclopedia chain (Worker route → gray DNS record → GoDaddy origin → Drupal) ·
+#   a published public map (the database read path) · the legal pages
+#
+# UPDATED 7/30 for the domain swap: the apex now serves the platform rather than a coming-soon
+# page, and the old "platform (github.io)" probe became meaningless once github.io started
+# 301-ing to the apex — it was silently re-testing the same URL twice. It now watches a real
+# map instead, which is the only probe here that proves Postgres + tiles are answering.
 
 name: uptime-watchdog
 on:
@@ -34,12 +39,13 @@ jobs:
               FAILS="$FAILS- **$1** — $2 (expected \`$3\`)\n"
             fi
           }
-          check "apex coming-soon"      "https://mapstructor.com/"                                                            "MapStructor"
+          check "site (apex)"           "https://mapstructor.com/"                                                            "MapStructor"
           check "railways showcase"     "https://mapstructor.com/maps/railways/"                                              "<html"
           check "tiles custom domain"   "https://tiles.mapstructor.com/snapshots/f914d5e6-7aad-477d-8613-5bd4aac350d5.json"   "layers"
           check "worker health"         "https://mapstructor-worker.mapstructor.workers.dev/health"                           '"ok":true'
           check "AHM encyclopedia"      "https://mapstructor.com/ames/encyclopedia/rendered-export-single?nid=45894"          "rendered_entity"
-          check "platform (github.io)"  "https://mapstructor.github.io/"                                                      "MapStructor"
+          check "public map (DB path)"  "https://mapstructor.com/map/index.html?id=f914d5e6-7aad-477d-8613-5bd4aac350d5"      "layers-panel"
+          check "legal pages"           "https://mapstructor.com/terms.html"                                                  "Terms of Service"
           if [ -n "$FAILS" ]; then
             printf "fails<<EOF\n%b\nEOF\n" "$FAILS" >> "$GITHUB_OUTPUT"
             exit 1
