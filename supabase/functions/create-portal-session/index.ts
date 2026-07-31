@@ -29,12 +29,18 @@ Deno.serve(async (req) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return json({ error: "not authenticated" }, 401);
 
-    const { data: profile } = await supabase.from("profiles").select("stripe_customer_id").eq("id", user.id).maybeSingle();
+    // SERVICE ROLE for this read. After the RLS lockdown an authenticated user cannot SELECT from
+    // profiles at all — even `id, subscription_tier` returns 42501 — which is why the app reads
+    // plans through ms_my_plan(). This function was the last place still reading directly, so it
+    // answered "no subscription yet" to every paying customer and left them with no way to cancel
+    // or change their card. Found 7/31, right after fixing the same class of bug in checkout.
+    const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    const { data: profile } = await admin.from("profiles").select("stripe_customer_id").eq("id", user.id).maybeSingle();
     if (!profile?.stripe_customer_id) return json({ error: "no subscription yet" }, 400);
 
     const session = await stripe.billingPortal.sessions.create({
       customer: profile.stripe_customer_id as string,
-      return_url: returnUrl || "https://example.com/dashboard.html",
+      return_url: returnUrl || "https://mapstructor.com/dashboard.html",
     });
     return json({ url: session.url });
   } catch (e) {

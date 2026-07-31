@@ -36,8 +36,39 @@ const PRICE_TO_TIER: Record<string, string> = {
   "price_1TluYVLiMJ4gksrjAsOIjG0A": "institutional",
 };
 
-async function setTierByCustomer(customerId: string, tier: string) {
-  await admin.from("profiles").update({ subscription_tier: tier }).eq("stripe_customer_id", customerId);
+// 2026-07-31 — this used to be a fire-and-forget update matched ONLY on stripe_customer_id, and
+// it silently matched zero rows whenever that column was blank (which it always was, after the
+// RLS lockdown broke the write in create-checkout-session). A payment handler that can quietly
+// do nothing is the worst shape for this code, so it now: matches on the user id when Stripe
+// gives us one, repairs the customer link while it's there, and RAISES if it changed no rows —
+// a 500 makes Stripe retry, which is exactly what should happen.
+async function setTier(tier: string, opts: { customerId?: string; userId?: string }) {
+  if (!opts.userId && !opts.customerId) {
+    throw new Error("no way to identify the payer — refusing to update a tier blindly");
+  }
+  const patch: Record<string, unknown> = { subscription_tier: tier };
+  if (opts.customerId) patch.stripe_customer_id = opts.customerId;   // self-heal the link
+
+  let q = admin.from("profiles").update(patch).select("id");
+  q = opts.userId ? q.eq("id", opts.userId) : q.eq("stripe_customer_id", opts.customerId!);
+
+  const { data, error } = await q;
+  if (error) throw new Error("profile update failed: " + error.message);
+  if (!data || data.length === 0) {
+    throw new Error(`no profile matched (user=${opts.userId ?? "-"} customer=${opts.customerId ?? "-"}) — tier NOT set`);
+  }
+}
+
+// For subscription events Stripe hands us a customer, not a user. Resolve one to the other so the
+// same "match by id" path can be used, instead of trusting a column that might be empty.
+async function userIdForCustomer(customerId: string): Promise<string | undefined> {
+  const { data } = await admin.from("profiles").select("id").eq("stripe_customer_id", customerId).maybeSingle();
+  if (data?.id) return data.id as string;
+  try {   // fall back to the metadata we set when the customer was created
+    const c = await stripe.customers.retrieve(customerId);
+    const uid = (c as Stripe.Customer)?.metadata?.user_id;
+    return uid || undefined;
+  } catch { return undefined; }
 }
 
 Deno.serve(async (req) => {
@@ -54,8 +85,15 @@ Deno.serve(async (req) => {
     switch (event.type) {
       case "checkout.session.completed": {
         const s = event.data.object as Stripe.Checkout.Session;
-        const tier = (s.metadata?.tier as string) || "";
-        if (s.customer && tier) await setTierByCustomer(s.customer as string, tier);
+        const userId = (s.client_reference_id as string) || (s.metadata?.user_id as string) || undefined;
+        // the tier the client asked for, or — if that's missing — whatever they actually bought
+        let tier = (s.metadata?.tier as string) || "";
+        if (!tier) {
+          const li = await stripe.checkout.sessions.listLineItems(s.id, { limit: 1 });
+          tier = PRICE_TO_TIER[li.data?.[0]?.price?.id ?? ""] || "";
+        }
+        if (!tier) throw new Error("could not work out which step was bought for session " + s.id);
+        await setTier(tier, { userId, customerId: (s.customer as string) || undefined });
         break;
       }
       case "customer.subscription.updated": {
@@ -66,12 +104,15 @@ Deno.serve(async (req) => {
         // free on terminal states (unpaid = retries exhausted, canceled, incomplete_expired,
         // paused). A real cancellation also fires subscription.deleted → free.
         const keepTier = sub.status === "active" || sub.status === "trialing" || sub.status === "past_due";
-        await setTierByCustomer(sub.customer as string, keepTier ? (PRICE_TO_TIER[priceId] || "free") : "free");
+        const cid = sub.customer as string;
+        await setTier(keepTier ? (PRICE_TO_TIER[priceId] || "free") : "free",
+                      { userId: await userIdForCustomer(cid), customerId: cid });
         break;
       }
       case "customer.subscription.deleted": {
         const sub = event.data.object as Stripe.Subscription;
-        await setTierByCustomer(sub.customer as string, "free");
+        const cid = sub.customer as string;
+        await setTier("free", { userId: await userIdForCustomer(cid), customerId: cid });
         break;
       }
     }
