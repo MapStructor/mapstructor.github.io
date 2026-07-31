@@ -190,8 +190,9 @@ jobs:
             echo "## Restore drill — restored + verified"
             echo "- public tables: **$TABLES** · foreign keys created and satisfied: **$FKS**"
             echo "- projects: **$PROJECTS** · layers: **$LAYERS** · features: **$FEATURES**"
-            echo "- accounts: **$ACCOUNTS** restored, **$EMAILED** with an email address"
-            echo "  (identity columns only — password hashes stay in Supabase, deliberately)"
+            echo "- accounts: **$ACCOUNTS** restored, of which **$EMAILED** have an email address"
+            echo "  (the rest are anonymous sessions — the platform is anonymous-first, so nearly every"
+            echo "  visitor gets one. Identity columns only; password hashes stay in Supabase, deliberately.)"
           } >> "$GITHUB_STEP_SUMMARY"
           # floors, not exact counts — the point is "the backup contains the real database"
           [ "$TABLES"   -ge 15 ]     || { echo "::error::too few tables restored"; exit 1; }
@@ -199,7 +200,13 @@ jobs:
           [ "$FEATURES" -ge 100000 ] || { echo "::error::features table implausibly small"; exit 1; }
           [ "$GEOM_OK"  -ge 1 ]      || { echo "::error::no readable geometries"; exit 1; }
           [ "$FKS"      -ge 10 ]     || { echo "::error::constraints did not restore — the data may not be coherent"; exit 1; }
-          [ "$EMAILED"  -ge 50 ]     || { echo "::error::accounts did not restore — the auth-users CSV is missing or empty"; exit 1; }
+          # Floors chosen from the real shape of this database, not from a guess: 680 accounts, of
+          # which only 6 carry an email — the platform is anonymous-first, so nearly every visitor
+          # gets an anonymous auth user. An earlier floor of 50 emails failed a perfectly good
+          # restore. What matters is that the CSV was found and loaded, and that the real
+          # (email-bearing) accounts are among what came back.
+          [ "$ACCOUNTS" -ge 100 ]    || { echo "::error::the auth-users CSV is missing or empty — accounts did not restore"; exit 1; }
+          [ "$EMAILED"  -ge 1 ]      || { echo "::error::no email-bearing accounts restored — the CSV's email column is empty"; exit 1; }
 
       - name: Open an issue on failure
         if: failure()
