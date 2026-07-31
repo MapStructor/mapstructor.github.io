@@ -1,0 +1,86 @@
+# Uptime monitor (launch item 22, 2026-07-30). Same shape as storage-alert.yml: when something
+# is down it opens (or updates) a GitHub issue, and GitHub emails you natively — no third-party
+# monitoring account, no extra password, nothing else to remember to pay for.
+#
+# What it watches, and why each one:
+#   mapstructor.com/                          the site itself
+#   mapstructor.com/map/index.html?id=…       a published public map — proves the DB path, not just the CDN
+#   mapstructor.com/ames/encyclopedia         the Worker's museum proxy — a LIVE dependency of the
+#                                             Ames History Museum's own website, and the thing most
+#                                             likely to break silently during infrastructure changes
+#   tiles.mapstructor.com/…                   R2, where every map's tiles come from
+#
+# HONEST LIMITS: GitHub's scheduler is best-effort — a 15-minute cron can slip by several minutes
+# under load, so this catches "down for a while", not "down for 90 seconds". It also pauses
+# scheduled workflows in repos with no activity for 60 days. If you ever need tighter than that,
+# an external monitor (UptimeRobot and friends) pings from multiple regions at 1-minute intervals.
+name: uptime
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes
+  workflow_dispatch: {}      # manual run — use this to test the alert path
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe the public surfaces
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -u
+          FAILED=""
+          probe() {   # name · url · what a healthy response must contain
+            NAME="$1"; URL="$2"; NEEDLE="$3"
+            CODE=$(curl -s -o /tmp/body -w "%{http_code}" -m 25 -L "$URL" || echo 000)
+            if [ "$CODE" != "200" ]; then
+              FAILED="${FAILED}- **${NAME}** — HTTP ${CODE} (${URL})"$'\n'
+              echo "DOWN  ${NAME}: HTTP ${CODE}"
+              return
+            fi
+            if [ -n "$NEEDLE" ] && ! grep -qi -- "$NEEDLE" /tmp/body; then
+              # 200 but the wrong page: a redirect to a parked page or an error shell still returns 200
+              FAILED="${FAILED}- **${NAME}** — 200 but the page didn't contain \`${NEEDLE}\` (${URL})"$'\n'
+              echo "WRONG ${NAME}: 200 without '${NEEDLE}'"
+              return
+            fi
+            echo "ok    ${NAME}"
+          }
+
+          probe "site"        "https://mapstructor.com/"                                                        "MapStructor"
+          probe "public map"  "https://mapstructor.com/map/index.html?id=f914d5e6-7aad-477d-8613-5bd4aac350d5"  "layers-panel"
+          probe "museum proxy" "https://mapstructor.com/ames/encyclopedia"                                      "Ames"
+          probe "tiles (R2)"  "https://tiles.mapstructor.com/tiles/f914d5e6-7aad-477d-8613-5bd4aac350d5/fd0d755e-ceb3-41e7-99c7-f19922f96cd3.geojson" ""
+
+          TITLE="🔴 MapStructor is not responding"
+          EXISTING=$(gh issue list --repo "$GH_REPO" --state open --search "MapStructor is not responding in:title" --json number --jq '.[0].number' || true)
+
+          if [ -z "$FAILED" ]; then
+            echo "all surfaces healthy"
+            # self-closing: if the last run opened an issue and things recovered, say so and close it
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$GH_REPO" --body "Recovered — all surfaces returned 200 at $(date -u '+%Y-%m-%d %H:%M UTC')."
+              gh issue close "$EXISTING" --repo "$GH_REPO"
+            fi
+            exit 0
+          fi
+
+          BODY="One or more public surfaces failed at $(date -u '+%Y-%m-%d %H:%M UTC'):
+
+          ${FAILED}
+          Checked from a GitHub runner, following redirects. If only the museum proxy failed, look at
+          the Cloudflare Worker route \`mapstructor.com/ames/*\` and the grey \`origin.mapstructor.com\`
+          DNS record — that pair is what keeps the museum's encyclopedia alive.
+
+          (Automated check: .github/workflows/uptime.yml)"
+
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --repo "$GH_REPO" --body "$BODY"
+          else
+            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          fi
+          exit 1
