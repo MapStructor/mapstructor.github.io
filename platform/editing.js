@@ -4153,7 +4153,9 @@
       var uEmail = u.data.user.email || '';
       if (!force && MS_ADMINS.indexOf(uEmail) > -1) { _storageOver = false; _storageInfo = null; _storageLast = Date.now(); updateStorageBanner(); return; }
       var tierKey = 'free';
-      try { var pr = await db.from('profiles').select('subscription_tier').eq('id', uid).maybeSingle(); if (pr.data && pr.data.subscription_tier) tierKey = pr.data.subscription_tier; } catch (e) {}
+      try { var mp = await db.rpc('ms_my_plan'); var m0 = mp && mp.data && (mp.data[0] || mp.data);
+        if (!mp.error && m0 && m0.subscription_tier) tierKey = m0.subscription_tier; } catch (e) {}
+      if (tierKey === 'free') { try { var pr = await db.from('profiles').select('subscription_tier').eq('id', uid).maybeSingle(); if (pr.data && pr.data.subscription_tier) tierKey = pr.data.subscription_tier; } catch (e) {} }
       var used = 0;
       try { var rpc = await db.rpc('mapstructor_user_storage'); if (!rpc.error && typeof rpc.data === 'number') used = rpc.data; } catch (e) {}
       var quota = P.stepFor(tierKey).quotaBytes;

@@ -166,7 +166,9 @@
         // accounts apart from the anonymous session every visitor gets automatically — anon accounts own
         // maps too, which is why the plain owner count looked absurd (#26).
         var P = window.MapStructorPricing, tierCounts = {}, profById = {};
-        var prof = await db.from('profiles').select('id, username, display_name, email, subscription_tier');
+        var prof = null;
+        try { var ap = await db.rpc('ms_admin_profiles'); if (!ap.error && ap.data) prof = { data: ap.data, error: null }; } catch (e) {}
+        if (!prof) prof = await db.from('profiles').select('id, username, display_name, email, subscription_tier');
         var hasTier = !prof.error;
         if (prof.error) prof = await db.from('profiles').select('id, username, display_name, email');
         if (prof.error) { prof = await db.from('profiles').select('id, username, display_name, subscription_tier'); hasTier = !prof.error; }

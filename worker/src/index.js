@@ -62,6 +62,76 @@ async function supabaseUser(env, req) {
 var MAX_UPLOAD_BYTES = 95 * 1024 * 1024;   // Worker request-body ceiling is ~100 MB;
 // bigger archives use multipart via presigned S3 URLs — a later addition (README #3).
 
+/* ── write-rate guard (launch item 8, 2026-07-30) ──────────────────────────────
+   R2 is the one meter in the stack with NO hard spend ceiling — Class A writes are
+   $4.50/million — and every browser write funnels through this Worker, so this is the
+   one place a runaway loop can be caught. The exposure is a loop, not organic growth:
+   a human editing hard makes a handful of writes a minute; a bug makes thousands.
+
+   TWO TIERS, and the order matters. The shared Postgres counter (rateCheckShared) is the
+   real one; the isolate Map below is only the fallback for when that RPC isn't installed.
+   Do not "simplify" by dropping the shared counter: measured 7/30, 900 rapid writes ALL
+   passed the isolate counter, because Cloudflare spread them across isolates and each one
+   saw a fraction of the traffic. An isolate counter cannot rate-limit a real client.
+   (KV can't either — ~1k writes/day on the free tier; Durable Objects need the paid plan.)
+
+   A trip leaves a JSON breadcrumb in R2 under alerts/ (who, what, how much) — written
+   once per window so the alert itself can't become the write storm. */
+var WRITE_LIMIT_PER_MIN = 600;
+var _rate = new Map();   // userId → { n, windowStart, alerted }
+var _rpcMissing = false;   // remembered per isolate: don't re-probe a function that isn't installed
+
+/* The SHARED counter (sql/setup/rate-guard-setup.sql). Measured 7/30: 900 rapid writes all
+   passed the isolate counter below, because Cloudflare spread them across isolates and each
+   saw only its slice. This one asks Postgres, so every isolate counts into the same bucket.
+   Called with the CALLER'S token — the function reads auth.uid() itself, so nobody can count
+   on someone else's behalf. Returns null when unavailable, and the caller falls back. */
+async function rateCheckShared(env, req, limit) {
+  if (_rpcMissing || !env.SUPABASE_URL) return null;
+  try {
+    var r = await fetch(env.SUPABASE_URL + "/rest/v1/rpc/ms_rate_bump", {
+      method: "POST",
+      headers: {
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: req.headers.get("Authorization"),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ p_limit: limit })
+    });
+    if (r.status === 404) { _rpcMissing = true; return null; }   // SQL not run yet
+    if (!r.ok) return null;
+    var rows = await r.json();
+    var row = Array.isArray(rows) ? rows[0] : rows;
+    if (!row || typeof row.n !== "number") return null;
+    return { over: !!row.over, count: row.n, first: row.n === limit + 1, window: Math.floor(Date.now() / 60000) };
+  } catch (e) { return null; }   // the guard must never take the write path down with it
+}
+
+function rateCheck(userId, limit) {
+  var now = Date.now(), w = Math.floor(now / 60000);
+  var e = _rate.get(userId);
+  if (!e || e.window !== w) { e = { window: w, n: 0, alerted: false }; _rate.set(userId, e); }
+  e.n++;
+  if (_rate.size > 5000) {   // prune stale windows — the map must not grow without bound
+    for (var k of _rate.keys()) { var v = _rate.get(k); if (v.window < w - 1) _rate.delete(k); }
+  }
+  return { over: e.n > limit, count: e.n, first: e.n === limit + 1, window: w };
+}
+
+async function noteRateTrip(env, user, hit, req, url) {
+  try {
+    await env.TILES.put("alerts/write-rate/" + user.id + "-" + hit.window + ".json",
+      JSON.stringify({
+        at: new Date().toISOString(), user: user.id, email: user.email || null,
+        writes_this_minute: hit.count, limit: WRITE_LIMIT_PER_MIN,
+        method: req.method, path: url.pathname.slice(0, 200),
+        ip: req.headers.get("CF-Connecting-IP") || null
+      }),
+      { httpMetadata: { contentType: "application/json" } });
+  } catch (e) { /* the guard must never fail the request path */ }
+  console.warn("write-rate guard tripped: user " + user.id + " at " + hit.count + "/min on " + url.pathname);
+}
+
 export default {
   async fetch(req, env) {
     var url = new URL(req.url);
@@ -180,6 +250,12 @@ export default {
     if (req.method === "POST" && url.pathname === "/fold") {
       var fuser = await supabaseUser(env, req);
       if (!fuser || !fuser.id) return new Response("auth required", { status: 401, headers: cors() });
+      // a fold dispatch costs a whole GitHub runner — hold it to the same ceiling
+      var fhit = await rateCheckShared(env, req, WRITE_LIMIT_PER_MIN) || rateCheck(fuser.id, WRITE_LIMIT_PER_MIN);
+      if (fhit.over) {
+        if (fhit.first) await noteRateTrip(env, fuser, fhit, req, url);
+        return new Response("write rate limit", { status: 429, headers: cors({ "Retry-After": "60" }) });
+      }
       var fb = null;
       try { fb = await req.json(); } catch (e) { return new Response("bad json", { status: 400, headers: cors() }); }
       var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -230,6 +306,15 @@ export default {
 
       var user = await supabaseUser(env, req);
       if (!user || !user.id) return new Response("auth required", { status: 401, headers: cors() });
+
+      // write-rate guard — shared counter when it's installed, isolate counter otherwise
+      var hit = await rateCheckShared(env, req, WRITE_LIMIT_PER_MIN) || rateCheck(user.id, WRITE_LIMIT_PER_MIN);
+      if (hit.over) {
+        if (hit.first) await noteRateTrip(env, user, hit, req, url);
+        return new Response("write rate limit — " + hit.count + " writes this minute (limit " +
+          WRITE_LIMIT_PER_MIN + "). If this wasn't you, something is looping.",
+          { status: 429, headers: cors({ "Retry-After": "60" }) });
+      }
 
       // OWNERSHIP (7/27): tiles/<projectId>/<file> and snapshots/<projectId>.json — the
       // caller must own <projectId>. Checked with the CALLER'S OWN token (RLS lets anyone

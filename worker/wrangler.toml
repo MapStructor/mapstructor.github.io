@@ -18,9 +18,18 @@ bucket_name = "mapstructor-tiles"
 #   SUPABASE_ANON_KEY     — the publishable key (used to validate user tokens)
 # Later: ANTHROPIC_API_KEY, GITHUB_DISPATCH_TOKEN.
 
-# Zone route: /maps/* (frozen showcases from R2) intercepts ONLY that path prefix
-# on the live domain — everything else keeps serving from the current origin
-# (WordPress today, GitHub Pages after the flip). Additive and reversible.
-routes = [
-  { pattern = "mapstructor.com/maps/*", zone_id = "e0770d1677077e48d164538f4f938394" }
-]
+# ROUTES ARE MANAGED IN THE CLOUDFLARE DASHBOARD — deliberately not here.
+#
+# This block used to sit after [[r2_buckets]], where TOML read it as a field of that
+# table; wrangler warned ("Unexpected fields found in r2_buckets[0]: routes") and the
+# routes were never applied from this file (7/30). The live routes have been in the
+# dashboard all along, which is why /maps/* and /ames/* work.
+#
+# It stays out on purpose: `mapstructor.com/ames/*` proxies the museum encyclopedia on
+# the old box — a live dependency of the Ames History Museum's own website. A deploy
+# that rewrote the route set could take that offline, and a deploy should never be able
+# to do that. Change routes in the dashboard, where the change is visible and reversible.
+#
+# Current routes (verified 7/30): mapstructor.com/* · mapstructor.com/maps/* · /ames/*
+# (zone e0770d1677077e48d164538f4f938394). The domain swap narrows the first one — see
+# process/domain-swap-runbook.md.

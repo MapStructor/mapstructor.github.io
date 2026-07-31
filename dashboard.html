@@ -355,7 +355,11 @@
       async function loadStorage() {
         var P = window.MapStructorPricing; if (!P) return;
         var tierKey = 'free', used = null;
-        try { var pr = await db.from('profiles').select('subscription_tier, storage_used_bytes').eq('id', user.id).maybeSingle(); if (pr.data) { if (pr.data.subscription_tier) tierKey = pr.data.subscription_tier; if (typeof pr.data.storage_used_bytes === 'number') used = pr.data.storage_used_bytes; } } catch (e) {}
+        // ms_my_plan() is the only path to your own plan once the private profile columns
+        // stop being granted (rls-phase1b.sql); the direct select is the pre-lockdown fallback.
+        try { var mp = await db.rpc('ms_my_plan'); var m0 = mp && mp.data && (mp.data[0] || mp.data);
+          if (!mp.error && m0) { if (m0.subscription_tier) tierKey = m0.subscription_tier; if (typeof m0.storage_used_bytes === 'number') used = m0.storage_used_bytes; } } catch (e) {}
+        if (used == null) { try { var pr = await db.from('profiles').select('subscription_tier, storage_used_bytes').eq('id', user.id).maybeSingle(); if (pr.data) { if (pr.data.subscription_tier) tierKey = pr.data.subscription_tier; if (typeof pr.data.storage_used_bytes === 'number') used = pr.data.storage_used_bytes; } } catch (e) {} }
         if (used == null) { try { var rpc = await db.rpc('mapstructor_user_storage'); if (!rpc.error && typeof rpc.data === 'number') used = rpc.data; } catch (e) {} }
         var approx = false;
         if (used == null) { used = await estimateStorage(); approx = true; }
