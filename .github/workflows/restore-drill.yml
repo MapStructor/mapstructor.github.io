@@ -105,18 +105,56 @@ jobs:
           CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS 'select null::uuid';
           CREATE OR REPLACE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$select 'anon'::text$$;
           SQL
-          # pg_restore exits 1 whenever ANY statement errored, even benign ones — capture the
-          # ignored-error count and allow a small floor of noise (CREATE SCHEMA public /
-          # CREATE EXTENSION postgis already existing). The NEXT step's row-count + geometry
-          # assertions are the real pass/fail; this step only fails on WHOLESALE breakage.
+          # TWO PASSES, and the reason matters. The dump is public-schema-only, so it carries the
+          # rows that REFERENCE accounts but not the accounts themselves. Restored in one pass, the
+          # foreign keys (projects.user_id → auth.users.id, layers.user_id → …) are created against
+          # an empty auth.users and every one of them fails. That is what "the restore drill is
+          # broken" was: not lost data, a missing referenced table.
+          #
+          # So: structure + rows first, then seed auth.users from the ids the data actually points
+          # at, then let the constraints be created. The FKs are therefore genuinely PROVEN — a
+          # constraint that is created and satisfied is real evidence the data is coherent.
           set +e
-          pg_restore -h localhost -U postgres -d drill --no-owner --no-privileges restore.dump 2> restore-errors.log
-          RC=$?
+          pg_restore -h localhost -U postgres -d drill --no-owner --no-privileges \
+            --section=pre-data --section=data restore.dump 2> restore-data.log
+          RC1=$?
           set -e
-          IGNORED=$(grep -oE "errors ignored on restore: [0-9]+" restore-errors.log | grep -oE "[0-9]+" || echo 0)
-          echo "pg_restore exit=$RC, ignored errors=$IGNORED"
-          tail -40 restore-errors.log || true
-          if [ "$IGNORED" -gt 5 ]; then echo "::error::too many restore errors ($IGNORED) — see log above"; exit 1; fi
+          IG1=$(grep -oE "errors ignored on restore: [0-9]+" restore-data.log | grep -oE "[0-9]+" || echo 0)
+          echo "pass 1 (structure + rows): exit=$RC1, ignored=$IG1"
+          tail -20 restore-data.log || true
+          if [ "$IG1" -gt 5 ]; then echo "::error::too many errors restoring the DATA ($IG1)"; exit 1; fi
+
+          psql -h localhost -U postgres -d drill -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE r record;
+          BEGIN
+            FOR r IN
+              SELECT c.table_name, c.column_name
+                FROM information_schema.columns c
+                JOIN information_schema.tables t
+                  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+                 AND t.table_type = 'BASE TABLE'
+               WHERE c.table_schema = 'public' AND c.data_type = 'uuid'
+                 AND (c.column_name IN ('user_id','owner_id')
+                      OR (c.table_name = 'profiles' AND c.column_name = 'id'))
+            LOOP
+              EXECUTE format('INSERT INTO auth.users(id) SELECT DISTINCT %I FROM public.%I '
+                             'WHERE %I IS NOT NULL ON CONFLICT DO NOTHING',
+                             r.column_name, r.table_name, r.column_name);
+            END LOOP;
+          END $$;
+          SELECT 'accounts referenced by the restored data: ' || count(*) FROM auth.users;
+          SQL
+
+          set +e
+          pg_restore -h localhost -U postgres -d drill --no-owner --no-privileges \
+            --section=post-data restore.dump 2> restore-post.log
+          RC2=$?
+          set -e
+          IG2=$(grep -oE "errors ignored on restore: [0-9]+" restore-post.log | grep -oE "[0-9]+" || echo 0)
+          echo "pass 2 (constraints + indexes): exit=$RC2, ignored=$IG2"
+          tail -30 restore-post.log || true
+          if [ "$IG2" -gt 5 ]; then echo "::error::too many errors creating constraints ($IG2)"; exit 1; fi
 
       - name: Assert the restored data is real
         if: steps.gate.outputs.r2 == 'yes'
@@ -128,17 +166,24 @@ jobs:
           LAYERS=$(q "select count(*) from layers" || echo 0)
           FEATURES=$(q "select count(*) from features" || echo 0)
           GEOM_OK=$(q "select count(*) from (select geom from features where geom is not null limit 5) s" || echo 0)
-          echo "tables=$TABLES projects=$PROJECTS layers=$LAYERS features=$FEATURES geomSample=$GEOM_OK"
+          # a foreign key that was CREATED is a foreign key the data satisfies — cheap, real proof
+          # that what came back is coherent and not just row-shaped
+          FKS=$(q "select count(*) from pg_constraint c join pg_namespace n on n.oid=c.connamespace where n.nspname='public' and c.contype='f'" || echo 0)
+          ACCOUNTS=$(q "select count(*) from auth.users" || echo 0)
+          echo "tables=$TABLES projects=$PROJECTS layers=$LAYERS features=$FEATURES geomSample=$GEOM_OK fks=$FKS"
           {
             echo "## Restore drill — restored + verified"
-            echo "- public tables: **$TABLES**"
+            echo "- public tables: **$TABLES** · foreign keys created and satisfied: **$FKS**"
             echo "- projects: **$PROJECTS** · layers: **$LAYERS** · features: **$FEATURES**"
+            echo "- accounts referenced by the data: **$ACCOUNTS** (seeded — the dump is public-schema-only,"
+            echo "  so \`auth.users\` itself is NOT in this backup; Supabase's own daily backups cover accounts)"
           } >> "$GITHUB_STEP_SUMMARY"
           # floors, not exact counts — the point is "the backup contains the real database"
           [ "$TABLES"   -ge 15 ]     || { echo "::error::too few tables restored"; exit 1; }
           [ "$PROJECTS" -ge 10 ]     || { echo "::error::projects table implausibly small"; exit 1; }
           [ "$FEATURES" -ge 100000 ] || { echo "::error::features table implausibly small"; exit 1; }
           [ "$GEOM_OK"  -ge 1 ]      || { echo "::error::no readable geometries"; exit 1; }
+          [ "$FKS"      -ge 10 ]     || { echo "::error::constraints did not restore — the data may not be coherent"; exit 1; }
 
       - name: Open an issue on failure
         if: failure()

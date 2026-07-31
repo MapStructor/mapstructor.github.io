@@ -5,16 +5,16 @@
 # place that number exists is Cloudflare's own analytics — so this job fetches it and parks it in
 # ms_service_guard, where the ceilings in sql/setup/service-guard-v3.sql can act on it.
 #
-# Free tier: 1,000,000 Class A (writes) and 10,000,000 Class B (reads) per month.
-# Class A over the ceiling stops WRITES. Class B over the ceiling freezes the SITE — blocking
-# writes would not slow tile reads by a single request.
+# The work is in scripts/r2-usage.mjs, deliberately: the first version was a shell step and it died
+# in 0.24 seconds with no output, which cannot be debugged without a push each time. Node runs the
+# same here and on my machine, so it can be proven before it ships.
 #
-# ONE-TIME SETUP — two repo secrets (Settings → Secrets and variables → Actions):
-#   CLOUDFLARE_ACCOUNT_ID   your account id (Cloudflare dashboard → R2 → right-hand sidebar)
+# ONE-TIME SETUP — three repo secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_ACCOUNT_ID   your account id (Cloudflare → R2 → right-hand sidebar)
 #   CLOUDFLARE_API_TOKEN    a READ-ONLY token: My Profile → API Tokens → Create Token →
 #                           Custom token → Permissions: Account · Account Analytics · Read
-#                           (that permission alone — it cannot change or delete anything)
-# Without them this job logs and exits 0, so it is safe to merge before the secrets exist.
+#   SUPABASE_SERVICE_KEY    already set (shared with the other watchers)
+# Without them the script logs and exits 0, so this is safe to merge before the secrets exist.
 name: r2-usage
 
 on:
@@ -29,100 +29,15 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Read R2 operations from Cloudflare and record them
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Read R2 operations from Cloudflare, record them, alert if high
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SB_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          set -u
-          if [ -z "${CF_TOKEN:-}" ] || [ -z "${CF_ACCOUNT:-}" ]; then
-            echo "Cloudflare secrets not set — skipping (see the header of this file)"; exit 0; fi
-          if [ -z "${SB_KEY:-}" ]; then echo "no Supabase key — skipping"; exit 0; fi
-
-          SINCE=$(date -u +%Y-%m-01)
-          QUERY=$(jq -nc --arg acc "$CF_ACCOUNT" --arg since "$SINCE" '{
-            query: "query($acc:String!,$since:Date!){viewer{accounts(filter:{accountTag:$acc}){r2OperationsAdaptiveGroups(limit:10000,filter:{date_geq:$since}){sum{requests} dimensions{actionType}}}}}",
-            variables: {acc:$acc, since:$since}}')
-
-          RESP=$(curl -s -X POST "https://api.cloudflare.com/client/v4/graphql" \
-            -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" -d "$QUERY")
-
-          if echo "$RESP" | jq -e '.errors != null' >/dev/null 2>&1; then
-            echo "Cloudflare API refused the query:"; echo "$RESP" | jq -c '.errors' | head -c 400; echo
-            echo "The token most likely lacks Account Analytics: Read."; exit 1; fi
-
-          GROUPS=$(echo "$RESP" | jq '.data.viewer.accounts[0].r2OperationsAdaptiveGroups // []')
-          # Cloudflare bills by operation class, not by name — these are the Class A (mutating) ones.
-          CLASS_A=$(echo "$GROUPS" | jq '[.[] | select(.dimensions.actionType | test("^(PutObject|CopyObject|CompleteMultipartUpload|CreateMultipartUpload|UploadPart|UploadPartCopy|ListBuckets|PutBucket|ListObjects|ListMultipartUploads|ListParts|PutBucketEncryption|PutBucketCors|PutBucketLifecycleConfiguration|LifecycleStorageTierTransition)$")) | .sum.requests] | add // 0')
-          CLASS_B=$(echo "$GROUPS" | jq '[.[] | select(.dimensions.actionType | test("^(GetObject|HeadObject|HeadBucket|UsageSummary|GetBucketEncryption|GetBucketCors|GetBucketLifecycleConfiguration)$")) | .sum.requests] | add // 0')
-          TOTAL=$(echo "$GROUPS" | jq '[.[].sum.requests] | add // 0')
-          echo "since $SINCE — class A: $CLASS_A · class B: $CLASS_B · all ops: $TOTAL"
-          echo "$GROUPS" | jq -r '.[] | "   \(.dimensions.actionType): \(.sum.requests)"' | sort -t: -k2 -rn | head -12
-
-          # park the numbers where the guard can act on them (service key bypasses RLS; no new fn)
-          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          PATCH=$(jq -nc --argjson a "$CLASS_A" --argjson b "$CLASS_B" --arg p "$SINCE" --arg n "$NOW" \
-            '{r2_class_a_month:$a, r2_class_b_month:$b, r2_ops_period:$p, r2_ops_checked:$n}')
-          CODE=$(curl -s -o /tmp/patch.out -w '%{http_code}' -X PATCH \
-            "https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/ms_service_guard?id=eq.1" \
-            -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" \
-            -H "Content-Type: application/json" -H "Prefer: return=minimal" -d "$PATCH")
-          echo "recorded: HTTP $CODE"
-          [ "$CODE" -ge 300 ] && { head -c 300 /tmp/patch.out; echo; exit 1; }
-
-          STATE=$(curl -s -X POST "https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/rpc/ms_service_state" \
-            -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" -H "Content-Type: application/json" -d '{}')
-          A_CAP=$(echo "$STATE" | jq -r '.[0].r2_class_a_cap // 800000')
-          B_CAP=$(echo "$STATE" | jq -r '.[0].r2_class_b_cap // 8000000')
-          FROZEN=$(echo "$STATE" | jq -r '.[0].frozen')
-          LOCKED=$(echo "$STATE" | jq -r '.[0].locked')
-          A_PCT=$((CLASS_A * 100 / A_CAP)); B_PCT=$((CLASS_B * 100 / B_CAP))
-          echo "- R2 ops: class A **$CLASS_A** (${A_PCT}% of $A_CAP) · class B **$CLASS_B** (${B_PCT}% of $B_CAP)" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$A_PCT" -lt 50 ] && [ "$B_PCT" -lt 50 ]; then echo "both well under the ceilings"; exit 0; fi
-          TITLE="⚠ R2 operations at ${A_PCT}% (writes) / ${B_PCT}% (tile reads) of the ceiling"
-          BODY="This month so far: **$CLASS_A** class A operations of $A_CAP, and **$CLASS_B** class B of $B_CAP.
-          Cloudflare's free tier is 1,000,000 and 10,000,000.
-
-          Right now — writes stopped: **$LOCKED** · maps frozen: **$FROZEN**
-
-          Class A over the ceiling stops writes. Class B over it freezes the site, because blocking
-          writes would not slow tile reads at all. Adjust with
-          \`select public.ms_service_set_r2_op_caps(a, b);\`
-
-          (Automated daily check: .github/workflows/r2-usage.yml)"
-          EXISTING=$(gh issue list --repo "$GH_REPO" --state open --search "R2 operations at in:title" --json number --jq '.[0].number' || true)
-          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            gh issue edit "$EXISTING" --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
-          else
-            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
-          fi
-
-      - name: Warn if the meter has gone quiet
-        # A guard that silently stops measuring is the dangerous failure — it looks like zero usage.
-        env:
-          SB_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          if [ -z "${SB_KEY:-}" ]; then exit 0; fi
-          STATE=$(curl -s -X POST "https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/rpc/ms_service_state" \
-            -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" -H "Content-Type: application/json" -d '{}')
-          FRESH=$(echo "$STATE" | jq -r '.[0].r2_ops_fresh // "null"')
-          echo "r2_ops_fresh = $FRESH"
-          if [ "$FRESH" = "true" ] || [ "$FRESH" = "null" ]; then exit 0; fi
-          TITLE="⚠ R2 usage meter has gone stale"
-          BODY="\`r2_ops_fresh\` is false — the R2 operations feed has not updated in over 3 days.
-
-          The guard deliberately treats a stale meter as UNKNOWN rather than as zero, so it will not
-          freeze anything on old numbers. But it also means tile reads are currently unwatched.
-          Check the CLOUDFLARE_API_TOKEN secret and this workflow's last run.
-
-          (Automated daily check: .github/workflows/r2-usage.yml)"
-          EXISTING=$(gh issue list --repo "$GH_REPO" --state open --search "R2 usage meter has gone stale in:title" --json number --jq '.[0].number' || true)
-          if [ -z "$EXISTING" ] || [ "$EXISTING" = "null" ]; then
-            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
-          fi
+        run: node scripts/r2-usage.mjs
