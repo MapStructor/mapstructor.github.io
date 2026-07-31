@@ -16,6 +16,12 @@
  *   · /maps/*  and  /ames/*     — served by the Worker, not this site: the frozen showcases and
  *                                 the Ames History Museum's encyclopedia, which is a LIVE
  *                                 dependency of somebody else's website
+ *   · /ames_history_museum/     — AHM1, the museum's own live map
+ *   · map/index.html            — THE VIEWER. Showcase links keep working while the veil is up
+ *                                 (owner's call, 7/31: "a user should still see showcases").
+ *                                 Safe, because the viewer is not a way in: a private map already
+ *                                 refuses strangers (RLS + the private notice), while the editor,
+ *                                 dashboard, admin and home page all stay behind the veil.
  *
  * WHAT IT IS NOT: security. It's a curtain, not a lock — the data behind it is protected by RLS
  * (item 9), which is the thing that actually stops a stranger reading a private map. The veil
@@ -35,6 +41,8 @@
   var path = location.pathname.toLowerCase();
   if (/(terms|privacy|report)\.html$/.test(path)) return;
   if (path.indexOf("/maps/") === 0 || path.indexOf("/ames/") === 0) return;
+  if (path.indexOf("/ames_history_museum/") === 0) return;
+  if (path.slice(-16) === "/map/index.html" || path.slice(-5) === "/map/") return;   // the viewer — showcase links stay open
 
   function show() {
     // The check below can finish BEFORE the DOM is ready — this script runs in <head>, so show()
