@@ -77,6 +77,35 @@ var MAX_UPLOAD_BYTES = 95 * 1024 * 1024;   // Worker request-body ceiling is ~10
 
    A trip leaves a JSON breadcrumb in R2 under alerts/ (who, what, how much) — written
    once per window so the alert itself can't become the write storm. */
+/* SERVICE GUARD (2026-07-31) — the second half of "the bill can never run away". The rate guard
+   below stops a fast loop; this stops slow, legitimate-looking growth past the free tiers. The
+   ceiling itself lives in Postgres (sql/setup/service-guard-setup.sql) so the database trigger
+   and this Worker enforce the SAME number, and the owner can change it without a deploy.
+   Cached for 60s per isolate: a cap that costs a database round-trip on every upload would be a
+   tax on the normal path, and a minute of lag cannot meaningfully overshoot a multi-GB ceiling. */
+var _svc = { at: 0, locked: false, reason: null };
+
+async function serviceLocked(env) {
+  var now = Date.now();
+  if (now - _svc.at < 60000) return _svc;
+  try {
+    var r = await fetch(env.SUPABASE_URL + "/rest/v1/rpc/ms_service_state", {
+      method: "POST",
+      headers: { apikey: env.SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: "{}"
+    });
+    if (r.ok) {
+      var rows = await r.json();
+      var row = Array.isArray(rows) ? rows[0] : rows;
+      if (row && typeof row.locked === "boolean") _svc = { at: now, locked: row.locked, reason: row.reason };
+      else _svc = { at: now, locked: false, reason: null };
+    } else if (r.status === 404) {
+      _svc = { at: now + 3600000, locked: false, reason: null };   // SQL not run yet — stop asking for an hour
+    }
+  } catch (e) { /* never fail a write because the guard couldn't be reached */ }
+  return _svc;
+}
+
 var WRITE_LIMIT_PER_MIN = 600;
 var _rate = new Map();   // userId → { n, windowStart, alerted }
 var _rpcMissing = false;   // remembered per isolate: don't re-probe a function that isn't installed
@@ -250,6 +279,8 @@ export default {
     if (req.method === "POST" && url.pathname === "/fold") {
       var fuser = await supabaseUser(env, req);
       if (!fuser || !fuser.id) return new Response("auth required", { status: 401, headers: cors() });
+      var fsvc = await serviceLocked(env);
+      if (fsvc.locked) return new Response("service paused: " + (fsvc.reason || ""), { status: 503, headers: cors() });
       // a fold dispatch costs a whole GitHub runner — hold it to the same ceiling
       var fhit = await rateCheckShared(env, req, WRITE_LIMIT_PER_MIN) || rateCheck(fuser.id, WRITE_LIMIT_PER_MIN);
       if (fhit.over) {
@@ -306,6 +337,16 @@ export default {
 
       var user = await supabaseUser(env, req);
       if (!user || !user.id) return new Response("auth required", { status: 401, headers: cors() });
+
+      // service guard — the ceiling on the whole platform, not this one user
+      if (req.method === "PUT") {
+        var svc = await serviceLocked(env);
+        if (svc.locked) {
+          return new Response("MapStructor isn't accepting new data right now (" + (svc.reason || "paused") +
+            "). Existing maps are unaffected — they can still be viewed, edited and downloaded.",
+            { status: 503, headers: cors({ "Retry-After": "3600" }) });
+        }
+      }
 
       // write-rate guard — shared counter when it's installed, isolate counter otherwise
       var hit = await rateCheckShared(env, req, WRITE_LIMIT_PER_MIN) || rateCheck(user.id, WRITE_LIMIT_PER_MIN);
