@@ -10,6 +10,15 @@
  * page load, so the whole thing can be verified now and flipped later with confidence.
  * (?veil=0 forces it off — useful if it's up and you need a quick look without logging in.)
  *
+ * THE GATE CODE. Anyone you give the code to can pull the curtain aside themselves — either by
+ * typing it into "Have a code?" on the veil, or by opening a link with ?code=<the code> on it.
+ * It is remembered in that browser, so they only do it once.
+ *
+ * This is NOT a login and deliberately not a secret. Past the curtain they are an ordinary
+ * visitor: anonymous at first, free to register, log in, make maps — everything a real visitor
+ * can do. Nothing about the code grants any permission; it only stops the general public
+ * wandering in before launch.
+ *
  * WHAT IT DELIBERATELY LETS THROUGH, because a closed front door must not break these:
  *   · terms / privacy / report  — a rights-holder has to be able to reach you even pre-launch;
  *                                 the ToS names that path, so hiding it would be a broken promise
@@ -28,7 +37,9 @@
  * exists so the site isn't *discovered* before it's ready, not to make it unreachable. */
 (function () {
   var VEIL_ON = false;                       // ← THE LAUNCH SWITCH
+  var GATE_CODE = "tester";                  // ← give this to anyone who should get in early
   var KEY_STYLE = "ms-veil-style";
+  var KEY_PASS = "ms-veil-pass";             // remembers that this browser was let through
 
   var lifted = false;   // set once we know the visitor is allowed in — see show()/hide()
 
@@ -36,6 +47,30 @@
   var forced = q.get("veil");
   if (forced === "0") return;                       // explicit bypass for a quick look
   if (!VEIL_ON && forced !== "1") return;           // down = do nothing at all
+
+  function norm(s) { return String(s || "").trim().toLowerCase(); }
+
+  // ── the code, checked BEFORE anything is drawn so nobody sees a flash of curtain ──
+  function remembered() {
+    try { return localStorage.getItem(KEY_PASS) === GATE_CODE; } catch (e) { return false; }
+  }
+  function accept(code) {
+    if (norm(code) !== norm(GATE_CODE)) return false;
+    try { localStorage.setItem(KEY_PASS, GATE_CODE); } catch (e) {}
+    return true;
+  }
+  // a shareable link: mapstructor.com/?code=tester
+  var linkCode = q.get("code") || q.get("gate");
+  if (linkCode && accept(linkCode)) {
+    // take the code back out of the address bar — it's an invitation, not part of the page
+    try {
+      q.delete("code"); q.delete("gate");
+      var rest = q.toString();
+      history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash);
+    } catch (e) {}
+    return;
+  }
+  if (remembered()) return;                         // already opened the curtain here
 
   // pages that stay reachable with the veil up
   var path = location.pathname.toLowerCase();
@@ -67,7 +102,17 @@
       "background:#7c5cbf;color:#fff;font-weight:700;font-size:15px;cursor:pointer;font-family:inherit;}" +
       "#ms-veil .btn:hover{background:#6b4db0;}" +
       "#ms-veil .sub{margin-top:18px;font-size:13px;color:#8b84a3;}" +
-      "#ms-veil .sub a{color:#7c5cbf;}";
+      "#ms-veil .sub a{color:#7c5cbf;}" +
+      "#ms-veil .codelink{margin-top:26px;font-size:13px;color:#8b84a3;}" +
+      "#ms-veil .codelink button{background:none;border:none;color:#7c5cbf;font:inherit;cursor:pointer;text-decoration:underline;padding:0;}" +
+      "#ms-veil .codebox{margin-top:14px;display:none;}" +
+      "#ms-veil .codebox.on{display:block;}" +
+      "#ms-veil .codebox input{padding:9px 13px;border:1px solid #cfc6e6;border-radius:8px;font:inherit;font-size:14px;" +
+      "width:180px;background:#fff;color:#2a2438;}" +
+      "#ms-veil .codebox input:focus{outline:2px solid #7c5cbf;outline-offset:1px;}" +
+      "#ms-veil .codebox button{margin-left:8px;padding:9px 18px;border:none;border-radius:8px;background:#7c5cbf;" +
+      "color:#fff;font-weight:700;font-size:14px;cursor:pointer;font-family:inherit;}" +
+      "#ms-veil .codemsg{margin-top:10px;font-size:13px;color:#c0392b;min-height:18px;}";
     document.head.appendChild(s);
 
     var d = document.createElement("div");
@@ -81,11 +126,37 @@
         '<button class="btn" id="ms-veil-login">Log in</button>' +
         '<p class="sub">Opening soon. Questions or early access — ' +
         '<a href="mailto:contact@mapstructor.com">contact@mapstructor.com</a></p>' +
+        '<p class="codelink">Been given a code? <button id="ms-veil-codelink" type="button">Enter it here</button></p>' +
+        '<div class="codebox" id="ms-veil-codebox">' +
+          '<input id="ms-veil-code" type="text" placeholder="code" autocomplete="off" ' +
+            'autocapitalize="off" autocorrect="off" spellcheck="false">' +
+          '<button id="ms-veil-codego" type="button">Enter</button>' +
+          '<p class="codemsg" id="ms-veil-codemsg"></p>' +
+        '</div>' +
       '</div>';
     (document.body || document.documentElement).appendChild(d);
     var b = document.getElementById("ms-veil-login");
     if (b) b.addEventListener("click", function () {
       try { MapAuth.openAuthModal("login"); } catch (e) { location.href = "/index.html"; }
+    });
+
+    var box = document.getElementById("ms-veil-codebox");
+    var input = document.getElementById("ms-veil-code");
+    var msg = document.getElementById("ms-veil-codemsg");
+    var link = document.getElementById("ms-veil-codelink");
+    if (link) link.addEventListener("click", function () {
+      box.classList.add("on"); link.parentNode.style.display = "none"; input.focus();
+    });
+    function tryCode() {
+      if (accept(input.value)) { hide(); return; }
+      msg.textContent = "That code doesn’t match.";
+      input.select();
+    }
+    var go = document.getElementById("ms-veil-codego");
+    if (go) go.addEventListener("click", tryCode);
+    if (input) input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); tryCode(); }
+      else if (msg.textContent) msg.textContent = "";
     });
   }
 

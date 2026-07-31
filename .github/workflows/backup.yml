@@ -83,7 +83,15 @@ jobs:
           # pre-upload bucket check 403s (AccessDenied) even though object PUTs work
           RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
         run: |
-          sudo apt-get install -y -qq rclone
+          # NOT apt: `apt-get install rclone` with no `apt-get update` first fails the moment the
+          # runner image's package index goes stale — the .deb it asks for 404s. That is exactly
+          # what broke the restore drill on 7/29 and again on 7/31. The static binary has no index.
+          if ! command -v rclone >/dev/null 2>&1; then
+            curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+            unzip -qq -o /tmp/rclone.zip -d /tmp/rclone-dl
+            sudo install -m 755 /tmp/rclone-dl/*/rclone /usr/local/bin/rclone
+          fi
+          rclone version | head -1
           rclone copyto "db-$STAMP.dump" "r2:mapstructor-db-backups/db/db-$STAMP.dump"
           [ -f "auth-users-$STAMP.csv" ] && rclone copyto "auth-users-$STAMP.csv" "r2:mapstructor-db-backups/db/auth-users-$STAMP.csv"
           rclone delete --min-age 14d "r2:mapstructor-db-backups/db/"
@@ -144,6 +152,14 @@ jobs:
           RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_KEY_ID }}
           RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APP_KEY }}
         run: |
-          sudo apt-get install -y -qq rclone
+          # NOT apt: `apt-get install rclone` with no `apt-get update` first fails the moment the
+          # runner image's package index goes stale — the .deb it asks for 404s. That is exactly
+          # what broke the restore drill on 7/29 and again on 7/31. The static binary has no index.
+          if ! command -v rclone >/dev/null 2>&1; then
+            curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+            unzip -qq -o /tmp/rclone.zip -d /tmp/rclone-dl
+            sudo install -m 755 /tmp/rclone-dl/*/rclone /usr/local/bin/rclone
+          fi
+          rclone version | head -1
           rclone copyto "db-$STAMP.dump" "b2:mapstructor-backups/backups/db/db-$STAMP.dump"
           rclone delete --min-age 14d "b2:mapstructor-backups/backups/db/"

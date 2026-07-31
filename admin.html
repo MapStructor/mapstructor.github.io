@@ -301,10 +301,23 @@
           document.getElementById('g-db-cap').textContent = '(cap ' + P.fmtBytes(G.db_cap) + ')';
           document.getElementById('g-r2').textContent = P.fmtBytes(G.r2_bytes);
           document.getElementById('g-r2-cap').textContent = '(cap ' + P.fmtBytes(G.r2_cap) + ')';
+          // The R2 operation meters come from OUTSIDE — tiles never touch our code, so a daily
+          // job fetches them from Cloudflare. Until it has run, they are UNKNOWN, and an unknown
+          // meter is shown as unknown rather than as a reassuring zero.
+          var opsBar = function (label, used, cap, note) {
+            if (!G.r2_ops_fresh) {
+              return '<div style="margin:8px 0;font-size:12px;color:#8b84a3;">' + label +
+                ' — <i>not measured yet</i> <span style="font-size:11px;">' + note + '</span></div>';
+            }
+            return bar(label, used, cap, num);
+          };
           document.getElementById('g-bars').innerHTML =
             bar('Map loads (Mapbox bills these; 50,000/month free)', G.map_loads, G.map_load_cap, num) +
             bar('Database', G.db_bytes, G.db_cap, P.fmtBytes) +
-            bar('Files on R2', G.r2_bytes, G.r2_cap, P.fmtBytes);
+            bar('Files on R2', G.r2_bytes, G.r2_cap, P.fmtBytes) +
+            opsBar('Tile reads this month (freezes the site)', G.r2_class_b, G.r2_class_b_cap,
+                   '— needs the Cloudflare token; see .github/workflows/r2-usage.yml') +
+            opsBar('File writes this month (stops writes)', G.r2_class_a, G.r2_class_a_cap, '');
           var chip = document.getElementById('guard-state');
           if (G.frozen) { chip.textContent = 'MAPS FROZEN'; chip.style.cssText += 'background:#b4453a;color:#fff;'; }
           else if (G.locked) { chip.textContent = 'writes stopped'; chip.style.cssText += 'background:#d98a00;color:#fff;'; }

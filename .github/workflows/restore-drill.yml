@@ -57,7 +57,15 @@ jobs:
           RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_KEY_ID }}
           RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APP_KEY }}
         run: |
-          sudo apt-get install -y -qq rclone
+          # NOT apt: `apt-get install rclone` with no `apt-get update` first fails the moment the
+          # runner image's package index goes stale — the .deb it asks for 404s. That is precisely
+          # why this drill "failed" on 7/29 and 7/31; the backups themselves were never the problem.
+          if ! command -v rclone >/dev/null 2>&1; then
+            curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+            unzip -qq -o /tmp/rclone.zip -d /tmp/rclone-dl
+            sudo install -m 755 /tmp/rclone-dl/*/rclone /usr/local/bin/rclone
+          fi
+          rclone version | head -1
           NEWEST=$(rclone lsf "r2:mapstructor-db-backups/db/" --include "db-*.dump" | sort | tail -1)
           if [ -z "$NEWEST" ] && [ -n "${{ secrets.B2_KEY_ID }}" ]; then
             echo "::warning::R2 empty — falling back to B2"

@@ -83,6 +83,16 @@ var MAX_UPLOAD_BYTES = 95 * 1024 * 1024;   // Worker request-body ceiling is ~10
    and this Worker enforce the SAME number, and the owner can change it without a deploy.
    Cached for 60s per isolate: a cap that costs a database round-trip on every upload would be a
    tax on the normal path, and a minute of lag cannot meaningfully overshoot a multi-GB ceiling. */
+/* THE SECOND CEILING, and why it is deliberately a DIFFERENT number in a DIFFERENT place.
+   Everything above trusts one source: a row in Postgres. That is fine against runaway software,
+   and useless against anyone who reaches the database — they would simply raise the cap. So this
+   ceiling is hard-coded here, in a repo that deploys separately, and the guard takes the LOWER of
+   the two. It is set well above any honest month's usage: it is not a budget, it is a backstop
+   for the case where the first ceiling has been tampered with or answers nonsense. Changing it
+   takes a deploy, on purpose — that is what makes it worth having. */
+var HARD_R2_BYTES = 9 * 1024 * 1024 * 1024;        // R2's free tier is 10 GB
+var HARD_DB_BYTES = 7 * 1024 * 1024 * 1024;        // the Supabase Pro plan is 8 GB
+
 var _svc = { at: 0, locked: false, reason: null };
 
 async function serviceLocked(env) {
@@ -97,7 +107,14 @@ async function serviceLocked(env) {
     if (r.ok) {
       var rows = await r.json();
       var row = Array.isArray(rows) ? rows[0] : rows;
-      if (row && typeof row.locked === "boolean") _svc = { at: now, locked: row.locked, reason: row.reason };
+      if (row && typeof row.locked === "boolean") {
+        var locked = row.locked, reason = row.reason;
+        // the backstop: measured usage past OUR number stops writes even if the database's own
+        // cap says otherwise, and even if its `locked` flag has been cleared
+        if (Number(row.r2_bytes) >= HARD_R2_BYTES) { locked = true; reason = "file-storage backstop reached"; }
+        if (Number(row.db_bytes) >= HARD_DB_BYTES) { locked = true; reason = "database backstop reached"; }
+        _svc = { at: now, locked: locked, reason: reason };
+      }
       else _svc = { at: now, locked: false, reason: null };
     } else if (r.status === 404) {
       _svc = { at: now + 3600000, locked: false, reason: null };   // SQL not run yet — stop asking for an hour
