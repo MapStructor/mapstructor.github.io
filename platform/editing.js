@@ -1096,6 +1096,8 @@
       '<div class="erow">' +
       '<button data-type="group">+ Group</button>' +
       '<button data-type="section">+ Section</button></div>' +
+      // the Portal lives with the other add-things buttons (user 8/5) — it ADDS a whole map
+      '<div class="erow" style="margin-top:6px;"><button data-type="portal" title="Add a bookmarked map into this one (All / Linked / Instance per layer)">⊞ Portal</button></div>' +
       // admin-only: Mapbox needs a token, so it's gated to the owner on the hosted site (the multi-library
       // / no-charge principle). Regular users only get the tokenless + Tileset above.
       (_isAdmin ? '<div class="erow" id="editor-admin-add" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">' +
@@ -1105,7 +1107,7 @@
       '<div id="editor-add-form"></div>' +
       // map data footprint — exact stored bytes, filled in the background after boot (user 7/23)
       '<div id="ms-map-size" title="Exact stored size of this map’s data — click to refresh" style="margin-top:6px;padding-top:5px;border-top:1px dashed #ddd;font-size:11px;color:#6b6580;cursor:pointer;">' + (_mapSizeText || 'Map data: measuring…') + '</div>';
-    bar.querySelectorAll('#editor-add-buttons button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
+    bar.querySelectorAll('#editor-add-buttons button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'portal') { if (window.MSPortalAdd) MSPortalAdd.open(); return; } markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
     var msEl = document.getElementById('ms-map-size');
     if (msEl) msEl.addEventListener('click', function () { refreshMapSize(true); });
     if (!_mapSizeRun) refreshMapSize(false);
@@ -6847,6 +6849,24 @@
     document.getElementById('elp-interact-row').style.display = isStyleableLayer ? '' : 'none';
     var labelsCapable = isGeojson || (isTilesetNode(node) && node.type === 'line');   // tileset LINE labels ride the vector source (labels.js 7/16); points/polygons still need geojson anchors
     document.getElementById('elp-labels-sec').style.display = labelsCapable ? '' : 'none';
+    // Instance mode (Map Portal, 8/5): a LOCKED mirror presents the source exactly as the source
+    // styles it — the style/label/interaction controls are hidden, with one line saying why.
+    // (Linked mode keeps them all: their data, your styling.)
+    var lockNote = document.getElementById('elp-stylelock-note');
+    if (!lockNote) {
+      lockNote = document.createElement('div');
+      lockNote.id = 'elp-stylelock-note';
+      lockNote.style.cssText = 'display:none;margin:6px 0;padding:7px 9px;background:#f3eefc;border:1px solid #d9cff1;border-radius:6px;font-size:12px;color:#4a3670;';
+      lockNote.textContent = '🔒 Locked mirror — this instance shows its source layer exactly as the source presents it. To restyle it, delete this layer and re-add it from the Portal in Linked mode.';
+      var ss0 = document.getElementById('elp-style-section');
+      if (ss0 && ss0.parentNode) ss0.parentNode.insertBefore(lockNote, ss0);
+    }
+    if (node.styleLocked) {
+      lockNote.style.display = 'block';
+      document.getElementById('elp-style-section').style.display = 'none';
+      document.getElementById('elp-interact-row').style.display = 'none';
+      document.getElementById('elp-labels-sec').style.display = 'none';
+    } else lockNote.style.display = 'none';
     fillDateSection(node);   // Timeline dates: async sample reveals the section for any layer with DB rows (incl. converted tilesets)
     document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';

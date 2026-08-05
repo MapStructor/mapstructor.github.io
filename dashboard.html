@@ -60,6 +60,7 @@
   <script src="platform/auth.js?v=20260728a"></script>
   <script src="platform/veil.js?v=20260731a"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
   <script src="platform/topbar.js?v=20260728a"></script>
+  <script src="platform/bookmarks.js?v=20260805a"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
   <script src="platform/pricing.js?v=20260729a"></script>
   <script src="platform/sanitize.js?v=20260709"></script>
   <script src="platform/share.js?v=20260709b"></script>
@@ -219,6 +220,7 @@
           // 🔒 status only — locking/unlocking lives in the map's own Settings (user 7/22)
           var locked = m.editLock === 'true' || m.editLock === true;
           row.innerHTML = '<a class="map-name" href="' + openHref + '" style="color:inherit;text-decoration:none;">' + esc(m.name || 'Untitled Map') + '</a>'
+            + '<span class="ms-bm" style="font-size:16px;line-height:1;"></span>'   // ★ bookmark (Map Portal) — starred maps show in the editor's Portal window
             + (locked ? '<span class="pill" style="cursor:default;background:#fdeaea;color:#b4453a;" title="Locked — editing is off; unlock inside the map’s Settings">🔒 locked</span>' : '')
             + '<span class="pill' + (vis === 'public' ? ' pub' : '') + '" style="cursor:default;">' + visLabel + '</span>'
             + '<span class="map-meta">' + fmtDate(m.updated_at) + '</span>'
@@ -249,6 +251,8 @@
             loadMaps(); loadTrash();
           };
           listEl.appendChild(row);
+          var bmEl = row.querySelector('.ms-bm');
+          if (bmEl && window.MSBookmarks) MSBookmarks.star(bmEl, m.id);
         });
       }
       // ── Trash (9i): a deleted map is soft-deleted (projects.deleted_at) — recoverable here, or

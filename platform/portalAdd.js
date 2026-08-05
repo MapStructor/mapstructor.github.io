@@ -20,8 +20,6 @@
   if (!projectId) return;
 
   var css =
-    '#ms-portal-btn{display:block;width:calc(100% - 16px);margin:0 8px 8px;padding:7px 10px;border:1px solid #7c5cbf;border-radius:7px;background:#f3eefc;color:#4a3670;font:700 12.5px "Source Sans Pro",Arial,sans-serif;cursor:pointer;text-align:center;}' +
-    '#ms-portal-btn:hover{background:#7c5cbf;color:#fff;}' +
     '#ms-portal-panel{position:fixed;top:60px;left:50%;transform:translateX(-50%);width:440px;max-width:94vw;max-height:76vh;overflow:auto;background:#fff;border:1px solid #cbc0e4;border-radius:12px;box-shadow:0 10px 34px rgba(30,27,46,.25);z-index:3000;font:13px/1.45 "Source Sans Pro",Arial,sans-serif;color:#2a2440;}' +
     '#ms-portal-panel .pp-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid #eee;font-weight:700;font-size:14px;}' +
     '#ms-portal-panel .pp-x{cursor:pointer;border:none;background:none;font-size:16px;color:#888;}' +
@@ -54,10 +52,12 @@
     return panel.querySelector('.pp-body');
   }
 
-  // ── screen 1: the map lists ───────────────────────────────────────────────
+  // ── screen 1: STARRED maps only (user 8/5). Your own maps appear here too — once you've
+  //    ★-ed them (from the map itself, the dashboard, a user page, or the portal). ──
   async function openList() {
     var body = shell('Map Portal');
     body.innerHTML = '<div class="pp-empty">Loading…</div>';
+    db = db || (window.MapAuth && MapAuth.db);
     me = await MapAuth.currentUser();
     if (!me) { body.innerHTML = '<div class="pp-empty">Log in (or just start drawing — an anonymous session works too) to add maps.</div>'; return; }
     var bmIds = (await MSBookmarks.list()).filter(function (id) { return id !== projectId; });
@@ -66,8 +66,6 @@
       var r = await db.from('projects').select('id,name').in('id', bmIds);
       if (!r.error && r.data) bmRows = bmIds.map(function (id) { return r.data.find(function (p) { return p.id === id; }); }).filter(Boolean);
     }
-    var mine = await db.from('projects').select('id,name').eq('user_id', me.id).is('deleted_at', null).neq('id', projectId).order('updated_at', { ascending: false }).limit(50);
-    var myRows = (!mine.error && mine.data) || [];
     function rows(list, empty) {
       if (!list.length) return '<div class="pp-empty">' + empty + '</div>';
       return list.map(function (p) {
@@ -75,8 +73,7 @@
       }).join('');
     }
     body.innerHTML =
-      '<div class="pp-sec">Portal Bookmarks</div>' + rows(bmRows, 'No bookmarks yet — ★ any map, or browse the portal.') +
-      '<div class="pp-sec">My Maps</div>' + rows(myRows, 'No other maps on this account.') +
+      '<div class="pp-sec">★ Bookmarked maps</div>' + rows(bmRows, 'Nothing starred yet — ★ any map (yours included: star them on your dashboard or user page), or browse the portal.') +
       '<div class="pp-foot"><a href="../portal.html" target="_blank" rel="noopener" style="color:#7c5cbf;font-weight:700;text-decoration:none;">Open Portal ↗</a></div>';
     body.querySelectorAll('.pp-add').forEach(function (b) {
       b.onclick = function () { openPicker(b.getAttribute('data-id'), b.getAttribute('data-name')); };
@@ -230,21 +227,8 @@
     }
   }
 
-  // ── mount ─────────────────────────────────────────────────────────────────
-  function mount() {
-    if (document.getElementById('ms-portal-btn')) return true;
-    var host = document.getElementById('layers-panel-content');
-    if (!host || !window.MapAuth || !MapAuth.db || !window.MSBookmarks) return false;
-    db = MapAuth.db;
-    var b = document.createElement('button');
-    b.id = 'ms-portal-btn';
-    b.textContent = '⊞ Portal — add a map into this one';
-    b.onclick = function () { if (panel) { close(); } else { openList(); } };
-    host.parentNode.insertBefore(b, host);
-    return true;
-  }
-  var tries = 0;
-  if (!mount()) { var iv = setInterval(function () { if (mount() || ++tries > 60) clearInterval(iv); }, 300); }
-
-  window.MSPortalAdd = { open: openList };
+  // ── no button of our own: the ⊞ Portal button lives in the editor's add-things bar
+  //    (editing.js showButtons — user 8/5: "along with the other layer add-related buttons")
+  //    and calls MSPortalAdd.open(). Toggle behaviour: open again = close.
+  window.MSPortalAdd = { open: function () { if (panel) close(); else openList(); } };
 })();
