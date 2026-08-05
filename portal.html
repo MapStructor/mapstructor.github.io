@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Map Portal — MapStructor</title>
+  <link rel="icon" href="images/logo-transparent.png">
+  <style>
+    /* Map Portal (component 1, plan step 2b) — one card for now; the grid grows as maps join. */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --p: #7c5cbf; --p-dark: #6246a8; }
+    body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #f0eaff; color: #1e1b2e; min-height: 100vh; }
+    nav { position: fixed; top: 0; right: 0; display: flex; align-items: center; gap: 4px; padding: 16px clamp(16px, 4vw, 40px); z-index: 20; }
+    nav a { color: #6e6585; text-decoration: none; font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 6px; white-space: nowrap; }
+
+    .head { text-align: center; padding: clamp(56px, 9vw, 96px) 20px clamp(28px, 4vw, 44px); }
+    .head h1 { font-size: clamp(32px, 6vw, 56px); font-weight: 800; letter-spacing: -0.03em; }
+    .head p { margin-top: 10px; color: #9490a8; font-size: clamp(14px, 1.8vw, 17px); }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 0 clamp(20px, 5vw, 64px) clamp(56px, 8vw, 88px); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
+
+    .card { background: #fff; border: 1px solid rgba(124,92,191,0.18); border-radius: 12px; overflow: hidden;
+            box-shadow: 0 2px 10px rgba(30,27,46,0.06); transition: transform .12s, box-shadow .12s; }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(30,27,46,0.10); }
+    .thumb { display: block; width: 100%; height: 180px; object-fit: cover; background: linear-gradient(120deg, #d9cff1, #b9d8c9); }
+    .card-body { padding: 16px 18px 18px; }
+    .card-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .card-title .star { font-size: 19px; text-decoration: none; line-height: 1; }
+    .card-blurb { margin-top: 8px; color: #6e6585; font-size: 13.5px; line-height: 1.5; }
+    .card-actions { margin-top: 14px; display: flex; gap: 10px; align-items: center; }
+    .btn { display: inline-block; text-decoration: none; font-weight: 700; font-size: 14px; padding: 9px 20px; border-radius: 7px; }
+    .btn-view { background: #1e1b2e; color: #fff; }
+    .btn-view:hover { background: #2e2848; }
+    .hint { color: #9490a8; font-size: 12.5px; }
+
+    .coming { margin-top: 36px; text-align: center; color: #9490a8; font-size: 13.5px; }
+    footer { display: flex; justify-content: center; gap: 18px; padding: 24px; }
+    footer a { color: #9490a8; text-decoration: none; font-size: 12.5px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js?v=20260728a"></script>
+  <script src="platform/veil.js?v=20260731a"></script>
+  <script src="platform/topbar.js?v=20260728a"></script>
+  <script src="platform/bookmarks.js?v=20260805a"></script>
+</head>
+<body>
+
+  <nav>
+    <a href="index.html">Home</a>
+    <a href="#" class="btn-nav" id="nav-auth" style="display:none;">Login</a>
+  </nav>
+
+  <div class="head">
+    <h1>Map Portal</h1>
+    <p>Curated maps and datasets to explore — and soon, to add straight into your own maps.</p>
+  </div>
+
+  <main>
+    <div class="grid">
+      <div class="card">
+        <!-- thumbnail ships as a real capture of the map; the gradient behind it is the fallback -->
+        <img class="thumb" src="images/portal/railways.jpg" alt="" onerror="this.removeAttribute('src')">
+        <div class="card-body">
+          <div class="card-title">
+            <span>US Early Transportation: Railway&nbsp;and&nbsp;Water</span>
+            <a class="star" href="#" id="star-railways">☆</a>
+          </div>
+          <div class="card-blurb">
+            Railroads, canals and steamboat routes across the early United States, 1787–1911 —
+            16 layers with a timeline, plus today's rail network for comparison.
+          </div>
+          <div class="card-actions">
+            <a class="btn btn-view" href="map/index.html?id=f914d5e6-7aad-477d-8613-5bd4aac350d5">View</a>
+            <span class="hint">★ saves it to your Portal Bookmarks</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="coming">More maps and datasets will appear here as the portal grows.</div>
+  </main>
+
+  <footer>
+    <a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="report.html">Report a map</a>
+  </footer>
+
+  <script>
+    // the card ★ is a live bookmark toggle backed by MSBookmarks (localStorage or account)
+    (function wire() {
+      if (!window.MSBookmarks) return setTimeout(wire, 150);
+      MSBookmarks.star(document.getElementById('star-railways'), 'f914d5e6-7aad-477d-8613-5bd4aac350d5');
+    })();
+  </script>
+</body>
+</html>
