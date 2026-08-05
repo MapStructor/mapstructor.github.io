@@ -6867,6 +6867,28 @@
       document.getElementById('elp-interact-row').style.display = 'none';
       document.getElementById('elp-labels-sec').style.display = 'none';
     } else lockNote.style.display = 'none';
+    // Tombstone (Map Portal step 6): a mirror whose SOURCE layer is gone renders empty — say so
+    // instead of silence. Only instanceOf mirrors can die this way; tiled/folded pointers keep
+    // rendering from R2 (the sweeper's refcount protects those files). "Gone" and "made private"
+    // are indistinguishable from here, so the note says "unavailable".
+    var dsNote = document.getElementById('elp-deadsource-note');
+    if (!dsNote) {
+      dsNote = document.createElement('div');
+      dsNote.id = 'elp-deadsource-note';
+      dsNote.style.cssText = 'display:none;margin:6px 0;padding:7px 9px;background:#fdeaea;border:1px solid #f2c4c0;border-radius:6px;font-size:12px;color:#8f3a31;';
+      dsNote.textContent = '⚠ Source unavailable — the layer this mirror follows was removed or made private, so it renders empty. You can delete this layer, or ask the source\'s owner.';
+      var ss1 = document.getElementById('elp-style-section');
+      if (ss1 && ss1.parentNode) ss1.parentNode.insertBefore(dsNote, ss1);
+    }
+    dsNote.style.display = 'none';
+    if (node.instanceOf) {
+      (function (noteEl, srcLid, forSlug) {
+        db.from('layers').select('id').eq('id', srcLid).maybeSingle().then(function (r) {
+          // still the same panel? (user may have clicked another layer while we checked)
+          if (activeLayerId === forSlug && !r.error && !r.data) noteEl.style.display = 'block';
+        }).catch(function () {});
+      })(dsNote, node.instanceOf, node.id);
+    }
     fillDateSection(node);   // Timeline dates: async sample reveals the section for any layer with DB rows (incl. converted tilesets)
     document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';

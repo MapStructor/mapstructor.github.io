@@ -148,6 +148,36 @@
       if (s.error || g.error || l.error) throw new Error((s.error || g.error || l.error).message);
       var pls = (l.data || []).filter(function (x) { return x.layers; });
 
+      // ── step 6: quota pre-check BEFORE any writes — an All-heavy add refuses cleanly up
+      //    front, never dies halfway. Only feature-copying All layers count NOW (live geojson /
+      //    converted tiles); folded All layers arrive as 0-byte pointers and bill their full
+      //    size at first Publish instead (the COW moment, which carries its own warning). ──
+      var copyingIds = pls.filter(function (x) {
+        var L0 = x.layers, m0 = modes[L0.id] || 'linked';
+        return m0 === 'all' && L0.fold_state !== 'folded' && (L0.source_type === 'geojson-supabase' || (L0.raw_config && L0.raw_config.pmtiles));
+      }).map(function (x) { return x.layers.id; });
+      var P = window.MapStructorPricing || window.MSPricing;   // pricing.js exports MapStructorPricing
+      if (copyingIds.length && P) {
+        note('Checking storage room…');
+        var est = 0;
+        for (var q = 0; q < copyingIds.length; q++) {
+          var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', copyingIds[q]);
+          est += (cq.count || 0) * 600;   // rough bytes/row — a pre-check, not an invoice
+        }
+        if (est > 0) {
+          var tier = 'free';
+          try { var mp = await db.rpc('ms_my_plan'); var mp0 = mp && mp.data && (mp.data[0] || mp.data); if (!mp.error && mp0 && mp0.subscription_tier) tier = mp0.subscription_tier; } catch (e0) {}
+          var used = 0;
+          try { var ur = await db.rpc('mapstructor_user_storage'); if (!ur.error && typeof ur.data === 'number') used = ur.data; } catch (e1) {}
+          var quota = P.stepFor(tier).quotaBytes;
+          if (quota && used + est > quota) {
+            note('Not enough storage: the "All" choices copy ~' + Math.max(1, Math.round(est / 1048576)) + ' MB now, but only ' + Math.max(0, Math.round((quota - used) / 1048576)) + ' MB is free on your plan. Switch heavy layers to Linked (0 bytes) or upgrade.');
+            goBtn.disabled = false; goBtn.textContent = 'Add to this map';
+            return;
+          }
+        }
+      }
+
       // the incoming block lands ABOVE everything: base sort = target's minimum − 1000
       var mins = await Promise.all(['layer_sections', 'layer_groups', 'project_layers'].map(function (t) {
         return db.from(t).select('sort_order').eq('project_id', projectId).order('sort_order', { ascending: true }).limit(1);
