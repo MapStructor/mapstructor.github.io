@@ -2356,6 +2356,93 @@
     document.getElementById('esp-logo-link').addEventListener('change', onLogoLink);
     // Sharing (who can see the map) moved to its own 🔗 Share panel in the top bar — see platform/share.js.
   }
+  // ── The per-layer copy engine (extracted 8/5 — Map Portal plan step 3). Copies ONE bundle
+  //    projectLayer — its layers row (fresh slug), its project link, and its features — into a
+  //    target project. `maps` carries the caller's shared remap tables ({secMap, grpMap,
+  //    layerIdMap, slugMap}); the cross-layer reference fix-up (instanceOf/outlineOf) is the
+  //    CALLER's job once every layer exists. Returns the feature-row count copied. Used by
+  //    ⧉ Copy-map and the Portal's "All" add mode — one engine, no drift. ──
+  async function copyLayerInto(pl, targetProjectId, maps, ownerId) {
+    var L = pl.layers; if (!L) return 0;
+    function strip(row, extra) { var o = {}; Object.keys(row).forEach(function (k) { if (k === 'id' || k === 'created_at' || k === 'updated_at' || (extra && extra.indexOf(k) > -1)) return; o[k] = row[k]; }); return o; }
+    var featCount = 0;
+    var nl = strip(L); if (nl.slug) nl.slug = L.slug + '-c' + Math.random().toString(36).slice(2, 7);
+    // the COPIER owns the copy (8/5): strip() used to carry the SOURCE's user_id, so a cross-user
+    // copy billed its storage to the person being copied FROM, forever. Same-owner copies unchanged.
+    if (ownerId) nl.user_id = ownerId;
+    // fresh bake identity: drop the dirty-check stamps so the copy's FIRST Publish bakes its
+    // OWN tiles/rasters into its own storage path (until then it renders from the source
+    // map's archives — same pixels, shared files, fully independent after one publish)
+    if (nl.raw_config) {
+      nl.raw_config = JSON.parse(JSON.stringify(nl.raw_config));
+      if (L.fold_state !== 'folded') { delete nl.raw_config.tilesGeneratedAt; delete nl.raw_config.tilesFeatureCount; delete nl.raw_config.tilesMaxFid; }
+    }
+    if (L.fold_state === 'folded') {
+      // C7 pointer copy: stamps stay (they carry the source-keyed artifact URLs the copy
+      // renders from) and the copy bills nothing until it materializes at first fold-merge.
+      nl.r2_bytes = 0;
+      delete nl.raw_config.foldError;
+    }
+    var rl = await db.from('layers').insert(nl).select('id').single(); if (rl.error) throw new Error(rl.error.message);
+    var newLid = rl.data.id;
+    maps.layerIdMap[L.id] = newLid; maps.slugMap[L.slug] = nl.slug;
+    var npl = strip(pl, ['layers']);
+    npl.project_id = targetProjectId; npl.layer_id = newLid;
+    npl.section_id = pl.section_id ? (maps.secMap[pl.section_id] || null) : null;
+    npl.group_id = pl.group_id ? (maps.grpMap[pl.group_id] || null) : null;
+    var rpl = await db.from('project_layers').insert(npl); if (rpl.error) throw new Error(rpl.error.message);
+    // Duplicate the features (paged; select * so custom fields survive). Converted tilesets
+    // (raw_config.pmtiles) keep their features in the DB as the editable source of truth —
+    // skipping them left copies with EMPTY attribute tables/feature lists, and a re-bake on
+    // the copy would have baked zero-feature tiles (user 7/22, copy be897684).
+    if (L.fold_state === 'folded') {
+      // C7: a folded layer's only meaningful rows are DELTAS (ms_foldsrc). Anything else is
+      // soak-period dead weight (C6 keeps pre-fold rows until their hard-delete) — cloning
+      // those would re-inflate the copy with rows nothing reads.
+      var dLast = null;
+      for (;;) {
+        var dq = db.from('features').select('*').eq('layer_id', L.id).not('custom_fields->>ms_foldsrc', 'is', null).order('feature_id').limit(1000);
+        if (dLast != null) dq = dq.gt('feature_id', dLast);
+        var dr = await dq;
+        if (dr.error) throw new Error('delta copy read: ' + dr.error.message);
+        if (!dr.data || !dr.data.length) break;
+        dLast = dr.data[dr.data.length - 1].feature_id;
+        var dRows = dr.data.map(function (f) { var nf = strip(f, ['feature_id']); nf.layer_id = newLid; return nf; });
+        var dIns = await db.from('features').insert(dRows); if (dIns.error) throw new Error(dIns.error.message);
+        featCount += dRows.length;
+        if (dr.data.length < 1000) break;
+      }
+    } else if (L.source_type === 'geojson-supabase' || (L.raw_config && L.raw_config.pmtiles)) {
+      // FAST PATH (7/22): one server-side INSERT…SELECT copies the whole layer in seconds with
+      // zero client transfer — needs ms_copy_layer_features (query-ops-setup.sql v8). Falls
+      // back to client-side keyset paging when the RPC isn't installed yet.
+      var rpcCopied = -1;
+      try {
+        var rpcC = await db.rpc('ms_copy_layer_features', { p_src: L.id, p_dst: newLid });
+        if (!rpcC.error && typeof rpcC.data === 'number') rpcCopied = rpcC.data;
+      } catch (eRpcC) {}
+      if (rpcCopied >= 0) { featCount += rpcCopied; }
+      else {
+      // KEYSET pagination (feature_id > last), not OFFSET — deep offsets on big layers hit the
+      // DB statement timeout and silently truncated the copy (78k-layer repair, 7/22)
+      var lastFid = null;
+      for (;;) {
+        var fq = db.from('features').select('*').eq('layer_id', L.id).order('feature_id').limit(1000);
+        if (lastFid != null) fq = fq.gt('feature_id', lastFid);
+        var fr = await fq;
+        if (fr.error) throw new Error('feature copy read: ' + fr.error.message);
+        if (!fr.data || !fr.data.length) break;
+        lastFid = fr.data[fr.data.length - 1].feature_id;
+        var rows = fr.data.map(function (f) { var nf = strip(f, ['feature_id']); nf.layer_id = newLid; return nf; });
+        var ri = await db.from('features').insert(rows); if (ri.error) throw new Error(ri.error.message);
+        featCount += rows.length;
+        if (fr.data.length < 1000) break;
+      }
+      }
+    }
+    return featCount;
+  }
+  window.MSCopyEngine = { copyLayerInto: copyLayerInto };   // the Portal add flow (portalAdd.js) calls this
   // ── Copy map (Google-My-Maps-style): clone the WHOLE project — sections, groups, layers (new rows, so
   //    edits never touch the original), project_layers links, and every feature — into a new private map
   //    owned by the CURRENT account. Solves "started the map before logging in" too. ──
@@ -2395,81 +2482,13 @@
         var rg = await db.from('layer_groups').insert(ng).select('id').single(); if (rg.error) throw new Error(rg.error.message);
         grpMap[g.id] = rg.data.id;
       }
-      // 4 — layers (new rows + fresh slugs), their project link, and their features
+      // 4 — layers (new rows + fresh slugs), their project link, and their features — one call per
+      //     layer into the shared engine (copyLayerInto, extracted 8/5; the Portal's "All" mode
+      //     runs the exact same code)
       var featTotal = 0;
+      var copyMaps = { secMap: secMap, grpMap: grpMap, layerIdMap: layerIdMap, slugMap: slugMap };
       for (var k = 0; k < (bundle.projectLayers || []).length; k++) {
-        var pl = bundle.projectLayers[k], L = pl.layers; if (!L) continue;
-        var nl = strip(L); if (nl.slug) nl.slug = L.slug + '-c' + Math.random().toString(36).slice(2, 7);
-        // fresh bake identity: drop the dirty-check stamps so the copy's FIRST Publish bakes its
-        // OWN tiles/rasters into its own storage path (until then it renders from the source
-        // map's archives — same pixels, shared files, fully independent after one publish)
-        if (nl.raw_config) {
-          nl.raw_config = JSON.parse(JSON.stringify(nl.raw_config));
-          if (L.fold_state !== 'folded') { delete nl.raw_config.tilesGeneratedAt; delete nl.raw_config.tilesFeatureCount; delete nl.raw_config.tilesMaxFid; }
-        }
-        if (L.fold_state === 'folded') {
-          // C7 pointer copy: stamps stay (they carry the source-keyed artifact URLs the copy
-          // renders from) and the copy bills nothing until it materializes at first fold-merge.
-          nl.r2_bytes = 0;
-          delete nl.raw_config.foldError;
-        }
-        var rl = await db.from('layers').insert(nl).select('id').single(); if (rl.error) throw new Error(rl.error.message);
-        var newLid = rl.data.id;
-        layerIdMap[L.id] = newLid; slugMap[L.slug] = nl.slug;
-        var npl = strip(pl, ['layers']);
-        npl.project_id = newId; npl.layer_id = newLid;
-        npl.section_id = pl.section_id ? (secMap[pl.section_id] || null) : null;
-        npl.group_id = pl.group_id ? (grpMap[pl.group_id] || null) : null;
-        var rpl = await db.from('project_layers').insert(npl); if (rpl.error) throw new Error(rpl.error.message);
-        // Duplicate the features (paged; select * so custom fields survive). Converted tilesets
-        // (raw_config.pmtiles) keep their features in the DB as the editable source of truth —
-        // skipping them left copies with EMPTY attribute tables/feature lists, and a re-bake on
-        // the copy would have baked zero-feature tiles (user 7/22, copy be897684).
-        if (L.fold_state === 'folded') {
-          // C7: a folded layer's only meaningful rows are DELTAS (ms_foldsrc). Anything else is
-          // soak-period dead weight (C6 keeps pre-fold rows until their hard-delete) — cloning
-          // those would re-inflate the copy with rows nothing reads.
-          var dLast = null;
-          for (;;) {
-            var dq = db.from('features').select('*').eq('layer_id', L.id).not('custom_fields->>ms_foldsrc', 'is', null).order('feature_id').limit(1000);
-            if (dLast != null) dq = dq.gt('feature_id', dLast);
-            var dr = await dq;
-            if (dr.error) throw new Error('delta copy read: ' + dr.error.message);
-            if (!dr.data || !dr.data.length) break;
-            dLast = dr.data[dr.data.length - 1].feature_id;
-            var dRows = dr.data.map(function (f) { var nf = strip(f, ['feature_id']); nf.layer_id = newLid; return nf; });
-            var dIns = await db.from('features').insert(dRows); if (dIns.error) throw new Error(dIns.error.message);
-            featTotal += dRows.length;
-            if (dr.data.length < 1000) break;
-          }
-        } else if (L.source_type === 'geojson-supabase' || (L.raw_config && L.raw_config.pmtiles)) {
-          // FAST PATH (7/22): one server-side INSERT…SELECT copies the whole layer in seconds with
-          // zero client transfer — needs ms_copy_layer_features (query-ops-setup.sql v8). Falls
-          // back to client-side keyset paging when the RPC isn't installed yet.
-          var rpcCopied = -1;
-          try {
-            var rpcC = await db.rpc('ms_copy_layer_features', { p_src: L.id, p_dst: newLid });
-            if (!rpcC.error && typeof rpcC.data === 'number') rpcCopied = rpcC.data;
-          } catch (eRpcC) {}
-          if (rpcCopied >= 0) { featTotal += rpcCopied; }
-          else {
-          // KEYSET pagination (feature_id > last), not OFFSET — deep offsets on big layers hit the
-          // DB statement timeout and silently truncated the copy (78k-layer repair, 7/22)
-          var lastFid = null;
-          for (;;) {
-            var fq = db.from('features').select('*').eq('layer_id', L.id).order('feature_id').limit(1000);
-            if (lastFid != null) fq = fq.gt('feature_id', lastFid);
-            var fr = await fq;
-            if (fr.error) throw new Error('feature copy read: ' + fr.error.message);
-            if (!fr.data || !fr.data.length) break;
-            lastFid = fr.data[fr.data.length - 1].feature_id;
-            var rows = fr.data.map(function (f) { var nf = strip(f, ['feature_id']); nf.layer_id = newLid; return nf; });
-            var ri = await db.from('features').insert(rows); if (ri.error) throw new Error(ri.error.message);
-            featTotal += rows.length;
-            if (fr.data.length < 1000) break;
-          }
-          }
-        }
+        featTotal += await copyLayerInto(bundle.projectLayers[k], newId, copyMaps, u.id);
         setStatus('Copying… ' + (k + 1) + '/' + bundle.projectLayers.length + ' layers');
       }
       // Remap cross-layer references the raw copy carried verbatim: instanceOf (a source layer's
