@@ -279,9 +279,21 @@
           };
           row.querySelector('[data-act=purge]').onclick = async function () {
             if (!confirm('Permanently delete "' + (m.name || 'Untitled Map') + '"? This CANNOT be undone.')) return;
-            var r = await db.from('projects').delete().eq('id', m.id);
+            // 8/5: deleting the project row ALONE orphaned this map's layers — `layers` has no FK to
+            // `projects`, so they survived carrying their r2_bytes and kept billing their owner for
+            // a map they had destroyed. The RPC removes the layers this map owns alone (a shared
+            // layer stays), their features in chunks, and lets the pricing-v5 trigger release the
+            // bytes. See mapstructor_docs/sql/setup/delete-forever-setup.sql.
+            var r = await db.rpc('ms_delete_project_forever', { p_project: m.id });
+            if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
+              r = await db.from('projects').delete().eq('id', m.id);   // migration not run yet — old behaviour
+            }
             if (r.error) { alert('Could not delete: ' + r.error.message); return; }
-            loadTrash();
+            var freed = (r.data && r.data[0]) || null;
+            if (freed && freed.bytes_released > 0) {
+              alert(Math.round(freed.bytes_released / 1048576) + ' MB released back to your storage.');
+            }
+            loadTrash(); loadMaps();
           };
           el.appendChild(row);
         });
