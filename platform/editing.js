@@ -323,18 +323,25 @@
         if (lid) {
           try { var cur = await db.from('project_layers').select('section_id, group_id, sort_order').eq('project_id', projectId).eq('layer_id', lid).single(); plf = cur.data || null; } catch (e) {}
           var dp = await db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', lid); if (dp.error) throw new Error(dp.error.message);
+          // 8/5 leak fix: if NO map still uses this layer it moves to Trash (layers.deleted_at) —
+          // visible on the dashboard, billed until "Delete forever" there. Without this the
+          // kept-for-undo row outlived the session as an invisible orphan billing its owner
+          // forever. Tolerates the migration not being run yet (see layer-trash-setup.sql).
+          try { await db.rpc('ms_trash_layer_if_orphaned', { p_layer: lid, p_project: projectId }); } catch (e) {}
         }
         removeMapLayers(node.id);           // drop tileset / engine-rendered map layers
         removeFromTree(layers, node);
         (function (n, llid, fields, arr, idx) {
           async function readd() {
             if (llid) await saveGuard(db.from('project_layers').insert({ project_id: projectId, layer_id: llid, section_id: fields ? fields.section_id : null, group_id: fields ? fields.group_id : null, sort_order: fields ? fields.sort_order : nextSort++ }), null, 'Undo failed to save').catch(function () {});
+            if (llid) { try { await db.from('layers').update({ deleted_at: null }).eq('id', llid); } catch (e) {} }   // un-trash — pairs with ms_trash_layer_if_orphaned on delete
             if (arr) arr.splice(Math.min(idx, arr.length), 0, n); else layers.push(n);
             rerender(); await loadFeatures();
             if (isTilesetNode(n)) renderTilesetOnMap(n);   // (large geojson layers re-render on reload)
           }
           async function reremove() {
             if (llid) await saveGuard(db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', llid), null, 'Undo failed to save').catch(function () {});
+            if (llid) { try { await db.rpc('ms_trash_layer_if_orphaned', { p_layer: llid, p_project: projectId }); } catch (e) {} }   // redo re-trashes, same as the primary path
             removeMapLayers(n.id); removeFromTree(layers, n); rerender(); await loadFeatures();
           }
           pushUndo(readd, reremove, 'delete ' + (n.label || 'layer'));

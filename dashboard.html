@@ -263,9 +263,14 @@
       async function loadTrash() {
         var el = document.getElementById('trash-section'); if (!el) return;
         var res = await db.from('projects').select('id,name,deleted_at').eq('user_id', user.id).not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
-        var rows = (res && res.data) || [];
-        if ((res && res.error) || !rows.length) { el.innerHTML = ''; return; }
-        el.innerHTML = '<h3 class="sub" style="margin:14px 0 6px;">🗑 Trash <span style="font-weight:400;color:#999;">(' + rows.length + ' — restorable)</span></h3>';
+        var rows = ((res && !res.error && res.data) || []);
+        // trashed LAYERS too (8/5): a layer removed from its last map parks here, still billed,
+        // until "Delete forever" releases its bytes — before this it became an INVISIBLE orphan
+        // billing its owner forever (see mapstructor_docs/sql/setup/layer-trash-setup.sql).
+        var lres = await db.from('layers').select('id,name,r2_bytes,deleted_at').eq('user_id', user.id).not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
+        var lrows = ((lres && !lres.error && lres.data) || []);   // column absent pre-migration → maps only
+        if (!rows.length && !lrows.length) { el.innerHTML = ''; return; }
+        el.innerHTML = '<h3 class="sub" style="margin:14px 0 6px;">🗑 Trash <span style="font-weight:400;color:#999;">(' + (rows.length + lrows.length) + ' — restorable)</span></h3>';
         rows.forEach(function (m) {
           var row = document.createElement('div'); row.className = 'map-row';
           row.innerHTML = '<span class="map-name" style="opacity:.65;">' + esc(m.name || 'Untitled Map') + '</span>'
@@ -294,6 +299,30 @@
               alert(Math.round(freed.bytes_released / 1048576) + ' MB released back to your storage.');
             }
             loadTrash(); loadMaps();
+          };
+          el.appendChild(row);
+        });
+        lrows.forEach(function (L) {
+          var mb = Math.round((L.r2_bytes || 0) / 1048576);
+          var row = document.createElement('div'); row.className = 'map-row';
+          row.innerHTML = '<span class="map-name" style="opacity:.65;">' + esc(L.name || 'Untitled layer')
+            + ' <span style="color:#999;font-weight:400;">(layer' + (mb ? ' · ' + mb + ' MB' : '') + ')</span></span>'
+            + '<span class="map-meta">trashed ' + fmtDate(L.deleted_at) + '</span>'
+            + '<div class="row-actions"><button class="btn btn-light" data-act="restore">Restore</button>'
+            + '<button class="btn btn-danger" data-act="purge">Delete forever</button></div>';
+          row.querySelector('[data-act=restore]').onclick = async function () {
+            // back into the map it was deleted from — or a fresh "Restored: …" map if that map is gone
+            var r = await db.rpc('ms_restore_layer', { p_layer: L.id });
+            if (r.error) { alert('Could not restore: ' + r.error.message); return; }
+            loadMaps(); loadTrash();
+          };
+          row.querySelector('[data-act=purge]').onclick = async function () {
+            if (!confirm('Permanently delete the layer "' + (L.name || 'Untitled layer') + '" and its data? This CANNOT be undone.')) return;
+            var r = await db.rpc('ms_delete_layer_forever', { p_layer: L.id });
+            if (r.error) { alert('Could not delete: ' + r.error.message); return; }
+            var freed = (r.data && r.data[0]) || null;
+            if (freed && freed.bytes_released > 0) alert(Math.round(freed.bytes_released / 1048576) + ' MB released back to your storage.');
+            loadTrash();
           };
           el.appendChild(row);
         });
