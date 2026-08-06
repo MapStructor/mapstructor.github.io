@@ -35,6 +35,10 @@
     .hint { color: #9490a8; font-size: 12.5px; }
 
     .coming { margin-top: 36px; text-align: center; color: #9490a8; font-size: 13.5px; }
+    .btn-contrib { display: inline-block; margin-top: 18px; text-decoration: none; font-weight: 700; font-size: 14px;
+                   padding: 10px 22px; border-radius: 8px; background: var(--p); color: #fff; }
+    .btn-contrib:hover { background: var(--p-dark); }
+    .contrib-hint { margin-top: 8px; color: #9490a8; font-size: 12.5px; }
     footer { display: flex; justify-content: center; gap: 18px; padding: 24px; }
     footer a { color: #9490a8; text-decoration: none; font-size: 12.5px; }
   </style>
@@ -53,31 +57,16 @@
 
   <div class="head">
     <h1>Map Portal</h1>
-    <p>Curated maps and datasets to explore — and soon, to add straight into your own maps.</p>
+    <p>Curated maps and datasets to explore — and to add straight into your own maps.</p>
+    <a class="btn-contrib" href="dashboard.html" title="Open your map → Share → Add to Portal">＋ Contribute a map</a>
+    <div class="contrib-hint">Own a map? Open it → <b>Share</b> → <b>Add to Portal</b>.</div>
   </div>
 
   <main>
-    <div class="grid">
-      <div class="card">
-        <!-- thumbnail ships as a real capture of the map; the gradient behind it is the fallback -->
-        <img class="thumb" src="images/portal/railways.jpg" alt="" onerror="this.removeAttribute('src')">
-        <div class="card-body">
-          <div class="card-title">
-            <span>US Early Transportation: Railway&nbsp;and&nbsp;Water</span>
-            <a class="star" href="#" id="star-railways">☆</a>
-          </div>
-          <div class="card-blurb">
-            Railroads, canals and steamboat routes across the early United States, 1787–1911 —
-            16 layers with a timeline, plus today's rail network for comparison.
-          </div>
-          <div class="card-actions">
-            <a class="btn btn-view" href="map/index.html?id=f914d5e6-7aad-477d-8613-5bd4aac350d5">View</a>
-            <span class="hint">★ saves it to your Portal Bookmarks</span>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="coming">More maps and datasets will appear here as the portal grows.</div>
+    <!-- cards come from portal_entries (joined to projects for the live name); maps that turned
+         private or were deleted drop out of the join automatically -->
+    <div class="grid" id="portal-grid"></div>
+    <div class="coming" id="portal-note">Loading…</div>
   </main>
 
   <footer>
@@ -85,10 +74,50 @@
   </footer>
 
   <script>
-    // the card ★ is a live bookmark toggle backed by MSBookmarks (localStorage or account)
-    (function wire() {
-      if (!window.MSBookmarks) return setTimeout(wire, 150);
-      MSBookmarks.star(document.getElementById('star-railways'), 'f914d5e6-7aad-477d-8613-5bd4aac350d5');
+    (function () {
+      // blurbs and names are USER text — cards are built with textContent, never innerHTML,
+      // and thumbs must look like an image (data:image/, images/, or http(s) URL) to render
+      var THUMB_OK = /^(data:image\/|images\/|https?:\/\/)/;
+      function card(e) {
+        var name = (e.projects && e.projects.name) || 'Untitled Map';
+        var c = document.createElement('div'); c.className = 'card';
+        var t;
+        if (e.thumb && THUMB_OK.test(e.thumb)) {
+          t = document.createElement('img'); t.className = 'thumb'; t.alt = '';
+          t.src = e.thumb; t.onerror = function () { this.removeAttribute('src'); };
+        } else { t = document.createElement('div'); t.className = 'thumb'; }
+        c.appendChild(t);
+        var body = document.createElement('div'); body.className = 'card-body';
+        var title = document.createElement('div'); title.className = 'card-title';
+        var nm = document.createElement('span'); nm.textContent = name; title.appendChild(nm);
+        var star = document.createElement('a'); star.className = 'star'; star.href = '#'; star.textContent = '☆'; title.appendChild(star);
+        body.appendChild(title);
+        var bl = document.createElement('div'); bl.className = 'card-blurb'; bl.textContent = e.blurb || ''; body.appendChild(bl);
+        var act = document.createElement('div'); act.className = 'card-actions';
+        var v = document.createElement('a'); v.className = 'btn btn-view'; v.href = 'map/index.html?id=' + encodeURIComponent(e.project_id); v.textContent = 'View'; act.appendChild(v);
+        var h = document.createElement('span'); h.className = 'hint'; h.textContent = '★ saves it to your Portal Bookmarks'; act.appendChild(h);
+        body.appendChild(act); c.appendChild(body);
+        (function wireStar() { if (window.MSBookmarks) MSBookmarks.star(star, e.project_id); else setTimeout(wireStar, 150); })();
+        return c;
+      }
+      async function load() {
+        if (!(window.MapAuth && MapAuth.db)) return setTimeout(load, 150);
+        var grid = document.getElementById('portal-grid'), note = document.getElementById('portal-note');
+        try {
+          var r = await MapAuth.db.from('portal_entries')
+            .select('project_id, blurb, thumb, sort_order, created_at, projects!inner(name, is_public, deleted_at)')
+            .eq('projects.is_public', true).is('projects.deleted_at', null)
+            .order('sort_order', { ascending: true }).order('created_at', { ascending: false });
+          if (r.error) throw new Error(r.error.message);
+          (r.data || []).forEach(function (e) { grid.appendChild(card(e)); });
+          note.textContent = (r.data && r.data.length)
+            ? 'More maps appear here as their makers contribute them.'
+            : 'No maps yet — open your map → Share → Add to Portal to be the first.';
+        } catch (e) {
+          note.textContent = 'The portal list could not load — please try again in a moment.';
+        }
+      }
+      load();
     })();
   </script>
 </body>

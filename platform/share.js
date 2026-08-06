@@ -136,6 +136,10 @@ var MapShare = (function () {
         '<button id="msshare-addbtn" style="padding:0 12px;border:1px solid #d9cff1;border-radius:8px;background:#efeaf8;color:#4a3f66;font-weight:600;font-size:12px;cursor:pointer;">Add</button></div>' +
       '<div id="msshare-editlinkrow" style="display:none;margin-top:10px;"><input id="msshare-editurl" readonly style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid #cdc6e0;border-radius:8px;font-size:12px;color:#555;background:#faf9fd;"><button id="msshare-editcopy" style="margin-top:6px;padding:6px 12px;border:1px solid #d9cff1;border-radius:6px;background:#efeaf8;color:#4a3f66;font-weight:600;font-size:12px;cursor:pointer;">Copy edit link</button></div>' +
       '<div id="msshare-editstatus" style="font-size:12px;margin-top:8px;min-height:15px;"></div>' +
+      '<hr style="border:none;border-top:1px solid #f0ecf8;margin:16px 0 12px;">' +
+      '<h3 style="font-size:15px;margin:0 0 2px;">Map Portal</h3>' +
+      '<p class="msshare-sub" style="margin:0 0 8px;">List this map in the public portal for anyone to find.</p>' +
+      '<div id="msshare-portal" style="font-size:12.5px;color:#6b6680;">Checking…</div>' +
       '<div id="msshare-note">Visitors see the last <b>published</b> version — edits autosave privately until you hit <b>Publish</b>. "Who can see" controls viewing; "Who can edit" controls changing the map.</div>' +
       '</div>';
     document.body.appendChild(ov);
@@ -167,6 +171,7 @@ var MapShare = (function () {
           await save(db, projectId, vis);
           status.textContent = 'Saved ✓'; status.style.color = '#2d7a2d';
           syncLinkRow(vis);
+          loadPortal();   // the portal checklist's "Visibility is Public" line follows live
           if (opts.onChange) try { opts.onChange(vis); } catch (e2) {}
         } catch (e) {
           status.textContent = 'Save failed: ' + (e && e.message); status.style.color = '#b4453a';
@@ -213,6 +218,114 @@ var MapShare = (function () {
     ov.querySelector('#msshare-addemail').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addEmail(); } });
     ov.querySelector('#msshare-editcopy').addEventListener('click', function () { var b = this; try { navigator.clipboard.writeText(eurl.value).then(function () { b.textContent = 'Copied ✓'; setTimeout(function () { b.textContent = 'Copy edit link'; }, 1600); }); } catch (e) { eurl.select(); } });
     renderEmails(); syncEditLink();
+
+    // ── Map Portal (component 2): list/delist this map in the portal_entries catalog.
+    //    The four conditions are RLS-enforced server-side; this panel mirrors them as a live
+    //    checklist so the ✗ lines tell the owner exactly what to fix. ──
+    var pBox = ov.querySelector('#msshare-portal');
+    var portalHref = location.pathname.indexOf('/map/') > -1 ? '../portal.html' : 'portal.html';
+    var PBTN = 'padding:6px 12px;border:1px solid #d9cff1;border-radius:6px;background:#efeaf8;color:#4a3f66;font-weight:600;font-size:12px;cursor:pointer;';
+    var PBTN_RED = 'padding:6px 12px;border:1px solid #f0d4d0;border-radius:6px;background:#fdf1ef;color:#b4453a;font-weight:600;font-size:12px;cursor:pointer;';
+    var PTA = 'width:100%;box-sizing:border-box;margin-top:8px;padding:7px 9px;border:1px solid #cdc6e0;border-radius:8px;font-size:12px;font-family:inherit;resize:vertical;';
+    function pEsc(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+    function pLine(ok, txt) { return '<div style="margin:2px 0;color:' + (ok ? '#2d7a2d' : '#b4453a') + ';">' + (ok ? '✓' : '✗') + ' ' + txt + '</div>'; }
+
+    // best-effort thumbnail: the live map canvas, downscaled to a small jpeg. Maps render
+    // without preserveDrawingBuffer, so a between-paints read comes back blank — detect a
+    // flat frame and drop it (the portal card falls back to its styled placeholder).
+    function captureThumb() {
+      try {
+        var m = window.beforeMap || window.afterMap; if (!m || !m.getCanvas) return null;
+        var src = m.getCanvas();
+        var w2 = 480, h2 = Math.max(1, Math.round(src.height * w2 / Math.max(1, src.width)));
+        var cv = document.createElement('canvas'); cv.width = w2; cv.height = h2;
+        var cx = cv.getContext('2d'); cx.drawImage(src, 0, 0, w2, h2);
+        var d = cx.getImageData(0, 0, w2, h2).data, first = [d[0], d[1], d[2]], varies = false;
+        for (var i = 4; i < d.length; i += 4 * 997) {
+          if (Math.abs(d[i] - first[0]) + Math.abs(d[i + 1] - first[1]) + Math.abs(d[i + 2] - first[2]) > 12) { varies = true; break; }
+        }
+        if (!varies) return null;
+        var url = cv.toDataURL('image/jpeg', 0.72);
+        if (url.length > 110000) url = cv.toDataURL('image/jpeg', 0.5);
+        return url.length > 110000 ? null : url;
+      } catch (e) { return null; }
+    }
+
+    async function submitPortal(isUpdate) {
+      var ta = ov.querySelector('#msshare-pblurb');
+      var blurb = ((ta && ta.value) || '').trim().slice(0, 300);
+      var st = ov.querySelector('#msshare-pstatus');
+      if (st) { st.textContent = 'Saving…'; st.style.color = '#6b6680'; }
+      try {
+        if (isUpdate) {
+          var thumb = captureThumb();
+          var payload = { blurb: blurb }; if (thumb) payload.thumb = thumb;   // keep an existing thumb when capture fails
+          var r = await db.from('portal_entries').update(payload).eq('project_id', projectId);
+          if (r.error) throw new Error(r.error.message);
+        } else {
+          var me2 = await MapAuth.currentUser();
+          var r2 = await db.from('portal_entries').insert({ project_id: projectId, user_id: me2.id, blurb: blurb, thumb: captureThumb() });
+          if (r2.error) throw new Error(r2.error.message);
+        }
+        loadPortal();
+      } catch (e) { if (st) { st.textContent = 'Failed: ' + (e && e.message); st.style.color = '#b4453a'; } }
+    }
+
+    async function loadPortal() {
+      var me = null; try { me = await MapAuth.currentUser(); } catch (e) {}
+      if (!me || !me.id) { pBox.textContent = 'Sign in to list maps in the portal.'; return; }
+      var fresh = null;
+      try { var rf = await db.from('projects').select('user_id, is_public, raw_config, deleted_at').eq('id', projectId).maybeSingle(); fresh = rf.data; } catch (e) {}
+      var entry = null;
+      try { var re = await db.from('portal_entries').select('blurb').eq('project_id', projectId).maybeSingle(); entry = re.data; } catch (e) {}
+      var own = !!(fresh && fresh.user_id === me.id);
+      var pub = !!fresh && !fresh.deleted_at && effectiveVisibility(fresh) === 'public';
+      var published = false;
+      try { var rs = await db.from('project_snapshots').select('id').eq('project_id', projectId).eq('label', 'published').limit(1); published = !!(rs.data && rs.data.length); } catch (e) {}
+      var clean = true;
+      try {
+        var rl = await db.from('project_layers').select('layers(id, parquet_key, raw_config)').eq('project_id', projectId);
+        (rl.data || []).forEach(function (x) {
+          var l = x.layers; if (!l) return;
+          var rc = l.raw_config || {};
+          if (rc.instanceOf || rc.editable === false) clean = false;
+          else if (l.parquet_key && String(l.parquet_key).indexOf(l.id) === -1) clean = false;   // C7 pointer: key names another layer's artifacts
+        });
+      } catch (e) {}
+
+      if (entry) {
+        pBox.innerHTML =
+          '<div style="color:#2d7a2d;font-weight:600;">✓ In the portal — <a href="' + portalHref + '" target="_blank" style="color:#7c5cbf;">see the listing</a></div>' +
+          (pub ? '' : '<div style="color:#b4453a;margin-top:3px;">⚠ Listed, but hidden right now — visibility is not Public.</div>') +
+          '<textarea id="msshare-pblurb" maxlength="300" rows="2" placeholder="Short description shown on the portal card" style="' + PTA + '">' + pEsc(entry.blurb) + '</textarea>' +
+          '<div style="display:flex;gap:6px;margin-top:6px;">' +
+          '<button id="msshare-psave" style="' + PBTN + '">Save description</button>' +
+          '<button id="msshare-premove" style="' + PBTN_RED + '">Remove from portal</button></div>' +
+          '<div id="msshare-pstatus" style="font-size:12px;margin-top:6px;min-height:14px;"></div>';
+        ov.querySelector('#msshare-psave').addEventListener('click', function () { submitPortal(true); });
+        ov.querySelector('#msshare-premove').addEventListener('click', async function () {
+          var st = ov.querySelector('#msshare-pstatus'); st.textContent = 'Removing…'; st.style.color = '#6b6680';
+          try { var r = await db.from('portal_entries').delete().eq('project_id', projectId); if (r.error) throw new Error(r.error.message); loadPortal(); }
+          catch (e) { st.textContent = 'Failed: ' + (e && e.message); st.style.color = '#b4453a'; }
+        });
+        return;
+      }
+
+      var all = own && pub && published && clean;
+      pBox.innerHTML =
+        pLine(own, 'You own this map') +
+        pLine(pub, 'Visibility is Public (set it above)') +
+        pLine(published, 'Published at least once') +
+        pLine(clean, 'No Linked or Instance layers — the portal lists originals only') +
+        (all
+          ? '<textarea id="msshare-pblurb" maxlength="300" rows="2" placeholder="Short description shown on the portal card" style="' + PTA + '"></textarea>' +
+            '<button id="msshare-padd" style="' + PBTN + ';margin-top:6px;">Add to Portal</button>' +
+            '<div id="msshare-pstatus" style="font-size:12px;margin-top:6px;min-height:14px;"></div>'
+          : '<div style="color:#9a93ad;margin-top:4px;">Fix the ✗ items, then reopen Share.</div>');
+      var addBtn = ov.querySelector('#msshare-padd');
+      if (addBtn) addBtn.addEventListener('click', function () { submitPortal(false); });
+    }
+    loadPortal();
   }
 
   return { open: open, effectiveVisibility: effectiveVisibility, canEdit: canEdit, editAccessOf: editAccessOf };
