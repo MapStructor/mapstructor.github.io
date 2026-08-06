@@ -5358,9 +5358,13 @@
     info.textContent = '';
     if (!lid) return;
     try {
-      var r = await db.from('features').select('custom_fields').eq('layer_id', lid).not('custom_fields', 'is', null).limit(100);
+      // Linked/instance mirrors have no rows of their own — sample the SOURCE layer's columns
+      // (instanceOf), and always offer the mirror's OWN added columns (overlayCols, Portal 5b)
+      var sampleLid = node.instanceOf || lid;
+      var r = await db.from('features').select('custom_fields').eq('layer_id', sampleLid).not('custom_fields', 'is', null).limit(100);
       var keys = {};
       (r.data || []).forEach(function (f) { Object.keys(f.custom_fields || {}).forEach(function (k) { keys[k] = 1; }); });
+      (node.overlayCols || []).forEach(function (k) { keys[k] = 1; });
       // dropdowns lead with the UNIVERSAL style columns (the default styling home), then everything else
       var allKeys = Object.keys(keys).sort();
       var msFirst = ['ms_color', 'ms_linecolor', 'ms_opacity', 'ms_thickness', 'ms_labelsize'].filter(function (k) { return allKeys.indexOf(k) > -1; });
@@ -5700,14 +5704,20 @@
           if (cr9.error) throw new Error(cr9.error.message + (/function|does not exist/.test(cr9.error.message) ? ' — run sql/setup/query-ops-setup.sql first' : ''));
           ((cr9.data) || []).slice().sort(function (a, b) { return b.n - a.n; }).forEach(function (c9) { var s9 = String(c9.k); if (!(s9 in seen)) { seen[s9] = 1; order.push(s9); } });
         } else {
+          var dataLid2 = node.instanceOf || lid;   // mirrors sample their SOURCE's rows (Portal 5b)
           var rows = [];
           for (var off = 0; ; off += 1000) {   // all values (paged)
-            var fr = await db.from('features').select('custom_fields').eq('layer_id', lid).order('feature_id').range(off, off + 999);
+            var fr = await db.from('features').select('custom_fields').eq('layer_id', dataLid2).order('feature_id').range(off, off + 999);
             if (fr.error || !fr.data || !fr.data.length) break;
             rows = rows.concat(fr.data);
             if (fr.data.length < 1000) break;
           }
           rows.forEach(function (f) { var v = f.custom_fields ? f.custom_fields[prop] : null; if (v == null) return; var s = String(v); if (!(s in seen)) { seen[s] = 1; order.push(s); } });
+          // the mirror's own added columns (Portal 5b): values live in layer_overlay, not features
+          if (window.MSOverlay && (node.overlayCols || []).indexOf(prop) > -1) {
+            var ovv = await MSOverlay.load(lid);
+            Object.keys(ovv).forEach(function (fid) { var v9 = ovv[fid] ? ovv[fid][prop] : null; if (v9 == null) return; var s9b = String(v9); if (!(s9b in seen)) { seen[s9b] = 1; order.push(s9b); } });
+          }
         }
         if (!order.length) { setStatus('No values in that column'); showToast('That column has no values'); return; }
         // literal-colour columns: hex (with/without #), rgb()/rgba(), or the explicit "none" (→ un-filled: the
@@ -6813,6 +6823,73 @@
     if (typeof refreshLayers === 'function') refreshLayers();
     showLayerPanel(activeLayerId);
   }
+  // ── Your columns (Map Portal 5b) — helpers for the panel section ──────────
+  function ovRenderChips(node) {
+    var box = document.getElementById('elp-ov-chips'); if (!box) return;
+    var cols = node.overlayCols || [];
+    box.innerHTML = cols.length
+      ? cols.map(function (c) { return '<span style="display:inline-block;margin:0 4px 4px 0;padding:2px 9px;background:#efeaf8;border:1px solid #d9cff1;border-radius:12px;font-size:11px;color:#4a3670;">' + String(c).replace(/[<>&]/g, '') + '</span>'; }).join('')
+      : '<span style="color:#9a94ad;font-size:11px;">none yet</span>';
+    var editBtn = document.getElementById('elp-ov-edit');
+    if (editBtn) editBtn.style.display = cols.length ? 'inline-block' : 'none';
+  }
+  async function ovAddColumn() {
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[node.id]; if (!lid) return;
+    var inp = document.getElementById('elp-ov-newcol');
+    var name = ((inp && inp.value) || '').trim().replace(/[^\w -]/g, '').slice(0, 40);
+    if (!name) return;
+    var cols = (node.overlayCols || []).slice();
+    if (cols.indexOf(name) > -1) { setStatus('Column exists'); return; }
+    cols.push(name);
+    setStatus('Saving…');
+    var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+    var rc = (cur.data && cur.data.raw_config) || {};
+    rc.overlayCols = cols;
+    var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+    if (r.error) { setStatus('Save failed: ' + r.error.message); return; }
+    node.overlayCols = cols;
+    if (inp) inp.value = '';
+    ovRenderChips(node);
+    populateColorBy(node);   // the new column appears in every styling dropdown immediately
+    setStatus('Saved');
+  }
+  async function ovToggleTable() {
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[node.id]; if (!lid) return;
+    var box = document.getElementById('elp-ov-table'); if (!box) return;
+    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+    var cols = node.overlayCols || []; if (!cols.length) return;
+    // rows = the LIVE source data (a mirror renders its source's features; ids are the source's)
+    var feats = [];
+    try { var src = (typeof beforeMap !== 'undefined' && beforeMap) ? beforeMap.getSource(node.id + '-left') : null; if (src && src._data) feats = src._data.features || []; } catch (e) {}
+    if (!feats.length) { box.style.display = 'block'; box.innerHTML = '<div style="padding:8px;color:#9a94ad;">No features loaded yet — toggle the layer on first.</div>'; return; }
+    var values = window.MSOverlay ? await MSOverlay.load(lid) : {};
+    var cap = 200;
+    var html = '<table style="width:100%;border-collapse:collapse;font-size:11.5px;">'
+      + '<tr><th style="text-align:left;padding:4px 6px;color:#9083ad;">feature</th>'
+      + cols.map(function (c) { return '<th style="text-align:left;padding:4px 6px;color:#9083ad;">' + String(c).replace(/[<>&]/g, '') + '</th>'; }).join('') + '</tr>';
+    feats.slice(0, cap).forEach(function (f) {
+      var fid = f.id != null ? f.id : (f.properties || {}).feature_id; if (fid == null) return;
+      var v = values[String(fid)] || {};
+      html += '<tr><td style="padding:3px 6px;border-top:1px solid #f1eef8;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + String((f.properties || {}).label || fid).replace(/[<>&]/g, '') + '</td>'
+        + cols.map(function (c) { return '<td style="padding:2px 4px;border-top:1px solid #f1eef8;"><input data-ovfid="' + fid + '" data-ovcol="' + String(c).replace(/"/g, '') + '" value="' + String(v[c] != null ? v[c] : '').replace(/"/g, '&quot;') + '" style="width:70px;font-size:11px;padding:2px 4px;border:1px solid #ddd;border-radius:3px;box-sizing:border-box;"></td>'; }).join('')
+        + '</tr>';
+    });
+    html += '</table>' + (feats.length > cap ? '<div style="padding:5px 6px;color:#9a94ad;">first ' + cap + ' of ' + feats.length + ' features shown</div>' : '');
+    box.innerHTML = html; box.style.display = 'block';
+    box.querySelectorAll('input[data-ovfid]').forEach(function (cell) {
+      cell.addEventListener('change', async function () {
+        var val = cell.value.trim();
+        var num = (val !== '' && !isNaN(Number(val))) ? Number(val) : val;   // numbers stay numbers (styling ramps)
+        setStatus('Saving…');
+        var r2 = await MSOverlay.set(lid, Number(cell.getAttribute('data-ovfid')), cell.getAttribute('data-ovcol'), val === '' ? null : num);
+        if (r2 && r2.error) { setStatus('Save failed: ' + r2.error.message); return; }
+        setStatus('Saved');
+        MSOverlay.refreshAll();   // live: popups + color-by read the value immediately
+      });
+    });
+  }
   function showLayerPanel(slug) {
     var node = findNodeById(layers, slug); if (!node) return;
     var isGeojson = node.source_type === 'geojson-supabase';   // split is drawn-layer only
@@ -6889,6 +6966,31 @@
         }).catch(function () {});
       })(dsNote, node.instanceOf, node.id);
     }
+    // ── Your columns (Map Portal 5b): a Linked mirror follows its source's geometry + columns
+    //    read-only — but the placement owner can ADD columns of their own. The list lives on this
+    //    row (raw_config.overlayCols); values in layer_overlay via MSOverlay; the styling
+    //    dropdowns above include them, so "color by my column" just works. ──
+    var ovSec = document.getElementById('elp-overlay-sec');
+    if (!ovSec) {
+      ovSec = document.createElement('div');
+      ovSec.id = 'elp-overlay-sec';
+      ovSec.style.cssText = 'display:none;margin:8px 0;padding:8px 9px;background:#f7f5fc;border:1px solid #e2dbf3;border-radius:6px;font-size:12px;';
+      ovSec.innerHTML = '<b style="font-size:12px;color:#4a3670;">Your columns</b>'
+        + '<div style="font-size:11px;color:#8a83a0;margin:2px 0 6px;">The source\'s data stays theirs — these columns are yours, saved on your map, stylable like any other.</div>'
+        + '<div id="elp-ov-chips" style="margin-bottom:6px;"></div>'
+        + '<div style="display:flex;gap:6px;"><input id="elp-ov-newcol" class="ms-in" placeholder="new column name" style="flex:1;min-width:0;">'
+        + '<button id="elp-ov-add" class="ms-btn" style="white-space:nowrap;">+ Add</button></div>'
+        + '<button id="elp-ov-edit" class="ms-btn" style="margin-top:6px;display:none;">✎ Edit values</button>'
+        + '<div id="elp-ov-table" style="display:none;max-height:220px;overflow:auto;margin-top:6px;border:1px solid #e2dbf3;border-radius:5px;background:#fff;"></div>';
+      var ss2 = document.getElementById('elp-style-section');
+      if (ss2 && ss2.parentNode) ss2.parentNode.insertBefore(ovSec, ss2);
+      document.getElementById('elp-ov-add').addEventListener('click', function () { ovAddColumn(); });
+      document.getElementById('elp-ov-edit').addEventListener('click', function () { ovToggleTable(); });
+    }
+    var isLinkedMirror = !!(node.instanceOf && !node.styleLocked);
+    ovSec.style.display = isLinkedMirror ? 'block' : 'none';
+    document.getElementById('elp-ov-table').style.display = 'none';
+    if (isLinkedMirror) ovRenderChips(node);
     fillDateSection(node);   // Timeline dates: async sample reveals the section for any layer with DB rows (incl. converted tilesets)
     document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';

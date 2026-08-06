@@ -36,7 +36,11 @@
     var f = (cur.data && cur.data.fields) || {};
     if (value === null || value === '') delete f[key]; else f[key] = value;
     var r = await client().from('layer_overlay').upsert({ layer_id: layerDbId, feature_id: featureId, fields: f, updated_at: new Date().toISOString() }, { onConflict: 'layer_id,feature_id' });
-    if (!r.error && cache[layerDbId]) cache[layerDbId][String(featureId)] = f;
+    if (!r.error) {
+      if (cache[layerDbId]) cache[layerDbId][String(featureId)] = f;
+      known = null;   // a write changes the world — the next refreshAll re-discovers (a column
+                      // added THIS session isn't in the boot-time scan, and cached [] hid it)
+    }
     return r;
   }
 
