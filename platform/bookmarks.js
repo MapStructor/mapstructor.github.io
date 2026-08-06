@@ -87,7 +87,12 @@
     has(projectId).then(paint);
     el.addEventListener('click', function (e) {
       e.preventDefault(); e.stopPropagation();
-      toggle(projectId).then(paint);
+      toggle(projectId).then(function (on) {
+        paint(on);
+        // let any list of bookmarks on the page redraw itself immediately (dashboard's
+        // Bookmarks strip) — starring your own map should show up without a refresh (8/6)
+        try { window.dispatchEvent(new CustomEvent('ms-bookmarks-changed', { detail: { projectId: projectId, on: on } })); } catch (e2) {}
+      });
     });
     return el;
   }

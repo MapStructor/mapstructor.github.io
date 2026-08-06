@@ -33,6 +33,15 @@
     input[type=password] { padding: 9px 12px; border: 1px solid #cdc6e0; border-radius: 8px; font-size: 14px; width: 240px; max-width: 100%; }
     .msg { font-size: 13px; margin-left: 8px; } .msg.ok { color: #2d7a2d; } .msg.err { color: #b4453a; }
     .card-box { border: 1px solid #eae6f3; border-radius: 12px; padding: 18px; background: #fff; margin-bottom: 14px; }
+    /* Bookmarks strip (8/6) — two rows of cards, each scrolls sideways on small screens */
+    .bm-rowtitle { font-size: 12px; font-weight: 700; color: #6b6680; text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 6px; }
+    .bm-row { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+    .bm-card { flex: 0 0 190px; border: 1px solid #eae6f3; border-radius: 10px; background: #fff; overflow: hidden; text-decoration: none; color: inherit; display: block; }
+    .bm-card:hover { border-color: #d3c9ee; box-shadow: 0 4px 14px rgba(90,70,150,.10); }
+    .bm-thumb { height: 96px; background: linear-gradient(135deg, #efeaf8, #dfe8f6); background-size: cover; background-position: center; display: block; }
+    .bm-body { padding: 8px 10px; display: flex; align-items: center; gap: 6px; }
+    .bm-name { font-size: 13px; font-weight: 600; color: #2a2a33; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .bm-star { font-size: 15px; line-height: 1; }
     .danger-box { border-color: #e9c4c0; }
     #anon-note { background: #fff7e6; border: 1px solid #f0dca8; border-radius: 10px; padding: 12px 14px; font-size: 14px; margin-bottom: 20px; }
     /* ── Pricing table (same look as services-pricing-preview.html) ── */
@@ -60,7 +69,7 @@
   <script src="platform/auth.js?v=20260728a"></script>
   <script src="platform/veil.js?v=20260731a"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
   <script src="platform/topbar.js?v=20260728a"></script>
-  <script src="platform/bookmarks.js?v=20260805a"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
+  <script src="platform/bookmarks.js?v=20260806a"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
   <script src="platform/pricing.js?v=20260729a"></script>
   <script src="platform/sanitize.js?v=20260709"></script>
   <script src="platform/share.js?v=20260806b"></script>
@@ -80,6 +89,23 @@
       You're using a temporary anonymous session. <a href="index.html">Sign up</a> to keep these maps permanently — nothing you've made will be lost.
     </div>
 
+    <!-- Bookmarks (8/6): starred maps as cards, in two rows — maps you starred in the Portal,
+         and your own. The same ★ that appears on every map row/card feeds this. -->
+    <section id="bm-section" style="margin-bottom:22px;">
+      <h2 style="margin:0 0 2px;">Bookmarks</h2>
+      <p class="sub" style="margin:0 0 10px;">Starred maps — these are what the editor's ⊞ Portal window offers you.</p>
+      <div id="bm-portal-wrap" style="display:none;">
+        <div class="bm-rowtitle">From Portal</div>
+        <div class="bm-row" id="bm-portal"></div>
+      </div>
+      <div id="bm-mine-wrap" style="display:none;">
+        <div class="bm-rowtitle">My Maps</div>
+        <div class="bm-row" id="bm-mine"></div>
+      </div>
+      <p class="sub" id="bm-empty" style="margin:0;">Nothing starred yet — tap ☆ on any map here or in the <a href="portal.html">Map Portal</a>.</p>
+    </section>
+
+    <h2 style="margin:0 0 8px;">All Your Maps</h2>
     <div id="maps-list"><p class="sub">Loading your maps…</p></div>
     <div id="trash-section" style="margin-top:16px;"></div>
     <button class="btn" id="btn-new-map" style="margin-top:8px;">+ Create a map</button>
@@ -139,18 +165,22 @@
         <div id="profile-link" style="margin-top:10px;font-size:13px;"></div>
       </div>
       <div class="card-box">
-        <div style="font-weight:600;margin-bottom:4px;">About you <span style="font-weight:400;color:#9a93ad;font-size:12px;">— public</span></div>
-        <p class="sub" style="margin:0 0 10px;">Shown to anyone on your profile page — a short intro, links, whatever you like.</p>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:4px;">
+          <div style="font-weight:600;">About you <span style="font-weight:400;color:#9a93ad;font-size:12px;">— public</span></div>
+          <span class="msg" id="about-msg" style="font-size:12px;"></span>
+        </div>
+        <p class="sub" style="margin:0 0 10px;">Shown to anyone on your profile page — a short intro, links, whatever you like. Saves as you type.</p>
         <div class="rt-toolbar" id="about-toolbar"></div>
         <div class="rt-editor" id="about-editor" contenteditable="true"></div>
-        <div style="margin-top:10px;"><button class="btn btn-light" id="btn-about">Save</button><span class="msg" id="about-msg"></span></div>
       </div>
       <div class="card-box">
-        <div style="font-weight:600;margin-bottom:4px;">Private notes <span style="font-weight:400;color:#9a93ad;font-size:12px;">— only you can see these</span></div>
-        <p class="sub" style="margin:0 0 10px;">Plans, sources, to-dos — never shown to anyone else.</p>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:4px;">
+          <div style="font-weight:600;">Private notes <span style="font-weight:400;color:#9a93ad;font-size:12px;">— only you can see these</span></div>
+          <span class="msg" id="notes-msg" style="font-size:12px;"></span>
+        </div>
+        <p class="sub" style="margin:0 0 10px;">Plans, sources, to-dos — never shown to anyone else. Saves as you type.</p>
         <div class="rt-toolbar" id="notes-toolbar"></div>
         <div class="rt-editor" id="notes-editor" contenteditable="true"></div>
-        <div style="margin-top:10px;"><button class="btn btn-light" id="btn-notes">Save</button><span class="msg" id="notes-msg"></span></div>
       </div>
     </section>
 
@@ -196,6 +226,55 @@
       var listEl = document.getElementById('maps-list');
       function esc(s) { return String(s == null ? '' : s).replace(/[<>&"]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]; }); }
       function fmtDate(d) { try { return d ? new Date(d).toLocaleDateString() : ''; } catch (e) { return ''; } }
+
+      // ---- Bookmarks strip (8/6): starred maps as cards, split "From Portal" / "My Maps" ----
+      // Thumbnails come from the portal listing when the map has one; anything else gets the
+      // neutral gradient. Names are user text → textContent only, never innerHTML.
+      var THUMB_OK = /^(data:image\/|images\/|https?:\/\/)/;
+      async function loadBookmarks() {
+        var pWrap = document.getElementById('bm-portal-wrap'), mWrap = document.getElementById('bm-mine-wrap');
+        var pRow = document.getElementById('bm-portal'), mRow = document.getElementById('bm-mine');
+        var empty = document.getElementById('bm-empty');
+        if (!pRow || !window.MSBookmarks) return;
+        var ids = [];
+        try { ids = await MSBookmarks.list(); } catch (e) { ids = []; }
+        pRow.innerHTML = ''; mRow.innerHTML = '';
+        if (!ids.length) { pWrap.style.display = 'none'; mWrap.style.display = 'none'; empty.style.display = ''; return; }
+        var rows = [], thumbs = {};
+        try {
+          var r = await db.from('projects').select('id,name,user_id,deleted_at').in('id', ids).is('deleted_at', null);
+          rows = (r && r.data) || [];
+        } catch (e) {}
+        try {
+          var t = await db.from('portal_entries').select('project_id,thumb').in('project_id', ids);
+          ((t && t.data) || []).forEach(function (e) { thumbs[e.project_id] = e.thumb; });
+        } catch (e) {}
+        if (!rows.length) { pWrap.style.display = 'none'; mWrap.style.display = 'none'; empty.style.display = ''; empty.textContent = 'Your starred maps are no longer available.'; return; }
+        rows.forEach(function (m) {
+          var mine = m.user_id === user.id;
+          var card = document.createElement('a');
+          card.className = 'bm-card';
+          card.href = (mine ? 'map/editor.html?id=' : 'map/index.html?id=') + encodeURIComponent(m.id);
+          var th = document.createElement('span'); th.className = 'bm-thumb';
+          var src = thumbs[m.id];
+          if (src && THUMB_OK.test(src)) th.style.backgroundImage = 'url("' + src.replace(/"/g, '%22') + '")';
+          card.appendChild(th);
+          var body = document.createElement('div'); body.className = 'bm-body';
+          var nm = document.createElement('span'); nm.className = 'bm-name'; nm.textContent = m.name || 'Untitled Map';
+          body.appendChild(nm);
+          var st = document.createElement('span'); st.className = 'bm-star';
+          st.addEventListener('click', function (e) { e.preventDefault(); });   // the star handles its own click; don't follow the card link
+          body.appendChild(st);
+          card.appendChild(body);
+          (mine ? mRow : pRow).appendChild(card);
+          MSBookmarks.star(st, m.id);
+        });
+        pWrap.style.display = pRow.children.length ? '' : 'none';
+        mWrap.style.display = mRow.children.length ? '' : 'none';
+        empty.style.display = (pRow.children.length || mRow.children.length) ? 'none' : '';
+      }
+      // starring anywhere on this page redraws the strip immediately (no refresh)
+      window.addEventListener('ms-bookmarks-changed', function () { loadBookmarks(); });
 
       async function loadMaps() {
         var sel = 'id,name,updated_at,is_public,visibility:raw_config->>visibility,editLock:raw_config->>editLock';   // only THIS user's maps (RLS still permissive — tighten at Step 25)
@@ -333,6 +412,7 @@
       }
       loadMaps();
       loadTrash();
+      loadBookmarks();
 
       // ---- Storage usage ----
       // Precise tracking (profiles.storage_used_bytes / an RPC) needs a one-time SQL migration — see
@@ -469,24 +549,45 @@
         if (/relation|does not exist|schema cache|column/i.test(m)) m += ' — run mapstructor_docs/profile-notes-setup.sql once.';
         msgEl.textContent = m; msgEl.className = 'msg err';
       }
+      // AUTOSAVE (8/6, owner request): both editors save themselves as you type — no Save button.
+      // 900 ms after typing stops, and immediately on blur / leaving the page, so a fast close
+      // can't lose the last sentence. The status sits at the TOP of each card, beside its title.
+      function autosave(ed, msgId, write) {
+        var msg = document.getElementById(msgId);
+        var timer = null, last = ed.innerHTML, inFlight = false, again = false;
+        function say(t, cls) { msg.textContent = t; msg.className = 'msg' + (cls ? ' ' + cls : ''); }
+        async function flush() {
+          if (timer) { clearTimeout(timer); timer = null; }
+          var html = ed.innerHTML;
+          if (html === last) return;
+          if (inFlight) { again = true; return; }         // one write at a time; coalesce the rest
+          inFlight = true; say('Saving…');
+          var r = await write(html);
+          inFlight = false;
+          if (r && r.error) { rtErr(msg, r.error); return; }
+          last = html; say('Saved ✓', 'ok');
+          if (again) { again = false; flush(); }
+        }
+        ed.addEventListener('input', function () {
+          say('Editing…');
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(flush, 900);
+        });
+        ed.addEventListener('blur', flush);
+        window.addEventListener('pagehide', function () {
+          if (ed.innerHTML !== last) { try { write(ed.innerHTML); } catch (e) {} }   // best effort on the way out
+        });
+        // rebase() re-marks the CURRENT content as saved — called once the stored text loads in,
+        // so filling the editor programmatically never looks like an unsaved edit.
+        return { flush: flush, rebase: function () { last = ed.innerHTML; msg.textContent = ''; msg.className = 'msg'; } };
+      }
+      var aboutAuto = autosave(aboutEd, 'about-msg', function (html) { return db.from('profiles').upsert({ id: user.id, profile_html: html }); });
+      var notesAuto = autosave(notesEd, 'notes-msg', function (html) { return db.from('user_notes').upsert({ user_id: user.id, html: html }); });
       (async function loadRt() {
         try { var pa = await db.from('profiles').select('profile_html').eq('id', user.id).maybeSingle(); if (pa.data && pa.data.profile_html) aboutEd.innerHTML = MSSanitize(pa.data.profile_html); } catch (e) {}
         try { var pn = await db.from('user_notes').select('html').eq('user_id', user.id).maybeSingle(); if (pn.data && pn.data.html) notesEd.innerHTML = MSSanitize(pn.data.html); } catch (e) {}
+        aboutAuto.rebase(); notesAuto.rebase();
       })();
-      document.getElementById('btn-about').addEventListener('click', async function () {
-        var msg = document.getElementById('about-msg'); this.disabled = true; msg.textContent = '…'; msg.className = 'msg';
-        var r = await db.from('profiles').upsert({ id: user.id, profile_html: aboutEd.innerHTML });
-        this.disabled = false;
-        if (r.error) { rtErr(msg, r.error); return; }
-        msg.textContent = 'Saved — it’s on your public page.'; msg.className = 'msg ok';
-      });
-      document.getElementById('btn-notes').addEventListener('click', async function () {
-        var msg = document.getElementById('notes-msg'); this.disabled = true; msg.textContent = '…'; msg.className = 'msg';
-        var r = await db.from('user_notes').upsert({ user_id: user.id, html: notesEd.innerHTML });
-        this.disabled = false;
-        if (r.error) { rtErr(msg, r.error); return; }
-        msg.textContent = 'Saved.'; msg.className = 'msg ok';
-      });
 
       // ---- Change password ----
       var pwBtn = document.getElementById('btn-pw'), pwMsg = document.getElementById('pw-msg');

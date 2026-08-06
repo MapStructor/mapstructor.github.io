@@ -46,7 +46,7 @@
   <script src="platform/auth.js?v=20260728a"></script>
   <script src="platform/veil.js?v=20260731a"></script>
   <script src="platform/topbar.js?v=20260728a"></script>
-  <script src="platform/bookmarks.js?v=20260805a"></script>
+  <script src="platform/bookmarks.js?v=20260806a"></script>
 </head>
 <body>
 
@@ -58,8 +58,8 @@
   <div class="head">
     <h1>Map Portal</h1>
     <p>Curated maps and datasets to explore — and to add straight into your own maps.</p>
-    <a class="btn-contrib" href="dashboard.html" title="Open your map → Share → Add to Portal">＋ Contribute a map</a>
-    <div class="contrib-hint">Own a map? Open it → <b>Share</b> → <b>Add to Portal</b>.</div>
+    <a class="btn-contrib" href="#" id="btn-contrib" title="Start a new map to contribute">＋ Contribute a map</a>
+    <div class="contrib-hint">Starts a fresh map — build it, then <b>Share</b> → <b>Add to Portal</b>. Already have one? <a href="dashboard.html" style="color:inherit;">Open it from your maps</a>.</div>
   </div>
 
   <main>
@@ -118,6 +118,28 @@
         }
       }
       load();
+
+      // "Contribute a map" starts a FRESH map, exactly like the front page's Create a Map
+      // (owner request 8/6) — same insert, same anonymous-signin fallback, same landing.
+      var cb = document.getElementById('btn-contrib');
+      if (cb) cb.addEventListener('click', async function (ev) {
+        ev.preventDefault();
+        if (!(window.MapAuth && MapAuth.db)) return;
+        var db = MapAuth.db, label = cb.textContent;
+        cb.textContent = 'Creating…'; cb.style.pointerEvents = 'none';
+        try {
+          var u = await MapAuth.currentUser();
+          if (!u) { var a = await db.auth.signInAnonymously(); if (a.error) throw new Error(a.error.message); u = a.data && a.data.user; }
+          var r = await db.from('projects')
+            .insert({ name: 'Untitled Map', user_id: u && u.id, is_public: false, raw_config: { visibility: 'private' } })
+            .select('id').single();
+          if (r.error || !r.data) throw new Error((r.error && r.error.message) || 'could not create the map');
+          window.location.href = 'map/editor.html?id=' + r.data.id;
+        } catch (e) {
+          cb.textContent = label; cb.style.pointerEvents = '';
+          document.getElementById('portal-note').textContent = 'Could not start a new map: ' + ((e && e.message) || e);
+        }
+      });
     })();
   </script>
 </body>
