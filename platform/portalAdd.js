@@ -36,7 +36,11 @@
     '#ms-portal-panel th{font-size:10.5px;color:#9083ad;text-transform:uppercase;letter-spacing:.05em;padding:6px 6px;text-align:left;}' +
     '#ms-portal-panel td{padding:5px 6px;border-top:1px solid #f4f2fa;font-size:12.5px;}' +
     '#ms-portal-panel td.md{text-align:center;white-space:nowrap;}' +
-    '#ms-portal-panel .setall button{margin-left:6px;padding:2px 8px;border:1px solid #cbc0e4;border-radius:5px;background:#faf8ff;cursor:pointer;font-size:11px;}';
+    '#ms-portal-panel .setall button{margin-left:6px;padding:2px 8px;border:1px solid #cbc0e4;border-radius:5px;background:#faf8ff;cursor:pointer;font-size:11px;}' +
+    '#ms-portal-panel .pp-thumb{flex:0 0 52px;height:36px;border-radius:5px;background:linear-gradient(135deg,#efeaf8,#dfe8f6);background-size:cover;background-position:center;}' +
+    '#ms-portal-panel .pp-view{padding:4px 10px;border:1px solid #cbc0e4;border-radius:6px;background:#faf8ff;color:#5c4a86;font-weight:700;text-decoration:none;font-size:12px;}' +
+    '#ms-portal-panel .pp-view:hover{background:#efeaf8;}' +
+    '#ms-portal-panel tr.off td{opacity:.45;}';
   var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
 
   var db = null, me = null, panel = null;
@@ -66,10 +70,29 @@
       var r = await db.from('projects').select('id,name').in('id', bmIds);
       if (!r.error && r.data) bmRows = bmIds.map(function (id) { return r.data.find(function (p) { return p.id === id; }); }).filter(Boolean);
     }
+    // thumbnails come from the portal listing (8/6) — a starred map that isn't in the portal
+    // simply shows the neutral tile, same as the dashboard's Bookmarks strip
+    var thumbs = {};
+    if (bmIds.length) {
+      try {
+        var tr = await db.from('portal_entries').select('project_id,thumb').in('project_id', bmIds);
+        ((tr && tr.data) || []).forEach(function (e) { thumbs[e.project_id] = e.thumb; });
+      } catch (eT) {}
+    }
+    var THUMB_OK = /^(data:image\/|images\/|\.\.\/images\/|https?:\/\/)/;
     function rows(list, empty) {
       if (!list.length) return '<div class="pp-empty">' + empty + '</div>';
       return list.map(function (p) {
-        return '<div class="pp-row"><span class="nm" title="' + esc(p.name) + '">' + esc(p.name || 'Untitled Map') + '</span><button class="pp-add" data-id="' + p.id + '" data-name="' + esc(p.name || 'Untitled Map') + '">Add</button></div>';
+        var t = thumbs[p.id];
+        // portal thumbs are stored site-relative ("images/…"); this window lives under /map/
+        if (t && t.indexOf('images/') === 0) t = '../' + t;
+        var thumbStyle = (t && THUMB_OK.test(t)) ? 'background-image:url(\'' + esc(t).replace(/'/g, '%27') + '\');' : '';
+        return '<div class="pp-row">' +
+          '<span class="pp-thumb" style="' + thumbStyle + '"></span>' +
+          '<span class="nm" title="' + esc(p.name) + '">' + esc(p.name || 'Untitled Map') + '</span>' +
+          '<a class="pp-view" href="index.html?id=' + esc(p.id) + '" target="_blank" rel="noopener" title="Open this map in a new tab">View</a>' +
+          '<button class="pp-add" data-id="' + p.id + '" data-name="' + esc(p.name || 'Untitled Map') + '">Add</button>' +
+          '</div>';
       }).join('');
     }
     body.innerHTML =
@@ -87,29 +110,56 @@
     var pls = await db.from('project_layers').select('layer_id, layers(id,name,r2_bytes,fold_state,source_type)').eq('project_id', srcId).order('sort_order');
     if (pls.error || !pls.data || !pls.data.length) { body.innerHTML = '<div class="pp-empty">Could not read that map’s layers' + (pls.error ? ' (' + esc(pls.error.message) + ')' : ' — it has none') + '.</div>'; return; }
     var rows = pls.data.filter(function (x) { return x.layers; });
+    // 8/6: PICK WHICH LAYERS COME OVER. The ✓ column decides what is added at all; the
+    // mode radios only matter for the layers you keep ticked.
     var html =
-      '<div class="pp-empty" style="padding-top:10px;">Per layer: <b>All</b> = your own full copy (costs storage) · <b>Linked</b> = their data live, your styling &amp; columns, 0 bytes · <b>Instance</b> = locked mirror, 0 bytes.' +
-      '<span class="setall" style="display:block;margin-top:6px;">Set all: <button data-m="all">All</button><button data-m="linked">Linked</button><button data-m="instance">Instance</button></span></div>' +
-      '<table><tr><th>Layer</th><th style="text-align:center;">All</th><th style="text-align:center;">Linked</th><th style="text-align:center;">Instance</th></tr>' +
+      '<div class="pp-empty" style="padding-top:10px;">Tick the layers you want. Then per layer: <b>All</b> = your own full copy (costs storage) · <b>Linked</b> = their data live, your styling &amp; columns, 0 bytes · <b>Instance</b> = locked mirror, 0 bytes.' +
+      '<span class="setall" style="display:block;margin-top:6px;">Select: <button data-pick="all">All</button><button data-pick="none">None</button>' +
+      ' &nbsp;·&nbsp; Set mode: <button data-m="all">All</button><button data-m="linked">Linked</button><button data-m="instance">Instance</button></span></div>' +
+      '<table><tr><th style="text-align:center;">✓</th><th>Layer</th><th style="text-align:center;">All</th><th style="text-align:center;">Linked</th><th style="text-align:center;">Instance</th></tr>' +
       rows.map(function (x, i) {
         var L = x.layers, mb = Math.round((L.r2_bytes || 0) / 1048576);
-        return '<tr><td>' + esc(L.name || 'Layer') + (mb ? ' <span style="color:#9a94ad;">(' + mb + ' MB)</span>' : '') + '</td>' +
+        return '<tr data-i="' + i + '"><td class="md"><input type="checkbox" class="pp-pick" data-i="' + i + '" checked></td>' +
+          '<td>' + esc(L.name || 'Layer') + (mb ? ' <span style="color:#9a94ad;">(' + mb + ' MB)</span>' : '') + '</td>' +
           ['all', 'linked', 'instance'].map(function (m) {
             return '<td class="md"><input type="radio" name="pm-' + i + '" value="' + m + '"' + (m === 'linked' ? ' checked' : '') + ' data-lid="' + L.id + '"></td>';
           }).join('') + '</tr>';
       }).join('') + '</table>' +
       '<div class="pp-foot"><span class="pp-empty" style="padding:0;" id="pp-note">Arrives as its own section(s) at the top of your list.</span><button class="pp-go" id="pp-go">Add to this map</button></div>';
     body.innerHTML = html;
+    function syncPicks() {
+      var n = 0;
+      body.querySelectorAll('.pp-pick').forEach(function (c) {
+        var tr = c.closest('tr');
+        if (tr) tr.classList.toggle('off', !c.checked);
+        if (c.checked) n++;
+      });
+      var go = document.getElementById('pp-go');
+      if (go) { go.disabled = n === 0; go.textContent = n === rows.length ? 'Add to this map' : ('Add ' + n + ' layer' + (n === 1 ? '' : 's')); }
+      if (!n) note('Tick at least one layer to add.');
+      return n;
+    }
+    body.querySelectorAll('.pp-pick').forEach(function (c) { c.onchange = syncPicks; });
     body.querySelectorAll('.setall button').forEach(function (b) {
-      b.onclick = function () { var m = b.getAttribute('data-m'); body.querySelectorAll('input[type=radio][value="' + m + '"]').forEach(function (r) { r.checked = true; }); };
+      b.onclick = function () {
+        var pick = b.getAttribute('data-pick');
+        if (pick) { body.querySelectorAll('.pp-pick').forEach(function (c) { c.checked = pick === 'all'; }); syncPicks(); return; }
+        var m = b.getAttribute('data-m');
+        body.querySelectorAll('input[type=radio][value="' + m + '"]').forEach(function (r) { r.checked = true; });
+      };
     });
+    syncPicks();
     document.getElementById('pp-go').onclick = function () {
-      var modes = {};
+      var modes = {}, picked = {};
       rows.forEach(function (x, i) {
+        var box = body.querySelector('.pp-pick[data-i="' + i + '"]');
+        if (!box || !box.checked) return;                       // left behind on purpose
+        picked[x.layers.id] = true;
         var sel = body.querySelector('input[name=pm-' + i + ']:checked');
         modes[x.layers.id] = sel ? sel.value : 'linked';
       });
-      run(srcId, srcName, modes, this);
+      if (!Object.keys(picked).length) { note('Tick at least one layer to add.'); return; }
+      run(srcId, srcName, modes, this, picked);
     };
   }
 
@@ -138,7 +188,9 @@
     return row;
   }
 
-  async function run(srcId, srcName, modes, goBtn) {
+  // `picked` (8/6) = the set of source layer ids the user ticked; anything else is skipped,
+  // and containers that end up empty are not created at all.
+  async function run(srcId, srcName, modes, goBtn, picked) {
     goBtn.disabled = true; goBtn.textContent = 'Adding…';
     try {
       // full source pull (features are NOT prefetched — copyLayerInto pages them itself)
@@ -146,7 +198,8 @@
       var g = await db.from('layer_groups').select('*').eq('project_id', srcId).order('sort_order');
       var l = await db.from('project_layers').select('*, layers(*)').eq('project_id', srcId).order('sort_order');
       if (s.error || g.error || l.error) throw new Error((s.error || g.error || l.error).message);
-      var pls = (l.data || []).filter(function (x) { return x.layers; });
+      var pls = (l.data || []).filter(function (x) { return x.layers && (!picked || picked[x.layers.id]); });
+      if (!pls.length) throw new Error('no layers were selected');
 
       // ── step 6: quota pre-check BEFORE any writes — an All-heavy add refuses cleanly up
       //    front, never dies halfway. Only feature-copying All layers count NOW (live geojson /
@@ -185,6 +238,15 @@
       var minSort = 0;
       mins.forEach(function (r) { if (!r.error && r.data && r.data[0] && typeof r.data[0].sort_order === 'number') minSort = Math.min(minSort, r.data[0].sort_order); });
       var base = minSort - 1000;
+
+      // only bring containers that still hold something after the tick-list (8/6) — an empty
+      // section arriving from a partial add is confusing clutter
+      var usedGrp = {}, usedSec = {};
+      pls.forEach(function (x) { if (x.group_id) usedGrp[x.group_id] = 1; if (x.section_id) usedSec[x.section_id] = 1; });
+      var srcGroups = (g.data || []).filter(function (x) { return usedGrp[x.id]; });
+      srcGroups.forEach(function (x) { if (x.section_id) usedSec[x.section_id] = 1; });
+      var srcSections = (s.data || []).filter(function (x) { return usedSec[x.id]; });
+      g = { data: srcGroups }; s = { data: srcSections };
 
       // sections: loose items (in no section) gather under one section named after the map
       var needLoose = pls.some(function (x) { return !x.section_id && !x.group_id; })
