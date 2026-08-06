@@ -1189,8 +1189,9 @@
   }
   async function exportLayer() {
     var sel = document.getElementById('editor-export-layer'); var slug = sel && sel.value; if (!slug) return;
-    var lid = slugToLayerDbId[slug]; if (!lid) { setStatus('That layer has no database id'); return; }
     var node = findNodeById(layers, slug);
+    // Mirrors export their SOURCE's rows (instanceOf) — a backup of what the layer shows.
+    var lid = (node && node.instanceOf) || slugToLayerDbId[slug]; if (!lid) { setStatus('That layer has no database id'); return; }
     var status = document.getElementById('editor-export-status'), btn = document.getElementById('editor-export-ok');
     if (btn) btn.disabled = true;
     try {
@@ -7469,7 +7470,8 @@
   }
   async function openAttributeTable(slug) {
     var node = slug && findNodeById(layers, slug); if (!node) return;
-    var lid = slugToLayerDbId[slug];
+    // Mirrors read their SOURCE's rows (instanceOf) — read-only from this placement; the source owns edits.
+    var lid = node.instanceOf || slugToLayerDbId[slug];
     if (!lid) { setStatus('No stored data for this layer'); return; }
     injectAttrModal();
     var modal = document.getElementById('editor-attr-modal');
@@ -7477,7 +7479,7 @@
     var thead = document.getElementById('editor-attr-thead'), tbody = document.getElementById('editor-attr-tbody'), foot = document.getElementById('editor-attr-foot');
     thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">Loading…</td></tr>'; foot.textContent = '';
     modal.style.display = 'block';
-    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = false; _attrVirtual = null;   // selection PERSISTS across open (map ⇄ table sync always) — rows render pre-starred
+    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = !!node.instanceOf; _attrVirtual = null;   // selection PERSISTS across open (map ⇄ table sync always) — rows render pre-starred; mirrors are read-only
     if (_attrWin) _attrWin.onMissing = null;   // virtual-mode page fetcher — re-attached only by openVirtualAttr
     // STREAMED load (7/15, after 78k rows hung the page): the FIRST page renders immediately — the
     // table is usable (sort/edit/drag/close) while the rest loads behind it. Closing the modal bumps
@@ -8228,12 +8230,13 @@
   }
   async function openFeaturesList(slug) {
     var node = slug && findNodeById(layers, slug); if (!node) return;
-    var lid = slugToLayerDbId[slug];
+    // Mirrors list their SOURCE's rows (instanceOf) — read-only from this placement; the source owns edits.
+    var lid = node.instanceOf || slugToLayerDbId[slug];
     if (!lid) { setStatus('No stored data for this layer'); return; }
     injectFeaturesList();
     var el = document.getElementById('editor-flist');
     document.getElementById('flist-title').textContent = node.label || 'Features';
-    _flistSlug = slug; _attrSlug = slug; _attrReadonly = false;
+    _flistSlug = slug; _attrSlug = slug; _attrReadonly = !!node.instanceOf;
     _flistIcon = flistLayerIcon(node);
     _attrById = {}; _attrRows = [];   // selection PERSISTS across open (map ⇄ table sync always)
     ensureAttrHlLayers(); ensureAttrMapHover();

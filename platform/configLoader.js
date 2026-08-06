@@ -134,6 +134,10 @@ var ConfigLoader = (function () {
 
     leaf.id = row.slug;
     leaf._layerDbId = row.id;   // every leaf knows its DB layer id (group families, tools)
+    // Mirrors resolve their DATA through the source layer regardless of source_type — a TILESET
+    // mirror (AHM curr-builds) renders rowless from tiles but its table/data reads live on the
+    // source's feature rows, same as geojson instances (viewerTable reads this first).
+    leaf._dataLayerId = raw.instanceOf || row.id;
     Object.keys(raw).forEach(function (k) {
       if (k !== "panel") leaf[k] = raw[k];
     });
@@ -185,8 +189,6 @@ var ConfigLoader = (function () {
     // Drawn (geojson-supabase) layers render from their Supabase features as a real
     // GeoJSON map layer — so they get the engine's paint/popup/panel like any tileset.
     if (row.source_type === "geojson-supabase") {
-      leaf._layerDbId = row.id;
-      leaf._dataLayerId = raw.instanceOf || row.id;   // 7/21: instances fetch their SOURCE layer's rows
       leaf.source = { type: "geojson", data: { type: "FeatureCollection", features: (features || []).map(featureToGeo) } };
       // off-by-default layer that got no features from the bundle → deferred (hydrateDeferredFeatures fills it post-boot).
       // 7/21: an INSTANCE with no bundled features defers too regardless of its own default — its source's
