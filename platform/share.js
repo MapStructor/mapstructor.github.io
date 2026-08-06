@@ -140,6 +140,11 @@ var MapShare = (function () {
       '<h3 style="font-size:15px;margin:0 0 2px;">Map Portal</h3>' +
       '<p class="msshare-sub" style="margin:0 0 8px;">List this map in the public portal for anyone to find.</p>' +
       '<div id="msshare-portal" style="font-size:12.5px;color:#6b6680;">Checking…</div>' +
+      '<hr style="border:none;border-top:1px solid #f0ecf8;margin:16px 0 12px;">' +
+      '<h3 style="font-size:15px;margin:0 0 2px;">Unpublished changes</h3>' +
+      '<p class="msshare-sub" style="margin:0 0 8px;">Go back to the version visitors currently see.</p>' +
+      '<button id="msshare-revert" style="padding:7px 13px;border:1px solid #e0cdca;border-radius:8px;background:#fdf4f3;color:#8c3b32;font-weight:600;font-size:12.5px;cursor:pointer;">⏮ Revert to published…</button>' +
+      '<div style="font-size:11px;color:#9a93ad;margin-top:6px;line-height:1.5;">Restores the layout and every layer\'s settings. Layers added since then move to Trash (recoverable), and it offers to duplicate this map first.</div>' +
       '<div id="msshare-note">Visitors see the last <b>published</b> version — edits autosave privately until you hit <b>Publish</b>. "Who can see" controls viewing; "Who can edit" controls changing the map.</div>' +
       '</div>';
     document.body.appendChild(ov);
@@ -177,6 +182,20 @@ var MapShare = (function () {
           status.textContent = 'Save failed: ' + (e && e.message); status.style.color = '#b4453a';
         }
       });
+    });
+
+    // ── revert to published (8/6) — the panel only opens the dialog; revert.js owns the rest ──
+    var revBtn = ov.querySelector('#msshare-revert');
+    if (revBtn) revBtn.addEventListener('click', async function () {
+      if (!window.MSRevert) {
+        try { await new Promise(function (res, rej) {
+          var sc = document.createElement('script');
+          sc.src = '../platform/revert.js?v=' + Date.now();
+          sc.onload = res; sc.onerror = rej; document.head.appendChild(sc);
+        }); } catch (eL) { status.textContent = 'Revert is unavailable here.'; status.style.color = '#b4453a'; return; }
+      }
+      close();
+      MSRevert.open({ db: db, projectId: projectId });
     });
 
     // ── edit-access wiring (collaborative editing) ──
