@@ -7,7 +7,8 @@
 // After the map boots, values merge into the rendered GeoJSON sources by feature id — so popups,
 // the attribute surfaces and color-by-column read them like any baked-in property. Runs on viewer
 // AND editor; RLS makes readers of the map see values and only its editors write them.
-// Editing UI (add-column + cell editing) is the next slice — MSOverlay.set() is its write path.
+// The style-panel UI (editing.js "Your columns") writes through MSOverlay.set(); the download
+// builder freezes values into its standalone copy through MSOverlay.mergeTree().
 (function () {
   'use strict';
   if (window.MSOverlay) return;
@@ -99,6 +100,38 @@
     return n;
   }
 
+  // Freeze the overlay into a CONFIG TREE (the download builder calls this after hydrating all
+  // deferred features) — a standalone copy can never reach layer_overlay, so the values must ride
+  // baked into feature properties. Tree-driven on purpose: covers every geojson leaf whether or
+  // not its map source is live, same feature-id rule as mergeMap.
+  async function mergeTree(tree) {
+    if (!client()) return 0;
+    var leaves = [];
+    (function w(a) { (a || []).forEach(function (x) {
+      if (x.children) { w(x.children); return; }
+      if (x.source && x.source.type === 'geojson' && x.source.data && x.source.data.features) leaves.push(x);
+    }); })(tree || []);
+    if (!leaves.length) return 0;
+    var r = await client().from('layers').select('id,slug,raw_config').in('slug', leaves.map(function (x) { return x.id; }));
+    if (r.error) return 0;
+    var bySlug = {};
+    (r.data || []).forEach(function (x) {
+      if (x.raw_config && x.raw_config.overlayCols && x.raw_config.overlayCols.length) bySlug[x.slug] = x.id;
+    });
+    var n = 0;
+    for (var i = 0; i < leaves.length; i++) {
+      var node = leaves[i], lid = bySlug[node.id];
+      if (!lid) continue;
+      var values = cache[lid] || await load(lid);
+      node.source.data.features.forEach(function (f) {
+        var fid = f.id != null ? f.id : (f.properties || {}).feature_id;
+        var v = fid != null ? values[String(fid)] : null;
+        if (v && Object.keys(v).length) { f.properties = f.properties || {}; Object.assign(f.properties, v); n++; }
+      });
+    }
+    return n;
+  }
+
   // boot: wait for the maps, then merge — and re-merge a few times, because deferred hydration
   // REPLACES source data after boot and would silently drop the overlay
   var tries = 0;
@@ -112,5 +145,5 @@
   }, 6000);
   setTimeout(function () { if (client()) refreshAll(); }, 4000);
 
-  window.MSOverlay = { load: load, set: set, refreshAll: refreshAll };
+  window.MSOverlay = { load: load, set: set, refreshAll: refreshAll, mergeTree: mergeTree };
 })();

@@ -576,6 +576,10 @@
     setStatus("Preparing…");
     var JSZipLib = await loadJSZip();
     await hydrateAll();
+    // Linked placements' own added columns (Portal 5b): the copy can't reach layer_overlay,
+    // so the values are frozen into feature properties before the config is serialized —
+    // they then ride in BOTH the generated layersList and the other_data/ raw exports.
+    try { if (window.MSOverlay && MSOverlay.mergeTree) await MSOverlay.mergeTree(grab(function () { return layers; }, [])); } catch (e) { console.warn("download: overlay merge skipped", e); }
 
     var zip = new JSZipLib();
     var name = projectName();
