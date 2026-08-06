@@ -8738,6 +8738,50 @@
       } catch (e) { alert('Unlock failed: ' + (e && e.message)); }
     });
   }
+  // ── A18 concurrency lock (ms_edit_locks): one live editor per map, DB-enforced. The client
+  //    half is courtesy — acquire before wiring, heartbeat every 30s (TTL 90s), banner while
+  //    someone else holds it, release on leave. FAIL-OPEN when the RPC isn't there yet (SQL
+  //    not applied / rights refused): the editor must never brick on deploy order, and the
+  //    write POLICIES are the real enforcement anyway. ──
+  var MSEditLock = {
+    sid: Math.random().toString(36).slice(2, 10),
+    held: false, _iv: null,
+    async boot(pid) {
+      if (!pid || !db) return;
+      var sess = null; try { sess = (await db.auth.getSession()).data.session; } catch (e0) {}
+      if (!sess) return;                                   // no session → viewer posture, no lock
+      var self = this;
+      async function tick() {
+        var r = null;
+        try { r = await db.rpc('ms_acquire_edit_lock', { p_project: pid, p_sid: self.sid }); } catch (e1) { r = { error: e1 }; }
+        if (r.error) { self.stop(); return; }              // fn missing or not an editor — fail open, stop nagging
+        var d = r.data || {};
+        self.held = !!d.ok;
+        self.banner(d.ok ? null : d);
+        if (d.ok && d.took_over) setStatus('Edit lock taken over (previous editor idle)');
+      }
+      await tick();
+      if (this._iv == null) this._iv = setInterval(tick, 30000);
+      window.addEventListener('pagehide', function () {
+        try { db.rpc('ms_release_edit_lock', { p_project: pid, p_sid: self.sid }); } catch (e2) {}
+      });   // fire-and-forget; the 90s TTL is the real cleanup for abandoned locks
+    },
+    stop() { if (this._iv != null) { clearInterval(this._iv); this._iv = null; } this.banner(null); },
+    banner(d) {
+      var el = document.getElementById('ms-editlock-bar');
+      if (!d) { if (el) el.remove(); return; }
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'ms-editlock-bar';
+        el.style.cssText = 'position:fixed;top:70px;left:50%;transform:translateX(-50%);z-index:6400;background:#fff8ec;border:2px solid #d99a2b;border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,0.25);padding:10px 16px;max-width:92vw;font-family:Source Sans Pro,Arial,sans-serif;font-size:13.5px;color:#5a4712;';
+        document.body.appendChild(el);
+      }
+      var who = d.same_user ? 'your other window' : ('<b>' + (d.username || 'another editor') + '</b>');
+      el.innerHTML = '🔒 ' + who + ' is editing this map right now — your changes will not save. ' +
+        'This clears automatically when they finish (checking every 30s).';
+    }
+  };
+
   (async function bootGate() {
     var locked = false;
     try {
@@ -8761,6 +8805,7 @@
       document.body.appendChild(pnl);
       return;   // no edit wiring, no draw, no writes — same posture as the map lock
     }
+    try { await MSEditLock.boot(projectId); } catch (eEl2) {}   // A18 — courtesy half; policies enforce
     start();
     (function whenReady() {
       if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); loadProjectChrome(); setupInPlaceEditing(); var _mtries = 0; var _miv = setInterval(function () { patchMapsRender(); var sec = document.getElementById('base-maps-section'); var has = sec && sec.querySelector('.layer-list-row'); if (has) { injectMapsChrome(); enhanceMapRows(); } if ((window.__mapsRenderPatched && has) || ++_mtries > 30) clearInterval(_miv); }, 400); }
