@@ -8705,7 +8705,72 @@
   // panel's innerHTML, so each render starts from fresh, un-enhanced rows.
   if (typeof window.generateLayersPanel === 'function') {
     var _origGenPanel = window.generateLayersPanel;
-    window.generateLayersPanel = function () { var r = _origGenPanel.apply(this, arguments); try { enhanceRows(); } catch (e) {} return r; };
+    window.generateLayersPanel = function () { var r = _origGenPanel.apply(this, arguments); try { enhanceRows(); } catch (e) {} try { renderPortalNotes(); } catch (e2) {} return r; };
+  }
+
+  // ── PORTAL CAPTIONS (8/6, owner's design): when a map is added from the Portal, a plain line
+  //    appears above the block it dropped in — "Added from Railways — 16 layers". It is NOT a
+  //    node in the layer tree: it lives on projects.raw_config.portalNotes, so it cannot be
+  //    dragged, cannot hold children, and never travels into the published view. Editing mode
+  //    only. Clicking it offers to remove it, the way every other sidebar thing is removed. ──
+  var _portalNotes = null;
+  async function loadPortalNotes() {
+    try {
+      var r = await db.from('projects').select('raw_config').eq('id', projectId).single();
+      var rc = (r.data && r.data.raw_config) || {};
+      _portalNotes = Array.isArray(rc.portalNotes) ? rc.portalNotes : [];
+    } catch (e) { _portalNotes = []; }
+    renderPortalNotes();
+  }
+  async function removePortalNote(noteId) {
+    try {
+      var r = await db.from('projects').select('raw_config').eq('id', projectId).single();
+      var rc = (r.data && r.data.raw_config) || {};
+      rc.portalNotes = (Array.isArray(rc.portalNotes) ? rc.portalNotes : []).filter(function (n) { return n.id !== noteId; });
+      var up = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
+      if (up.error) throw new Error(up.error.message);
+      _portalNotes = rc.portalNotes;
+      renderPortalNotes();
+      setStatus('Label removed');
+    } catch (e) { setStatus('Could not remove that label'); }
+  }
+  function renderPortalNotes() {
+    var panel = document.getElementById('layers-panel-content');
+    if (!panel || !_portalNotes) return;
+    Array.prototype.forEach.call(panel.querySelectorAll('.ms-portal-note'), function (n) { n.remove(); });
+    if (!document.getElementById('ms-portal-note-css')) {
+      var st2 = document.createElement('style'); st2.id = 'ms-portal-note-css';
+      st2.textContent = '.ms-portal-note{display:flex;align-items:center;gap:6px;margin:8px 0 2px;padding:3px 6px;font-size:11.5px;color:#7a7290;' +
+        'background:#f7f4fd;border-left:3px solid #cbc0e4;border-radius:3px;cursor:pointer;user-select:none;}' +
+        '.ms-portal-note:hover{background:#efeaf8;color:#5c4a86;}' +
+        '.ms-portal-note .x{margin-left:auto;opacity:.5;font-size:12px;}' +
+        '.ms-portal-note:hover .x{opacity:1;}';
+      document.head.appendChild(st2);
+    }
+    _portalNotes.forEach(function (n) {
+      var el = document.createElement('div');
+      el.className = 'ms-portal-note';
+      el.title = 'Click to remove this label (the layers stay)';
+      var t = document.createElement('span'); t.textContent = n.text || 'Added from another map';
+      var x = document.createElement('span'); x.className = 'x'; x.textContent = '✕';
+      el.appendChild(t); el.appendChild(x);
+      el.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (window.confirm('Remove this label?\n\n"' + (n.text || '') + '"\n\nThe layers it points at stay exactly where they are.')) removePortalNote(n.id);
+      });
+      // sit above the top-level thing the block starts with; if that row is gone (layer deleted),
+      // fall back to the top of the panel rather than vanishing silently
+      var anchor = null;
+      if (n.anchorSlug) {
+        var cb = document.getElementById(n.anchorSlug);
+        var row = cb && cb.closest ? cb.closest('.layer-list-row') : null;
+        anchor = row;
+        while (anchor && anchor.parentElement && anchor.parentElement !== panel) anchor = anchor.parentElement;
+        if (anchor && anchor.parentElement !== panel) anchor = null;
+      }
+      if (anchor) panel.insertBefore(el, anchor);
+      else panel.insertBefore(el, panel.firstChild);
+    });
   }
 
   // ── EDITING LOCK (7/22, user: "keep original maps totally intact — only edit copies").
@@ -8808,7 +8873,7 @@
     try { await MSEditLock.boot(projectId); } catch (eEl2) {}   // A18 — courtesy half; policies enforce
     start();
     (function whenReady() {
-      if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); loadProjectChrome(); setupInPlaceEditing(); var _mtries = 0; var _miv = setInterval(function () { patchMapsRender(); var sec = document.getElementById('base-maps-section'); var has = sec && sec.querySelector('.layer-list-row'); if (has) { injectMapsChrome(); enhanceMapRows(); } if ((window.__mapsRenderPatched && has) || ++_mtries > 30) clearInterval(_miv); }, 400); }
+      if (document.getElementById('layers-panel-content')) { injectChrome(); enhanceRows(); loadPortalNotes(); loadProjectChrome(); setupInPlaceEditing(); var _mtries = 0; var _miv = setInterval(function () { patchMapsRender(); var sec = document.getElementById('base-maps-section'); var has = sec && sec.querySelector('.layer-list-row'); if (has) { injectMapsChrome(); enhanceMapRows(); } if ((window.__mapsRenderPatched && has) || ++_mtries > 30) clearInterval(_miv); }, 400); }
       else setTimeout(whenReady, 150);
     })();
     (function waitForMap() {

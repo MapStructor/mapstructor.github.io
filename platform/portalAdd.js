@@ -248,17 +248,11 @@
       var srcSections = (s.data || []).filter(function (x) { return usedSec[x.id]; });
       g = { data: srcGroups }; s = { data: srcSections };
 
-      // sections: loose items (in no section) gather under one section named after the map
-      var needLoose = pls.some(function (x) { return !x.section_id && !x.group_id; })
-        || (g.data || []).some(function (x) { return !x.section_id; })
-        || !(s.data || []).length;
+      // VERBATIM (8/6): the map arrives exactly as it is — its own sections and groups, and its
+      // loose layers staying loose at the top level. No invented wrapper section; a plain caption
+      // above the block says where it came from (editing mode only — see editing.js portalNotes).
       var maps = { secMap: {}, grpMap: {}, layerIdMap: {}, slugMap: {} };
       var sort = base;
-      if (needLoose) {
-        var ls = await db.from('layer_sections').insert({ project_id: projectId, name: srcName, sort_order: sort++ }).select('id').single();
-        if (ls.error) throw new Error(ls.error.message);
-        maps.secMap.__loose = ls.data.id;
-      }
       for (var i = 0; i < (s.data || []).length; i++) {
         var ns = stripRow(s.data[i]); ns.project_id = projectId; ns.sort_order = sort++;
         var rs = await db.from('layer_sections').insert(ns).select('id').single();
@@ -267,21 +261,25 @@
       }
       for (var j = 0; j < (g.data || []).length; j++) {
         var ng = stripRow(g.data[j]); ng.project_id = projectId;
-        ng.section_id = g.data[j].section_id ? (maps.secMap[g.data[j].section_id] || null) : maps.secMap.__loose;
+        ng.section_id = g.data[j].section_id ? (maps.secMap[g.data[j].section_id] || null) : null;
+        if (!ng.section_id) ng.sort_order = sort++;   // a top-level group keeps its place in the block
         var rg = await db.from('layer_groups').insert(ng).select('id').single();
         if (rg.error) throw new Error(rg.error.message);
         maps.grpMap[g.data[j].id] = rg.data.id;
       }
 
       // layers, each by its chosen mode
-      var added = [], feats = 0;
+      var added = [], feats = 0, firstSlug = null;
       for (var k = 0; k < pls.length; k++) {
         var pl = pls[k], L = pl.layers, mode = modes[L.id] || 'linked';
         note('Adding ' + (k + 1) + '/' + pls.length + ' — ' + (L.name || 'layer'));
-        if (!pl.section_id && !pl.group_id && maps.secMap.__loose) pl = Object.assign({}, pl, { section_id: '__loose' });
+        // a loose layer stays loose, but must land at the TOP of the target's list, not wherever
+        // its source sort_order happens to point
+        if (!pl.section_id && !pl.group_id) pl = Object.assign({}, pl, { sort_order: sort++ });
         if (mode === 'all') {
           feats += await MSCopyEngine.copyLayerInto(pl, projectId, maps, me.id);
           added.push({ lid: maps.layerIdMap[L.id], all: true });
+          if (!firstSlug && maps.slugMap[L.slug]) firstSlug = maps.slugMap[L.slug];
         } else {
           var row = mirrorRow(L, srcId, mode === 'instance');
           var ins = await db.from('layers').insert(row).select('id').single();
@@ -294,8 +292,27 @@
           var rpl = await db.from('project_layers').insert(npl);
           if (rpl.error) throw new Error(rpl.error.message);
           added.push({ lid: ins.data.id, all: false });
+          if (!firstSlug) firstSlug = row.slug;
         }
       }
+
+      // the caption (8/6): a plain line above the block saying where these layers came from.
+      // It lives on the PROJECT (raw_config.portalNotes), not in the layer tree — nothing can be
+      // dropped into it, it cannot be dragged, and clicking it offers to remove it. Editing mode
+      // only, by the owner's call; read-merge-write so other project chrome is never clobbered.
+      try {
+        var pr = await db.from('projects').select('raw_config').eq('id', projectId).single();
+        var prc = (pr.data && pr.data.raw_config) || {};
+        var notes = Array.isArray(prc.portalNotes) ? prc.portalNotes.slice() : [];
+        notes.push({
+          id: 'pn' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          text: 'Added from ' + (srcName || 'another map') + ' — ' + added.length + ' layer' + (added.length === 1 ? '' : 's'),
+          anchorSlug: firstSlug || null,
+          fromMap: srcId
+        });
+        prc.portalNotes = notes;
+        await db.from('projects').update({ raw_config: prc }).eq('id', projectId);
+      } catch (eNote) { console.warn('portal caption not saved', eNote); }
 
       // provenance on All-mode copies + cross-layer reference remap (instanceOf/outlineOf must
       // point INSIDE the added block for full copies — same rule as ⧉ Copy-map, 7/22)
