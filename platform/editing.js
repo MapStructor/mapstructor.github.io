@@ -4184,7 +4184,9 @@
       var tierKey = 'free';
       try { var mp = await db.rpc('ms_my_plan'); var m0 = mp && mp.data && (mp.data[0] || mp.data);
         if (!mp.error && m0 && m0.subscription_tier) tierKey = m0.subscription_tier; } catch (e) {}
-      if (tierKey === 'free') { try { var pr = await db.from('profiles').select('subscription_tier').eq('id', uid).maybeSingle(); if (pr.data && pr.data.subscription_tier) tierKey = pr.data.subscription_tier; } catch (e) {} }
+      // profiles.subscription_tier has been ungranted to clients since the 7/30 lockdown — this
+      // direct read only produced a 403 in the console. ms_my_plan() is the supported way.
+      if (tierKey === 'free') { try { var pr = await db.rpc('ms_my_plan'); var pr0 = pr && pr.data && (pr.data[0] || pr.data); if (!pr.error && pr0 && pr0.subscription_tier) tierKey = pr0.subscription_tier; } catch (e) {} }
       var used = 0;
       try { var rpc = await db.rpc('mapstructor_user_storage'); if (!rpc.error && typeof rpc.data === 'number') used = rpc.data; } catch (e) {}
       var quota = P.stepFor(tierKey).quotaBytes;
@@ -8838,25 +8840,35 @@
       });   // fire-and-forget; the 90s TTL is the real cleanup for abandoned locks
     },
     stop() { if (this._iv != null) { clearInterval(this._iv); this._iv = null; } this.banner(null); },
-    // A small chip, deliberately out of the way (owner 8/6: "should remain somehow, but not be in
-    // the way of anything"). Bottom-left above the timeline, one line, and pointer-events:none so
-    // it can never intercept a click — the full explanation lives in its tooltip.
+    // INSIDE the sidebar, at the very top above the map title (owner 8/6): always visible while
+    // it matters, and it covers nothing because it takes its own space in the flow. Falls back to
+    // a fixed corner chip only if the sidebar isn't there (a layout that has no panel).
     banner(d) {
       var el = document.getElementById('ms-editlock-bar');
       if (!d) { if (el) el.remove(); return; }
+      // the sidebar is #studioMenu; the map's title sits in .header just above it, so the notice
+      // goes at the top of their SHARED parent — genuinely above the title, inside the panel
+      var menu = document.getElementById('studioMenu');
+      var head = document.querySelector('.header');
+      var host = (menu && head && head.parentElement === menu.parentElement) ? menu.parentElement : menu;
       if (!el) {
         el = document.createElement('div');
         el.id = 'ms-editlock-bar';
-        el.style.cssText = 'position:fixed;left:12px;bottom:96px;z-index:6400;background:#fff8ec;border:1px solid #e3c07a;' +
-          'border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.12);padding:4px 11px;max-width:280px;pointer-events:none;' +
-          'font-family:Source Sans Pro,Arial,sans-serif;font-size:11.5px;line-height:1.35;color:#7a6320;white-space:nowrap;' +
-          'overflow:hidden;text-overflow:ellipsis;opacity:.92;';
-        document.body.appendChild(el);
+        el.style.cssText = host
+          ? 'margin:0 0 10px;padding:9px 12px;background:#fff8ec;border:1px solid #e3c07a;border-left:5px solid #d99a2b;' +
+            'border-radius:7px;font-family:Source Sans Pro,Arial,sans-serif;font-size:12px;line-height:1.45;color:#7a6320;'
+          : 'position:fixed;left:12px;bottom:96px;z-index:6400;background:#fff8ec;border:1px solid #e3c07a;border-radius:16px;' +
+            'padding:5px 12px;max-width:280px;pointer-events:none;font-family:Source Sans Pro,Arial,sans-serif;font-size:11.5px;color:#7a6320;';
+        if (host) host.insertBefore(el, host.firstChild); else document.body.appendChild(el);
       }
-      var who = d.same_user ? 'Your other window' : ((d.username || 'Another editor'));
-      el.textContent = '🔒 ' + who + ' is editing — changes won\'t save';
-      el.title = who + ' holds the edit lock on this map, so anything you change here will not be saved. ' +
-        'It clears by itself once they finish or close the map (checked every 30 seconds).';
+      var who = d.same_user ? 'Your other window' : (d.username || 'Another editor');
+      el.textContent = '';   // built as nodes: the holder's name is user text
+      var b1 = document.createElement('b');
+      b1.style.cssText = 'display:block;margin-bottom:2px;';
+      b1.textContent = '🔒 ' + who + ' is editing this map';
+      var l1 = document.createElement('span'); l1.textContent = 'Changes you make here will not save.';
+      var l2 = document.createElement('span'); l2.style.display = 'block'; l2.textContent = 'This clears by itself when they finish.';
+      el.appendChild(b1); el.appendChild(l1); el.appendChild(l2);
     }
   };
 

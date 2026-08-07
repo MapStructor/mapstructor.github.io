@@ -231,6 +231,7 @@
   // and containers that end up empty are not created at all.
   async function run(srcId, srcName, modes, goBtn, picked) {
     goBtn.disabled = true; goBtn.textContent = 'Adding…';
+    var made = null;
     try {
       // full source pull (features are NOT prefetched — copyLayerInto pages them itself)
       var s = await db.from('layer_sections').select('*').eq('project_id', srcId).order('sort_order');
@@ -292,19 +293,23 @@
       // above the block says where it came from (editing mode only — see editing.js portalNotes).
       var maps = { secMap: {}, grpMap: {}, layerIdMap: {}, slugMap: {} };
       var sort = base;
+      // Everything this add creates, so a failure halfway can be UNDONE. Before this, a write
+      // that died mid-loop left sections with nothing in them and a half-imported map that
+      // looked like the add had "replaced" things (owner report 8/6).
+      made = { sections: [], groups: [], layers: [], links: [] };
       for (var i = 0; i < (s.data || []).length; i++) {
         var ns = stripRow(s.data[i]); ns.project_id = projectId; ns.sort_order = sort++;
         var rs = await db.from('layer_sections').insert(ns).select('id').single();
-        if (rs.error) throw new Error(rs.error.message);
-        maps.secMap[s.data[i].id] = rs.data.id;
+        if (rs.error) throw new Error('section "' + (s.data[i].name || '') + '": ' + rs.error.message);
+        maps.secMap[s.data[i].id] = rs.data.id; made.sections.push(rs.data.id);
       }
       for (var j = 0; j < (g.data || []).length; j++) {
         var ng = stripRow(g.data[j]); ng.project_id = projectId;
         ng.section_id = g.data[j].section_id ? (maps.secMap[g.data[j].section_id] || null) : null;
         if (!ng.section_id) ng.sort_order = sort++;   // a top-level group keeps its place in the block
         var rg = await db.from('layer_groups').insert(ng).select('id').single();
-        if (rg.error) throw new Error(rg.error.message);
-        maps.grpMap[g.data[j].id] = rg.data.id;
+        if (rg.error) throw new Error('group "' + (g.data[j].name || '') + '": ' + rg.error.message);
+        maps.grpMap[g.data[j].id] = rg.data.id; made.groups.push(rg.data.id);
       }
 
       // layers, each by its chosen mode
@@ -318,18 +323,19 @@
         if (mode === 'all') {
           feats += await MSCopyEngine.copyLayerInto(pl, projectId, maps, me.id);
           added.push({ lid: maps.layerIdMap[L.id], all: true });
+          if (maps.layerIdMap[L.id]) made.layers.push(maps.layerIdMap[L.id]);
           if (!firstSlug && maps.slugMap[L.slug]) firstSlug = maps.slugMap[L.slug];
         } else {
           var row = mirrorRow(L, srcId, mode === 'instance');
           var ins = await db.from('layers').insert(row).select('id').single();
-          if (ins.error) throw new Error(ins.error.message);
-          maps.layerIdMap[L.id] = ins.data.id; maps.slugMap[L.slug] = row.slug;
+          if (ins.error) throw new Error('layer "' + (L.name || '') + '": ' + ins.error.message);
+          maps.layerIdMap[L.id] = ins.data.id; maps.slugMap[L.slug] = row.slug; made.layers.push(ins.data.id);
           var npl = stripRow(pl, ['layers']);
           npl.project_id = projectId; npl.layer_id = ins.data.id;
           npl.section_id = pl.section_id ? (maps.secMap[pl.section_id] || null) : null;
           npl.group_id = pl.group_id ? (maps.grpMap[pl.group_id] || null) : null;
           var rpl = await db.from('project_layers').insert(npl);
-          if (rpl.error) throw new Error(rpl.error.message);
+          if (rpl.error) throw new Error('placing "' + (L.name || '') + '": ' + rpl.error.message);
           added.push({ lid: ins.data.id, all: false });
           if (!firstSlug) firstSlug = row.slug;
         }
@@ -370,7 +376,33 @@
       setTimeout(function () { location.reload(); }, 700);
     } catch (e) {
       console.warn('portal add failed', e);
-      note('Add failed: ' + ((e && e.message) || e));
+      var msg = (e && e.message) || String(e);
+      // ROLL BACK (8/6): an add that dies partway used to leave its sections behind with nothing
+      // in them, which read as "it created empty sections and replaced my layers". Undo in
+      // reverse order — links, then layers, then groups, then sections — so nothing of this
+      // attempt survives. The map is left exactly as it was before the click.
+      var undone = { links: 0, layers: 0, groups: 0, sections: 0 };
+      if (made) {
+        note('Add failed — putting the map back…');
+        try {
+          if (made.layers.length) {
+            var lr = await db.from('project_layers').delete().eq('project_id', projectId).in('layer_id', made.layers).select('id');
+            undone.links = (lr && lr.data && lr.data.length) || 0;
+            await db.from('features').delete().in('layer_id', made.layers);
+            var dl = await db.from('layers').delete().in('id', made.layers).select('id');
+            undone.layers = (dl && dl.data && dl.data.length) || 0;
+          }
+          if (made.groups.length) { var dg = await db.from('layer_groups').delete().in('id', made.groups).select('id'); undone.groups = (dg && dg.data && dg.data.length) || 0; }
+          if (made.sections.length) { var ds = await db.from('layer_sections').delete().in('id', made.sections).select('id'); undone.sections = (ds && ds.data && ds.data.length) || 0; }
+        } catch (eU) { console.warn('rollback incomplete', eU); }
+      }
+      var clean = made && undone.layers === made.layers.length && undone.sections === made.sections.length;
+      note((clean ? 'Add failed and was undone — your map is unchanged. ' : 'Add failed. ') + msg);
+      // and say it where it cannot be missed: the panel is small and easy to look past
+      try {
+        if (typeof showToast === 'function') showToast('Portal add failed: ' + msg + (clean ? ' — nothing was left behind.' : ' — some pieces may remain; reload and check.'), 14000);
+        else alert('Portal add failed:\n\n' + msg + (clean ? '\n\nNothing was left behind — your map is unchanged.' : '\n\nSome pieces may remain. Reload and check.'));
+      } catch (eT) {}
       goBtn.disabled = false; goBtn.textContent = 'Add to this map';
     }
   }
