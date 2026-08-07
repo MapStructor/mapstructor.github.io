@@ -133,9 +133,21 @@
   async function openPicker(srcId, srcName) {
     var body = shell('Add “' + srcName + '”');
     body.innerHTML = '<div class="pp-empty">Loading its layers…</div>';
-    if (await alreadyAdded(srcId)) {
-      if (!window.confirm('“' + srcName + '” is already in this map.\n\nAdding it again makes a second copy of every layer you pick (and, for "All" layers, uses storage again).\n\nAdd it anyway?')) { close(); return; }
-    }
+    // Which of this source's layers are ALREADY here? (8/6 — the owner re-added a map to get MORE
+    // layers and got duplicates plus a second copy of every section instead.) Matched on the
+    // _msFromLayer stamp, falling back to the name for blocks added before that stamp existed.
+    // No confirm dialog any more: the picker itself now shows the situation and pre-unticks them.
+    var here = {}, hereNames = {};
+    try {
+      var ex = await db.from('project_layers').select('layers(name, raw_config)').eq('project_id', projectId);
+      ((ex && ex.data) || []).forEach(function (x) {
+        var rc0 = (x.layers && x.layers.raw_config) || {};
+        if (rc0._msFromMap !== srcId) return;
+        if (rc0._msFromLayer) here[rc0._msFromLayer] = 1;
+        if (x.layers.name) hereNames[String(x.layers.name).replace(/\s*\(view\)\s*$/, '')] = 1;
+      });
+    } catch (eH) {}
+    function isHere(L) { return !!here[L.id] || !!hereNames[String(L.name || '').replace(/\s*\(view\)\s*$/, '')]; }
     var pls = await db.from('project_layers').select('layer_id, layers(id,name,r2_bytes,fold_state,source_type)').eq('project_id', srcId).order('sort_order');
     if (pls.error || !pls.data || !pls.data.length) { body.innerHTML = '<div class="pp-empty">Could not read that map’s layers' + (pls.error ? ' (' + esc(pls.error.message) + ')' : ' — it has none') + '.</div>'; return; }
     var rows = pls.data.filter(function (x) { return x.layers; });
@@ -144,6 +156,7 @@
     var html =
       '<div class="pp-lead">' +
       '<div style="margin-bottom:8px;">Tick the layers you want, then choose how each one comes over:</div>' +
+      '<div id="pp-already" style="display:none;margin-bottom:8px;color:#b0691d;"></div>' +
       '<ul class="pp-modes">' +
       '<li><b>All</b> — your own full copy. Costs storage.</li>' +
       '<li><b>Linked</b> — their data, live and read-only. Your styling and your own columns. 0 bytes.</li>' +
@@ -156,8 +169,10 @@
       '<table><tr><th style="text-align:center;">✓</th><th>Layer</th><th style="text-align:center;">All</th><th style="text-align:center;">Linked</th><th style="text-align:center;">Instance</th></tr>' +
       rows.map(function (x, i) {
         var L = x.layers, mb = Math.round((L.r2_bytes || 0) / 1048576);
-        return '<tr data-i="' + i + '"><td class="md"><input type="checkbox" class="pp-pick" data-i="' + i + '" checked></td>' +
-          '<td>' + esc(L.name || 'Layer') + (mb ? ' <span style="color:#9a94ad;">(' + mb + ' MB)</span>' : '') + '</td>' +
+        var have = isHere(L);
+        return '<tr data-i="' + i + '"><td class="md"><input type="checkbox" class="pp-pick" data-i="' + i + '"' + (have ? '' : ' checked') + '></td>' +
+          '<td>' + esc(L.name || 'Layer') + (mb ? ' <span style="color:#9a94ad;">(' + mb + ' MB)</span>' : '') +
+          (have ? '<span style="display:block;font-size:11px;color:#b0691d;">already in this map</span>' : '') + '</td>' +
           ['all', 'linked', 'instance'].map(function (m) {
             return '<td class="md"><input type="radio" name="pm-' + i + '" value="' + m + '"' + (m === 'linked' ? ' checked' : '') + ' data-lid="' + L.id + '"></td>';
           }).join('') + '</tr>';
@@ -177,6 +192,13 @@
       if (go) { go.disabled = n === 0; go.textContent = n === rows.length ? 'Add to this map' : ('Add ' + n + ' layer' + (n === 1 ? '' : 's')); }
       if (!n) note('Tick at least one layer to add.');
       return n;
+    }
+    var haveCount = rows.filter(function (x) { return isHere(x.layers); }).length;
+    if (haveCount) {
+      var al = document.getElementById('pp-already');
+      al.style.display = '';
+      al.textContent = haveCount + ' layer' + (haveCount === 1 ? ' is' : 's are') +
+        ' already in this map, so they start unticked — no accidental duplicates. Tick one to add a second copy anyway.';
     }
     body.querySelectorAll('.pp-pick').forEach(function (c) { c.onchange = syncPicks; });
     body.querySelectorAll('.setall button').forEach(function (b) {
@@ -210,6 +232,7 @@
     var slug = L.slug + (locked ? '-i' : '-l') + Math.random().toString(36).slice(2, 7);
     var rc = JSON.parse(JSON.stringify(L.raw_config || {}));
     rc._msFromMap = srcId;
+    rc._msFromLayer = L.id;   // which source layer this mirrors — lets the picker spot re-adds
     rc.containerId = 'cont-' + slug; rc.className = slug; rc.topLayerClass = slug; rc.toggleElement = slug;
     delete rc.editorOnly; delete rc.foldError;
     // KEEP rasterYears (cross-map — no same-map source to draw the scrub raster) and KEEP the
@@ -297,19 +320,43 @@
       // that died mid-loop left sections with nothing in them and a half-imported map that
       // looked like the add had "replaced" things (owner report 8/6).
       made = { sections: [], groups: [], layers: [], links: [] };
+      // REUSE, don't duplicate (8/6): a second add from the same map dropped a second copy of
+      // every section — four "Campus Area" rows in the owner's live map. Sections created by an
+      // add carry _msFromMap/_msFromSection, so a later add from the same source finds its own
+      // section and puts the new layers INSIDE it.
+      var haveSec = {}, haveGrp = {};
+      try {
+        var exS = await db.from('layer_sections').select('id, raw_config').eq('project_id', projectId);
+        ((exS && exS.data) || []).forEach(function (r0) {
+          var c0 = r0.raw_config || {};
+          if (c0._msFromMap === srcId && c0._msFromSection) haveSec[c0._msFromSection] = r0.id;
+        });
+        var exG = await db.from('layer_groups').select('id, raw_config').eq('project_id', projectId);
+        ((exG && exG.data) || []).forEach(function (r0) {
+          var c0 = r0.raw_config || {};
+          if (c0._msFromMap === srcId && c0._msFromGroup) haveGrp[c0._msFromGroup] = r0.id;
+        });
+      } catch (eEx) {}
+
       for (var i = 0; i < (s.data || []).length; i++) {
-        var ns = stripRow(s.data[i]); ns.project_id = projectId; ns.sort_order = sort++;
+        var srcSec = s.data[i];
+        if (haveSec[srcSec.id]) { maps.secMap[srcSec.id] = haveSec[srcSec.id]; continue; }   // already here
+        var ns = stripRow(srcSec); ns.project_id = projectId; ns.sort_order = sort++;
+        ns.raw_config = Object.assign({}, ns.raw_config || {}, { _msFromMap: srcId, _msFromSection: srcSec.id });
         var rs = await db.from('layer_sections').insert(ns).select('id').single();
-        if (rs.error) throw new Error('section "' + (s.data[i].name || '') + '": ' + rs.error.message);
-        maps.secMap[s.data[i].id] = rs.data.id; made.sections.push(rs.data.id);
+        if (rs.error) throw new Error('section "' + (srcSec.name || '') + '": ' + rs.error.message);
+        maps.secMap[srcSec.id] = rs.data.id; made.sections.push(rs.data.id);
       }
       for (var j = 0; j < (g.data || []).length; j++) {
-        var ng = stripRow(g.data[j]); ng.project_id = projectId;
-        ng.section_id = g.data[j].section_id ? (maps.secMap[g.data[j].section_id] || null) : null;
+        var srcGrp = g.data[j];
+        if (haveGrp[srcGrp.id]) { maps.grpMap[srcGrp.id] = haveGrp[srcGrp.id]; continue; }
+        var ng = stripRow(srcGrp); ng.project_id = projectId;
+        ng.section_id = srcGrp.section_id ? (maps.secMap[srcGrp.section_id] || null) : null;
         if (!ng.section_id) ng.sort_order = sort++;   // a top-level group keeps its place in the block
+        ng.raw_config = Object.assign({}, ng.raw_config || {}, { _msFromMap: srcId, _msFromGroup: srcGrp.id });
         var rg = await db.from('layer_groups').insert(ng).select('id').single();
-        if (rg.error) throw new Error('group "' + (g.data[j].name || '') + '": ' + rg.error.message);
-        maps.grpMap[g.data[j].id] = rg.data.id; made.groups.push(rg.data.id);
+        if (rg.error) throw new Error('group "' + (srcGrp.name || '') + '": ' + rg.error.message);
+        maps.grpMap[srcGrp.id] = rg.data.id; made.groups.push(rg.data.id);
       }
 
       // layers, each by its chosen mode
@@ -367,6 +414,7 @@
         var cur = await db.from('layers').select('raw_config').eq('id', newLid).single();
         var rc2 = (cur.data && cur.data.raw_config) || {};
         rc2._msFromMap = srcId;
+        rc2._msFromLayer = oL.id;   // same stamp the mirrors carry, so re-adds are spotted here too
         if (rc2.instanceOf && maps.layerIdMap[rc2.instanceOf]) rc2.instanceOf = maps.layerIdMap[rc2.instanceOf];
         if (rc2.outlineOf && maps.slugMap[rc2.outlineOf]) rc2.outlineOf = maps.slugMap[rc2.outlineOf];
         await db.from('layers').update({ raw_config: rc2 }).eq('id', newLid);
