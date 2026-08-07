@@ -8740,20 +8740,26 @@
     Array.prototype.forEach.call(panel.querySelectorAll('.ms-portal-note'), function (n) { n.remove(); });
     if (!document.getElementById('ms-portal-note-css')) {
       var st2 = document.createElement('style'); st2.id = 'ms-portal-note-css';
-      st2.textContent = '.ms-portal-note{display:flex;align-items:center;gap:6px;margin:8px 0 2px;padding:3px 6px;font-size:11.5px;color:#7a7290;' +
-        'background:#f7f4fd;border-left:3px solid #cbc0e4;border-radius:3px;cursor:pointer;user-select:none;}' +
-        '.ms-portal-note:hover{background:#efeaf8;color:#5c4a86;}' +
-        '.ms-portal-note .x{margin-left:auto;opacity:.5;font-size:12px;}' +
-        '.ms-portal-note:hover .x{opacity:1;}';
+      st2.textContent = '.ms-portal-note{position:relative;margin:22px 0 10px;padding:10px 30px 10px 13px;' +
+        'background:#f4f0fd;border:1px solid #d9cff1;border-left:5px solid #7c5cbf;border-radius:8px;' +
+        'cursor:pointer;user-select:none;line-height:1.4;}' +
+        '.ms-portal-note:first-child{margin-top:6px;}' +
+        '.ms-portal-note:hover{background:#ece5fb;border-color:#c3b2e8;}' +
+        '.ms-portal-note .kicker{display:block;font-size:10px;font-weight:800;letter-spacing:.09em;' +
+        'text-transform:uppercase;color:#7c5cbf;margin-bottom:3px;}' +
+        '.ms-portal-note .body{display:block;font-size:13.5px;font-weight:700;color:#2e2748;}' +
+        '.ms-portal-note .x{position:absolute;top:8px;right:9px;font-size:13px;color:#9a8fc4;opacity:.65;}' +
+        '.ms-portal-note:hover .x{opacity:1;color:#7c5cbf;}';
       document.head.appendChild(st2);
     }
     _portalNotes.forEach(function (n) {
       var el = document.createElement('div');
       el.className = 'ms-portal-note';
       el.title = 'Click to remove this label (the layers stay)';
-      var t = document.createElement('span'); t.textContent = n.text || 'Added from another map';
+      var k = document.createElement('span'); k.className = 'kicker'; k.textContent = 'From the Portal';
+      var t = document.createElement('span'); t.className = 'body'; t.textContent = n.text || 'Added from another map';
       var x = document.createElement('span'); x.className = 'x'; x.textContent = '✕';
-      el.appendChild(t); el.appendChild(x);
+      el.appendChild(k); el.appendChild(t); el.appendChild(x);
       el.addEventListener('click', function (e) {
         e.stopPropagation();
         if (window.confirm('Remove this label?\n\n"' + (n.text || '') + '"\n\nThe layers it points at stay exactly where they are.')) removePortalNote(n.id);

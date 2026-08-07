@@ -24,7 +24,8 @@
     '#ms-portal-panel .pp-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid #eee;font-weight:700;font-size:14px;}' +
     '#ms-portal-panel .pp-x{cursor:pointer;border:none;background:none;font-size:16px;color:#888;}' +
     '#ms-portal-panel .pp-sec{padding:10px 14px 2px;font-weight:700;font-size:11px;letter-spacing:.06em;color:#9083ad;text-transform:uppercase;}' +
-    '#ms-portal-panel .pp-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 14px;border-bottom:1px solid #f4f2fa;}' +
+    '#ms-portal-panel .pp-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid #f0edf8;}' +
+    '#ms-portal-panel .pp-row:hover{background:#faf8ff;}' +
     '#ms-portal-panel .pp-row .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
     '#ms-portal-panel .pp-add{padding:4px 12px;border:1px solid #7c5cbf;border-radius:6px;background:#fff;color:#7c5cbf;font-weight:700;cursor:pointer;}' +
     '#ms-portal-panel .pp-add:hover{background:#7c5cbf;color:#fff;}' +
@@ -34,7 +35,13 @@
     '#ms-portal-panel .pp-go[disabled]{opacity:.55;cursor:default;}' +
     '#ms-portal-panel table{width:100%;border-collapse:collapse;}' +
     '#ms-portal-panel th{font-size:10.5px;color:#9083ad;text-transform:uppercase;letter-spacing:.05em;padding:6px 6px;text-align:left;}' +
-    '#ms-portal-panel td{padding:5px 6px;border-top:1px solid #f4f2fa;font-size:12.5px;}' +
+    '#ms-portal-panel td{padding:9px 6px;border-top:1px solid #f0edf8;font-size:12.5px;line-height:1.4;}' +
+    '#ms-portal-panel .pp-modes{margin:0;padding:0;list-style:none;}' +
+    '#ms-portal-panel .pp-modes li{margin:5px 0;}' +
+    '#ms-portal-panel .pp-lead{padding:12px 14px 4px;color:#6b6386;font-size:12.5px;line-height:1.55;}' +
+    '#ms-portal-panel .pp-lead b{color:#3b3357;}' +
+    '#ms-portal-panel .setall{display:block;margin-top:10px;padding-top:9px;border-top:1px solid #f0edf8;}' +
+    '#ms-portal-panel .setall .grp{display:block;margin:5px 0;}' +
     '#ms-portal-panel td.md{text-align:center;white-space:nowrap;}' +
     '#ms-portal-panel .setall button{margin-left:6px;padding:2px 8px;border:1px solid #cbc0e4;border-radius:5px;background:#faf8ff;cursor:pointer;font-size:11px;}' +
     '#ms-portal-panel .pp-thumb{flex:0 0 52px;height:36px;border-radius:5px;background:linear-gradient(135deg,#efeaf8,#dfe8f6);background-size:cover;background-position:center;}' +
@@ -135,9 +142,17 @@
     // 8/6: PICK WHICH LAYERS COME OVER. The ✓ column decides what is added at all; the
     // mode radios only matter for the layers you keep ticked.
     var html =
-      '<div class="pp-empty" style="padding-top:10px;">Tick the layers you want. Then per layer: <b>All</b> = your own full copy (costs storage) · <b>Linked</b> = their data live, your styling &amp; columns, 0 bytes · <b>Instance</b> = locked mirror, 0 bytes.' +
-      '<span class="setall" style="display:block;margin-top:6px;">Select: <button data-pick="all">All</button><button data-pick="none">None</button>' +
-      ' &nbsp;·&nbsp; Set mode: <button data-m="all">All</button><button data-m="linked">Linked</button><button data-m="instance">Instance</button></span></div>' +
+      '<div class="pp-lead">' +
+      '<div style="margin-bottom:8px;">Tick the layers you want, then choose how each one comes over:</div>' +
+      '<ul class="pp-modes">' +
+      '<li><b>All</b> — your own full copy. Costs storage.</li>' +
+      '<li><b>Linked</b> — their data, live and read-only. Your styling and your own columns. 0 bytes.</li>' +
+      '<li><b>Instance</b> — a locked mirror, exactly as they made it. 0 bytes.</li>' +
+      '</ul>' +
+      '<span class="setall">' +
+      '<span class="grp">Select: <button data-pick="all">All</button><button data-pick="none">None</button></span>' +
+      '<span class="grp">Set mode: <button data-m="all">All</button><button data-m="linked">Linked</button><button data-m="instance">Instance</button></span>' +
+      '</span></div>' +
       '<table><tr><th style="text-align:center;">✓</th><th>Layer</th><th style="text-align:center;">All</th><th style="text-align:center;">Linked</th><th style="text-align:center;">Instance</th></tr>' +
       rows.map(function (x, i) {
         var L = x.layers, mb = Math.round((L.r2_bytes || 0) / 1048576);
@@ -147,7 +162,9 @@
             return '<td class="md"><input type="radio" name="pm-' + i + '" value="' + m + '"' + (m === 'linked' ? ' checked' : '') + ' data-lid="' + L.id + '"></td>';
           }).join('') + '</tr>';
       }).join('') + '</table>' +
-      '<div class="pp-foot"><span class="pp-empty" style="padding:0;" id="pp-note">Arrives as its own section(s) at the top of your list.</span><button class="pp-go" id="pp-go">Add to this map</button></div>';
+      '<div class="pp-foot" style="align-items:flex-end;gap:14px;padding-top:14px;">' +
+      '<span class="pp-empty" style="padding:0;line-height:1.5;" id="pp-note">Arrives at the top of your list,<br>keeping the map\'s own sections.</span>' +
+      '<button class="pp-go" id="pp-go">Add to this map</button></div>';
     body.innerHTML = html;
     function syncPicks() {
       var n = 0;
