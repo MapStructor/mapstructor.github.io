@@ -170,7 +170,7 @@
       rows.map(function (x, i) {
         var L = x.layers, mb = Math.round((L.r2_bytes || 0) / 1048576);
         var have = isHere(L);
-        return '<tr data-i="' + i + '"><td class="md"><input type="checkbox" class="pp-pick" data-i="' + i + '"' + (have ? '' : ' checked') + '></td>' +
+        return '<tr data-i="' + i + '"><td class="md"><input type="checkbox" class="pp-pick" data-i="' + i + '" checked></td>' +
           '<td>' + esc(L.name || 'Layer') + (mb ? ' <span style="color:#9a94ad;">(' + mb + ' MB)</span>' : '') +
           (have ? '<span style="display:block;font-size:11px;color:#b0691d;">already in this map</span>' : '') + '</td>' +
           ['all', 'linked', 'instance'].map(function (m) {
@@ -198,7 +198,7 @@
       var al = document.getElementById('pp-already');
       al.style.display = '';
       al.textContent = haveCount + ' layer' + (haveCount === 1 ? ' is' : 's are') +
-        ' already in this map, so they start unticked — no accidental duplicates. Tick one to add a second copy anyway.';
+        ' already in this map from an earlier add. Adding again makes a separate copy — untick any you do not want twice.';
     }
     body.querySelectorAll('.pp-pick').forEach(function (c) { c.onchange = syncPicks; });
     body.querySelectorAll('.setall button').forEach(function (b) {
@@ -320,43 +320,32 @@
       // that died mid-loop left sections with nothing in them and a half-imported map that
       // looked like the add had "replaced" things (owner report 8/6).
       made = { sections: [], groups: [], layers: [], links: [] };
-      // REUSE, don't duplicate (8/6): a second add from the same map dropped a second copy of
-      // every section — four "Campus Area" rows in the owner's live map. Sections created by an
-      // add carry _msFromMap/_msFromSection, so a later add from the same source finds its own
-      // section and puts the new layers INSIDE it.
-      var haveSec = {}, haveGrp = {};
-      try {
-        var exS = await db.from('layer_sections').select('id, raw_config').eq('project_id', projectId);
-        ((exS && exS.data) || []).forEach(function (r0) {
-          var c0 = r0.raw_config || {};
-          if (c0._msFromMap === srcId && c0._msFromSection) haveSec[c0._msFromSection] = r0.id;
-        });
-        var exG = await db.from('layer_groups').select('id, raw_config').eq('project_id', projectId);
-        ((exG && exG.data) || []).forEach(function (r0) {
-          var c0 = r0.raw_config || {};
-          if (c0._msFromMap === srcId && c0._msFromGroup) haveGrp[c0._msFromGroup] = r0.id;
-        });
-      } catch (eEx) {}
-
+      // EVERY ADD IS ITS OWN BLOCK (owner 8/6: "They should be new additions, entirely, nothing
+      // should be combined"). Each section/group is created fresh — and with a FRESH SLUG,
+      // because the engine keys its tree nodes by slug: reusing the source's slug made a second
+      // add collide with the first one's sections, which is what looked like merging.
+      var firstAnchor = null;   // the slug of this block's first top-level thing — the caption sits above it
       for (var i = 0; i < (s.data || []).length; i++) {
         var srcSec = s.data[i];
-        if (haveSec[srcSec.id]) { maps.secMap[srcSec.id] = haveSec[srcSec.id]; continue; }   // already here
         var ns = stripRow(srcSec); ns.project_id = projectId; ns.sort_order = sort++;
+        ns.slug = (srcSec.slug || 'sec') + '-p' + Math.random().toString(36).slice(2, 7);
         ns.raw_config = Object.assign({}, ns.raw_config || {}, { _msFromMap: srcId, _msFromSection: srcSec.id });
         var rs = await db.from('layer_sections').insert(ns).select('id').single();
         if (rs.error) throw new Error('section "' + (srcSec.name || '') + '": ' + rs.error.message);
         maps.secMap[srcSec.id] = rs.data.id; made.sections.push(rs.data.id);
+        if (!firstAnchor) firstAnchor = ns.slug;
       }
       for (var j = 0; j < (g.data || []).length; j++) {
         var srcGrp = g.data[j];
-        if (haveGrp[srcGrp.id]) { maps.grpMap[srcGrp.id] = haveGrp[srcGrp.id]; continue; }
         var ng = stripRow(srcGrp); ng.project_id = projectId;
         ng.section_id = srcGrp.section_id ? (maps.secMap[srcGrp.section_id] || null) : null;
         if (!ng.section_id) ng.sort_order = sort++;   // a top-level group keeps its place in the block
+        ng.slug = (srcGrp.slug || 'grp') + '-p' + Math.random().toString(36).slice(2, 7);   // fresh: node ids are slugs
         ng.raw_config = Object.assign({}, ng.raw_config || {}, { _msFromMap: srcId, _msFromGroup: srcGrp.id });
         var rg = await db.from('layer_groups').insert(ng).select('id').single();
         if (rg.error) throw new Error('group "' + (srcGrp.name || '') + '": ' + rg.error.message);
         maps.grpMap[srcGrp.id] = rg.data.id; made.groups.push(rg.data.id);
+        if (!firstAnchor && !ng.section_id) firstAnchor = ng.slug;
       }
 
       // layers, each by its chosen mode
@@ -399,7 +388,7 @@
         notes.push({
           id: 'pn' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
           text: 'Added from ' + (srcName || 'another map') + ' — ' + added.length + ' layer' + (added.length === 1 ? '' : 's'),
-          anchorSlug: firstSlug || null,
+          anchorSlug: firstAnchor || firstSlug || null,
           fromMap: srcId
         });
         prc.portalNotes = notes;

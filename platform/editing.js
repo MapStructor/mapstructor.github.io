@@ -8766,17 +8766,26 @@
         e.stopPropagation();
         if (window.confirm('Remove this label?\n\n"' + (n.text || '') + '"\n\nThe layers it points at stay exactly where they are.')) removePortalNote(n.id);
       });
-      // sit above the top-level thing the block starts with; if that row is gone (layer deleted),
-      // fall back to the top of the panel rather than vanishing silently
+      // Sit above THIS block's own first item. The anchor is that item's node id (a section,
+      // group or layer slug — all unique per add since 8/6). Three ways to find its element,
+      // because sections, groups and layers render differently:
+      //   1. the row enhanceRows tagged with data-node-id
+      //   2. an element whose id IS the slug (layer checkboxes)
+      //   3. a container element named after it (cont-<slug>)
+      // Only when none of those exist (the anchor was deleted) does it fall back to the top —
+      // that fallback is what put a caption above everything else (owner report 8/6).
       var anchor = null;
       if (n.anchorSlug) {
-        var cb = document.getElementById(n.anchorSlug);
-        var row = cb && cb.closest ? cb.closest('.layer-list-row') : null;
-        anchor = row;
+        var seed = panel.querySelector('[data-node-id="' + n.anchorSlug + '"]') ||
+                   document.getElementById(n.anchorSlug) ||
+                   document.getElementById('cont-' + n.anchorSlug);
+        if (seed && !panel.contains(seed)) seed = null;
+        anchor = seed;
         while (anchor && anchor.parentElement && anchor.parentElement !== panel) anchor = anchor.parentElement;
         if (anchor && anchor.parentElement !== panel) anchor = null;
       }
       if (anchor) panel.insertBefore(el, anchor);
+      else if (n.anchorSlug) return;   // its block is gone — say nothing rather than float to the top
       else panel.insertBefore(el, panel.firstChild);
     });
   }
