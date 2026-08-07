@@ -104,9 +104,31 @@
   }
 
   // ── screen 2: per-layer mode picker ───────────────────────────────────────
+  // DOUBLE-ADD GUARD (8/6): adding the same map twice is almost always a mis-click — the layers
+  // arrive again, storage is spent again, and the list doubles. Two independent traces are
+  // checked because either can be cleared by hand: the caption written at add time
+  // (raw_config.portalNotes[].fromMap) and the provenance stamp on every added layer
+  // (raw_config._msFromMap). Warn once, and let the deliberate case through.
+  async function alreadyAdded(srcId) {
+    try {
+      var pr = await db.from('projects').select('raw_config').eq('id', projectId).single();
+      var notes = (pr.data && pr.data.raw_config && pr.data.raw_config.portalNotes) || [];
+      if (notes.some(function (n) { return n && n.fromMap === srcId; })) return true;
+    } catch (e) {}
+    try {
+      var r = await db.from('project_layers').select('layers(raw_config)').eq('project_id', projectId);
+      return ((r && r.data) || []).some(function (x) {
+        return x.layers && x.layers.raw_config && x.layers.raw_config._msFromMap === srcId;
+      });
+    } catch (e) { return false; }
+  }
+
   async function openPicker(srcId, srcName) {
     var body = shell('Add “' + srcName + '”');
     body.innerHTML = '<div class="pp-empty">Loading its layers…</div>';
+    if (await alreadyAdded(srcId)) {
+      if (!window.confirm('“' + srcName + '” is already in this map.\n\nAdding it again makes a second copy of every layer you pick (and, for "All" layers, uses storage again).\n\nAdd it anyway?')) { close(); return; }
+    }
     var pls = await db.from('project_layers').select('layer_id, layers(id,name,r2_bytes,fold_state,source_type)').eq('project_id', srcId).order('sort_order');
     if (pls.error || !pls.data || !pls.data.length) { body.innerHTML = '<div class="pp-empty">Could not read that map’s layers' + (pls.error ? ' (' + esc(pls.error.message) + ')' : ' — it has none') + '.</div>'; return; }
     var rows = pls.data.filter(function (x) { return x.layers; });

@@ -8832,18 +8832,25 @@
       });   // fire-and-forget; the 90s TTL is the real cleanup for abandoned locks
     },
     stop() { if (this._iv != null) { clearInterval(this._iv); this._iv = null; } this.banner(null); },
+    // A small chip, deliberately out of the way (owner 8/6: "should remain somehow, but not be in
+    // the way of anything"). Bottom-left above the timeline, one line, and pointer-events:none so
+    // it can never intercept a click — the full explanation lives in its tooltip.
     banner(d) {
       var el = document.getElementById('ms-editlock-bar');
       if (!d) { if (el) el.remove(); return; }
       if (!el) {
         el = document.createElement('div');
         el.id = 'ms-editlock-bar';
-        el.style.cssText = 'position:fixed;top:70px;left:50%;transform:translateX(-50%);z-index:6400;background:#fff8ec;border:2px solid #d99a2b;border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,0.25);padding:10px 16px;max-width:92vw;font-family:Source Sans Pro,Arial,sans-serif;font-size:13.5px;color:#5a4712;';
+        el.style.cssText = 'position:fixed;left:12px;bottom:96px;z-index:6400;background:#fff8ec;border:1px solid #e3c07a;' +
+          'border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.12);padding:4px 11px;max-width:280px;pointer-events:none;' +
+          'font-family:Source Sans Pro,Arial,sans-serif;font-size:11.5px;line-height:1.35;color:#7a6320;white-space:nowrap;' +
+          'overflow:hidden;text-overflow:ellipsis;opacity:.92;';
         document.body.appendChild(el);
       }
-      var who = d.same_user ? 'your other window' : ('<b>' + (d.username || 'another editor') + '</b>');
-      el.innerHTML = '🔒 ' + who + ' is editing this map right now — your changes will not save. ' +
-        'This clears automatically when they finish (checking every 30s).';
+      var who = d.same_user ? 'Your other window' : ((d.username || 'Another editor'));
+      el.textContent = '🔒 ' + who + ' is editing — changes won\'t save';
+      el.title = who + ' holds the edit lock on this map, so anything you change here will not be saved. ' +
+        'It clears by itself once they finish or close the map (checked every 30 seconds).';
     }
   };
 

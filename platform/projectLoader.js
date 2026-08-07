@@ -158,6 +158,16 @@ window.msApplyHeaderFeature = function (visible, projectName) {
       try {
         var vg = await db.from("projects").select("user_id, is_public, raw_config").eq("id", platformProjectId).maybeSingle();
         var vrow = vg && vg.data;
+        // A19 (8/6): link-visibility maps are no longer readable from the projects TABLE — they
+        // come back one-at-a-time through ms_project_by_id, so holding the link still opens the
+        // map while `select *` can no longer enumerate every link map on the platform. Falls
+        // through silently when the migration isn't applied yet.
+        if (!vrow) {
+          try {
+            var byId = await db.rpc("ms_project_by_id", { p_id: platformProjectId });
+            if (!byId.error && byId.data && byId.data.length) vrow = byId.data[0];
+          } catch (eById) {}
+        }
         if (!vg.error && !vrow) {
           // Before RLS this meant "deleted" and the page just came up empty. Now it also means
           // "private, and you aren't the owner" — so a stranger following a private link used to

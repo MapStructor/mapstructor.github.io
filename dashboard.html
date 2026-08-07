@@ -240,18 +240,19 @@
         try { ids = await MSBookmarks.list(); } catch (e) { ids = []; }
         pRow.innerHTML = ''; mRow.innerHTML = '';
         if (!ids.length) { pWrap.style.display = 'none'; mWrap.style.display = 'none'; empty.style.display = ''; return; }
-        var rows = [], thumbs = {};
+        var rows = [], thumbs = {}, inPortal = {};
         try {
           var r = await db.from('projects').select('id,name,user_id,deleted_at').in('id', ids).is('deleted_at', null);
           rows = (r && r.data) || [];
         } catch (e) {}
         try {
           var t = await db.from('portal_entries').select('project_id,thumb').in('project_id', ids);
-          ((t && t.data) || []).forEach(function (e) { thumbs[e.project_id] = e.thumb; });
+          ((t && t.data) || []).forEach(function (e) { thumbs[e.project_id] = e.thumb; inPortal[e.project_id] = 1; });
         } catch (e) {}
         if (!rows.length) { pWrap.style.display = 'none'; mWrap.style.display = 'none'; empty.style.display = ''; empty.textContent = 'Your starred maps are no longer available.'; return; }
         rows.forEach(function (m) {
-          var mine = m.user_id === user.id;
+          // a map that IS in the portal belongs in the Portal row even when you own it (8/6)
+          var mine = m.user_id === user.id && !inPortal[m.id];
           var card = document.createElement('a');
           card.className = 'bm-card';
           card.href = (mine ? 'map/editor.html?id=' : 'map/index.html?id=') + encodeURIComponent(m.id);
@@ -276,11 +277,17 @@
       // starring anywhere on this page redraws the strip immediately (no refresh)
       window.addEventListener('ms-bookmarks-changed', function () { loadBookmarks(); });
 
+      var _portalMine = {};   // my maps that are listed in the Map Portal → "Portal Item" badge
       async function loadMaps() {
         var sel = 'id,name,updated_at,is_public,visibility:raw_config->>visibility,editLock:raw_config->>editLock';   // only THIS user's maps (RLS still permissive — tighten at Step 25)
         var res = await db.from('projects').select(sel).eq('user_id', user.id).is('deleted_at', null).order('updated_at', { ascending: false });   // ACTIVE maps (trashed = deleted_at set)
         if (res.error) res = await db.from('projects').select(sel).eq('user_id', user.id).order('updated_at', { ascending: false });   // deleted_at not migrated yet → show all (run trash-soft-delete-setup.sql to enable Trash)
         if (res.error) { listEl.innerHTML = '<p class="msg err">Could not load your maps.</p>'; return; }
+        _portalMine = {};
+        try {
+          var pe = await db.from('portal_entries').select('project_id').eq('user_id', user.id);
+          ((pe && pe.data) || []).forEach(function (e) { _portalMine[e.project_id] = 1; });
+        } catch (e) {}
         render(res.data || []);
       }
       function render(maps) {
@@ -301,6 +308,7 @@
           row.innerHTML = '<a class="map-name" href="' + openHref + '" style="color:inherit;text-decoration:none;">' + esc(m.name || 'Untitled Map') + '</a>'
             + '<span class="ms-bm" style="font-size:16px;line-height:1;"></span>'   // ★ bookmark (Map Portal) — starred maps show in the editor's Portal window
             + (locked ? '<span class="pill" style="cursor:default;background:#fdeaea;color:#b4453a;" title="Locked — editing is off; unlock inside the map’s Settings">🔒 locked</span>' : '')
+            + (_portalMine[m.id] ? '<span class="pill" style="cursor:default;background:#efeaf8;color:#5c4a86;border-color:#d9cff1;" title="Listed in the Map Portal — anyone can find and add it">Portal Item</span>' : '')
             + '<span class="pill' + (vis === 'public' ? ' pub' : '') + '" style="cursor:default;">' + visLabel + '</span>'
             + '<span class="map-meta">' + fmtDate(m.updated_at) + '</span>'
             + '<div class="row-actions">'

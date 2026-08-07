@@ -327,6 +327,14 @@ var ConfigLoader = (function () {
 
   async function fetchProjectBundle(db, projectId) {
     var p = await db.from("projects").select("*").eq("id", projectId).single();
+    // A19 (8/6): a link-shared map isn't in the projects table's read policy any more — one row,
+    // by id, through the definer function. Owners/editors and public maps never reach this.
+    if (p.error || !p.data) {
+      try {
+        var byId = await db.rpc("ms_project_by_id", { p_id: projectId });
+        if (!byId.error && byId.data && byId.data.length) p = { data: byId.data[0], error: null };
+      } catch (eById) {}
+    }
     if (p.error) throw p.error;
     var s = await db.from("layer_sections").select("*").eq("project_id", projectId);
     if (s.error) throw s.error;
