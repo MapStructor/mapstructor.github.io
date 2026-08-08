@@ -280,6 +280,27 @@
      keep the earliest build year. Powers platform/rasterScrub.js (instant timeline preview
      while dragging). Guarded at the call site — a bake failure never breaks conversion.
      REMOVE together with rasterScrub.js (this block + its call in convertLayer). */
+  // Why a layer gets NO instant-scrub raster (8/7, owner's 2,000-point gazetteer at z4.8:
+  // "I move to one end, a bunch disappear, and then upon release, reappear"):
+  //   · POINTS. The raster is a fixed-resolution PNG of the world — sparse dots merge or vanish
+  //     at its pixel grid, so scrubbing visibly loses points that pop back on release. And points
+  //     are the cheapest thing the vector paint path animates; the raster solves a problem point
+  //     layers don't have.
+  //   · PRE-1800 YEARS. One byte per year from base 1799 means the earliest representable start
+  //     is 1800 — every earlier year clamps to it. The owner's data runs 1111-1810: during a drag
+  //     the shader saw "everything starts 1800 / everything ended by 1800", i.e. an empty or
+  //     wrong map for 99% of their timeline, corrected only at release by the real filter.
+  //     A wider encoding is a future change; until then the honest answer is no raster.
+  function rasterUnfitReason(geomKind, fc) {
+    if (geomKind === "circle" || geomKind === "Point") return "point layers animate directly";
+    var minYs = Infinity;
+    (fc.features || []).forEach(function (f) {
+      var d = f.properties && f.properties.DayStart;
+      if (d) { var y = Math.floor(d / 10000); if (y < minYs) minYs = y; }
+    });
+    if (minYs < 1800) return "this data reaches back to " + minYs + ", before the raster's earliest representable year (1800)";
+    return null;
+  }
   async function bakeYearsRaster(db, projectId, layerDbId, fc) {
     var b = boundsOf(fc);
     var my = function (lat) { return Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)); };
@@ -462,12 +483,27 @@
     // count catches adds/deletes; max feature id catches add+delete pairs that leave the count equal;
     // features.updated_at (trigger-set on UPDATE, verified 7/21) catches edits.
     rc.tilesFeatureCount = (features && features.length) || 0;
+    // WHICH label column this archive actually carries (8/7). A tileset label can only say what the
+    // tiler wrote, so the editor needs to know whether the column the user just picked is in here —
+    // null means "only the always-present `label`". Without this it cannot tell a stale archive from
+    // a current one and either re-bakes needlessly or shows blank labels.
+    rc.tilesLabelField = o.labelField || null;
     try { rc.tilesMaxFid = (features || []).reduce(function (m, f) { var v = Number(f && f.id); return v > m ? v : m; }, 0) || null; } catch (eMx) {}
     // EXPERIMENTAL instant-scrub raster — guarded; remove together with platform/rasterScrub.js
+    // A bake that would MISBEHAVE is refused HERE, at bake time — the loader never second-guesses
+    // a raster that exists (8/7 rule), so existence is the whole contract, and a re-bake through
+    // this code is what clears a stamp that should never have been made. No raster simply means
+    // the vector animates itself, which is correct — a wrong raster is far worse than none.
     try {
-      status("Baking instant-scrub raster…");
-      rc.rasterYears = await bakeYearsRaster(db, projectId, layerDbId, fc);
-      status("Instant-scrub raster ready (" + Math.round(rc.rasterYears.bytes / 1024) + " KB).");
+      var ryNew = null, ryWhy = rasterUnfitReason(geomKind, fc);
+      if (!ryWhy) {
+        status("Baking instant-scrub raster…");
+        ryNew = await bakeYearsRaster(db, projectId, layerDbId, fc);
+      } else {
+        status("Instant-scrub raster skipped — " + ryWhy + ".");
+      }
+      if (ryNew) { rc.rasterYears = ryNew; status("Instant-scrub raster ready (" + Math.round(ryNew.bytes / 1024) + " KB)."); }
+      else delete rc.rasterYears;   // clear any stale/unfit bake — this layer scrubs as a vector
     } catch (eR) { console.warn("raster bake skipped:", eR && eR.message); }
     var upd = await db.from("layers").update({
       source_type: "vector-tiles-url",
@@ -527,7 +563,7 @@
       if (r.data.length < 1000) break;
     }
     if (!feats.length) return 0;
-    await convertLayer(db, projectId, L.id, feats, { name: L.name, geomKind: L.type, status: status });
+    await convertLayer(db, projectId, L.id, feats, { name: L.name, geomKind: L.type, status: status, labelField: lblField });
     return 1;
   }
   // 7/21 dirty check: is this layer's data UNCHANGED since its last bake? Any doubt → false (re-bake;

@@ -146,6 +146,12 @@ if (jQuery.browser.msie)
         .text(moment.unix(sliderMiddle).format("MM/DD/YYYY"));
     },
     change: function (event, ui) {   // release: restore the layers' own paint, then apply the REAL filter at the final value
+      // A slide event schedules its paint for the NEXT animation frame — release can beat that
+      // frame. The stale callback then re-wraps every layer's paint in a date-case AFTER the
+      // restore below, leaving the layer dimmed at the last drag date on top of the real filter
+      // (8/7). Cancel the pending frame first so release always has the final word.
+      if (_sliderRAF) { try { (window.cancelAnimationFrame || clearTimeout)(_sliderRAF); } catch (e0) {} _sliderRAF = null; }
+      _sliderPendingVal = null;
       if (typeof endDatePaint === "function") try { endDatePaint(); } catch (e) {}
       if (ui && ui.value != null && typeof changeDate === "function") changeDate(ui.value);
     },

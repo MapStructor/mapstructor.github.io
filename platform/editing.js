@@ -124,6 +124,13 @@
       zoom_level: val(node.zoomLevel), zoom_level_left: val(node.zoomLevelLeft), zoom_level_right: val(node.zoomLevelRight),
       content_base_url: panel ? val(panel.encyclopediaBase) : null, content_id_prop: panel ? val(panel.nidProp) : null,
       panel_color: panel ? val(panel.color) : null, is_public: true,
+      // EVERY layer must name its owner. layers_insert is `with check (user_id = auth.uid())`,
+      // so an ownerless row is refused outright — which is what broke every import (owner report
+      // 8/7: "Import failed: new row violates row-level security policy for table layers").
+      // It is also why older imports left invisible layers behind: before that policy tightened
+      // they inserted fine with user_id NULL, then failed ms_layer_writable forever after — the
+      // orphan debris cleaned up on 8/6 came from exactly this row.
+      user_id: userId || null,
       raw_config: Object.keys(raw).length ? raw : null,
     };
   }
@@ -158,8 +165,12 @@
   function uid() { return 'new-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
   var LAYER_COLORS = ['#4a9eff', '#e8553e', '#3bb273', '#b56cd6', '#e8a33e', '#3ec0d0', '#d64576'];
   function nextColor() {
+    // Counts ALL data leaves, not just un-baked geojson ones (8/7). The old count skipped
+    // tiled layers, so on a map whose layers get baked the count was forever 0 and every new
+    // import wore palette slot 0 — the owner: "every time I add CShapes, it's blue." The
+    // colours were never random; the cycle just never advanced.
     var n = 0;
-    (function count(arr) { (arr || []).forEach(function (x) { if (x.source_type === 'geojson-supabase') n++; if (x.children) count(x.children); }); })(typeof layers !== 'undefined' ? layers : []);
+    (function count(arr) { (arr || []).forEach(function (x) { if (['fill', 'line', 'circle'].indexOf(x.type) > -1) n++; if (x.children) count(x.children); }); })(typeof layers !== 'undefined' ? layers : []);
     return LAYER_COLORS[n % LAYER_COLORS.length];
   }
   function makeNode(type, name) {
@@ -733,6 +744,8 @@
       _changeDatePatched = true; var _origCD = window.changeDate;
       window.changeDate = function () {
         var r = _origCD.apply(this, arguments);
+        try { disarmEngineEditsOutsideDate(arguments[0]); } catch (eDa) {}   // armed features follow the timeline (8/7)
+        try { if (window.moment) applyEditedOverlayDayFilter(parseInt(moment.unix(arguments[0]).format('YYYYMMDD'), 10)); } catch (eOv) {}   // the Done-editing overlay follows it too (8/8)
         try {
           Object.keys(_engineEditIds).forEach(function (slug) {
             if (!(_engineEditIds[slug] || []).length) return;
@@ -744,6 +757,27 @@
         return r;
       };
     }
+    // Mid-DRAG too (8/8): disarm ran only on release, but a drag can sit on an out-of-range date
+    // for seconds with the button down — armed copies and the edited overlay must follow the
+    // paint path's date exactly like every engine layer does. (rasterScrub swaps paintDate for a
+    // no-op during raster drags; it saves and restores whatever is installed, so this composes.)
+    if (!_paintDatePatched && typeof window.paintDate === 'function') {
+      _paintDatePatched = true; var _origPD = window.paintDate;
+      window.paintDate = function () {
+        var r2 = _origPD.apply(this, arguments);
+        try { disarmEngineEditsOutsideDate(arguments[0]); } catch (eDp) {}
+        try { if (window.moment) applyEditedOverlayDayFilter(parseInt(moment.unix(arguments[0]).format('YYYYMMDD'), 10)); } catch (eOp) {}
+        return r2;
+      };
+    }
+    // headless-diagnosable arm state (8/8): the editor's arm/disarm internals live in this IIFE,
+    // so when "a clicked feature ignores the timeline" the harness could only see pixels, not WHY.
+    // Read-only snapshot; costs nothing.
+    window.__msArmDebug = function () {
+      var metas = {}; Object.keys(_engineEditNode).forEach(function (k) { var m = featureMeta[k] || {}; metas[k] = { start: m.start, end: m.end }; });
+      return { patchedCD: _changeDatePatched, patchedPD: _paintDatePatched, editNode: Object.keys(_engineEditNode), metas: metas,
+               editing: _editingDraw, edited: Object.keys(_engineEdited), days: _engineEditedDays, editIds: _engineEditIds };
+    };
     // ONE map-level click handler per side that queries the editable layers at CLICK time — robust, unlike
     // per-layer handlers that depend on the layer already existing when wiring runs (the flaky "bolting" race).
     if (!_engineMapClickWired) {
@@ -932,16 +966,23 @@
     var lid = slugToLayerDbId[node.id]; if (!lid) return;
     try {
       await foldSleep(4000);   // let the maps finish booting
-      var r = await db.from('features').select('feature_id, geom, custom_fields').eq('layer_id', lid).limit(500);
+      var r = await db.from('features').select('feature_id, geom, custom_fields, start_date, end_date').eq('layer_id', lid).limit(500);
       if (r.error || !r.data || !r.data.length) return;
       var eo = (_engineEdited[node.id] = _engineEdited[node.id] || {});
+      var eod = (_engineEditedDays[node.id] = _engineEditedDays[node.id] || {});
       var hid = (_engineEditIds[node.id] = _engineEditIds[node.id] || []);
       var found = 0;
       r.data.forEach(function (d) {
         var src = d.custom_fields && d.custom_fields.ms_foldsrc;
         if (src == null) return;
         if (hid.indexOf(Number(src)) < 0) hid.push(Number(src));
-        if (d.geom) { eo[d.feature_id] = d.geom; found++; }
+        if (d.geom) {
+          eo[d.feature_id] = d.geom; found++;
+          eod[d.feature_id] = [
+            d.start_date ? +String(d.start_date).slice(0, 10).replace(/-/g, '') : 0,
+            d.end_date ? +String(d.end_date).slice(0, 10).replace(/-/g, '') : 99999999
+          ];
+        }
       });
       if (!found) return;
       applyEngineEditFilter(node);
@@ -952,6 +993,8 @@
   async function enterEngineEdit(node, fid, clickEvt) {
     // cache the clicked geometry FIRST so the selection highlight the star-add triggers paints instantly
     try { if (clickEvt && clickEvt.features && clickEvt.features[0] && clickEvt.features[0].geometry) _selGeom[String(fid)] = clickEvt.features[0].geometry; } catch (eG) {}
+    // …and its days (skinny tiles + live sources both carry them), so the marker can follow the timeline
+    try { var cp = clickEvt && clickEvt.features && clickEvt.features[0] && clickEvt.features[0].properties; if (cp && (cp.DayStart != null || cp.DayEnd != null)) _selDays[String(fid)] = [cp.DayStart != null ? +cp.DayStart : 0, cp.DayEnd != null ? +cp.DayEnd : 99999999]; } catch (eD) {}
     attrStarFromMap(node, fid);
     var drawId = 'db-' + fid;
     if (draw && draw.get(drawId)) {   // already pulled into draw (re-click via the edited overlay) → stage 1 unless mid-geometry-edit
@@ -1009,6 +1052,72 @@
     updateGroupHl(drawId);
     setStatus('Feature ' + fid + ' — click it again to edit its shape');
   }
+  // ── ARMED FEATURES FOLLOW THE TIMELINE (8/7) ─────────────────────────────────────────────
+  // A feature pulled into draw for editing renders as a DRAW copy, and draw knows nothing about
+  // the timeline — so an armed feature stayed on screen at dates where it does not exist (owner:
+  // Santa Fe, started 1692, sitting on the map at 1223 while armed, immune to the slider). When
+  // the date changes, an armed feature that is merely SELECTED (stage 1 — geometry untouched)
+  // and whose own dates exclude the new date is returned to the tiles, which then hide it like
+  // everything else. A feature whose SHAPE is mid-edit is left alone: yanking half-finished
+  // geometry to satisfy a filter would cost real work, showing one extra dot does not.
+  function _geomEq(a, b) {   // geometry equality by type + numeric coordinates (1e-9), immune to key order
+    if (!a || !b || a.type !== b.type) return false;
+    var eq = function (x, y) {
+      if (Array.isArray(x) || Array.isArray(y)) {
+        if (!Array.isArray(x) || !Array.isArray(y) || x.length !== y.length) return false;
+        for (var i = 0; i < x.length; i++) if (!eq(x[i], y[i])) return false;
+        return true;
+      }
+      return Math.abs((+x) - (+y)) < 1e-9;
+    };
+    return eq(a.coordinates, b.coordinates);
+  }
+  function disarmEngineEditsOutsideDate(unixDate) {
+    if (!window.moment) return;
+    var day = parseInt(moment.unix(unixDate).format('YYYYMMDD'), 10);
+    if (!isFinite(day)) return;
+    Object.keys(_engineEditNode).forEach(function (drawId) {
+      var node = _engineEditNode[drawId]; if (!node) return;
+      // Being in shape-edit mode is NOT immunity by itself (8/8): a second click puts a feature
+      // in stage 2 with its geometry untouched, and the old blanket skip here made it ignore the
+      // timeline forever ("it just stays permanently all of a sudden"). The only thing worth
+      // protecting is unsaved WORK — and the geometry-snapshot guard below already does exactly
+      // that, for stage 1 and stage 2 alike.
+      var meta = featureMeta[drawId] || {};
+      var ds = meta.start ? +String(meta.start).replace(/-/g, '') : 0;
+      var de = meta.end ? +String(meta.end).replace(/-/g, '') : 99999999;
+      if (day >= ds && day <= de) return;                                   // still alive at this date
+      var cur = null; try { cur = draw && draw.get ? draw.get(drawId) : null; } catch (e0) {}
+      // ORDER-TOLERANT equality, not JSON.stringify (8/8): draw rebuilds geometry with its own
+      // key order ({coordinates,type} vs the snapshot's {type,coordinates}), so the string
+      // compare called EVERY untouched feature an "unsaved shape change" — which made every
+      // pulled feature permanently immune to the timeline. This check exists to protect real
+      // unsaved work only.
+      try { if (cur && _geomSnap[drawId] && !_geomEq(cur.geometry, _geomSnap[drawId])) return; } catch (e1) {}
+      var fid = featureToDb[drawId];
+      // deleting the feature draw is actively pointed at → leave edit mode first, or draw's
+      // current mode keeps referencing a feature that no longer exists
+      if (_editingDraw === drawId) { try { draw.changeMode('simple_select', { featureIds: [] }); } catch (eM) {} _editingDraw = null; }
+      try { if (cur) draw.delete(drawId); } catch (e2) {}
+      var list = _engineEditIds[node.id] || [];
+      var ix = list.indexOf(fid); if (ix < 0) ix = list.indexOf(Number(fid)); if (ix < 0) ix = list.indexOf(String(fid));
+      if (ix > -1) list.splice(ix, 1);
+      delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId];
+      delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId];
+      try { _armedSet = (_armedSet || []).filter(function (x) { return x !== drawId; }); updateArmedHl(); } catch (e3) {}
+      // the edit-hover chrome tracks mouseleave, but a feature deleted OUT FROM UNDER the
+      // pointer never emits one — its hover halo would float at every date (8/8)
+      [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (mH) {
+        if (!mH) return; try { var sH = mH.getSource('edit-hover-hl'); if (sH) sH.setData({ type: 'FeatureCollection', features: [] }); } catch (eH) {}
+      });
+      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
+        var m = pr[1]; if (!m) return;
+        [node.id + '-' + pr[0], node.id + '-stroke-' + pr[0], node.id + '-highlighted-' + pr[0]].forEach(function (lid) { delete _engineBaseFilter[lid]; });
+      });
+      try { if (typeof selectedDrawId !== 'undefined' && selectedDrawId === drawId) hideFeaturePanel(); } catch (e4) {}
+      try { applyEngineEditFilter(node); } catch (e5) {}
+    });
+  }
   function applyEngineEditFilter(node) {
     var ids = (_engineEditIds[node.id] || []).map(Number);
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
@@ -1031,9 +1140,11 @@
   //    GeoJSON overlay. The tile copy stays filtered out (no stale double-render until tiles regenerate),
   //    so the edit stays visible. Re-clicking the overlay re-enters edit. ──
   var _engineEdited = {};     // node.id → { feature_id: geometry } currently shown on the overlay
+  var _engineEditedDays = {}; // node.id → { feature_id: [DayStart, DayEnd] } — overlay features render rowless, so their dates must be remembered at fold time or the overlay can never follow the timeline (8/8)
   var _engineEditNode = {};   // drawId → node (so the feature panel knows it's an engine edit → show "Done editing")
   var _panelClickPatched = false;
   var _changeDatePatched = false;
+  var _paintDatePatched = false;
   var _engineMapClickWired = false;
   function ensureEditedOverlay(node) {
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
@@ -1056,10 +1167,45 @@
   }
   function refreshEditedOverlay(node) {
     var store = _engineEdited[node.id] || {};
-    var feats = Object.keys(store).map(function (fid) { return { type: 'Feature', id: Number(fid), geometry: store[fid], properties: {} }; });
+    var days = _engineEditedDays[node.id] || {};
+    var feats = Object.keys(store).map(function (fid) {
+      var d = days[fid] || [];
+      return { type: 'Feature', id: Number(fid), geometry: store[fid], properties: { DayStart: d[0] != null ? d[0] : 0, DayEnd: d[1] != null ? d[1] : 99999999 } };
+    });
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
       var map = pair[1]; if (!map) return; var src = map.getSource(node.id + '-edited-' + pair[0]);
       if (src) try { src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {}
+    });
+    try { if (typeof editorCurrentDate === 'function') applyEditedOverlayDayFilter(editorCurrentDate()); } catch (e) {}
+  }
+  // Editor chrome that renders features OUTSIDE the engine's changeDate walk — the "Done
+  // editing" overlay and the yellow selection markers — must be date-filtered HERE, or a
+  // feature the timeline excludes leaves its ghost on screen at every date (owner 8/8: "it
+  // just stays permanently"). Same coalesce shape as the engine's label filter: features whose
+  // days were never learned default to always-visible rather than silently vanishing.
+  // EXPRESSION syntax throughout — mixing legacy '$type' with expressions makes setFilter
+  // throw (the AHM filter bug), so the hl layers' geometry gate is rebuilt as ['geometry-type'].
+  function applyEditedOverlayDayFilter(day) {
+    if (!isFinite(day)) return;
+    var dOk = ['all', ['<=', ['coalesce', ['get', 'DayStart'], 0], day], ['>=', ['coalesce', ['get', 'DayEnd'], 99999999], day]];
+    Object.keys(_engineEdited).forEach(function (slug) {
+      var node = findNodeById(layers, slug); if (!node) return;
+      var lf = node.timelineIgnore ? null : dOk;
+      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
+        var m = pr[1]; if (!m) return; var lid = slug + '-edited-' + pr[0];
+        try { if (m.getLayer(lid)) m.setFilter(lid, lf); } catch (e) {}
+      });
+    });
+    var gt = function (kinds) { return ['match', ['geometry-type'], kinds, true, false]; };
+    var HL = [
+      ['editor-attr-hl-fill', ['all', gt(['Polygon', 'MultiPolygon']), dOk]],
+      ['editor-attr-hl-line-casing', dOk],
+      ['editor-attr-hl-line', dOk],
+      ['editor-attr-hl-pt', ['all', gt(['Point', 'MultiPoint']), dOk]]
+    ];
+    [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (m) {
+      if (!m) return;
+      HL.forEach(function (pair) { try { if (m.getLayer(pair[0])) m.setFilter(pair[0], pair[1]); } catch (e) {} });
     });
   }
   function finishEngineEdit(node, fid) {
@@ -1067,10 +1213,23 @@
     var drawId = 'db-' + fid, geom = null;
     try { var f = draw && draw.get(drawId); if (f) geom = f.geometry; } catch (e) {}
     if (!geom) geom = _geomSnap[drawId];
-    if (geom) { (_engineEdited[node.id] = _engineEdited[node.id] || {})[fid] = geom; ensureEditedOverlay(node); refreshEditedOverlay(node); }
+    if (geom) {
+      (_engineEdited[node.id] = _engineEdited[node.id] || {})[fid] = geom;
+      // carry the feature's days onto the overlay BEFORE featureMeta is dropped below — the
+      // overlay is how this feature renders from now on, and it must keep filtering with time
+      var dMeta = featureMeta[drawId] || {};
+      (_engineEditedDays[node.id] = _engineEditedDays[node.id] || {})[fid] = [
+        dMeta.start ? +String(dMeta.start).replace(/-/g, '') : 0,
+        dMeta.end ? +String(dMeta.end).replace(/-/g, '') : 99999999
+      ];
+      ensureEditedOverlay(node); refreshEditedOverlay(node);
+    }
     try { if (draw && draw.get(drawId)) draw.delete(drawId); } catch (e) {}
     // fid stays in _engineEditIds → the tile copy remains hidden; the overlay shows the saved geometry instead
     delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId]; delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId];
+    // the feature is no longer armed — clear its ring, or a stale _armedSet entry makes
+    // updateArmedHl feed draw.get() nulls and the ring freezes on screen at every date (8/8)
+    try { _armedSet = (_armedSet || []).filter(function (x) { return x !== drawId; }); updateArmedHl(); } catch (eAh) {}
     hideFeaturePanel();
     setStatus('Done editing — saved');
   }
@@ -1423,7 +1582,7 @@
   }
 
   // ── import: GeoJSON / KML / Shapefile(.zip) → editable geojson-supabase layer(s) ──
-  var LIB = { togeojson: 'https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js', shp: 'https://unpkg.com/shpjs@4.0.4/dist/shp.js', turf: 'https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js', fflate: 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js' };
+  var LIB = { togeojson: 'https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js', shp: 'https://unpkg.com/shpjs@4.0.4/dist/shp.js', turf: 'https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js', fflate: 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js', proj4: 'https://cdn.jsdelivr.net/npm/proj4@2.12.1/dist/proj4.js' };
   var _scripts = {};
   function loadScript(url) {   // lazy-load a parser lib only when that format is imported
     if (_scripts[url]) return _scripts[url];
@@ -1771,7 +1930,23 @@
       if (parts) return await importKmlFolders(parts, stripExt(file.name), parent);
       fc = window.toGeoJSON.kml(kdom);
     }
-    else if (ext === 'zip') { await loadScript(LIB.shp); var r = await window.shp(await file.arrayBuffer()); fc = Array.isArray(r) ? { type: 'FeatureCollection', features: r.reduce(function (a, c) { return a.concat(c.features || []); }, []) } : r; }
+    else if (ext === 'zip') {
+      await loadScript(LIB.shp);
+      var zbuf = await file.arrayBuffer();
+      var r = await window.shp(zbuf);
+      fc = Array.isArray(r) ? { type: 'FeatureCollection', features: r.reduce(function (a, c) { return a.concat(c.features || []); }, []) } : r;
+      // Read the .prj OURSELVES. shpjs only reprojects when it recognises the projection, and
+      // when it does not it hands back the raw projected numbers with no warning — which is how
+      // a shapefile ends up at null island. The .prj is the file telling us its CRS; proj4 reads
+      // that WKT directly, so ANY grid (UTM, Lambert, state plane, national) can be placed
+      // correctly instead of only the ones shpjs happens to know. This is what QGIS is doing.
+      try {
+        await loadScript(LIB.fflate);
+        var zf = window.fflate.unzipSync(new Uint8Array(zbuf));
+        var prjName = Object.keys(zf).filter(function (k) { return /\.prj$/i.test(k) && !/(^|\/)__MACOSX\//.test(k); })[0];
+        if (prjName) fc.__msPrj = new TextDecoder().decode(zf[prjName]).trim();
+      } catch (ePrj) { console.warn('could not read .prj', ePrj); }
+    }
     else if (ext === 'tif' || ext === 'tiff') throw new Error('GeoTIFF (raster) import is coming soon');
     else throw new Error('unsupported format .' + ext);
     if (!fc || !fc.features || !fc.features.length) throw new Error('no features found');
@@ -1812,6 +1987,15 @@
   // falls back to today's row import — deploy-safe even before the Worker secret exists.
   var FOLD_WORKER_BASE = 'https://mapstructor-worker.mapstructor.workers.dev';
   var CLOUD_FOLD_IMPORTS = true;             // kill-switch (also: window.__msForceRowImport for tests)
+  // How big before an import goes to the cloud INSTEAD of inserting rows. This used to be 500
+  // polygons / 2,000 points, which sent nearly every real dataset down the fold-raw path — and
+  // fold-raw writes ZERO feature rows, so the layer renders NOTHING until the Action finishes:
+  // many minutes on a cold runner that compiles tippecanoe first. An 18 MB, 8,695-polygon
+  // shapefile sat invisible behind that (owner 8/7: "In the past I've seen a layer appear very
+  // quickly. It is essential that it does."). Now only imports where inserting the rows would
+  // ITSELF be the slow part go to the cloud; everything below imports rows and is visible and
+  // editable immediately, with the browser tiler baking its tiles right after (auto-convert).
+  var FOLD_RAW_MIN = 50000;
   var _foldWatch = [];                       // {node, layerId} queued by the import loop, drained into polls
   function foldSleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   // projectLoader registers pmt-sw ONLY when the boot config already has a /pmt/ layer — a map
@@ -1826,32 +2010,49 @@
     } catch (e) {}
   }
   // upload the per-layer FC + dispatch the Action. true = cloud fold is underway; false = fall back.
+  // 'fold-rows', NOT 'fold-raw' (8/7). fold-raw reads a client-uploaded FeatureCollection and
+  // MINTS ITS OWN feature ids — fine when Postgres holds no rows, but the import now always
+  // inserts rows first so the layer is visible immediately, and those rows carry ids of their
+  // own. Two independent id spaces for the same data would strand every later edit (the C4
+  // delta restore matches rows to tile features by id). fold-rows bakes from the rows we just
+  // wrote, so the ids match by construction — and it needs no upload at all.
   async function foldImportDispatch(layerId, node, feats) {
     try {
-      var rawKey = 'tiles/' + projectId + '/' + layerId + '.source.geojson';
       var tok = (await db.auth.getSession()).data.session.access_token;
-      importStatus('Uploading "' + (node.label || 'layer') + '" for cloud processing…');
-      var blob = new Blob([JSON.stringify({ type: 'FeatureCollection', features: feats })], { type: 'application/geo+json' });
-      var putR = await fetch(FOLD_WORKER_BASE + '/upload/' + rawKey, { method: 'PUT', body: blob, headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/geo+json' } });
-      if (!putR.ok) throw new Error('source upload HTTP ' + putR.status);
       var dR = await fetch(FOLD_WORKER_BASE + '/fold', {
         method: 'POST', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: projectId, layerId: layerId, mode: 'fold-raw', rawKey: rawKey })
+        body: JSON.stringify({ projectId: projectId, layerId: layerId, mode: 'fold-rows' })
       });
       if (!dR.ok) throw new Error('fold dispatch HTTP ' + dR.status);
       ensurePmtSw();   // fire-and-forget — the worker is claimed long before the tiles are needed
-      importStatus('Folding "' + (node.label || 'layer') + '" in the cloud (' + nfmt(feats.length) + ' features) — it appears here when ready…');
+      importStatus('"' + (node.label || 'layer') + '" is on the map (' + nfmt(feats.length) + ' features). Building faster tiles for it in the cloud…');
       return true;
     } catch (e) {
-      console.warn('cloud fold unavailable — importing normally', e);
-      importStatus('Cloud fold unavailable — importing "' + (node.label || 'layer') + '" normally…');
+      // the layer is already imported and drawing — this only means it keeps its browser-made
+      // tiles instead of tippecanoe's, which is a speed difference, not a broken import
+      console.warn('cloud fold unavailable — keeping the local tiles', e);
+      importStatus('"' + (node.label || 'layer') + '" imported — cloud tiling unavailable, using local tiles.');
       return false;
     }
   }
   // watch the layer row until the Action stamps it (or leaves raw_config.foldError)
   async function pollFoldDone(node, layerId) {
     var POLL_MS = 8000, MAX = 90;   // ~12 min ceiling — a cold Action run compiles tippecanoe (~3-4 min)
+    var t0 = Date.now();
     for (var i = 0; i < MAX; i++) {
+      // say so where progress is always said (owner 8/7) — the import step-checklist, which is
+      // where every other stage of the upload reported itself. A reload resumes this watch
+      // (loadIds scans for fold_state 'folding'), so the line comes back rather than going quiet.
+      // …but NOT while the import is still saving: the checklist starts a new row whenever the
+      // leading phrase changes, so alternating with "Saving features… n/N" printed a fresh
+      // "Building tiles…" line every few seconds and buried the actual progress (owner 8/7).
+      // Saving is the useful number while it is running; this line takes over once it is done.
+      if (!window.__msImportSaving) {
+        var mins = Math.floor((Date.now() - t0) / 60000);
+        importStatus('Building tiles for "' + (node.label || 'layer') + '" in the cloud'
+          + (mins ? ' — ' + mins + ' min so far' : '')
+          + '. The layer is already on the map; this only makes it faster, and it swaps itself in when ready.');
+      }
       await foldSleep(POLL_MS);
       var r = null;
       try { r = await db.from('layers').select('*').eq('id', layerId).single(); } catch (e) { continue; }
@@ -1907,9 +2108,134 @@
     });
     var kinds = Object.keys(groups).filter(function (k) { return groups[k].length; });
     if (!kinds.length) throw new Error('no point/line/polygon geometries');
-    // shapefiles are often in a projected CRS; if it didn't come through as lng/lat, say so clearly
+    // ── PROJECTED SOURCES: REPROJECT RATHER THAN REFUSE (8/7) ────────────────────────────
+    // Shapefiles and ArcGIS/Hub exports very often arrive in Web Mercator. The owner hit this
+    // twice in one sitting — a .zip and a downloaded Gazetteer GeoJSON — and "re-export as
+    // WGS84" is not something you can always do to someone else's published data. Refusing is
+    // also against the rule that we widen the source matrix rather than narrow it.
+    // Web Mercator has an exact closed-form inverse, so when every coordinate sits inside its
+    // bounds we convert and carry on. Anything OUTSIDE that still gets the clear old error:
+    // guessing a UTM zone or a state plane from magnitudes alone would silently drop the data
+    // in the wrong part of the world, which is worse than declining it.
+    // One pass over every coordinate pair in the import, visiting each pair EXACTLY once.
+    // explodeMulti returns the original feature for single geometries and, for Multi*, pieces
+    // that still SHARE the inner arrays — so walking fc.features and groups[] naively would
+    // touch some pairs twice. Remembering the arrays already seen makes the sharing harmless
+    // however the two lists overlap.
+    var eachImportCoord = function (fn) {
+      var seen = new Set();
+      var walk = function (c) {
+        if (!Array.isArray(c)) return;
+        if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+          if (seen.has(c)) return;
+          seen.add(c); fn(c); return;
+        }
+        c.forEach(walk);
+      };
+      var geom = function (g) {
+        if (!g) return;
+        if (g.type === 'GeometryCollection') { (g.geometries || []).forEach(geom); return; }
+        walk(g.coordinates);
+      };
+      (fc.features || []).forEach(function (f) { if (f) geom(f.geometry); });
+      kinds.forEach(function (k) { groups[k].forEach(function (f) { if (f) geom(f.geometry); }); });
+    };
+    // Snap coordinates that overshoot the edge of the world by a rounding error (8/7). The
+    // owner's 2,000-point shapefile carried ONE point at latitude 90.0000000000001 — the pole,
+    // missed by 1e-13 of a degree — in a file whose .prj plainly says GCS_WGS_1984. An exact
+    // `> 90` test on the bounding box called the whole file projected on the strength of that
+    // one point, and everything below then treated 2,000 lng/lat features as something else.
+    // A pair 1e-13 past the pole and a pair at 500000 are not the same kind of thing, and one
+    // exact test cannot tell them apart; absorbing the slop first means it never has to.
+    var snapCoord = function (c) {
+      var hit = false;
+      if (c[0] > 180) { c[0] = 180; hit = true; } else if (c[0] < -180) { c[0] = -180; hit = true; }
+      if (c[1] > 90) { c[1] = 90; hit = true; } else if (c[1] < -90) { c[1] = -90; hit = true; }
+      return hit;
+    };
+    var LL_EPS = 1e-6;
+    var inLngLat = function (b) {
+      return b && Math.abs(b[0][0]) <= 180 + LL_EPS && Math.abs(b[1][0]) <= 180 + LL_EPS &&
+                  Math.abs(b[0][1]) <= 90 + LL_EPS && Math.abs(b[1][1]) <= 90 + LL_EPS;
+    };
     var bnds = computeImportBounds(fc);
-    if (bnds && (Math.abs(bnds[0][0]) > 180 || Math.abs(bnds[1][0]) > 180 || Math.abs(bnds[0][1]) > 90 || Math.abs(bnds[1][1]) > 90)) throw new Error('coordinates look projected, not lng/lat — re-export as WGS84 / EPSG:4326');
+    if (inLngLat(bnds)) {
+      var snapped = 0;
+      eachImportCoord(function (c) { if (snapCoord(c)) snapped++; });
+      if (snapped) { bnds = computeImportBounds(fc); importStatus('Snapped ' + snapped + ' point' + (snapped === 1 ? '' : 's') + ' sitting just past the edge of the map…'); }
+    }
+    var offLngLat = !inLngLat(bnds);
+    if (offLngLat) {
+      var MX = 20037508.342789244, MY = 20048966.104;   // Web Mercator's extent
+      var inMerc = Math.abs(bnds[0][0]) <= MX && Math.abs(bnds[1][0]) <= MX &&
+                   Math.abs(bnds[0][1]) <= MY && Math.abs(bnds[1][1]) <= MY;
+      // An EXPLICIT declaration beats any guess (older GeoJSON carries a crs member; RFC 7946
+      // files are always lng/lat and never reach here).
+      var crsName = '';
+      try { crsName = String(((fc.crs || {}).properties || {}).name || '').toLowerCase(); } catch (eC) {}
+      var saysMerc = /3857|900913|102100|pseudo.?mercator/.test(crsName);
+      var saysOther = crsName && !saysMerc && !/4326|crs84/.test(crsName);
+      // NEVER guess from magnitude. An earlier cut here accepted anything with an x beyond
+      // 1,000,000 as Web Mercator, reasoning that UTM eastings stop at 900k. That is false for
+      // plenty of grids (Lambert conformal conics carry huge false eastings), and the failure
+      // was silent: dividing such an x by Mercator's extent yields ~13° lng and a small lat, so
+      // the owner's shapefile landed in the Gulf of Guinea — "around null island" (8/7).
+      // Wrong-but-quiet is the worst thing an importer can do. So we only ever reproject from a
+      // CRS the FILE told us: a shapefile's .prj, or a GeoJSON crs member.
+      var toLngLat = null;
+      // A .prj that declares a GEOGRAPHIC system (GEOGCS with no PROJCS wrapper) is telling us
+      // the numbers are already degrees, so there is nothing to reproject and proj4 would only
+      // hand back an identity. Reaching here with one means the coordinates really are out of
+      // range — say that, rather than blaming a projection the file does not claim to have.
+      if (fc.__msPrj && !/PROJCS/i.test(fc.__msPrj)) {
+        throw new Error('the .prj says this file is already in degrees (' +
+          (String(fc.__msPrj).match(/GEOGCS\s*\[\s*"([^"]+)"/i) || [])[1] + '), but its coordinates run to ' +
+          '[' + bnds[1][0].toFixed(3) + ', ' + bnds[1][1].toFixed(3) + '] — that is off the map, so the file itself looks wrong.');
+      }
+      if (fc.__msPrj) {
+        // proj4 reads the .prj's WKT directly, so any grid places correctly — the same thing
+        // QGIS does when it opens these without complaint.
+        importStatus('Reprojecting from the file’s own CRS (.prj)…');
+        try { await loadScript(LIB.proj4); } catch (eL) { throw new Error('could not load the projection library — check your connection'); }
+        var p4 = window.proj4;
+        if (!p4) throw new Error('projection library unavailable');
+        var fromPrj;
+        try { fromPrj = p4(fc.__msPrj, 'EPSG:4326'); }
+        catch (eD) { fromPrj = null; }
+        // proj4 does NOT reliably throw on WKT it cannot understand — it can hand back a
+        // pass-through, which then "reprojects" the data to exactly where it already was and the
+        // import dies on the generic bounds check with nothing to act on (owner 8/7). So TEST the
+        // transform on a real corner first, and if it does not produce lng/lat, say what the file
+        // declared and what came back — enough to fix the projection instead of guessing at it.
+        var probe = null;
+        if (fromPrj) { try { probe = fromPrj.forward([bnds[0][0], bnds[0][1]]); } catch (eF) { probe = null; } }
+        var probeOk = probe && isFinite(probe[0]) && isFinite(probe[1]) &&
+                      Math.abs(probe[0]) <= 180 && Math.abs(probe[1]) <= 90;
+        if (!probeOk) {
+          var firstLine = String(fc.__msPrj || '').replace(/\s+/g, ' ').slice(0, 110);
+          throw new Error('the .prj was read but its projection could not be applied — ' +
+            'sample point [' + Math.round(bnds[0][0]) + ', ' + Math.round(bnds[0][1]) + '] came back as ' +
+            (probe ? '[' + probe[0] + ', ' + probe[1] + ']' : 'nothing') +
+            '. The .prj says: ' + firstLine + ' — send me that line and I can add support for it.');
+        }
+        toLngLat = function (x, y) { var o = fromPrj.forward([x, y]); return [o[0], o[1]]; };
+      } else if (saysMerc && inMerc) {
+        importStatus('Reprojecting from Web Mercator to lng/lat…');
+        toLngLat = function (x, y) {
+          return [x / MX * 180, 180 / Math.PI * (2 * Math.atan(Math.exp((y / MX * 180) * Math.PI / 180)) - Math.PI / 2)];
+        };
+      } else {
+        throw new Error('coordinates are projected (' + (crsName || 'the file does not say which system') +
+          ') — without a .prj or a declared CRS they cannot be placed. Re-export as WGS84 / EPSG:4326.');
+      }
+      // Converts each coordinate pair exactly once — see eachImportCoord above for why that
+      // matters when Multi* pieces share their inner arrays.
+      eachImportCoord(function (c) { var p = toLngLat(c[0], c[1]); c[0] = p[0]; c[1] = p[1]; });
+      bnds = computeImportBounds(fc);
+      // The transform can land a pole-adjacent point a hair outside too, so snap before judging.
+      if (inLngLat(bnds)) { eachImportCoord(snapCoord); bnds = computeImportBounds(fc); }
+      if (!inLngLat(bnds)) throw new Error('coordinates look projected, not lng/lat — re-export as WGS84 / EPSG:4326');
+    }
     var total = kinds.reduce(function (n, k) { return n + groups[k].length; }, 0);
     if (total > 3000 && !window.confirm('Import ' + total + ' features? Large layers auto-convert to tiles for fast viewing; editing that many features may still be slow.')) { importStatus('Cancelled'); return; }
     var TYPE_LABEL = { circle: 'points', line: 'lines', fill: 'polygons' };
@@ -1923,20 +2249,62 @@
         importStatus('Saving ' + groups[type].length + ' ' + TYPE_LABEL[type] + '…');
         var node = makeNode('layer', kinds.length > 1 ? baseName + ' (' + TYPE_LABEL[type] + ')' : baseName);
         node.type = type; node.iconType = TILESET_ICON[type] || 'square';
-        // THE FOLD (C3): past the tile thresholds the data goes to R2 + the cloud Action —
-        // Postgres gets the layer row only. foldImportDispatch flips wantsFold off on ANY
-        // failure and the classic row import below runs instead.
+        // THE FOLD (C3): past FOLD_RAW_MIN the data goes to R2 + the cloud Action and Postgres
+        // gets the layer row only. foldImportDispatch flips wantsFold off on ANY failure and the
+        // classic row import below runs instead.
         var wantsFold = CLOUD_FOLD_IMPORTS && !window.__msForceRowImport &&
-          groups[type].length > (type === 'circle' ? 2000 : 500);
+          groups[type].length > FOLD_RAW_MIN;
         var lrow = leafRow(node); if (wantsFold) lrow.fold_state = 'folding';
         var layerId = await insertOne('layers', lrow);
         slugToLayerDbId[node.id] = layerId;
         await insertOne('project_layers', { project_id: projectId, layer_id: layerId, sort_order: nextSort++, section_id: sId, group_id: gId });
+        // ── SEEN FIRST, SAVED SECOND ────────────────────────────────────────────────────────
+        // Owner 8/7: "It doesn't matter how large a file is, it should be seen asap … it's a
+        // major benefit of using a GIS program that you can see a layer immediately. It's a
+        // drawback to have to wait." Rendering used to read the features back OUT of Postgres,
+        // so nothing appeared until every row was written — and past 500 polygons the import was
+        // rerouted to the cloud, which writes no rows at all and so showed nothing for minutes.
+        // The features are already parsed in this browser: draw them from memory NOW, through
+        // the very same leaf-building the normal load uses (so the styling is identical), and
+        // let saving happen behind a layer that is already on screen. No size threshold — a
+        // bigger file just means the saving underneath it runs longer.
+        try {
+          var pvRows = groups[type].map(function (f) {
+            return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), custom_fields: importCustomFields(f.properties) };
+          });
+          var pv = (typeof ConfigLoader !== 'undefined' && ConfigLoader.leafFromRow)
+            ? ConfigLoader.leafFromRow(Object.assign({}, lrow, { id: layerId }), null, pvRows) : null;
+          if (pv && pv.source) {
+            node.source = pv.source;
+            if (node.paint == null) node.paint = pv.paint;
+            if (node.type == null) node.type = pv.type;
+            renderTilesetOnMap(node);   // loadFeatures() below hands small layers over to MapboxDraw
+          }
+        } catch (ePv) { console.warn('instant render failed — the layer appears once saved', ePv); }
+        // …now persist. A cloud fold afterwards is an optimisation running behind an
+        // already-visible layer, never a precondition for seeing it; the fold soak expects the
+        // rows to still be there anyway.
+        var newIds = await batchInsertFeatures(layerId, groups[type]);
+        // Stamp the returned ids onto the instant-render features (both lists were built from
+        // groups[type] in order, so index i is the same feature everywhere). Without this the
+        // on-screen source stays id-less until a reload — matching the boot shape (featureToGeo:
+        // top-level id = feature_id) is what lets apply-dates' live refresh and click-to-edit
+        // find these features in THIS session.
+        try {
+          var srcFeats = node.source && node.source.data && node.source.data.features;
+          if (newIds.length && srcFeats && srcFeats.length) {
+            for (var fi = 0; fi < srcFeats.length && fi < newIds.length; fi++) srcFeats[fi].id = newIds[fi];
+            [['left', typeof beforeMap !== 'undefined' ? beforeMap : null], ['right', typeof afterMap !== 'undefined' ? afterMap : null]].forEach(function (prI) {
+              var mI = prI[1]; if (!mI) return;
+              try { var sI = mI.getSource(node.id + '-' + prI[0]); if (sI && sI.setData) sI.setData(node.source.data); } catch (eI) {}
+            });
+          }
+        } catch (eIds) { console.warn('import: could not stamp feature ids onto the live source', eIds); }
         if (wantsFold) wantsFold = await foldImportDispatch(layerId, node, groups[type]);
         if (wantsFold) { node.fold_state = 'folding'; _foldWatch.push({ node: node, layerId: layerId }); }
-        else {
-          if (lrow.fold_state === 'folding') { node.fold_state = null; try { await db.from('layers').update({ fold_state: 'live' }).eq('id', layerId); } catch (eFs) {} }
-          await batchInsertFeatures(layerId, groups[type]);
+        else if (lrow.fold_state === 'folding') {
+          node.fold_state = null;
+          try { await db.from('layers').update({ fold_state: 'live' }).eq('id', layerId); } catch (eFs) {}
         }
         if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; if (parent.type === 'group') node.topLayerClass = parent.id; }
         else layers.push(node);
@@ -2005,18 +2373,59 @@
   }
   window._msImportFC = importFeatureCollection;   // programmatic import seam (harness + future API)
   async function batchInsertFeatures(layerId, feats) {
+    // 500 polygon rows in one statement outran Postgres's statement timeout — the import died at
+    // "feature insert: canceling statement due to statement timeout" (found by the 8/7 import
+    // gate at 700 polygons). Polygon geometry is far heavier per row than a point, so the batch
+    // starts smaller and HALVES on a timeout rather than failing the whole import: a slow row
+    // shape costs extra round trips, not the user's data.
+    // Writes go to features_data, the TABLE, not the `features` VIEW. Measured 8/7, 100 polygon
+    // rows, network subtracted, identical rows and identical RLS:
+    //     features VIEW  as owner   1951 ms   19.51 ms/row
+    //     features_data  as owner     98 ms    0.98 ms/row   ← 20x
+    // The view carries INSTEAD OF triggers (they exist to translate geom <-> base columns), and
+    // those run per row, so every row pays a PL/pgSQL call plus its own policy evaluation.
+    // Verified equivalent before switching: a row written to the table and a row written through
+    // the view, read back THROUGH the view, differ in nothing but msid — geometry, dates,
+    // custom_fields and the ms_* style defaults all match, because those defaults live on the
+    // table. It is also the stricter path security-wise: features_data's policies are the
+    // boundary features-write-lockdown.sql established, with no definer trigger in between.
     var BATCH = 500;
+    // Measured 8/7: ONE polygon row costs ~670 ms as the owner and ten cost ~732 ms, while the
+    // same inserts as the service role run ~14 ms/row. Nearly all of it is fixed per-STATEMENT
+    // cost in the write policy (see mapstructor_docs/sql/setup/rls-write-perf.sql), so the way
+    // to spend less wall-clock from here is to have several statements in flight rather than
+    // bigger ones — bigger ones just hit the 8 s statement timeout.
+    // Sending several statements AT ONCE was tried and measured on 8/7, and it made things
+    // strictly worse: the cost is CPU inside the policy, so four in flight simply contend, and
+    // even 25-row batches then hit the timeout — the gate died at 500/700 instead of finishing.
+    // Sequential it stays. The real lever is the policy itself, not the client.
     // Publishing while an import is still SAVING bakes a partial tile archive (NTAD 7/23:
     // baked at 194k of 302,771 → "so many lines missing"). Flag the window so onPublish waits.
     window.__msImportSaving = (window.__msImportSaving || 0) + 1;
+    // The generated feature_ids come back with the insert (RETURNING keeps input order for a
+    // plain INSERT), because the instant-render source drawn BEFORE this save is otherwise
+    // id-less — and everything that later matches screen features to rows by id (apply-dates'
+    // live refresh, click-to-edit) silently no-ops until a reload rebuilds the source from the
+    // DB. That was the 8/8 bug: "Dates applied" said done, the map ignored the timeline until
+    // refresh. ~10 KB per 500-row chunk — noise even on 50k imports.
+    var insertedIds = [];
     try {
-      for (var i = 0; i < feats.length; i += BATCH) {
-        if (feats.length > BATCH) importStatus('Saving features… ' + nfmt(Math.min(i + BATCH, feats.length)) + '/' + nfmt(feats.length));   // uncapped imports can be 100k+ rows — show progress, not silence
-        var rows = feats.slice(i, i + BATCH).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null, custom_fields: importCustomFields(f.properties) }; });
-        var r = await db.from('features').insert(rows);
-        if (r.error) throw new Error('feature insert: ' + r.error.message);
+      var i = 0;
+      while (i < feats.length) {
+        var take = Math.min(feats.length - i, BATCH);
+        var rows = feats.slice(i, i + take).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null, custom_fields: importCustomFields(f.properties) }; });
+        var r = await db.from('features_data').insert(rows).select('feature_id');
+        if (r.error) {
+          // too big a bite for one statement → take a smaller one and retry the SAME rows
+          if (/timeout|canceling statement/i.test(r.error.message || '') && take > 25) { BATCH = Math.max(25, Math.floor(BATCH / 2)); continue; }
+          throw new Error('feature insert: ' + r.error.message);
+        }
+        i += rows.length;
+        (r.data || []).forEach(function (row) { insertedIds.push(row.feature_id); });
+        if (feats.length > BATCH) importStatus('Saving features… ' + nfmt(i) + '/' + nfmt(feats.length));   // uncapped imports can be 100k+ rows — show progress, not silence
       }
     } finally { window.__msImportSaving--; }
+    return insertedIds;
   }
   var LABEL_KEYS = ['name', 'Name', 'NAME', 'label', 'Label', 'LABEL', 'title', 'Title', 'TITLE'];
   function importLabelKey(props) {
@@ -2038,7 +2447,20 @@
       if (k === labelKey) return;
       var v = props[k];
       if (v == null || v === '') return;
-      if (typeof v === 'object') { try { v = JSON.stringify(v); } catch (e) { return; } }   // flatten nested values to a string
+      // A shapefile's DBF date columns (type D) arrive from shpjs as Date OBJECTS, and
+      // JSON.stringify turns a Date into a QUOTED string — the column landed in the database as
+      // "\"1886-01-01T04:56:16.000Z\"", quote characters and all. Nothing downstream could read
+      // that: the timeline's date parser tests for a leading digit, so the precise columns
+      // silently produced no dates and the only usable option was the coarse YEAR columns — which
+      // round every period out to Jan 1 / Dec 31 and make neighbouring eras overlap (owner 8/7,
+      // CShapes: three United States polygons all visible through 1959). Write the plain date.
+      // Its LOCAL parts, not toISOString(): shpjs builds these with new Date(y, m, d) in the
+      // viewer's zone, so a UTC render moves the day backwards for anyone east of Greenwich.
+      if (v instanceof Date) {
+        if (isNaN(v.getTime())) return;
+        var p2c = function (x) { return ('0' + x).slice(-2); };
+        v = v.getFullYear() + '-' + p2c(v.getMonth() + 1) + '-' + p2c(v.getDate());
+      } else if (typeof v === 'object') { try { v = JSON.stringify(v); } catch (e) { return; } }   // flatten nested values to a string
       out[k] = v; n++;
     });
     return n ? out : null;
@@ -4649,7 +5071,7 @@
       if (!m) return; try { var s2 = m.getSource('editor-armed-hl'); if (s2) s2.setData(data); } catch (e) {}
     });
   }
-  function updateArmedHl() { setArmedHl(_armedSet.map(function (id2) { try { return draw.get(id2); } catch (e) { return null; } })); }
+  function updateArmedHl() { setArmedHl(_armedSet.map(function (id2) { try { return draw.get(id2); } catch (e) { return null; } }).filter(Boolean)); }   // a stale id must yield [] — a null in setData throws and the source keeps its OLD ring (8/8)
   // ═══ GROUP-AS-ONE — universal filter-twin design (7/18) ═══════════════════
   // Membership is DECLARED, never copied: each grouped layer gets a twin
   // highlight layer bound to the SAME source, and hover/click merely set its
@@ -5333,15 +5755,13 @@
         });
         var tcols = Object.keys(tkeys).sort();
         fillLabelFieldSelect(node, tcols);
-        // map labels now work on TILESET LINE layers too (labels.js rides the vector source, 7/16).
-        // Skinny tiles carry `label` + the configured column (baked at Publish) — offer whatever
-        // the tiles actually contain, minus the timeline plumbing. Points/polygons: still hidden.
-        if (node.type === 'line') {
-          fillMapLabelControls(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
-        } else {
-          var mlRow2 = document.getElementById('elp-maplabels-row'); if (mlRow2) mlRow2.style.display = 'none';   // also clears a stale 'block' from a previously-selected drawn layer
-          var mlHelp2 = document.getElementById('elp-lbl-help'); if (mlHelp2) mlHelp2.style.display = 'none';
-        }
+        // Map labels on TILESETS: every geometry (8/8 — the old line-only gate was never intended;
+        // owner: "labels disabled for everything but lines?? Definitely NOT intended"). The whole
+        // chain below this gate has been geometry-agnostic since 8/7: labels.js puts a symbol layer
+        // over the vector source (lines via group anchors, points/polygons per feature), addLayers
+        // adds it in the viewer, changeDate date-filters `-label-`, and onMapLabelsChange re-bakes
+        // when the picked column isn't in the tiles. Only this UI gate still hid the controls.
+        fillMapLabelControls(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
         // "Treat as one" works on tilesets too: members come from the loaded tiles (which carry the baked columns)
         fillGroupBySelect(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
         // color-by for tileset LINES: same control, values later fetched from server counts
@@ -5806,9 +6226,9 @@
       var lyrId = node.id + '-label-' + side, srcId = node.id + '-labels-' + side;
       function teardown() { try { if (m.getLayer(lyrId)) m.removeLayer(lyrId); } catch (e) {} try { if (m.getSource(srcId)) m.removeSource(srcId); } catch (e) {} }
       if (!node.labels || !node.labels.field) { teardown(); return; }
-      // TILESET lines: labels ride the vector source (labels.js needs the REAL node's source/source-layer);
-      // the geojson-anchor proxy is only for drawn/imported layers
-      var isVecLine = node.type === 'line' && node.source && node.source.type === 'vector';
+      // TILESETS of every type label off the vector source (labels.js needs the REAL node's
+      // source/source-layer); the geojson-anchor proxy is only for drawn/imported layers
+      var isVecLine = node.source && node.source.type === 'vector';
       var proxy = isVecLine ? node : { id: node.id, type: node.type, labels: node.labels,
         source: { type: 'geojson', data: { type: 'FeatureCollection', features: labelFeaturesFor(node) } } };
       var ll = msLabelLayerFor(proxy, side, 'visible', m);   // m → fonts the style's glyph server actually has
@@ -5965,6 +6385,26 @@
       var r2 = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
       if (r2.error) throw new Error(r2.error.message);
       applyLabelLayers(node);
+      // TILESET LABELS ONLY SAY WHAT THE TILER WROTE (8/7). A symbol layer over a vector source
+      // reads the tile's own properties, and skinny tiles carry the timeline days, `label`, and
+      // whichever column labels.field named AT BAKE TIME — nothing else. So picking a column the
+      // archive predates renders blank labels with no explanation. Compare against the stamp
+      // convertLayer records and re-bake when they disagree; `label` itself always rides, so it
+      // never needs one. Owner 8/7: CShapes-2.0's names live in cntry_name, which was in no tile.
+      if (isTilesetNode(node)) {
+        var want = node.labels ? ((node.labels.field || 'label') === 'label' ? null : node.labels.field) : null;
+        var have = ('tilesLabelField' in rc) ? (rc.tilesLabelField || null) : undefined;
+        if (want && have !== want) {
+          try {
+            var bakedOk = await rebakeLayerTiles(lid, 'Baking “' + want + '” into');
+            if (bakedOk) { msProgress('Labels ready — “' + want + '” is baked into the tiles.'); setStatus('Labels baked'); }
+            else msProgress('Labels saved, but this layer’s tiles could not be re-baked — its labels stay blank until they are.');
+          } catch (eLb) {
+            console.warn('label re-bake failed', eLb);
+            msProgress('Labels saved, but the tile re-bake failed (' + (eLb && eLb.message || eLb) + ') — hit Publish to bake “' + want + '” in.');
+          }
+        }
+      }
       // checkbox ticked BEFORE any feature data arrived (deferred/unhydrated layer) → the label layer
       // just built over ZERO anchors and looks dead. Priority-fetch this layer now and re-anchor when
       // it lands — the old behavior forced the user to toggle off/on or reload the page.
@@ -5979,7 +6419,13 @@
   // ── Timeline dates (7/15): column → Start/End mapping. See the elp-dates-sec template block. ──
   function parseLooseDate(v, isEnd) {   // "1877"→1877-01-01/12-31; "18700101"→1870-01-01; ISO passes; Date-readable→ISO; junk/0/9999…→null
     if (v == null) return null;
+    if (v instanceof Date) return isNaN(v.getTime()) ? null : (v.getFullYear() + '-' + ('0' + (v.getMonth() + 1)).slice(-2) + '-' + ('0' + v.getDate()).slice(-2));
     v = String(v).trim();
+    // Unwrap a value that was JSON-encoded on the way in. Imports before 8/7 stored DBF date
+    // columns as '"1886-01-01T04:56:16.000Z"' — quotes included — and every test below starts
+    // at a digit, so those rows read as "no date". Reading them costs one replace and spares
+    // anyone who already imported a shapefile from having to import it again.
+    if (v.length > 1 && v.charAt(0) === '"' && v.charAt(v.length - 1) === '"') v = v.slice(1, -1).trim();
     if (!v || v === '0' || /^(none|null|n\/a)$/i.test(v)) return null;
     if (/^\d{3,4}$/.test(v)) { var y = ('0000' + v).slice(-4); return isEnd ? y + '-12-31' : y + '-01-01'; }
     // Compact integer dates (the railway "DayStart"/"DayEnd" convention, e.g. 18700101): YYYYMMDD or
@@ -5994,6 +6440,30 @@
       return mc[1] + '-' + p2(Mo) + '-' + p2(Da);
     }
     if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+    // EPOCH NUMBERS (8/7). A shapefile has no date type wide enough for history, so GIS tools put
+    // dates in a NUMERIC field as an offset from 1970 — negative for anything earlier. The owner's
+    // gazetteer stores 1652 as -10035100800000. Nothing above could read that (it has a sign, it is
+    // not 4 digits, not YYYYMMDD, and `new Date(string)` refuses a bare number that long), so the
+    // column silently produced no dates at all. Milliseconds is what QGIS/GDAL write; seconds is
+    // the other common convention, so both are tried. These values are absolute instants the tool
+    // wrote at UTC midnight — read them in UTC, unlike a Date OBJECT from the .dbf, which shpjs
+    // builds in the viewer's own zone.
+    if (/^-?\d{9,}$/.test(v)) {
+      var n = Number(v);
+      if (!isFinite(n)) return null;
+      var tries = [n, n * 1000];
+      for (var ti = 0; ti < tries.length; ti++) {
+        var de = new Date(tries[ti]);
+        if (isNaN(de.getTime())) continue;
+        var yr = de.getUTCFullYear();
+        if (yr < 1 || yr >= 9999) continue;   // year 9999 = the "no end" sentinel, same as 99990101 above
+        // a big number that reads as a date right next to 1970 is almost certainly SECONDS
+        // (1600000000 is September 2020 in seconds, but the 19th of January 1970 in milliseconds)
+        if (ti === 0 && yr >= 1968 && yr <= 1972 && Math.abs(n) > 1e8) continue;
+        return de.toISOString().slice(0, 10);
+      }
+      return null;
+    }
     var d = new Date(v);
     return isNaN(d) ? null : d.toISOString().slice(0, 10);
   }
@@ -6072,37 +6542,185 @@
     if (start) { var ns = rows.filter(function (r) { return r.start_date != null; }).length; if (ns) clobber.push(nfmt(ns) + ' features already have a Start date'); }
     if (end) { var ne = rows.filter(function (r) { return r.end_date != null; }).length; if (ne) clobber.push(nfmt(ne) + ' features already have an End date'); }
     if (clobber.length && !window.confirm('There is data in the date column' + (clobber.length > 1 ? 's' : '') + ' (' + clobber.join('; ') + '). Are you sure you want to replace it?')) { msProgress(''); setStatus('Cancelled'); return 0; }
-    var upserts = [], blank = 0, groups9 = {};
-    rows.forEach(function (r) {
-      var sv, ev, touched = false;
-      if (start) { sv = start.fixed != null ? start.fixed : parseLooseDate(r.custom_fields && r.custom_fields[start.col], false); touched = true; if (!sv) blank++; }
-      if (end) { ev = end.fixed != null ? end.fixed : parseLooseDate(r.custom_fields && r.custom_fields[end.col], true); touched = true; if (!ev) blank++; }
-      if (!touched) return;
-      var key9 = (start ? String(sv) : '·') + '|' + (end ? String(ev) : '·');
-      (groups9[key9] = groups9[key9] || { s: sv, e: ev, ids: [] }).ids.push(r.feature_id);
-      upserts.push(1);
-    });
-    var doneN = 0, keys9 = Object.keys(groups9);
-    for (var g9 = 0; g9 < keys9.length; g9++) {
-      var grp = groups9[keys9[g9]];
-      var patch9 = {};
-      if (start) patch9.start_date = grp.s != null ? grp.s : null;
-      if (end) patch9.end_date = grp.e != null ? grp.e : null;
-      for (var c9 = 0; c9 < grp.ids.length; c9 += 400) {
-        var w9 = await db.from('features').update(patch9).in('feature_id', grp.ids.slice(c9, c9 + 400));
-        if (w9.error) throw new Error(w9.error.message);
-        doneN += Math.min(400, grp.ids.length - c9);
-        msProgress('Setting dates… ' + nfmt(doneN) + '/' + nfmt(upserts.length) + ' (' + nfmt(keys9.length) + ' distinct values)');
+    // ── A YEAR IS A SPAN, NOT AN INSTANT (8/7) ────────────────────────────────────────────
+    // A column can carry a year written three ways: "1767", 17670101, or an epoch instant for
+    // 1767-01-01 (what QGIS/GDAL write into a numeric shapefile field). Only the first was being
+    // widened, so an End column of epoch instants ended every period on 1 JANUARY — a mission that
+    // ran through 1767 vanished on the 2nd of January 1767, and the map showed it for one day of
+    // the year it was actually there. That is a historical error, not a rounding one.
+    // A source with day precision spreads its values across the calendar. One that lands EVERY
+    // value on 1 January is not claiming 2,000 New Year's Days — it is a year in disguise, and its
+    // End dates belong on 31 December, exactly as "1767" already does.
+    function colValues(col) { return rows.map(function (r) { return r.custom_fields && r.custom_fields[col]; }); }
+    function yearOnlyColumn(col) {
+      var vals = colValues(col), seen = 0;
+      for (var i = 0; i < vals.length; i++) {
+        var p = parseLooseDate(vals[i], false);
+        if (!p) continue;
+        seen++;
+        if (p.slice(4) !== '-01-01') return false;
       }
+      return seen > 0;
     }
-    upserts = [];
-    keys9.forEach(function (k9) { var grp2 = groups9[k9]; grp2.ids.forEach(function (fid2) { var u2 = { feature_id: fid2 }; if (start) u2.start_date = grp2.s != null ? grp2.s : null; if (end) u2.end_date = grp2.e != null ? grp2.e : null; upserts.push(u2); }); });
+    var endYearOnly = !!(end && !end.fixed && end.col && yearOnlyColumn(end.col));
+    function widenEnd(v) { return (endYearOnly && v && v.slice(4) === '-01-01') ? (v.slice(0, 4) + '-12-31') : v; }
+
+    // "No end" is not a failure. 99990101, or an epoch instant landing in year 9999, is the
+    // standard marker for "still open" — the owner's gazetteer uses it on 1,578 of 2,000 rows.
+    // It parses to null exactly as junk does, and an empty cell is simply missing rather than
+    // unreadable; reporting either as a problem would bury the values that really are one.
+    function deliberatelyOpen(v) {
+      if (v == null || v === '') return true;
+      var s = String(v).trim().replace(/^"|"$/g, '');
+      if (!s || s === '0' || /^(none|null|n\/a)$/i.test(s)) return true;
+      if (/^-?\d{9,}$/.test(s)) {
+        var n0 = Number(s);
+        return [n0, n0 * 1000].some(function (ms) { var d = new Date(ms); return !isNaN(d.getTime()) && d.getUTCFullYear() >= 9999; });
+      }
+      var m0 = /^(\d{4})\d{0,4}$/.exec(s);
+      return !!m0 && +m0[1] >= 9999;
+    }
+    var payload = [], blank = 0, badVals = {}, badCount = 0;
+    function noteBad(col, raw) {
+      if (deliberatelyOpen(raw)) return;
+      badCount++;
+      var k = col + ' = ' + String(raw).slice(0, 40);
+      badVals[k] = (badVals[k] || 0) + 1;
+    }
+    rows.forEach(function (r) {
+      var cf = r.custom_fields || {}, u = { feature_id: r.feature_id, layer_id: lid }, touched = false;
+      if (start) {
+        var sv = start.fixed != null ? start.fixed : parseLooseDate(cf[start.col], false);
+        if (!sv) { blank++; if (start.fixed == null) noteBad(start.col, cf[start.col]); }
+        u.start_date = sv || null; touched = true;
+      }
+      if (end) {
+        var ev = end.fixed != null ? end.fixed : widenEnd(parseLooseDate(cf[end.col], true));
+        if (!ev) { blank++; if (end.fixed == null) noteBad(end.col, cf[end.col]); }
+        u.end_date = ev || null; touched = true;
+      }
+      // A date we cannot read leaves the column NULL, which the timeline reads as "always
+      // visible" — the feature stays on the map until someone fills it in by hand, rather than
+      // silently disappearing because its source used a format we do not speak.
+      if (touched) payload.push(u);
+    });
+
+    // ── ONE REQUEST PER 1,000 FEATURES, NOT ONE PER DISTINCT DATE (8/7) ───────────────────
+    // The old loop grouped rows by their (start,end) value and sent one UPDATE per group. That is
+    // fine for a handful of eras and terrible for a real gazetteer: the owner's 2,000-point layer
+    // has 380 distinct pairs, so it made 380 network round-trips to write 2,000 rows and took
+    // minutes. The work was never the database — it was the waiting. A bulk upsert keyed on the
+    // primary key writes any number of DIFFERENT values in one statement; feature_id is the only
+    // NOT NULL column, so a payload of ids plus dates is complete, and every id here came from
+    // this layer's own rows, so every one conflicts and updates rather than inserting.
+    var upserts = payload;
+    // ── LIVE LAYERS SEE THEIR DATES IMMEDIATELY (8/7) ─────────────────────────────────────
+    // An engine-rendered geojson layer draws from the source built at page load; until now the
+    // new dates existed only in the database, so the slider kept filtering yesterday's
+    // properties until a refresh. Worst on a layer dated for the FIRST time: its source had no
+    // DayStart at all, so dragging (coalesce → always visible) animated nothing and releasing
+    // (legacy filter → missing property = hidden) blanked the layer — the exact "animates
+    // wrong, then things change on release" chaos reported. Patch the live features and
+    // re-apply the current date's filter on the spot, both maps, companions included.
+    try {
+      if (node && node.source && node.source.type === 'geojson' && node.source.data && node.source.data.features) {
+        var byFid2 = {}; payload.forEach(function (u) { byFid2[String(u.feature_id)] = u; });
+        var ymd2 = function (d, dflt) { return d ? +(String(d).slice(0, 10).replace(/-/g, '')) || dflt : dflt; };
+        var liveMatched = 0;
+        node.source.data.features.forEach(function (f) {
+          var k2 = f.id != null ? String(f.id) : (f.properties && f.properties.feature_id != null ? String(f.properties.feature_id) : null);
+          var u2 = k2 && byFid2[k2]; if (!u2) return;
+          liveMatched++;
+          f.properties = f.properties || {};
+          if ('start_date' in u2) f.properties.DayStart = ymd2(u2.start_date, 0);
+          if ('end_date' in u2) f.properties.DayEnd = ymd2(u2.end_date, 99999999);
+        });
+        // Tripwire (8/8): this refresh matching NOTHING is exactly how "Dates applied" once meant
+        // "nothing on screen changed until reload" — an id-less live source fails here SILENTLY,
+        // so say it loudly instead of letting the status line claim success.
+        if (payload.length && !liveMatched) console.warn('live date refresh matched 0 of ' + payload.length + ' features by id — the timeline will not reflect these dates until the page is reloaded');
+        var dNow = (typeof editorCurrentDate === 'function') ? editorCurrentDate() : undefined;
+        var fNow = (dNow && !node.timelineIgnore) ? ['all', ['<=', 'DayStart', dNow], ['>=', 'DayEnd', dNow]] : null;
+        [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr2) {
+          var m2 = pr2[1]; if (!m2) return;
+          try { var s2 = m2.getSource(node.id + '-' + pr2[0]); if (s2 && s2.setData) s2.setData(node.source.data); } catch (e2) {}
+          [node.id + '-' + pr2[0], node.id + '-stroke-' + pr2[0], node.id + '-highlighted-' + pr2[0]].forEach(function (lid2) {
+            try { if (m2.getLayer(lid2)) m2.setFilter(lid2, fNow); } catch (e3) {}
+          });
+        });
+      }
+    } catch (eLive) { console.warn('live date refresh failed', eLive); }
     if (_attrSlug === slug && _attrRows.length) {   // keep an open attribute table on this layer in sync
       var byId9 = {}; upserts.forEach(function (u) { byId9[String(u.feature_id)] = u; });
       _attrRows.forEach(function (r) { var u = byId9[String(r.feature_id)]; if (!u) return; if ('start_date' in u) r.start_date = u.start_date; if ('end_date' in u) r.end_date = u.end_date; });
       try { renderAttrBody(); } catch (e2) {}
     }
-    msProgress('Dates set on ' + nfmt(upserts.length) + ' features' + (blank ? ' (' + nfmt(blank) + ' had no readable date — left empty)' : '') + '.');
+    // WHY THE TIMELINE MIGHT LOOK DEAD (8/7). Historical sources very often use a placeholder for
+    // "before our records start" the same way they use 9999 for "no end" — the owner's gazetteer
+    // puts 1,486 of 2,000 places at 1111-01-01, every one of them flagged `start_ex = "start"` in
+    // its own certainty column. Those points are on the map from the first frame and never move,
+    // so scrubbing six centuries changes the picture by a few percent and reads as "animation is
+    // broken". It is not, and nothing here should GUESS that a date is a placeholder — but saying
+    // which value dominates turns an invisible data property into something the owner can act on.
+    var domNote = '';
+    if (start && upserts.length) {
+      var tally = {}, top = null;
+      upserts.forEach(function (u) { if (u.start_date) { tally[u.start_date] = (tally[u.start_date] || 0) + 1; } });
+      Object.keys(tally).forEach(function (k) { if (!top || tally[k] > tally[top]) top = k; });
+      if (top && tally[top] >= Math.max(20, upserts.length * 0.4)) {
+        domNote = ' · heads-up: ' + nfmt(tally[top]) + ' of ' + nfmt(upserts.length) + ' share the start date ' + top
+          + ', so they all appear at once and the timeline will look nearly still — that is usually a "no earlier record" placeholder in the source.';
+      }
+    }
+    msProgress('Dates applied to ' + nfmt(upserts.length) + ' features'
+      + (endYearOnly ? ' · the End column holds only years, so each one runs to 31 December' : '')
+      + (blank ? ' · ' + nfmt(blank) + ' left blank (always visible)' : '') + '.' + domNote);
+    setStatus('Dates applied — saving…');
+    // SAY WHAT WE COULD NOT READ (8/7). A value we cannot parse leaves the column blank, which the
+    // timeline treats as "always visible" — nothing disappears — but silence would leave the owner
+    // to discover the gap by noticing a feature that never moves. Name the column and the actual
+    // values, since that is what tells them whether it is a format worth supporting or genuinely
+    // missing data. Grouped and counted: a gazetteer with 1,578 blanks has a handful of causes.
+    if (badCount) {
+      var kinds9 = Object.keys(badVals).sort(function (a, b) { return badVals[b] - badVals[a]; });
+      var head9 = nfmt(badCount) + ' date value' + (badCount === 1 ? '' : 's') + ' could not be read, across '
+        + nfmt(kinds9.length) + ' distinct value' + (kinds9.length === 1 ? '' : 's') + '.\n\n'
+        + 'Those features were left blank, so they stay visible at every date until you set them by hand.\n\n'
+        + 'Show the values?';
+      try {
+        if (window.confirm(head9)) {
+          var list9 = kinds9.slice(0, 40).map(function (k) { return '  ' + nfmt(badVals[k]) + ' x   ' + k; }).join('\n');
+          window.alert('Values that could not be read as dates:\n\n' + list9
+            + (kinds9.length > 40 ? '\n\n  …and ' + nfmt(kinds9.length - 40) + ' more' : '')
+            + '\n\nOpen Table to see them in the column itself.');
+        }
+      } catch (eRep) {}
+    }
+    // ── THE SAVE RUNS AFTER THE SCREEN IS ALREADY RIGHT (8/7: "it should be instantaneous") ──
+    // Everything above — map, table, summary, the unreadable-values dialog — came from data this
+    // browser already held, so it all happens the moment Apply is clicked; the network is pure
+    // durability. One bulk upsert keyed on the primary key carries any number of DIFFERENT
+    // values, so 5,000 rows per request is one request for nearly every layer (the old
+    // per-distinct-value loop sent 380 requests for this same 2,000-row gazetteer and took
+    // minutes). Failure is loud and honest: the screen keeps the applied dates, the message says
+    // plainly they are NOT saved, and clicking Apply again retries.
+    var doneN = 0, DATE_CHUNK = 5000;
+    try {
+      for (var i9 = 0; i9 < payload.length; ) {
+        var take9 = Math.min(payload.length - i9, DATE_CHUNK);
+        var w9 = await db.from('features_data').upsert(payload.slice(i9, i9 + take9), { onConflict: 'feature_id' });
+        if (w9.error) {
+          if (/timeout|canceling statement/i.test(w9.error.message || '') && take9 > 50) { DATE_CHUNK = Math.max(50, Math.floor(DATE_CHUNK / 2)); continue; }
+          throw new Error(w9.error.message);
+        }
+        i9 += take9; doneN += take9;
+        if (payload.length > DATE_CHUNK) msProgress('Saving… ' + nfmt(doneN) + '/' + nfmt(payload.length));
+      }
+    } catch (eSave) {
+      msProgress('⚠ The dates are SHOWING but did NOT save (' + (eSave && eSave.message || eSave) + '). Click Apply again to retry the save.');
+      setStatus('Dates NOT saved');
+      return 0;
+    }
     setStatus('Dates applied');
     // AUTO-REBAKE (7/20): a vector-TILE layer renders from its tiles, and the slider filters the tiles'
     // BAKED days — so new dates don't take effect until the tiles re-bake. Do that automatically for
@@ -6183,7 +6801,10 @@
         hover: src.hover, hover_paint: src.hover_paint, click: src.click,
         popup_style: src.popup_style, popup_prop: src.popup_prop,
         enabled_by_default: true,
-        user_id: src.user_id || null,
+        // the CREATOR owns the instance — same rule as copyLayerInto. Carrying the SOURCE's
+        // user_id made instancing someone else's layer insert a row you don't own, which
+        // layers_insert refuses (and would have billed its storage to them).
+        user_id: userId || src.user_id || null,
         raw_config: rc
       };
       var ins = await db.from('layers').insert(row).select('id').single();
@@ -6927,7 +7548,7 @@
     var isStyleableLayer = isGeojson || (isTilesetNode(node) && ['fill', 'line', 'circle'].indexOf(node.type) > -1);
     document.getElementById('elp-style-section').style.display = isStyleableLayer ? '' : 'none';   // typeless/basemap tilesets: hide style, keep attr + source + zoom
     document.getElementById('elp-interact-row').style.display = isStyleableLayer ? '' : 'none';
-    var labelsCapable = isGeojson || (isTilesetNode(node) && node.type === 'line');   // tileset LINE labels ride the vector source (labels.js 7/16); points/polygons still need geojson anchors
+    var labelsCapable = isGeojson || (isTilesetNode(node) && ['line', 'fill', 'circle'].indexOf(node.type) > -1);   // 8/7: every tileset type labels off its own vector source (labels.js)
     document.getElementById('elp-labels-sec').style.display = labelsCapable ? '' : 'none';
     // Instance mode (Map Portal, 8/5): a LOCKED mirror presents the source exactly as the source
     // styles it — the style/label/interaction controls are hidden, with one line saying why.
@@ -6937,7 +7558,7 @@
       lockNote = document.createElement('div');
       lockNote.id = 'elp-stylelock-note';
       lockNote.style.cssText = 'display:none;margin:6px 0;padding:7px 9px;background:#f3eefc;border:1px solid #d9cff1;border-radius:6px;font-size:12px;color:#4a3670;';
-      lockNote.textContent = '🔒 Locked mirror — this instance shows its source layer exactly as the source presents it. To restyle it, delete this layer and re-add it from the Portal in Linked mode.';
+      lockNote.textContent = '🔒 Locked mirror — this layer follows its source\'s styling, so it changes whenever the source does. To style it yourself instead, delete it and re-add it from the Portal in Linked mode.';
       var ss0 = document.getElementById('elp-style-section');
       if (ss0 && ss0.parentNode) ss0.parentNode.insertBefore(lockNote, ss0);
     }
@@ -7027,7 +7648,9 @@
     // 7/21 linked instances: create-button on real data layers; explainer note on instances themselves
     var instBtn = document.getElementById('elp-instance'), instNote = document.getElementById('elp-instance-note');
     if (instBtn) instBtn.style.display = ((isConvertedTs || node.source_type === 'geojson-supabase') && !node.instanceOf && !node.outlineOf) ? 'block' : 'none';
-    if (instNote) instNote.style.display = node.instanceOf ? 'block' : 'none';
+    // "Style it independently here" is true of a LINKED mirror only — on a locked one it sat
+    // directly above the lock note saying the opposite (owner 8/7, both visible at once)
+    if (instNote) instNote.style.display = (node.instanceOf && !node.styleLocked) ? 'block' : 'none';
     document.getElementById('elp-color').value = color;
     var legOn = document.getElementById('elp-legend-on'); if (legOn) legOn.checked = !!node.legend;
     var srOn = document.getElementById('elp-stylerows-on'); if (srOn) srOn.checked = !!node.styleRows;
@@ -7258,6 +7881,7 @@
   }
   var _attrCustom = {};   // fid → its custom_fields object, so a single-cell edit rewrites the whole jsonb
   var _attrRows = [], _attrCols = [], _attrSort = null, _attrSel = [], _selGeom = {};   // loaded rows + column model + {idx,dir} + READ-ONLY MIRROR of MSSel (see below) + fid→geometry cache from map-clicks (instant highlight without a DB fetch)
+  var _selDays = {};   // fid → [DayStart, DayEnd] captured at map-click (tile props) — the selection marker must know its feature's days to follow the timeline (8/8)
   // ── selection store (7/28 carve-out → platform/selection.js) ──────────────────────────────────
   // MSSel owns the selected-feature set; _attrSel is a read-only mirror kept fresh by the ONE
   // subscriber below, which also refreshes every selection surface (table row classes, map
@@ -7868,8 +8492,21 @@
   // Paint the CURRENT selection from whatever geometry is on hand (fetched row geoms + clicked-tile
   // fragments). Reads live _attrSel, so a late repaint can never show a stale set.
   function paintAttrHighlight() {
-    var feats = _attrSel.map(function (fid) { var r = findAttrRow(fid); var g = (r && r.geom) || _selGeom[String(fid)]; return g ? { type: 'Feature', geometry: g, properties: {} } : null; }).filter(Boolean);
+    var ymdN = function (d, dflt) { return d ? +(String(d).slice(0, 10).replace(/-/g, '')) || dflt : dflt; };
+    var feats = _attrSel.map(function (fid) {
+      var r = findAttrRow(fid); var g = (r && r.geom) || _selGeom[String(fid)]; if (!g) return null;
+      // the marker carries its feature's days (8/8): a selected feature that the timeline
+      // excludes must not leave a floating star behind — same contract as every other costume.
+      // Best source wins: the table row (fresh), then the click-time tile props, then the armed
+      // meta; a feature whose days are unknowable stays always-visible rather than vanishing.
+      var ds = 0, de = 99999999;
+      if (r && (r.start_date || r.end_date)) { ds = ymdN(r.start_date, 0); de = ymdN(r.end_date, 99999999); }
+      else if (_selDays[String(fid)]) { ds = _selDays[String(fid)][0]; de = _selDays[String(fid)][1]; }
+      else { var m2 = featureMeta['db-' + fid]; if (m2 && (m2.start || m2.end)) { ds = ymdN(m2.start, 0); de = ymdN(m2.end, 99999999); } }
+      return { type: 'Feature', geometry: g, properties: { DayStart: ds, DayEnd: de } };
+    }).filter(Boolean);
     attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {} });
+    try { if (typeof editorCurrentDate === 'function') applyEditedOverlayDayFilter(editorCurrentDate()); } catch (e) {}
   }
   var _attrHlSeq = 0;
   function updateAttrHighlight() {
@@ -8564,7 +9201,40 @@
       var sId = null, gId = null;
       if (pParent && pParent.type === 'group') { gId = pParent._dbId; var ps = findParent(layers, pParent); if (ps && ps.type === 'section') sId = ps._dbId; }
       else if (pParent && pParent.type === 'section') { sId = pParent._dbId; }
-      var oLayerId = await insertOne('layers', leafRow(oNode));
+      var oRow = leafRow(oNode);
+      if (isTs) {
+        // A split outline over a BAKED fill renders from the PARENT's tiles, so it has to be
+        // stored pointing at them properly. Two things went wrong here (owner 8/7 — border gone
+        // after splitting, and "nothing to bake"):
+        //   · oNode.source came from the RUNTIME node, whose tile URL configLoader had already
+        //     made absolute — so the row saved "http://localhost:8000/map/pmt/…", which is
+        //     nobody else's address. Take the parent's STORED (site-relative) route instead.
+        //   · the pmtiles archive stamp was never copied, and without it the pmt service worker
+        //     has no archive to answer that route from: every tile 404s and the layer draws
+        //     nothing. Meanwhile the fill had already stopped drawing its own border (that is
+        //     what outlineSplit means), so the border vanished entirely.
+        // It owns no features of its own by design — it draws the parent's edges — which is also
+        // why baking it reported "nothing to bake"; carrying the parent's stamps says "already
+        // tiled" so it renders instead of asking to be baked.
+        var pLid0 = slugToLayerDbId[P.id];
+        if (pLid0) {
+          var pr0 = await db.from('layers').select('source_url, source_layer, source_minzoom, source_maxzoom, raw_config').eq('id', pLid0).single();
+          if (!pr0.error && pr0.data) {
+            var prc0 = pr0.data.raw_config || {};
+            oRow.source_type = 'vector-tiles-url';
+            oRow.source_url = pr0.data.source_url;
+            oRow.source_layer = pr0.data.source_layer;
+            oRow.source_minzoom = pr0.data.source_minzoom;
+            oRow.source_maxzoom = pr0.data.source_maxzoom;
+            oRow.raw_config = Object.assign({}, oRow.raw_config || {}, {
+              pmtiles: prc0.pmtiles,
+              tilesGeneratedAt: prc0.tilesGeneratedAt,
+              tilesFeatureCount: prc0.tilesFeatureCount
+            });
+          }
+        }
+      }
+      var oLayerId = await insertOne('layers', oRow);
       slugToLayerDbId[oNode.id] = oLayerId;
       await insertOne('project_layers', { project_id: projectId, layer_id: oLayerId, sort_order: nextSort++, section_id: sId, group_id: gId });
       // mark the polygon split (its auto-stroke is now handed off) + persist (merge, don't clobber raw_config)
@@ -8826,7 +9496,22 @@
   //    not applied / rights refused): the editor must never brick on deploy order, and the
   //    write POLICIES are the real enforcement anyway. ──
   var MSEditLock = {
-    sid: Math.random().toString(36).slice(2, 10),
+    // STABLE PER TAB, NOT PER PAGE LOAD (8/7). A fresh random id on every load meant a REFRESH
+    // locked you out of your own map: the previous load's id still holds the lock for the 90-second
+    // TTL, and the pagehide release is fire-and-forget — browsers routinely cancel it mid-unload.
+    // So the owner saw "Your other window is editing — changes won't save" with a single window
+    // open, on and off, for a minute and a half after every refresh, and I had been telling them to
+    // refresh all session. sessionStorage is exactly the right lifetime: it survives a reload in
+    // THIS tab and is never shared with another tab, so a genuine second window still gets its own
+    // id and still reports honestly — which is the rule the lock was meant to express.
+    sid: (function () {
+      var K = 'ms_editlock_sid';
+      try {
+        var v = sessionStorage.getItem(K);
+        if (!v) { v = Math.random().toString(36).slice(2, 10); sessionStorage.setItem(K, v); }
+        return v;
+      } catch (e) { return Math.random().toString(36).slice(2, 10); }   // private mode → previous behaviour
+    })(),
     held: false, _iv: null,
     async boot(pid) {
       if (!pid || !db) return;

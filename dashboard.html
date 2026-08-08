@@ -244,6 +244,16 @@
         try {
           var r = await db.from('projects').select('id,name,user_id,deleted_at').in('id', ids).is('deleted_at', null);
           rows = (r && r.data) || [];
+          // link-shared maps aren't listable since A19 — a bookmark IS the link, so ask for
+          // those by id instead of letting them disappear from this strip
+          var got = {}; rows.forEach(function (x) { got[x.id] = 1; });
+          var miss = ids.filter(function (id) { return !got[id]; });
+          for (var mi = 0; mi < miss.length; mi++) {
+            try {
+              var one = await db.rpc('ms_project_by_id', { p_id: miss[mi] });
+              if (!one.error && one.data && one.data.length) rows.push({ id: one.data[0].id, name: one.data[0].name, user_id: one.data[0].user_id, deleted_at: null });
+            } catch (eOne) {}
+          }
         } catch (e) {}
         try {
           var t = await db.from('portal_entries').select('project_id,thumb').in('project_id', ids);
@@ -380,14 +390,37 @@
             // a map they had destroyed. The RPC removes the layers this map owns alone (a shared
             // layer stays), their features in chunks, and lets the pricing-v5 trigger release the
             // bytes. See mapstructor_docs/sql/setup/delete-forever-setup.sql.
-            var r = await db.rpc('ms_delete_project_forever', { p_project: m.id });
-            if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
-              r = await db.from('projects').delete().eq('id', m.id);   // migration not run yet — old behaviour
+            // 8/8: the RPC is RESUMABLE (delete-forever-chunked.sql) — one 8s statement could never
+            // finish a big map, and its rollback erased even the partial work. Each call now commits
+            // a ~3s slice and returns done=false until drained, so we LOOP it and show progress.
+            var btn = row.querySelector('[data-act=purge]'); btn.disabled = true;
+            var total = 0, fin = null, r = null, slow = 0, after = 0;
+            for (var guard = 0; guard < 400; guard++) {
+              // p_after = keyset watermark from the last slice: scans never re-walk dead index
+              // space, so throughput can't decay mid-purge (the freshly-dead-tuple stall, 8/8)
+              r = await db.rpc('ms_delete_project_forever', { p_project: m.id, p_after: after });
+              if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
+                r = await db.rpc('ms_delete_project_forever', { p_project: m.id });   // pre-keyset chunked fn
+                if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
+                  r = await db.from('projects').delete().eq('id', m.id);   // no migration at all — old behaviour
+                  break;
+                }
+              }
+              if (r.error && /57014|statement timeout/i.test(r.error.message || '')) {
+                if (++slow >= 3) break;   // persistent — surface it
+                continue;                 // one chunk overshot this call's window — the NEXT call gets a fresh 8s
+              }
+              if (r.error) break;
+              slow = 0;
+              fin = (r.data && r.data[0]) || null;
+              if (fin && fin.last_id) after = fin.last_id;
+              total += (fin && fin.features_removed) || 0;
+              if (!fin || fin.done !== false) break;   // finished — or a pre-`done` function that did it in one shot
+              btn.textContent = 'Deleting… ' + total.toLocaleString();
             }
-            if (r.error) { alert('Could not delete: ' + r.error.message); return; }
-            var freed = (r.data && r.data[0]) || null;
-            if (freed && freed.bytes_released > 0) {
-              alert(Math.round(freed.bytes_released / 1048576) + ' MB released back to your storage.');
+            if (r && r.error) { alert('Could not delete: ' + r.error.message); btn.disabled = false; btn.textContent = 'Delete forever'; return; }
+            if (fin && fin.bytes_released > 0) {
+              alert(Math.round(fin.bytes_released / 1048576) + ' MB released back to your storage.');
             }
             loadTrash(); loadMaps();
           };
@@ -409,10 +442,28 @@
           };
           row.querySelector('[data-act=purge]').onclick = async function () {
             if (!confirm('Permanently delete the layer "' + (L.name || 'Untitled layer') + '" and its data? This CANNOT be undone.')) return;
-            var r = await db.rpc('ms_delete_layer_forever', { p_layer: L.id });
-            if (r.error) { alert('Could not delete: ' + r.error.message); return; }
-            var freed = (r.data && r.data[0]) || null;
-            if (freed && freed.bytes_released > 0) alert(Math.round(freed.bytes_released / 1048576) + ' MB released back to your storage.');
+            // 8/8: resumable RPC, same loop as the map purge above (delete-forever-chunked.sql)
+            var btn = row.querySelector('[data-act=purge]'); btn.disabled = true;
+            var total = 0, fin = null, r = null, slow = 0, after = 0;
+            for (var guard = 0; guard < 400; guard++) {
+              r = await db.rpc('ms_delete_layer_forever', { p_layer: L.id, p_after: after });
+              if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
+                r = await db.rpc('ms_delete_layer_forever', { p_layer: L.id });   // pre-keyset fn
+              }
+              if (r.error && /57014|statement timeout/i.test(r.error.message || '')) {
+                if (++slow >= 3) break;   // persistent — surface it
+                continue;                 // transient overshoot — next call gets a fresh window
+              }
+              if (r.error) break;
+              slow = 0;
+              fin = (r.data && r.data[0]) || null;
+              if (fin && fin.last_id) after = fin.last_id;
+              total += (fin && fin.features_removed) || 0;
+              if (!fin || fin.done !== false) break;   // finished — or a pre-`done` function that did it in one shot
+              btn.textContent = 'Deleting… ' + total.toLocaleString();
+            }
+            if (r && r.error) { alert('Could not delete: ' + r.error.message); btn.disabled = false; btn.textContent = 'Delete forever'; return; }
+            if (fin && fin.bytes_released > 0) alert(Math.round(fin.bytes_released / 1048576) + ' MB released back to your storage.');
             loadTrash();
           };
           el.appendChild(row);

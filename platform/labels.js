@@ -116,11 +116,11 @@
   function msLabelLayerFor(layer, side, initVis, map) {   // map (optional) picks glyph-server-safe fonts
     if (!layer || !layer.labels || !layer.labels.field) return null;
     var srcType = layer.source && layer.source.type;
-    // geojson (drawn/imported) layers, PLUS tileset LINE layers (7/16): line labels ride the
-    // vector source directly (symbol-placement: line) — no anchors needed. The label field must
-    // be baked into the tiles (tilegen does: `label` always + the configured column at Publish).
-    // Tileset points/polygons still need geojson anchors — not yet.
-    if (!(srcType === 'geojson' || (srcType === 'vector' && layer.type === 'line'))) return null;
+    // geojson (drawn/imported) layers, PLUS every tileset type (8/7): labels ride the vector
+    // source directly — lines along the line, polygons and points at the feature itself — so no
+    // anchor geometry is needed. The label field must be baked into the tiles (tilegen does:
+    // `label` always + the configured column at Publish).
+    if (!(srcType === 'geojson' || srcType === 'vector')) return null;
     var cfg = layer.labels;
     var field = cfg.field;
     // sizeFor(wrap): builds text-size with the per-feature override applied by `wrap` at each value.
@@ -208,6 +208,21 @@
           ['all', ['==', ['typeof', g2], 'string'], ['!=', g2, ''], ['!=', g2, 'none']], ['to-number', g2, v],
           v];
       });
+      return { layer: base };
+    }
+    // TILESET POLYGONS AND POINTS (8/7): a symbol layer over the SAME vector source. Mapbox puts
+    // one label per feature — inside the polygon for a fill, on the point for a circle — so there
+    // is nothing to compute and no second source to keep in step. It also makes the labels
+    // timeline-correct for free: they ride the very tiles the shapes ride, and mapinit's `-label-`
+    // filter hides each one with its own feature. The catch is that the text must be physically IN
+    // the tile — the editor re-bakes when the chosen column isn't there yet, because a tileset
+    // label can only ever say what the tiler wrote.
+    if (srcType === 'vector') {
+      base.source = layer.id + '-' + side;
+      base['source-layer'] = layer['source-layer'] || 'features';
+      base.layout['symbol-placement'] = 'point';
+      base.layout['text-field'] = ['to-string', ['coalesce', ['get', field], '']];
+      base.layout['text-size'] = sizeFor(function (v) { return v; });
       return { layer: base };
     }
     var srcId = layer.id + '-labels-' + side;

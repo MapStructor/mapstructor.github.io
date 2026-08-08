@@ -297,9 +297,25 @@ var ConfigLoader = (function () {
     var slugToId = {};
     (bundle.projectLayers || []).forEach(function (pl) { if (pl.layers && pl.layers.slug != null) slugToId[pl.layers.slug] = pl.layers.id; });
 
+    // ORPHANED SPLIT (8/7): raw.outlineSplit means "another layer draws my border now", and it makes
+    // leafFromRow skip the stroke companion entirely. If that other layer is GONE — deleted, or
+    // never created because the split half-failed — the flag is a promise nobody keeps and the
+    // polygon has no border at any date, which reads as "baking doesn't apply to borders" (owner
+    // 8/7, CShapes-2.0 (view): outlineSplit set, no layer in the project claiming outlineOf).
+    // The flag is only ever a hand-off, so when nobody has taken it, the fill takes it back.
+    var claimedOutlines = {};
+    (bundle.projectLayers || []).forEach(function (pl) {
+      var oo = pl.layers && pl.layers.raw_config && pl.layers.raw_config.outlineOf;
+      if (oo) claimedOutlines[oo] = true;
+    });
+
     (bundle.projectLayers || []).forEach(function (pl) {
       if (!pl.layers) return;
       var praw = pl.layers.raw_config || {};
+      if (praw.outlineSplit && !claimedOutlines[pl.layers.slug]) {
+        praw = Object.assign({}, praw); delete praw.outlineSplit;   // copy — never mutate the fetched row
+        pl = Object.assign({}, pl, { layers: Object.assign({}, pl.layers, { raw_config: praw }) });
+      }
       var featLayerId = praw.outlineOf ? slugToId[praw.outlineOf] : (praw.instanceOf || pl.layers.id);   // outline layers draw their parent's features; instances (7/21) share their source layer's
       var entry = { sort: pl.sort_order, node: leafFromRow(pl.layers, registry, (bundle.featuresByLayer || {})[featLayerId]) };
       if (pl.group_id && groupNodes[pl.group_id]) groupNodes[pl.group_id].kids.push(entry);
@@ -343,6 +359,44 @@ var ConfigLoader = (function () {
     var l = await db.from("project_layers").select("*, layers(*)").eq("project_id", projectId);
     if (l.error) throw l.error;
     var bundle = { project: p.data, sections: s.data, groups: g.data, projectLayers: l.data, featuresByLayer: {} };
+
+    // ── A LOCKED MIRROR FOLLOWS ITS SOURCE'S STYLE (8/7) ───────────────────────────────
+    // Instance mode promises "shows its source layer exactly as the source presents it", but
+    // mirrorRow COPIES the source's style columns at add time — so it was really a frozen
+    // snapshot. Restyle the source and the mirror stayed on its old colour, with no way to
+    // change it either, because the style panel hides its controls when styleLocked (owner
+    // report 8/7: source turned blue, the mirror stayed orange). Resolve the presentation
+    // from the SOURCE row at load; the mirror keeps WHO it is, the source decides how it LOOKS.
+    var lockedSrcIds = {};
+    (l.data || []).forEach(function (pl) {
+      var rc = (pl.layers && pl.layers.raw_config) || {};
+      if (rc.styleLocked && rc.instanceOf) lockedSrcIds[rc.instanceOf] = 1;
+    });
+    var lockedIds = Object.keys(lockedSrcIds);
+    if (lockedIds.length) {
+      var srcRes = await db.from("layers").select("*").in("id", lockedIds);
+      if (!srcRes.error && srcRes.data && srcRes.data.length) {
+        var srcById = {};
+        srcRes.data.forEach(function (r) { srcById[r.id] = r; });
+        // identity stays the mirror's — its DOM ids collide with the source's otherwise
+        var IDENTITY = ["containerId", "className", "topLayerClass", "toggleElement", "groupId",
+                        "instanceOf", "styleLocked", "editable", "editorOnly", "overlayCols"];
+        var LOOKS = ["color", "type", "paint", "layout", "hover", "hover_paint", "click",
+                     "popup_style", "popup_prop", "panel_color"];
+        (l.data || []).forEach(function (pl) {
+          var row = pl.layers, rc = (row && row.raw_config) || {};
+          var src = (rc.styleLocked && rc.instanceOf) ? srcById[rc.instanceOf] : null;
+          if (!src) return;
+          LOOKS.forEach(function (k) { row[k] = src[k]; });
+          // styling also lives in raw_config (colour-by-column, categories, legend, labels),
+          // so take the source's wholesale, then put the mirror's own identity back on top
+          var merged = Object.assign({}, src.raw_config || {});
+          IDENTITY.forEach(function (k) { if (rc[k] !== undefined) merged[k] = rc[k]; else delete merged[k]; });
+          Object.keys(rc).forEach(function (k) { if (k.indexOf("_msFrom") === 0) merged[k] = rc[k]; });
+          row.raw_config = merged;
+        });
+      }
+    }
     // Pull features for drawn (geojson-supabase) layers so synthesize can build their source.
     // Off-by-default layers are SKIPPED here (fast first paint) — hydrateDeferredFeatures loads them post-boot.
     var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase" && pl.layers.enabled_by_default !== false; }).map(function (pl) { return pl.layers.id; });

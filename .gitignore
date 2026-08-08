@@ -1,5 +1,6 @@
 docs/
 secrets/
+FILES_DELETE_ANYTIME/
 test/mapbox-token.js
 map/js/mapbox-token.js
 map/ahm_twin/js/mapbox-token.js

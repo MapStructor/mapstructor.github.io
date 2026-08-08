@@ -347,6 +347,12 @@
     }
     rows.forEach(function (row) {
       var L = row.layers, ry = L && L.raw_config && L.raw_config.rasterYears;
+      // A feature-count threshold briefly lived here (8/7): "small tilesets scrub as vectors".
+      // WRONG CALL, reverted the same day — it silently refused the owner's own baked raster on
+      // an 8,695-feature world map ("Should be instantaneous with baked raster. Looks like there
+      // isn't one" — they even re-baked it, and this line threw the bake away). Whether a layer
+      // has an instant-scrub raster is decided where it is BAKED, not second-guessed at load: if
+      // a bake exists, the person who made it wanted it.
       if (ry && (ry.url || ry.levels) && ry.bounds) S.items.push({
         lid: L.id, cfg: ry, color: colorOf(L.id, ry), slug: slugOf(L.id, ry),
         // every level normalizes to a TILE LIST: whole-image levels = one tile with the full

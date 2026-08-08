@@ -75,7 +75,19 @@
     var bmRows = [];
     if (bmIds.length) {
       var r = await db.from('projects').select('id,name').in('id', bmIds);
-      if (!r.error && r.data) bmRows = bmIds.map(function (id) { return r.data.find(function (p) { return p.id === id; }); }).filter(Boolean);
+      var found = {};
+      if (!r.error && r.data) r.data.forEach(function (p0) { found[p0.id] = p0; });
+      // A19 (8/6) took LINK-shared maps out of the projects table policy so they can't be
+      // enumerated. A bookmark is a held link, so fetch those one at a time through the
+      // by-id function — otherwise someone else's link-shared map silently vanishes here.
+      var missing = bmIds.filter(function (id) { return !found[id]; });
+      for (var mi = 0; mi < missing.length; mi++) {
+        try {
+          var one = await db.rpc('ms_project_by_id', { p_id: missing[mi] });
+          if (!one.error && one.data && one.data.length) found[missing[mi]] = { id: one.data[0].id, name: one.data[0].name };
+        } catch (eOne) {}
+      }
+      bmRows = bmIds.map(function (id) { return found[id]; }).filter(Boolean);
     }
     // thumbnails come from the portal listing (8/6) — a starred map that isn't in the portal
     // simply shows the neutral tile, same as the dashboard's Bookmarks strip
@@ -302,19 +314,46 @@
       mins.forEach(function (r) { if (!r.error && r.data && r.data[0] && typeof r.data[0].sort_order === 'number') minSort = Math.min(minSort, r.data[0].sort_order); });
       var base = minSort - 1000;
 
-      // only bring containers that still hold something after the tick-list (8/6) — an empty
-      // section arriving from a partial add is confusing clutter
-      var usedGrp = {}, usedSec = {};
-      pls.forEach(function (x) { if (x.group_id) usedGrp[x.group_id] = 1; if (x.section_id) usedSec[x.section_id] = 1; });
-      var srcGroups = (g.data || []).filter(function (x) { return usedGrp[x.id]; });
-      srcGroups.forEach(function (x) { if (x.section_id) usedSec[x.section_id] = 1; });
-      var srcSections = (s.data || []).filter(function (x) { return usedSec[x.id]; });
-      g = { data: srcGroups }; s = { data: srcSections };
+      // ── READ THE SOURCE THE WAY THE SIDEBAR DOES (8/7) ──────────────────────────────────
+      // sort_order is ONE counter shared by sections, groups and layers: configLoader.synthesize
+      // merges all three into a single top-level list and sorts by it. So a map can say "this
+      // group sits under City" EITHER with a real section_id OR merely by sitting below City's
+      // header with no parent at all — the Ames State Map does both, as most hand-built maps do.
+      // Copying table-by-table (all sections, then all groups, then the layers) threw that away:
+      // headers that were only positional parents were never created, every group piled up
+      // straight after the FIRST section, and a layer inside such a group kept its SOURCE
+      // sort_order — landing a thousand slots from its own group, in among the target's own
+      // layers (owner report 8/7: "one item was in a different section … in between layers").
+      var flat = []
+        .concat((s.data || []).map(function (x) { return { sort: x.sort_order || 0, rank: 0, kind: 'section', row: x }; }))
+        .concat((g.data || []).map(function (x) { return { sort: x.sort_order || 0, rank: 1, kind: 'group', row: x }; }))
+        .concat((l.data || []).map(function (x) { return { sort: x.sort_order || 0, rank: 2, kind: 'layer', row: x }; }))
+        .sort(function (a, b) { return (a.sort - b.sort) || (a.rank - b.rank); });   // on a tie the header comes first
+
+      // which header does each thing appear under? its own section_id when it has one, otherwise
+      // the last section header above it in that order
+      var underSec = { grp: {}, lay: {} }, runSec = null;
+      flat.forEach(function (x) {
+        if (x.kind === 'section') { runSec = x.row.id; return; }
+        if (x.kind === 'group') { underSec.grp[x.row.id] = x.row.section_id || runSec || null; return; }
+        if (x.row.layers) underSec.lay[x.row.layers.id] = x.row.section_id || (x.row.group_id ? null : runSec) || null;
+      });
+
+      // bring only the ticked layers, plus the containers they actually live in — an empty
+      // section arriving from a partial add is confusing clutter (8/6)
+      var keepLay = {}, keepGrp = {}, keepSec = {};
+      pls.forEach(function (x) {
+        keepLay[x.layers.id] = 1;
+        if (x.group_id) { keepGrp[x.group_id] = 1; return; }   // its group carries the header
+        var hdr = underSec.lay[x.layers.id];
+        if (hdr) keepSec[hdr] = 1;
+      });
+      Object.keys(keepGrp).forEach(function (gid) { if (underSec.grp[gid]) keepSec[underSec.grp[gid]] = 1; });
 
       // VERBATIM (8/6): the map arrives exactly as it is — its own sections and groups, and its
       // loose layers staying loose at the top level. No invented wrapper section; a plain caption
       // above the block says where it came from (editing mode only — see editing.js portalNotes).
-      var maps = { secMap: {}, grpMap: {}, layerIdMap: {}, slugMap: {} };
+      var maps = { secMap: {}, grpMap: {}, layerIdMap: {}, slugMap: {}, grpSlug: {} };
       var sort = base;
       // Everything this add creates, so a failure halfway can be UNDONE. Before this, a write
       // that died mid-loop left sections with nothing in them and a half-imported map that
@@ -325,37 +364,68 @@
       // because the engine keys its tree nodes by slug: reusing the source's slug made a second
       // add collide with the first one's sections, which is what looked like merging.
       var firstAnchor = null;   // the slug of this block's first top-level thing — the caption sits above it
-      for (var i = 0; i < (s.data || []).length; i++) {
-        var srcSec = s.data[i];
-        var ns = stripRow(srcSec); ns.project_id = projectId; ns.sort_order = sort++;
-        ns.slug = (srcSec.slug || 'sec') + '-p' + Math.random().toString(36).slice(2, 7);
-        ns.raw_config = Object.assign({}, ns.raw_config || {}, { _msFromMap: srcId, _msFromSection: srcSec.id });
-        var rs = await db.from('layer_sections').insert(ns).select('id').single();
-        if (rs.error) throw new Error('section "' + (srcSec.name || '') + '": ' + rs.error.message);
-        maps.secMap[srcSec.id] = rs.data.id; made.sections.push(rs.data.id);
-        if (!firstAnchor) firstAnchor = ns.slug;
-      }
-      for (var j = 0; j < (g.data || []).length; j++) {
-        var srcGrp = g.data[j];
-        var ng = stripRow(srcGrp); ng.project_id = projectId;
-        ng.section_id = srcGrp.section_id ? (maps.secMap[srcGrp.section_id] || null) : null;
-        if (!ng.section_id) ng.sort_order = sort++;   // a top-level group keeps its place in the block
-        ng.slug = (srcGrp.slug || 'grp') + '-p' + Math.random().toString(36).slice(2, 7);   // fresh: node ids are slugs
-        ng.raw_config = Object.assign({}, ng.raw_config || {}, { _msFromMap: srcId, _msFromGroup: srcGrp.id });
-        var rg = await db.from('layer_groups').insert(ng).select('id').single();
-        if (rg.error) throw new Error('group "' + (srcGrp.name || '') + '": ' + rg.error.message);
-        maps.grpMap[srcGrp.id] = rg.data.id; made.groups.push(rg.data.id);
-        if (!firstAnchor && !ng.section_id) firstAnchor = ng.slug;
-      }
+      var added = [], feats = 0, firstSlug = null, done = 0;
 
-      // layers, each by its chosen mode
-      var added = [], feats = 0, firstSlug = null;
-      for (var k = 0; k < pls.length; k++) {
-        var pl = pls[k], L = pl.layers, mode = modes[L.id] || 'linked';
-        note('Adding ' + (k + 1) + '/' + pls.length + ' — ' + (L.name || 'layer'));
-        // a loose layer stays loose, but must land at the TOP of the target's list, not wherever
-        // its source sort_order happens to point
-        if (!pl.section_id && !pl.group_id) pl = Object.assign({}, pl, { sort_order: sort++ });
+      // ONE ordered pass, ONE counter: order in = order out. Every row this block creates is
+      // renumbered into the block's own range, so nothing can interleave with the layers the
+      // target already had, whatever the source's numbers happened to be.
+      for (var i = 0; i < flat.length; i++) {
+        var it = flat[i];
+
+        if (it.kind === 'section') {
+          if (!keepSec[it.row.id]) continue;
+          var srcSec = it.row;
+          var ns = stripRow(srcSec); ns.project_id = projectId; ns.sort_order = sort++;
+          ns.slug = (srcSec.slug || 'sec') + '-p' + Math.random().toString(36).slice(2, 7);
+          // DOM identity must follow the NEW slug. These ids are what the engine renders children
+          // into and what the caret toggles (generateLayers.js:131-135); copying the source's ids
+          // produced DUPLICATE element ids, so a second block's children rendered inside the FIRST
+          // block and its collapse arrow toggled the wrong thing (owner report 8/7).
+          ns.raw_config = Object.assign({}, ns.raw_config || {}, {
+            containerId: 'cont-' + ns.slug,
+            caretId: 'caret-' + ns.slug,
+            itemSelector: '.' + ns.slug + '_item',
+            _msFromMap: srcId, _msFromSection: srcSec.id
+          });
+          var rs = await db.from('layer_sections').insert(ns).select('id').single();
+          if (rs.error) throw new Error('section "' + (srcSec.name || '') + '": ' + rs.error.message);
+          maps.secMap[srcSec.id] = rs.data.id; made.sections.push(rs.data.id);
+          if (!firstAnchor) firstAnchor = ns.slug;
+          continue;
+        }
+
+        if (it.kind === 'group') {
+          if (!keepGrp[it.row.id]) continue;
+          var srcGrp = it.row;
+          var ng = stripRow(srcGrp); ng.project_id = projectId; ng.sort_order = sort++;
+          // a group that only LOOKED like it sat under a header now really does: that header came
+          // along just above it, and a real link survives later dragging and re-sorting
+          var gHdr = underSec.grp[srcGrp.id];
+          ng.section_id = gHdr ? (maps.secMap[gHdr] || null) : null;
+          ng.slug = (srcGrp.slug || 'grp') + '-p' + Math.random().toString(36).slice(2, 7);   // fresh: node ids are slugs
+          ng.raw_config = Object.assign({}, ng.raw_config || {}, {
+            containerId: 'cont-' + ng.slug,
+            caretId: 'caret-' + ng.slug,
+            itemSelector: '.' + ng.slug + '_item',   // matches `${topLayerClass}_item` on its rows
+            _msFromMap: srcId, _msFromGroup: srcGrp.id
+          });
+          var rg = await db.from('layer_groups').insert(ng).select('id').single();
+          if (rg.error) throw new Error('group "' + (srcGrp.name || '') + '": ' + rg.error.message);
+          maps.grpMap[srcGrp.id] = rg.data.id; maps.grpSlug[srcGrp.id] = ng.slug; made.groups.push(rg.data.id);
+          if (!firstAnchor) firstAnchor = ng.slug;
+          continue;
+        }
+
+        var pl = it.row, L = pl.layers;
+        if (!L || !keepLay[L.id]) continue;
+        var mode = modes[L.id] || 'linked';
+        note('Adding ' + (++done) + '/' + pls.length + ' — ' + (L.name || 'layer'));
+        // renumber into this block, and point the row at the header it appeared under: a grouped
+        // layer follows its GROUP's header, anything else its own
+        pl = Object.assign({}, pl, {
+          sort_order: sort++,
+          section_id: pl.group_id ? (underSec.grp[pl.group_id] || null) : (underSec.lay[L.id] || null)
+        });
         if (mode === 'all') {
           feats += await MSCopyEngine.copyLayerInto(pl, projectId, maps, me.id);
           added.push({ lid: maps.layerIdMap[L.id], all: true });
@@ -363,6 +433,12 @@
           if (!firstSlug && maps.slugMap[L.slug]) firstSlug = maps.slugMap[L.slug];
         } else {
           var row = mirrorRow(L, srcId, mode === 'instance');
+          // a row renders as `<topLayerClass>_item`, which is exactly what the group's
+          // itemSelector looks for — point it at the NEW group, or collapse/expand does nothing
+          if (pl.group_id && maps.grpSlug[pl.group_id]) {
+            row.raw_config.topLayerClass = maps.grpSlug[pl.group_id];
+            row.raw_config.groupId = maps.grpSlug[pl.group_id];
+          }
           var ins = await db.from('layers').insert(row).select('id').single();
           if (ins.error) throw new Error('layer "' + (L.name || '') + '": ' + ins.error.message);
           maps.layerIdMap[L.id] = ins.data.id; maps.slugMap[L.slug] = row.slug; made.layers.push(ins.data.id);
@@ -404,6 +480,8 @@
         var rc2 = (cur.data && cur.data.raw_config) || {};
         rc2._msFromMap = srcId;
         rc2._msFromLayer = oL.id;   // same stamp the mirrors carry, so re-adds are spotted here too
+        var srcGid = pls[m].group_id;
+        if (srcGid && maps.grpSlug[srcGid]) { rc2.topLayerClass = maps.grpSlug[srcGid]; rc2.groupId = maps.grpSlug[srcGid]; }
         if (rc2.instanceOf && maps.layerIdMap[rc2.instanceOf]) rc2.instanceOf = maps.layerIdMap[rc2.instanceOf];
         if (rc2.outlineOf && maps.slugMap[rc2.outlineOf]) rc2.outlineOf = maps.slugMap[rc2.outlineOf];
         await db.from('layers').update({ raw_config: rc2 }).eq('id', newLid);

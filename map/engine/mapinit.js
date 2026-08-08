@@ -251,6 +251,20 @@ function changeDate(unixDate) {
 // loading — tiles always contain every feature; only WHERE the hide happens moves (GPU paint
 // stage instead of worker re-layout).
 var _dpBase = {};   // "<layerId>|<paintKey>" → the layer's own paint value, saved at first wrap
+// Layers whose date FILTER was dropped for the current drag. The paint case can only HIDE —
+// a feature excluded by the filter is not rendered at all, so no opacity can show it. With the
+// filter frozen at the drag-start date, dragging BACKWARD animated (paint hides live) while
+// dragging FORWARD showed nothing until mouse-up, when everything new popped in at once
+// ("pay attention to what happens when you release, and how Santa Fe appears" — owner 8/7,
+// after a full day of this reading as "animation is not working"). Dropping the filter costs
+// one re-layout at the first tick of a drag; the per-tick work stays pure paint. changeDate
+// rebuilds every filter at release, so nothing here needs restoring by hand.
+var _dpFilterDropped = {};
+function _dpDropFilter(m, id) {
+  if (_dpFilterDropped[id]) return;
+  _dpFilterDropped[id] = 1;
+  try { if (m.getLayer(id)) m.setFilter(id, null); } catch (e) {}
+}
 var _DP_KEYS = { fill: ["fill-opacity"], line: ["line-opacity"], circle: ["circle-opacity", "circle-stroke-opacity"] };
 function _dpTargets() {
   var t = [];
@@ -271,6 +285,7 @@ function paintDate(unixDate) {
   _dpTargets().forEach(function (tg) {
     var m = tg[0], id = tg[1];
     if (!m || !m.getLayer(id)) return;
+    _dpDropFilter(m, id);   // paint owns visibility for the whole drag — both directions
     _DP_KEYS[tg[2]].forEach(function (key) {
       var ck = id + "|" + key;
       if (!(ck in _dpBase)) {
@@ -291,6 +306,7 @@ function endDatePaint() {
     });
   });
   _dpBase = {};
+  _dpFilterDropped = {};   // changeDate (called right after) rebuilds every filter at the release date
 }
 
 /////////////////////////////

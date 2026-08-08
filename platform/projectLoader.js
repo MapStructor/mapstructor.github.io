@@ -367,6 +367,29 @@ window.msApplyHeaderFeature = function (visible, projectName) {
         return new Promise(function (res) { setTimeout(res, 150); });
       });
       await Promise.race([swReady, new Promise(function (res) { setTimeout(res, 3000); })]);
+      // ── HARD REFRESH LEAVES THE WORKER BYPASSED (8/7) ──────────────────────────────────
+      // Ctrl+Shift+R loads the page with service-worker bypass for the page's WHOLE LIFETIME:
+      // registration succeeds, `ready` resolves, claim() runs — and controller stays null, so
+      // every pmt/ tile request goes to the raw file server and 404s. The map then draws every
+      // layer EXCEPT the tiled ones, silently ("vectors not even appearing", owner 8/7 — after
+      // being told to hard-refresh for the cache-buster, so we caused the very state we're
+      // healing). Measured: normal load tile=200/590 features rendered; bypassed load tile=404/0.
+      // One ordinary reload restores control, so do it ourselves, once, before anything renders.
+      // The sessionStorage guard stops a loop where control never arrives (private mode, SW off):
+      // in that case fall through and render what we can rather than reload forever.
+      try {
+        if (!navigator.serviceWorker.controller) {
+          if (!sessionStorage.getItem("ms-sw-heal")) {
+            sessionStorage.setItem("ms-sw-heal", "1");
+            location.reload();
+            await new Promise(function () {});   // stop boot — the reload owns this page now
+          } else {
+            console.warn("MapStructor: service worker not controlling this page — tiled layers may be blank this load.");
+          }
+        } else {
+          sessionStorage.removeItem("ms-sw-heal");
+        }
+      } catch (eHeal) {}
     }
   } catch (eSw) {}
 
