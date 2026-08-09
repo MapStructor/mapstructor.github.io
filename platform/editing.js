@@ -711,13 +711,38 @@
   var _engineEditIds = {};      // slug → [feature_id,…] currently pulled into draw (excluded from the engine render)
   var _engineBaseFilter = {};   // layerId → its filter before exclusion (so it can be restored)
   var _engineEditWired = {};    // slug → true once click handlers are attached
-  var _engineWasMulti = {};     // drawId → true if the DB geom was a MultiPolygon — mapbox-gl-draw renders/edits Polygons, not MultiPolygons (so an unconverted building vanishes on click), convert in + convert back on save
+  var _engineWasMulti = {};     // drawId → true if the DB geom was a MultiPolygon
   var _engineOrigMulti = {};    // drawId → the original MultiPolygon, so extra parts survive a save
-  function toDrawPolygon(geom) { return (geom && geom.type === 'MultiPolygon') ? { type: 'Polygon', coordinates: (geom.coordinates && geom.coordinates[0]) || [] } : geom; }
+  var _engineMultiPartIx = {};  // drawId → which part is in draw during a stage-2 shape edit
+  var _lastMapClickPt = null;   // lngLat of the latest mousedown — picks the CLICKED part at stage-2 entry
+  // STAGE 1 keeps the FULL MultiPolygon in draw — gl-draw renders every part (verified 8/8; the
+  // day-one "draw needs a Polygon" conversion showed only part 0 while the !in filter hid ALL
+  // parts from the tiles, so clicking a whole-Multi country VANISHED everything but one piece).
+  // Vertex editing still needs a Polygon: stage-2 entry swaps in the CLICKED part (multiPartForEdit),
+  // and toDbGeom folds the edit back into its slot.
+  function multiPartForEdit(drawId, lngLat) {
+    var f = null; try { f = draw.get(drawId); } catch (e) {}
+    if (!f || !f.geometry || f.geometry.type !== 'MultiPolygon') return;
+    var coords = f.geometry.coordinates || [];
+    var ix = 0;
+    try {
+      if (lngLat && window.turf) {
+        var pt = turf.point([lngLat.lng, lngLat.lat]);
+        for (var i = 0; i < coords.length; i++) if (turf.booleanPointInPolygon(pt, turf.polygon(coords[i]))) { ix = i; break; }
+      }
+    } catch (e) {}
+    _engineMultiPartIx[drawId] = ix;
+    var part = { type: 'Polygon', coordinates: coords[ix] || [] };
+    try { draw.add({ type: 'Feature', id: drawId, geometry: part, properties: f.properties || {} }); } catch (e) {}
+    _geomSnap[drawId] = JSON.parse(JSON.stringify(part));   // fresh baseline — nothing user-edited yet
+  }
   function toDbGeom(drawId, geom) {
-    if (!_engineWasMulti[drawId] || !geom || geom.type !== 'Polygon') return geom;
-    var rest = ((_engineOrigMulti[drawId] || {}).coordinates || []).slice(1);   // keep any extra polygon parts the user didn't edit
-    return { type: 'MultiPolygon', coordinates: [geom.coordinates].concat(rest) };
+    if (!_engineWasMulti[drawId] || !geom || geom.type !== 'Polygon') return geom;   // an unconverted Multi passes through whole
+    var orig = ((_engineOrigMulti[drawId] || {}).coordinates || []).slice();
+    if (!orig.length) return { type: 'MultiPolygon', coordinates: [geom.coordinates] };
+    var ix = _engineMultiPartIx[drawId] || 0; if (ix >= orig.length) ix = 0;
+    orig[ix] = geom.coordinates;   // the edited part lands back in its own slot; the rest untouched
+    return { type: 'MultiPolygon', coordinates: orig };
   }
   function isEngineEditable(node) {
     if (!node || !node.id) return false;
@@ -1027,7 +1052,7 @@
     }
     var origGeom = { type: rowGeom.type, coordinates: rowGeom.coordinates };
     if (origGeom.type === 'MultiPolygon') { _engineWasMulti[drawId] = true; _engineOrigMulti[drawId] = origGeom; }
-    var geom = toDrawPolygon(origGeom);   // mapbox-gl-draw needs a Polygon
+    var geom = origGeom;   // the FULL geometry — every part of a Multi renders while armed (stage 2 swaps in the clicked part)
     var rowFid = foldedEdit ? row.feature_id : fid;   // folded: the DELTA row's id (all writers target it)
     featureToDb[drawId] = rowFid; featureLayer[drawId] = foldedEdit ? row.layer_id : row[EB.layerCol]; _engineEditNode[drawId] = node;
     featureMeta[drawId] = { label: row.label || '', notes: row.description || '', start: row.start_date ? String(row.start_date).slice(0, 10) : '', end: row.end_date ? String(row.end_date).slice(0, 10) : '', pageid: row.content_id != null ? String(row.content_id) : '', image_url: row.image_url || '', custom: row.custom_fields || null };
@@ -1103,7 +1128,7 @@
       var ix = list.indexOf(fid); if (ix < 0) ix = list.indexOf(Number(fid)); if (ix < 0) ix = list.indexOf(String(fid));
       if (ix > -1) list.splice(ix, 1);
       delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId];
-      delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId];
+      delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId]; delete _engineMultiPartIx[drawId];
       try { _armedSet = (_armedSet || []).filter(function (x) { return x !== drawId; }); updateArmedHl(); } catch (e3) {}
       // the edit-hover chrome tracks mouseleave, but a feature deleted OUT FROM UNDER the
       // pointer never emits one — its hover halo would float at every date (8/8)
@@ -1226,7 +1251,7 @@
     }
     try { if (draw && draw.get(drawId)) draw.delete(drawId); } catch (e) {}
     // fid stays in _engineEditIds → the tile copy remains hidden; the overlay shows the saved geometry instead
-    delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId]; delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId];
+    delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId]; delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId]; delete _engineMultiPartIx[drawId];
     // the feature is no longer armed — clear its ring, or a stale _armedSet entry makes
     // updateArmedHl feed draw.get() nulls and the ring freezes on screen at every date (8/8)
     try { _armedSet = (_armedSet || []).filter(function (x) { return x !== drawId; }); updateArmedHl(); } catch (eAh) {}
@@ -2097,12 +2122,12 @@
     if (typeof layers === 'undefined') return;
     if (idsReady) { try { await idsReady; } catch (e) {} }
     if (!loaded) { importStatus('Still loading — try again'); return; }
-    // MapboxDraw can't render Multi* geometries — explode them into single pieces so they show + edit.
+    // Multi-line/point geometries explode into single pieces; MultiPolygons stay whole (see explodeMulti).
     var groups = { circle: [], line: [], fill: [] };
     (fc.features || []).forEach(function (f) {
       explodeMulti(f).forEach(function (sf) {
         var t = sf.geometry && sf.geometry.type;
-        var bt = t === 'Point' ? 'circle' : t === 'LineString' ? 'line' : t === 'Polygon' ? 'fill' : null;
+        var bt = t === 'Point' ? 'circle' : t === 'LineString' ? 'line' : (t === 'Polygon' || t === 'MultiPolygon') ? 'fill' : null;
         if (bt) groups[bt].push(sf);
       });
     });
@@ -2355,6 +2380,31 @@
             }
             if (!feats2.length) continue;
             await MSTileGen.convertLayer(db, projectId, lid2, feats2, { name: bn.label, geomKind: bn.type, status: importStatus });
+            // DATES-DURING-CONVERT (8/8): this convert read its rows back BEFORE baking, and the
+            // natural first minute with a new layer is "import, then set the date columns" — which
+            // lands the dates WHILE the bake runs, shipping tiles whose DayStart is 0 (visible at
+            // every slider date; CShapes full-file gate caught it by pixels). Time stamps can't
+            // detect it (a stale bake FINISHES after the apply), so compare CONTENT: if the dated-
+            // row count changed while we baked, re-read and re-bake. Twice at most; then be loud.
+            for (var rb8 = 0; rb8 < 2; rb8++) {
+              var datedRead8 = 0;
+              feats2.forEach(function (f8) { if (f8.properties && f8.properties.DayStart) datedRead8++; });
+              var cq8 = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid2).not('start_date', 'is', null);
+              if (((cq8 && cq8.count) || 0) === datedRead8) break;
+              importStatus('Dates arrived while the tiles baked — re-baking "' + (bn.label || 'layer') + '" with them…');
+              var did8 = false;
+              try { did8 = !!(await rebakeLayerTiles(lid2, 'Re-baking')); } catch (e8) {}
+              if (!did8) { importStatus('Could not re-bake automatically — use the layer panel’s Re-bake button to bake the new dates in.'); break; }
+              feats2 = [];   // refresh the read-back so the next comparison reflects this bake
+              var from8 = 0;
+              for (;;) {
+                var fr8 = await db.from('features').select('feature_id, start_date').eq('layer_id', lid2).order('feature_id').range(from8, from8 + 999);
+                if (fr8.error || !fr8.data || !fr8.data.length) break;
+                fr8.data.forEach(function (f8) { feats2.push({ properties: { DayStart: f8.start_date ? 1 : 0 } }); });
+                if (fr8.data.length < 1000) break;
+                from8 += 1000;
+              }
+            }
             importStatus('"' + (bn.label || 'layer') + '" now renders from tiles (from the next load).');
           }
         }
@@ -2409,20 +2459,38 @@
     // DB. That was the 8/8 bug: "Dates applied" said done, the map ignored the timeline until
     // refresh. ~10 KB per 500-row chunk — noise even on 50k imports.
     var insertedIds = [];
+    // Batches are capped by BYTES as well as rows — 500 country-sized MultiPolygons is ~13 MB of
+    // JSON in one statement while 500 points is ~50 KB, and the statement budget only sees bytes
+    // (8/8, CShapes whole-record import: measured 1.36 MB ≈ 1.2 s as the owner). Geometry size is
+    // estimated once per feature, up front.
+    var BYTE_CAP = 1200000;
+    var szOf = feats.map(function (f) { try { return JSON.stringify(f.geometry).length + 300; } catch (e) { return 5000; } });
+    // A timeout no longer kills the import: halve to a FLOOR OF ONE row (25 stranded a CShapes
+    // import at 125/710 — the failing window inserted in 337 ms minutes later; the timeouts were
+    // a transient server-sick patch, not the data), and at one row retry with a pause a few times
+    // before giving up LOUDLY, naming the feature that would not save.
+    var soloRetries = 0, okStreak = 0;
     try {
       var i = 0;
       while (i < feats.length) {
-        var take = Math.min(feats.length - i, BATCH);
+        var take = 0, bsum = 0;
+        while (take < Math.min(feats.length - i, BATCH) && (take === 0 || bsum + szOf[i + take] <= BYTE_CAP)) { bsum += szOf[i + take]; take++; }
         var rows = feats.slice(i, i + take).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null, custom_fields: importCustomFields(f.properties) }; });
         var r = await db.from('features_data').insert(rows).select('feature_id');
         if (r.error) {
-          // too big a bite for one statement → take a smaller one and retry the SAME rows
-          if (/timeout|canceling statement/i.test(r.error.message || '') && take > 25) { BATCH = Math.max(25, Math.floor(BATCH / 2)); continue; }
-          throw new Error('feature insert: ' + r.error.message);
+          okStreak = 0;
+          if (/timeout|canceling statement/i.test(r.error.message || '')) {
+            if (take > 1) { BATCH = Math.max(1, Math.floor(take / 2)); continue; }   // smaller bite, SAME rows
+            if (++soloRetries <= 3) { importStatus('Database is slow — retrying…'); await new Promise(function (res) { setTimeout(res, 2500 * soloRetries); }); continue; }
+          }
+          throw new Error('feature insert: ' + r.error.message + ' — stopped at "' + (rows[0].label || 'feature ' + (i + 1)) + '" (' + nfmt(i) + ' of ' + nfmt(feats.length) + ' saved)');
         }
+        soloRetries = 0;
         i += rows.length;
         (r.data || []).forEach(function (row) { insertedIds.push(row.feature_id); });
-        if (feats.length > BATCH) importStatus('Saving features… ' + nfmt(i) + '/' + nfmt(feats.length));   // uncapped imports can be 100k+ rows — show progress, not silence
+        // recover the batch size after a transient dip so a 100k-row import doesn't crawl home
+        if (++okStreak >= 3 && BATCH < 500) { BATCH = Math.min(500, BATCH * 2); okStreak = 0; }
+        if (feats.length > take) importStatus('Saving features… ' + nfmt(i) + '/' + nfmt(feats.length));   // uncapped imports can be 100k+ rows — show progress, not silence
       }
     } finally { window.__msImportSaving--; }
     return insertedIds;
@@ -2474,10 +2542,15 @@
   function collectImportCoords(g, fn) { if (!g) return; if (g.type === 'GeometryCollection') (g.geometries || []).forEach(function (s) { collectImportCoords(s, fn); }); else if (g.coordinates) walkImportCoords(g.coordinates, fn); }
   function walkImportCoords(c, fn) { if (!c || !c.length) return; if (typeof c[0] === 'number') fn(c[0], c[1]); else c.forEach(function (x) { walkImportCoords(x, fn); }); }
   // Split a Multi* (or GeometryCollection) feature into single-geometry features (MapboxDraw needs singles).
+  // EXCEPT MultiPolygon (8/8): one source record stays ONE feature. Splitting turned CShapes' 710
+  // country-eras into 8,695 island rows — 12× the rows/storage/apply-dates, a label on every island,
+  // and "click Russia, select one island". The whole chain handles MultiPolygon whole now: the
+  // engine renders it, arm-to-edit keeps the whole Multi (stage 2 edits one part via multiPartForEdit), labels anchor the
+  // biggest part, and the raster/vector tilers walk it natively. MultiLineString/MultiPoint still
+  // split — their arm path has no such converter.
   function explodeMulti(f) {
     var g = f && f.geometry; if (!g) return [];
     function feat(geom) { return { type: 'Feature', properties: f.properties, geometry: geom }; }
-    if (g.type === 'MultiPolygon') return (g.coordinates || []).map(function (c) { return feat({ type: 'Polygon', coordinates: c }); });
     if (g.type === 'MultiLineString') return (g.coordinates || []).map(function (c) { return feat({ type: 'LineString', coordinates: c }); });
     if (g.type === 'MultiPoint') return (g.coordinates || []).map(function (c) { return feat({ type: 'Point', coordinates: c }); });
     if (g.type === 'GeometryCollection') return (g.geometries || []).reduce(function (a, sub) { return a.concat(explodeMulti(feat(sub))); }, []);
@@ -4032,6 +4105,11 @@
     }
     draw = new MapboxDraw({ displayControlsDefault: false, userProperties: true, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
     window._msDraw = draw;   // engine helpers (Zoom to Layers bounds) read the live drawn features here — guarded there, so its absence never breaks the engine
+    // mousedown precedes draw's mouseup-driven selectionchange, so the stage-2 promotion always
+    // knows WHERE the click landed (multiPartForEdit picks the clicked part of a Multi by it)
+    [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (mDn) {
+      if (mDn) try { mDn.on('mousedown', function (eDn) { _lastMapClickPt = eDn.lngLat; }); } catch (eW) {}
+    });
     beforeMap.addControl(draw, 'top-left');   // left side, clear of the right swipe map (offset past the sidebar in CSS)
     beforeMap.on('draw.render', measureRender);   // live distance while measuring
     beforeMap.on('draw.render', scheduleMirrorSync);   // mirror the MapboxDraw contents onto the right swipe side (both-sides display)
@@ -4267,6 +4345,7 @@
             } else {
               if (_armedSet.indexOf(did) > -1) {   // stage 2: geometry editable (selection lives in draw on the left; the mirror shows it)
                 _editingDraw = did; _armedSet = []; setArmedHl(null);
+                multiPartForEdit(did, e.lngLat);   // a Multi swaps to just the CLICKED part for vertex editing
                 try { draw.changeMode('simple_select', { featureIds: [did] }); } catch (err) {}
               } else {                              // stage 1: highlight + panel, geometry NOT editable
                 _editingDraw = null; _armedSet = [did];
@@ -4408,7 +4487,12 @@
     var p = { color: (node && node.iconColor) || '#3bb2d0' };
     var paint = node && node.paint; if (!paint) return p;
     var op = paintOpacity(paint); if (op != null) p.opacity = op;
-    var ol = paintOutline(paint); if (ol != null) p.outline = ol;
+    var ol = paintOutline(paint);
+    // the runtime paint's outline is BLANKED to transparent whenever a -stroke- companion owns the
+    // border (any width ≠ 1) — pass the companion's real colour through, or every pulled-in draw
+    // copy renders borderless (the 8/8 click-vanish's "just the border disappears" half)
+    if (ol != null && String(ol).replace(/\s+/g, '') === 'rgba(0,0,0,0)' && node && node.stroke && node.stroke['line-color']) ol = node.stroke['line-color'];
+    if (ol != null) p.outline = ol;
     if (paint['line-opacity'] != null) p.strokeopacity = paint['line-opacity'];
     var w = paintWidth(paint); if (w != null) p.strokewidth = w;
     if (paint['circle-radius'] != null) p.radius = paint['circle-radius'];
@@ -5057,7 +5141,9 @@
       try {
         if (m.getSource('editor-armed-hl')) return;
         m.addSource('editor-armed-hl', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-        m.addLayer({ id: 'editor-armed-hl-fill', type: 'fill', source: 'editor-armed-hl', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#ffd54d', 'fill-opacity': 0.45 } });
+        // 0.45 buried a clicked COUNTRY under yellow (stacked with the 0.18 selection wash it read
+        // as "the feature disappeared", 8/8) — the ORANGE RING is the armed signal; the wash is a hint
+        m.addLayer({ id: 'editor-armed-hl-fill', type: 'fill', source: 'editor-armed-hl', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#ffd54d', 'fill-opacity': 0.12 } });
         m.addLayer({ id: 'editor-armed-hl-line', type: 'line', source: 'editor-armed-hl', paint: { 'line-color': '#ce5c00', 'line-width': 2.5 } });
         m.addLayer({ id: 'editor-armed-hl-pt', type: 'circle', source: 'editor-armed-hl', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#ffd54d', 'circle-opacity': 0.7, 'circle-stroke-color': '#ce5c00', 'circle-stroke-width': 2 } });
       } catch (e) {}
@@ -5364,6 +5450,7 @@
       // stage 2: plain click on the already-highlighted feature → geometry becomes editable
       _editingDraw = id; _armedSet = [];
       setArmedHl(null);
+      multiPartForEdit(id, _lastMapClickPt);   // a Multi swaps to just the CLICKED part for vertex editing
       deferDrawSel([id]);
       showFeaturePanel(id);   // idempotent — also restores the panel when entering from a multi-select set
       updateGroupHl(id);      // the company stays lit while one piece is being edited
@@ -5754,14 +5841,31 @@
           } catch (e) {}
         });
         var tcols = Object.keys(tkeys).sort();
-        fillLabelFieldSelect(node, tcols);
+        // Label pickers also offer the DB's custom_fields columns (60-row sample, like the dates
+        // section) — skinny tiles only carry what a past bake wrote, so a source column like
+        // CShapes' cntry_name was UNPICKABLE right when picking it is what triggers the re-bake
+        // that bakes it in (8/8). The popup label reads the DB by id, so DB columns are always
+        // valid there; groupBy stays tile-columns-only (group anchors key on tile properties).
+        var lblCols = tcols.slice();
+        try {
+          var lid5 = slugToLayerDbId[node.id];
+          if (lid5) {
+            var r5 = await db.from('features').select('custom_fields').eq('layer_id', lid5).limit(60);
+            (r5.data || []).forEach(function (row5) {
+              var cf5 = row5.custom_fields;
+              if (cf5 && typeof cf5 === 'object') Object.keys(cf5).forEach(function (k5) { if (lblCols.indexOf(k5) < 0) lblCols.push(k5); });
+            });
+            lblCols = orderAttrKeys(lblCols, 40);
+          }
+        } catch (e5) {}
+        fillLabelFieldSelect(node, lblCols);
         // Map labels on TILESETS: every geometry (8/8 — the old line-only gate was never intended;
         // owner: "labels disabled for everything but lines?? Definitely NOT intended"). The whole
         // chain below this gate has been geometry-agnostic since 8/7: labels.js puts a symbol layer
         // over the vector source (lines via group anchors, points/polygons per feature), addLayers
         // adds it in the viewer, changeDate date-filters `-label-`, and onMapLabelsChange re-bakes
         // when the picked column isn't in the tiles. Only this UI gate still hid the controls.
-        fillMapLabelControls(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
+        fillMapLabelControls(node, lblCols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
         // "Treat as one" works on tilesets too: members come from the loaded tiles (which carry the baked columns)
         fillGroupBySelect(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
         // color-by for tileset LINES: same control, values later fetched from server counts
@@ -6722,6 +6826,31 @@
       return 0;
     }
     setStatus('Dates applied');
+    // DRAW → ENGINE RECLASSIFY (8/8). loadFeatures classifies small UNDATED layers into MapboxDraw,
+    // and draw copies apply no timeline filter — so a layer imported small-and-undated that gets its
+    // dates HERE stayed slider-immune for the rest of the session (CShapes 710 ≤ MAX_DRAW: fills at
+    // every date, nothing animating until a reload — the mini gate caught it by pixels). The 7/21
+    // rule is "dated layers render via the ENGINE"; re-running the classifier enforces it now that
+    // the dates exist, and refreshLayers restores the engine copies' visibility from the checkbox.
+    if (node && _drawLayerSlugs[node.id]) {
+      try {
+        await loadFeatures();
+        // Un-hide the engine copies hideDrawnEngineLayers turned off while the layer lived in
+        // draw — directly, because refreshLayers keys off a checkbox element that import-made
+        // rows don't always carry. Respect the sidebar box when it does exist.
+        var vis8 = 'visible';
+        try { var cb8 = document.getElementById(node.toggleElement || node.id); if (cb8 && !cb8.checked) vis8 = 'none'; } catch (eCb) {}
+        [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr8) {
+          var m8 = pr8[1]; if (!m8) return;
+          [node.id + '-' + pr8[0], node.id + '-stroke-' + pr8[0], node.id + '-highlighted-' + pr8[0]].forEach(function (id8) {
+            try { if (m8.getLayer(id8)) m8.setLayoutProperty(id8, 'visibility', vis8); } catch (eV) {}
+          });
+        });
+        var d8 = (typeof editorCurrentDate === 'function') ? editorCurrentDate() : null;
+        if (d8 && typeof changeDate === 'function') changeDate(d8);   // apply the current slider date to the freshly-shown engine copies
+        window.__msDrawReclass = { slug: node.id, stillDraw: !!_drawLayerSlugs[node.id], vis: vis8, day: d8 };   // read-only breadcrumb (harness + console diagnosis)
+      } catch (eRc) { console.warn('draw→engine reclassify after dates failed', eRc); window.__msDrawReclass = { slug: node.id, err: String(eRc).slice(0, 120) }; }
+    } else if (node) window.__msDrawReclass = { slug: node.id, skipped: 'not in draw' };
     // AUTO-REBAKE (7/20): a vector-TILE layer renders from its tiles, and the slider filters the tiles'
     // BAKED days — so new dates don't take effect until the tiles re-bake. Do that automatically for
     // THIS layer (background), so the user never has to Publish just to make the timeline filter. Drawn
@@ -8471,7 +8600,7 @@
       if (m.getSource('editor-attr-hl-src')) return;
       try {
         m.addSource('editor-attr-hl-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-        m.addLayer({ id: 'editor-attr-hl-fill', type: 'fill', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#ffd400', 'fill-opacity': 0.3 } });
+        m.addLayer({ id: 'editor-attr-hl-fill', type: 'fill', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#ffd400', 'fill-opacity': 0.18 } });   // light — the feature's own colour must stay recognisable (8/8)
         // selection lines: dark casing + bright yellow core — must be unmistakable over ANY layer color
         // (the old single orange 3px line was INVISIBLE on orange layers — the rail-lines "selection
         // doesn't stick" bug 7/28: the set was right, the paint was camouflaged; hover stays cyan)
@@ -9178,7 +9307,13 @@
     var isTs = isTilesetNode(P);
     setStatus('Splitting…');
     try {
-      var color = (P.paint && P.paint['fill-outline-color']) || P.iconColor || '#3bb2d0';
+      // the runtime node's fill-outline-color is BLANKED to transparent whenever a -stroke-
+      // companion owns the border (any width ≠ 1, incl. the 0.5 default) — reading it raw made
+      // every split outline layer INVISIBLE (8/8, caught by border-split-probe). The real colour
+      // lives on the stroke companion (node.stroke) when the native one is blank.
+      var poc = P.paint && P.paint['fill-outline-color'];
+      if (String(poc).replace(/\s+/g, '') === 'rgba(0,0,0,0)') poc = null;
+      var color = poc || (P.stroke && P.stroke['line-color']) || P.iconColor || '#3bb2d0';
       var owidth = (P.paint && P.paint['line-width']) || (isTs ? 1 : 2);
       var oNode;
       if (isTs) {

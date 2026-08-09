@@ -128,7 +128,49 @@
         // punches holes in the chain and whole corridors render as dashes/nothing (7/23).
         // Lines rely on geojson-vt's own simplification instead; dedup still applies to both.
         if (f.type === 3) {
-          var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, g0 = f.geometry;
+          // RING REPAIR (8/9) — a tile carries a MultiPolygon as ONE FLAT LIST of rings; which are
+          // outers and which are holes is re-derived by the renderer from each ring's SIGNED AREA,
+          // seeded by the first ring with non-zero area. Simplification can flip the winding of a
+          // ring it has reduced to a few near-collinear points, and when such a ring comes first
+          // the whole feature inverts. Madagascar's 51-unit mainland was classified as a hole
+          // inside a 0.0005-unit speck at z<=3 and triangulated to nothing — the island rendered
+          // as bare basemap with only its -stroke- coastline drawn, since a line layer never
+          // classifies rings (owner 8/9: "Madagascar's vector color is gone").
+          //   1. drop rings too small to cover a pixel — the same sub-pixel rule this function has
+          //      always applied to whole polygons, now applied per RING, so it is the consistent
+          //      behaviour rather than a new one. These are invisible at this zoom (kept at deeper
+          //      zooms, where the pyramid re-cuts them) and are precisely the rings whose winding
+          //      survives simplification unreliably. A hole is always smaller than its own outer
+          //      ring, so an outer and its holes are dropped together, never split.
+          //      (A conservative variant — drop only zero-area rings — was written and then backed
+          //      out. It was justified by ghost ink appearing to rise 100/109/115/115 →
+          //      133/133/128/137 after this change, which a re-run on the SAME artifacts showed to
+          //      be run-to-run variance of the metric, not this code: fade-probe's drag lands on a
+          //      slightly different date each run. See the metric-variance note in the test book.)
+          //   2. repair what is left: a hole can never enclose more area than the outer ring it
+          //      sits in, so any ring classified as a hole while being LARGER than its outer is a
+          //      mis-wound outer — reverse it. Correct geometry can never satisfy that test, so
+          //      this cannot fire on good data. It is on its own sufficient for the Madagascar
+          //      case: speck(+flipped), speck(-), mainland(-) walks to three outers.
+          var g0 = f.geometry, ar = [], keep = [], k, q, s, a;
+          for (k = 0; k < g0.length; k++) {
+            var rg = g0[k];
+            for (a = 0, q = 0, s = rg.length - 1; q < rg.length; s = q++) a += rg[s][0] * rg[q][1] - rg[q][0] * rg[s][1];
+            a /= 2;
+            if (Math.abs(a) >= minD2) { keep.push(rg); ar.push(a); }
+          }
+          if (!keep.length) continue;
+          var ccw = null, outerA = 0, fixed = false;
+          for (k = 0; k < keep.length; k++) {
+            if (ccw === null) { ccw = ar[k] < 0; outerA = Math.abs(ar[k]); continue; }
+            if ((ar[k] < 0) === ccw) { outerA = Math.abs(ar[k]); continue; }   // a new outer ring
+            if (Math.abs(ar[k]) > outerA) { keep[k] = keep[k].slice().reverse(); ar[k] = -ar[k]; outerA = Math.abs(ar[k]); fixed = true; }
+          }
+          // geojson-vt still owns `f` and derives child tiles from it — never mutate, copy instead
+          if (fixed || keep.length !== g0.length) f = { id: f.id, type: f.type, tags: f.tags, geometry: keep };
+
+          var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          g0 = f.geometry;
           for (var r = 0; r < g0.length; r++) for (var p = 0; p < g0[r].length; p++) {
             var pt = g0[r][p];
             if (pt[0] < x0) x0 = pt[0]; if (pt[0] > x1) x1 = pt[0];
@@ -274,12 +316,38 @@
     return { bytes: concat([header, rootBytes, metaBytes, leafBytes, tileData]), maxZoom: maxZoom };   // maxZoom = ACHIEVED zoom (may be budget-capped)
   }
 
-  /* ── EXPERIMENTAL instant-scrub raster bake (7/16) ─────────────────────────
-     A tiny PNG beside the archive: pixel R = build year − 1799, G = end year − 1799
-     (255 = never ends), alpha 0 = no feature. Cohorts draw latest-start FIRST so overlaps
-     keep the earliest build year. Powers platform/rasterScrub.js (instant timeline preview
-     while dragging). Guarded at the call site — a bake failure never breaks conversion.
-     REMOVE together with rasterScrub.js (this block + its call in convertLayer). */
+  /* ── EXPERIMENTAL instant-scrub raster bake (7/16 · INDEXED rebuild 8/9) ──
+     A tiny PNG beside the archive. Each pixel now stores an ID, not a date range:
+     id = R*65536 + G*256 + B (0 = empty, alpha 0), and that id indexes a shared LOOKUP
+     texture holding the pixel's FULL list of time stretches — up to 8, each texel
+     (start−1799, end−1799, startMonth<<4 | endMonth, 255), an alpha-0 texel meaning
+     "stop reading". Stretches are MONTH-precise (8/9b) at no extra bytes: the month pair
+     rides in the byte that was reserved for a colour index, which moved into alpha.
+
+     WHY (the ghost-border bug, measured ~3000 px of mid-drag-only ink): the old bake put
+     ONE interval in the pixel — R = min start, G = max end across every era covering it.
+     That cannot say "on, off, on". A Poland border pixel covered by Poland-1918-1939 and
+     Poland-1945-2019 collapsed to 1918–2019 and drew straight through the 1939–1945
+     partition, so mid-drag showed borders the released vector does not. An id + stretch
+     list says it exactly: two stretches with a real gap between them.
+
+     HOW the ids are built: features are grouped by shapeSig (identical geometry = one
+     SHAPE, carrying its own list of [start,end] stretches, merged only where they overlap
+     or touch). Every pyramid level is stamped in horizontal STRIPS: for each shape whose
+     bbox meets the strip, draw it alone on a cleared scratch canvas and fold its index into
+     every pixel it inks. Folding is a trie step — (currentId, shapeIndex) → newId — so a
+     pixel's id IS its exact shape set, with no per-pixel slot cap and no key strings, and
+     a new id's stretch list is its parent's merged with the shape's. One id space is shared
+     by the fill and border pyramids, so one LUT serves both.
+
+     The index pyramid occupies the SAME config slots as the old union pyramid
+     (rasterYears.levels / rasterYears.borders.levels, same {url,width,height,bytes} and
+     {tiles:[…]} shapes), so level-picking, prefetch, quadrant logic and download embedding
+     are untouched; rasterYears.indexed = true + rasterYears.lut tell the reader to use the
+     indexed shader. Configs WITHOUT `indexed` still render through the untouched legacy
+     path — old bakes keep working. Guarded at the call site — a bake failure never breaks
+     conversion. REMOVE together with rasterScrub.js (this block + its call in
+     convertLayer). */
   // Why a layer gets NO instant-scrub raster (8/7, owner's 2,000-point gazetteer at z4.8:
   // "I move to one end, a bunch disappear, and then upon release, reappear"):
   //   · POINTS. The raster is a fixed-resolution PNG of the world — sparse dots merge or vanish
@@ -302,66 +370,286 @@
     return null;
   }
   async function bakeYearsRaster(db, projectId, layerDbId, fc) {
+    var t0 = Date.now();
     var b = boundsOf(fc);
     var my = function (lat) { return Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)); };
     var aspect = (my(b[3]) - my(b[1])) / ((b[2] - b[0]) * Math.PI / 180);
     if (!isFinite(aspect) || aspect <= 0) throw new Error("degenerate bounds for raster");
-    // cohorts once — shared across every pyramid level
-    var cohorts = {};
-    (fc.features || []).forEach(function (f) {
-      var p = f.properties || {};
-      var ys = p.DayStart ? Math.floor(p.DayStart / 10000) : 0;
-      var ye = (p.DayEnd && p.DayEnd !== 99999999) ? Math.floor(p.DayEnd / 10000) : 9999;
-      var r = ys <= 1800 ? 1 : Math.min(255, Math.max(1, ys - 1799));
-      var g = ye >= 2054 ? 255 : Math.min(255, Math.max(1, ye - 1799));
-      var k = r + "," + g;
-      (cohorts[k] = cohorts[k] || []).push(f.geometry);
-    });
-    var keys = Object.keys(cohorts).sort(function (a, b2) { return (+b2.split(",")[0]) - (+a.split(",")[0]); });   // latest start first, earliest ON TOP
 
-    // PYRAMID (7/16): each level is a FRESH crisp bake at its own resolution (never downscale —
-    // that blends pixel values into wrong years). Strokes thin as resolution rises so screen
-    // thickness stays steady. bakeCanvas draws the (ox,oy,cw,ch) WINDOW of the full W×H image —
-    // whole-image levels pass the full window; the finest level bakes as 2×2 QUADRANT tiles
-    // (one 16384-wide texture would blow VRAM; quads load individually, only where you look).
-    function bakeCanvas(W, H, ox, oy, cw, ch) {
+    /* ── 1 · SHAPES · one entry per distinct geometry, carrying its own stretch LIST ──────
+       Most eras are attribute-only changes that reuse identical geometry (CShapes: 710 eras,
+       far fewer distinct outlines), so shapeSig groups them. What changed 8/9: the group keeps
+       EVERY [start,end] instead of collapsing to min/max. Stretches merge only where they
+       overlap or TOUCH (next.start <= cur.end + 1) — Poland 1918-1939 + 1939-1945 become one
+       1918–1945 stretch, while 1918-1939 + 1945-2019 stay two, which is precisely the gap the
+       old union threw away.
+
+       MONTHS, NOT YEARS (8/9b): stretches are carried as a MONTH INDEX — (year − 1799) * 12 +
+       month — from here through the merge and into the LUT. A whole-year stretch made every
+       border that MOVED mid-year show its before AND after position for the whole of that year:
+       ghost ink measured 1880 px at 1920 (Trianon, 4 Jun) and 2114 px at 1945 (Oder-Neisse,
+       8 May), while 1939 — whose changes fall on 1 Sep, a clean year boundary in the data —
+       already scored 110. Months are the finest unit that can matter: the reader's own clock is
+       the slider's `yearOf` = getUTCFullYear() + getUTCMonth()/12, so a day-precise stretch
+       would decode to the same picture. And it is free — the month pair rides in the LUT texel's
+       already-reserved B byte, so the bake is the same number of bytes. */
+    /* shapeSig is a cheap BUCKET KEY, never the merge decision (8/9 fix). It was both, and eras
+       whose outlines differ only in the interior collide on it: Libya 1919-1925 and 1925-1934
+       are both Polygon|532 points|first=last=15.3574,32.0298 — the 1925 boundary change with
+       Egypt moved vertices without adding any. The two folded into one shape, the smaller
+       geometry won, and eastern Libya went unstamped for that era: its pixels carried stretches
+       1899->Dec 1925 and Jul 1934->2019 with a nine-year hole, so the border vanished mid-drag
+       (owner 8/9, "a weird anomaly with Libya"). Measured on this layer: 153 signature groups,
+       149 genuinely identical, 4 false merges folding 5 eras into a wrong geometry — Estonia,
+       Tanzania, Libya, Brunei. Coordinates are now compared exactly WITHIN a bucket, which costs
+       one deep compare per collision (buckets here hold at most 3) and cannot be fooled. */
+    function shapeSig(g) {
+      var n = 0, first = null, last = null;
+      (function walk(c) {
+        if (!c) return;
+        if (typeof c[0] === "number") { n++; if (!first) first = c; last = c; return; }
+        for (var i = 0; i < c.length; i++) walk(c[i]);
+      })(g && g.coordinates);
+      var fx = first ? first[0].toFixed(4) + "," + first[1].toFixed(4) : "";
+      var lx = last ? last[0].toFixed(4) + "," + last[1].toFixed(4) : "";
+      return (g && g.type) + "|" + n + "|" + fx + "|" + lx;
+    }
+    function sameCoords(a, b) {
+      if (a === b) return true;
+      if (!a || !b || a.length !== b.length) return false;
+      var an = typeof a[0] === "number", bn = typeof b[0] === "number";
+      if (an || bn) return an && bn && a[0] === b[0] && a[1] === b[1];
+      for (var i = 0; i < a.length; i++) if (!sameCoords(a[i], b[i])) return false;
+      return true;
+    }
+    // MONTHS everywhere below: +1 now means "the next month", so eras that abut across a year
+    // boundary (…ends Aug 1939, next starts Sep 1939) still merge into one stretch, and eras
+    // separated by a real gap still stay two.
+    function mergeSpans(list) {
+      var a = list.slice().sort(function (x, y) { return (x[0] - y[0]) || (x[1] - y[1]); }), out = [];
+      for (var i = 0; i < a.length; i++) {
+        var cur = out.length ? out[out.length - 1] : null;
+        if (cur && a[i][0] <= cur[1] + 1) { if (a[i][1] > cur[1]) cur[1] = a[i][1]; }
+        else out.push([a[i][0], a[i][1]]);
+      }
+      return out;
+    }
+    // DayStart/DayEnd are YYYYMMDD integers. An UNKNOWN or malformed month resolves in the
+    // direction that never shortens an era — January for a start, December for an end — which is
+    // the same instinct as the reader's "an era ending in month M lives through all of M".
+    var MIDX = function (y, mo) { return (y - 1799) * 12 + mo; };
+    var monOf = function (d, dflt) { var mo = Math.floor(d / 100) % 100 - 1; return (mo >= 0 && mo <= 11) ? mo : dflt; };
+    var OPEN = MIDX(9999, 11);        // DayEnd 99999999 — the open-ended sentinel, clamped at write time
+    var bySig = {}, shapes = [];
+    (fc.features || []).forEach(function (f) {
+      if (!f || !f.geometry) return;
+      var p = f.properties || {};
+      var ys = p.DayStart ? MIDX(Math.floor(p.DayStart / 10000), monOf(p.DayStart, 0)) : MIDX(0, 0);
+      var ye = (p.DayEnd && p.DayEnd !== 99999999) ? MIDX(Math.floor(p.DayEnd / 10000), monOf(p.DayEnd, 11)) : OPEN;
+      var sig = shapeSig(f.geometry);
+      var bucket = bySig[sig] || (bySig[sig] = []);
+      var e = null;
+      for (var bi = 0; bi < bucket.length; bi++) {
+        if (bucket[bi].g.type === f.geometry.type && sameCoords(bucket[bi].g.coordinates, f.geometry.coordinates)) { e = bucket[bi]; break; }
+      }
+      if (!e) { e = { g: f.geometry, spans: [] }; bucket.push(e); shapes.push(e); }
+      e.spans.push([ys, ye]);
+    });
+    shapes.forEach(function (s) {
+      s.spans = mergeSpans(s.spans);
+      var bb = [Infinity, Infinity, -Infinity, -Infinity], poly = false;
+      (function walkG(g) {
+        if (!g) return;
+        if (g.type === "GeometryCollection") return (g.geometries || []).forEach(walkG);
+        if (g.type === "Polygon" || g.type === "MultiPolygon") poly = true;
+        (function walk(c) {
+          if (!c || !c.length) return;
+          if (typeof c[0] === "number") {
+            if (c[0] < bb[0]) bb[0] = c[0]; if (c[1] < bb[1]) bb[1] = c[1];
+            if (c[0] > bb[2]) bb[2] = c[0]; if (c[1] > bb[3]) bb[3] = c[1];
+          } else for (var i = 0; i < c.length; i++) walk(c[i]);
+        })(g.coordinates);
+      })(s.g);
+      s.bb = bb; s.poly = poly;
+    });
+    // lat outside the layer's own bounds cannot happen (bounds come from this data), but a shape
+    // bbox is still clamped so the mercator projection never sees ±90
+    shapes.forEach(function (s) {
+      if (s.bb[1] < b[1]) s.bb[1] = b[1]; if (s.bb[3] > b[3]) s.bb[3] = b[3];
+      if (s.bb[0] < b[0]) s.bb[0] = b[0]; if (s.bb[2] > b[2]) s.bb[2] = b[2];
+    });
+
+    /* ── 2 · the ID space · a TRIE over shape sets ────────────────────────────────────────
+       Stamping visits shapes in ascending index order, so a pixel's set is built incrementally
+       and one transition table (currentId, shapeIndex) → newId is enough to name it: identical
+       sets always walk the same path, so they always land on the same id. Each node stores the
+       merged stretch list of its whole set (parent's list merged with the shape's) — that list
+       IS the pixel's timeline, and the LUT is just these nodes written out. One trie serves the
+       fill AND border pyramids, so ids are global and a single LUT decodes both. */
+    var SPAN = Math.max(4096, shapes.length + 1);
+    var nodes = [null];              // id 0 = "no shape here" (never written)
+    var trans = new Map();
+    var MAXID = 16777215;            // the packing's ceiling: R*65536 + G*256 + B
+    function stepId(prev, si) {
+      var k = prev * SPAN + si, got = trans.get(k);
+      if (got !== undefined) return got;
+      var id = nodes.length;
+      if (id > MAXID) throw new Error("instant-scrub raster: more than 16.7M distinct shape sets");
+      nodes.push({ spans: mergeSpans((prev ? nodes[prev].spans : []).concat(shapes[si].spans)) });
+      trans.set(k, id);
+      return id;
+    }
+
+    /* ── 3 · STAMPING · shape indices → pixels, in horizontal strips ──────────────────────
+       Each level is a FRESH crisp bake at its own resolution (never downscale — that blends
+       ids into nonsense). bakeIndexCanvas fills the (ox,oy,cw,ch) WINDOW of the full W×H image;
+       whole-image levels pass the full window, the finest level bakes as 2×2 QUADRANTS (one
+       16384-wide texture would blow VRAM; quads load individually, only where you look).
+       STRIPS bound memory: one Uint32Array of cw × 512 ids (≈17 MB at 8192 wide) plus a scratch
+       canvas the same size, instead of a whole-image id buffer. Work is proportional to the SUM
+       OF SHAPE BBOX AREAS, not shapes × image: a shape is only cleared, drawn and read back
+       inside its own bbox ∩ strip.
+       bordersOnly (8/8, option B): a COMPANION pyramid of just the polygon RINGS — mid-drag the
+       reader lays it over the flat fill so contiguous features stay distinguishable ("shapes are
+       defined by their outlines"). Rings only: no fill, no points, and no plain LineStrings
+       (those ARE the layer and already live in the fill raster). */
+    var STRIP = 512;
+    function bakeIndexCanvas(W, H, ox, oy, cw, ch, bordersOnly) {
       var px = function (lon) { return (lon - b[0]) / (b[2] - b[0]) * W - ox; };
       var py = function (lat) { return (my(b[3]) - my(lat)) / (my(b[3]) - my(b[1])) * H - oy; };
-      var cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+      var out = document.createElement("canvas"); out.width = cw; out.height = ch;
+      var octx = out.getContext("2d", { willReadFrequently: true });
+      var sh = Math.min(STRIP, ch);
+      var scv = document.createElement("canvas"); scv.width = cw; scv.height = sh;
+      var sctx = scv.getContext("2d", { willReadFrequently: true });
+      // finer strokes on finer levels — zoomed-in lines were reading too fat (user 7/16).
+      // Border pyramid bakes THINNER (8/8): stacked-era rings sit a pixel or two apart, so fat
+      // strokes merge into bands mid-timeline ("lines get thicker toward the middle").
+      sctx.lineWidth = bordersOnly
+        ? (W >= 16384 ? 1.5 : W >= 8192 ? 1.6 : W >= 4096 ? 1.8 : 2.0)
+        : (W >= 16384 ? 1.8 : W >= 8192 ? 2.0 : W >= 4096 ? 2.5 : 3.0);
+      sctx.lineCap = "round"; sctx.lineJoin = "round";
+      sctx.strokeStyle = sctx.fillStyle = "#ffffff";
+      var pad = Math.ceil(sctx.lineWidth) + 3;
+      // FILLS keep the hard 140 cut — their interiors are fully opaque, so 140 only trims the
+      // anti-aliased fringe. BORDERS are all fringe: 120 with the 5× restroke below keeps a thin
+      // line's core and drops the un-saturable halo. Unlike the union bake, nothing here BLENDS —
+      // each shape is drawn alone on cleared pixels — so the floor is a pure coverage test.
+      var KEEP = bordersOnly ? 120 : 140;
+      var cur = new Uint32Array(cw * sh);
+      var inked = 0;
+      for (var y0 = 0; y0 < ch; y0 += STRIP) {
+        var hgt = Math.min(STRIP, ch - y0);
+        cur.fill(0);
+        for (var si = 0; si < shapes.length; si++) {
+          var S = shapes[si];
+          if (bordersOnly && !S.poly) continue;
+          var bx0 = Math.floor(px(S.bb[0])) - pad, bx1 = Math.ceil(px(S.bb[2])) + pad;
+          var by0 = Math.floor(py(S.bb[3])) - pad, by1 = Math.ceil(py(S.bb[1])) + pad;
+          if (bx0 < 0) bx0 = 0;
+          if (bx1 > cw) bx1 = cw;
+          if (by0 < y0) by0 = y0;
+          if (by1 > y0 + hgt) by1 = y0 + hgt;
+          if (bx1 <= bx0 || by1 <= by0) continue;
+          var rw = bx1 - bx0, rh = by1 - by0;
+          sctx.setTransform(1, 0, 0, 1, 0, -y0);    // draw in WINDOW coords, land in strip rows
+          sctx.clearRect(bx0, by0, rw, rh);         // only this shape's own footprint — the rest of
+          // the scratch canvas may hold older ink, but no shape is ever read outside its own bbox
+          drawShape(sctx, S.g, px, py, bordersOnly);
+          sctx.setTransform(1, 0, 0, 1, 0, 0);
+          var d = sctx.getImageData(bx0, by0 - y0, rw, rh).data;
+          for (var yy = 0; yy < rh; yy++) {
+            var row = (by0 - y0 + yy) * cw + bx0, di = yy * rw * 4 + 3;
+            for (var xx = 0; xx < rw; xx++, di += 4) {
+              if (d[di] >= KEEP) { var pI = row + xx; cur[pI] = stepId(cur[pI], si); }
+            }
+          }
+        }
+        var oim = octx.createImageData(cw, hgt), od = oim.data;   // starts all-zero = empty pixels
+        for (var i = 0, n = cw * hgt; i < n; i++) {
+          var id = cur[i];
+          if (!id) continue;
+          var o4 = i * 4;
+          od[o4] = (id >>> 16) & 255; od[o4 + 1] = (id >>> 8) & 255; od[o4 + 2] = id & 255; od[o4 + 3] = 255;
+          inked++;
+        }
+        octx.putImageData(oim, 0, y0);
+      }
+      return { cv: out, inked: inked };
+    }
+    // one shape, alone, on cleared pixels — no compositing tricks, so nothing can blend two
+    // shapes' encodings into a third that means neither (the 8/8 partial-alpha trap)
+    function drawShape(ctx, g, px, py, bordersOnly) {
+      var pts = [], strokes = false, fills = false;
+      var line = function (c) { for (var i = 0; i < c.length; i++) { var X = px(c[i][0]), Y = py(c[i][1]); if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y); } };
+      ctx.beginPath();
+      (function walkG(gg) {
+        if (!gg) return;
+        if (gg.type === "GeometryCollection") return (gg.geometries || []).forEach(walkG);
+        if (gg.type === "LineString") { if (!bordersOnly) { line(gg.coordinates); strokes = true; } }
+        else if (gg.type === "MultiLineString") { if (!bordersOnly) { gg.coordinates.forEach(line); strokes = true; } }
+        else if (gg.type === "Polygon") { gg.coordinates.forEach(function (r) { line(r); ctx.closePath(); }); fills = true; }
+        else if (gg.type === "MultiPolygon") { gg.coordinates.forEach(function (po) { po.forEach(function (r) { line(r); ctx.closePath(); }); }); fills = true; }
+        else if (gg.type === "Point") { if (!bordersOnly) pts.push(gg.coordinates); }
+        else if (gg.type === "MultiPoint") { if (!bordersOnly) gg.coordinates.forEach(function (c) { pts.push(c); }); }
+      })(g);
+      if (fills && !bordersOnly) ctx.fill();
+      // BORDERS RESTROKE (8/8): one anti-aliased pass leaves a thin line's texels at partial
+      // alpha, under the keep floor, and the line renders DOTTED. Restroking drives the core
+      // opaque so it survives; the faint halo stays below and is dropped.
+      if (strokes || fills) { var reps = bordersOnly ? 5 : 1; for (var rp = 0; rp < reps; rp++) ctx.stroke(); }
+      if (!bordersOnly) pts.forEach(function (c) { ctx.fillRect(px(c[0]) - 2.5, py(c[1]) - 2.5, 5, 5); });
+    }
+
+    /* ── 4 · the LOOKUP texture · 256 timelines per row × 8 stretch columns ──────────────
+       Texel for stretch c of id i sits at x = (i % 256) * 8 + c, y = floor(i / 256) and holds
+       (start−1799, end−1799, months, 255) where `months` packs TWO 4-bit fields, startMonth<<4 |
+       endMonth, each 0–11 (8/9b — see "MONTHS, NOT YEARS" above). An alpha-0 texel still means
+       "stop reading"; the colour index reserved for future categorical painting moved out of B
+       and into A as 255 − alpha (so today's reserved 0 is the byte 255 already written).
+
+       WHY 255 − index AND NOT index + 1: a 2D canvas backing store is PREMULTIPLIED, and this
+       LUT reaches the GPU as putImageData → toBlob(PNG) → texImage2D. Measured in this Chrome:
+       the texel (120,146,83, alpha 1) comes back (0,255,0) — at alpha 1 the only representable
+       channel values are 0 and 255, so a low-alpha texel loses its year bytes entirely and every
+       era decodes to nonsense. Counting the colour index DOWN from 255 keeps the alpha byte high,
+       where the round trip is exact, and leaves 0 free as the stop marker. Written LAST, once,
+       after both pyramids: the ids are global. */
+    var lutCapped = 0;
+    function buildLut() {
+      var n = nodes.length, rows = Math.max(1, Math.ceil(n / 256));
+      var cv = document.createElement("canvas"); cv.width = 2048; cv.height = rows;
       var ctx = cv.getContext("2d", { willReadFrequently: true });
-      // finer strokes on finer levels — zoomed-in lines were reading too fat (user 7/16)
-      ctx.lineWidth = W >= 16384 ? 1.8 : W >= 8192 ? 2.0 : W >= 4096 ? 2.5 : 3.0;
-      ctx.lineCap = "round"; ctx.lineJoin = "round";
-      keys.forEach(function (k) {
-        var rg = k.split(",");
-        ctx.strokeStyle = ctx.fillStyle = "rgb(" + rg[0] + "," + rg[1] + ",0)";
-        var pts = [];
-        var line = function (c) { for (var i = 0; i < c.length; i++) { var X = px(c[i][0]), Y = py(c[i][1]); if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y); } };
-        ctx.beginPath();
-        var strokes = false, fills = false;
-        cohorts[k].forEach(function walkG(g) {
-          if (!g) return;
-          if (g.type === "GeometryCollection") return (g.geometries || []).forEach(walkG);
-          if (g.type === "LineString") { line(g.coordinates); strokes = true; }
-          else if (g.type === "MultiLineString") { g.coordinates.forEach(line); strokes = true; }
-          else if (g.type === "Polygon") { g.coordinates.forEach(function (rg2) { line(rg2); ctx.closePath(); }); fills = true; }
-          else if (g.type === "MultiPolygon") { g.coordinates.forEach(function (po) { po.forEach(function (rg2) { line(rg2); ctx.closePath(); }); }); fills = true; }
-          else if (g.type === "Point") pts.push(g.coordinates);
-          else if (g.type === "MultiPoint") g.coordinates.forEach(function (c) { pts.push(c); });
-        });
-        if (fills) ctx.fill();
-        if (strokes || fills) ctx.stroke();
-        pts.forEach(function (c) { ctx.fillRect(px(c[0]) - 2.5, py(c[1]) - 2.5, 5, 5); });
-      });
-      // kill anti-aliased fringes so every surviving pixel carries exact-ish years
-      var im = ctx.getImageData(0, 0, cw, ch), d = im.data, inked = 0;
-      for (var i = 0; i < d.length; i += 4) {
-        if (d[i + 3] >= 140) { d[i + 2] = 0; d[i + 3] = 255; inked++; }
-        else { d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0; }
+      var im = ctx.createImageData(2048, rows), d = im.data;
+      for (var id = 1; id < n; id++) {
+        var sp = nodes[id].spans;
+        if (sp.length > 8) {          // keep the 8 LONGEST — dropping the briefest stretch is the
+          lutCapped++;                // smallest possible visual error, and it is logged
+          sp = sp.slice().sort(function (a, c) { return (c[1] - c[0]) - (a[1] - a[0]); }).slice(0, 8)
+                 .sort(function (a, c) { return a[0] - c[0]; });
+        }
+        var row = Math.floor(id / 256), colBase = (id % 256) * 8;
+        for (var c2 = 0; c2 < sp.length; c2++) {
+          var i4 = (row * 2048 + colBase + c2) * 4;
+          // month index → year byte + month nibble. Math.floor is correct for the negative
+          // indices a pre-1799 start produces; both ends are then clamped into the byte range,
+          // a start never LATER than reality and an end never EARLIER.
+          var sY = 1799 + Math.floor(sp[c2][0] / 12), sM = sp[c2][0] - (sY - 1799) * 12;
+          var eY = 1799 + Math.floor(sp[c2][1] / 12), eM = sp[c2][1] - (eY - 1799) * 12;
+          if (sY <= 1800) { sY = 1800; sM = 0; }      // 1800 is the encoding's floor
+          if (sY > 2054) { sY = 2054; sM = 11; }
+          if (eY >= 2054) { eY = 2054; eM = 11; }     // …and 2054 its ceiling (open-ended lands here)
+          if (eY < 1800) { eY = 1800; eM = 0; }
+          d[i4] = sY - 1799;          // 1..255
+          d[i4 + 1] = eY - 1799;
+          d[i4 + 2] = (sM << 4) | eM; // two 4-bit month fields, 0-11 each
+          d[i4 + 3] = 255;            // in use · colour index = 255 − alpha, reserved 0 today
+        }
       }
       ctx.putImageData(im, 0, 0);
-      return { cv: cv, inked: inked };
+      return { cv: cv, rows: rows };
     }
+
     async function uploadPng(cv, suffix) {
       var blob = await new Promise(function (res) { cv.toBlob(res, "image/png"); });
       if (!blob) return null;
@@ -375,42 +663,71 @@
       return { url: SUPABASE_URL + "/storage/v1/object/public/" + BUCKET + "/" + path, bytes: blob.size };
     }
 
-    var levels = [], total = 0, widths = [2048, 4096, 8192];
-    for (var wi = 0; wi < widths.length; wi++) {
-      var W = widths[wi], H = Math.round(W * aspect);
-      if (H < 8 || W * H > 80e6) continue;   // VRAM/canvas guard per texture
-      var res = bakeCanvas(W, H, 0, 0, W, H);
-      if (!res.inked) continue;
-      var up = await uploadPng(res.cv, String(W));
-      if (!up) continue;
-      levels.push({ url: up.url, width: W, height: H, bytes: up.bytes });
-      total += up.bytes;
-    }
-    // finest level: 16384-wide image baked as 2×2 QUADRANTS (empty quads skipped) — each quad is
-    // its own texture with its own lon/lat bounds, loaded only when the viewport touches it
-    var W4 = 16384, H4 = Math.round(W4 * aspect);
-    if (H4 >= 16 && (W4 / 2) * Math.ceil(H4 / 2) <= 80e6) {
-      var myT = my(b[3]), myB = my(b[1]);
-      var lonAt = function (f) { return b[0] + f * (b[2] - b[0]); };
-      var latAt = function (f) { return (2 * Math.atan(Math.exp(myT - f * (myT - myB))) - Math.PI / 2) * 180 / Math.PI; };
-      var qtiles = [], ch0 = Math.round(H4 / 2);
-      for (var qy = 0; qy < 2; qy++) {
-        for (var qx = 0; qx < 2; qx++) {
-          var oy = qy === 0 ? 0 : ch0, chq = qy === 0 ? ch0 : (H4 - ch0);
-          var rq = bakeCanvas(W4, H4, qx * (W4 / 2), oy, W4 / 2, chq);
-          if (!rq.inked) continue;
-          var upq = await uploadPng(rq.cv, W4 + "-" + qx + qy);
-          if (!upq) continue;
-          qtiles.push({ url: upq.url, bytes: upq.bytes,
-            bounds: [lonAt(qx * 0.5), latAt((oy + chq) / H4), lonAt((qx + 1) * 0.5), latAt(oy / H4)] });
-          total += upq.bytes;
-        }
+    // the whole pyramid, once per mode — fills (sfx "") and borders (sfx "b" → .yearsb2048.png …)
+    async function bakePyramid(bordersOnly, sfx) {
+      var lvls = [], bytes = 0, widths = [2048, 4096, 8192];
+      for (var wi = 0; wi < widths.length; wi++) {
+        var W = widths[wi], H = Math.round(W * aspect);
+        if (H < 8 || W * H > 80e6) continue;   // VRAM/canvas guard per texture
+        var res = bakeIndexCanvas(W, H, 0, 0, W, H, bordersOnly);
+        if (!res.inked) continue;
+        var up = await uploadPng(res.cv, sfx + String(W));
+        if (!up) continue;
+        lvls.push({ url: up.url, width: W, height: H, bytes: up.bytes });
+        bytes += up.bytes;
       }
-      if (qtiles.length) levels.push({ width: W4, height: H4, tiles: qtiles });
+      // finest level: 16384-wide image baked as 2×2 QUADRANTS (empty quads skipped) — each quad is
+      // its own texture with its own lon/lat bounds, loaded only when the viewport touches it
+      var W4 = 16384, H4 = Math.round(W4 * aspect);
+      if (H4 >= 16 && (W4 / 2) * Math.ceil(H4 / 2) <= 80e6) {
+        var myT = my(b[3]), myB = my(b[1]);
+        var lonAt = function (f) { return b[0] + f * (b[2] - b[0]); };
+        var latAt = function (f) { return (2 * Math.atan(Math.exp(myT - f * (myT - myB))) - Math.PI / 2) * 180 / Math.PI; };
+        var qtiles = [], ch0 = Math.round(H4 / 2);
+        for (var qy = 0; qy < 2; qy++) {
+          for (var qx = 0; qx < 2; qx++) {
+            var oy = qy === 0 ? 0 : ch0, chq = qy === 0 ? ch0 : (H4 - ch0);
+            var rq = bakeIndexCanvas(W4, H4, qx * (W4 / 2), oy, W4 / 2, chq, bordersOnly);
+            if (!rq.inked) continue;
+            var upq = await uploadPng(rq.cv, sfx + W4 + "-" + qx + qy);
+            if (!upq) continue;
+            qtiles.push({ url: upq.url, bytes: upq.bytes,
+              bounds: [lonAt(qx * 0.5), latAt((oy + chq) / H4), lonAt((qx + 1) * 0.5), latAt(oy / H4)] });
+            bytes += upq.bytes;
+          }
+        }
+        if (qtiles.length) lvls.push({ width: W4, height: H4, tiles: qtiles });
+      }
+      return { levels: lvls, bytes: bytes };
     }
-    if (!levels.length) throw new Error("no raster levels baked");
-    return { levels: levels, bounds: b, yearBase: 1799, bytes: total, bakedAt: new Date().toISOString(),
-             url: levels[0].url, width: levels[0].width, height: levels[0].height };   // legacy single-image fields
+
+    var fillP = await bakePyramid(false, "");
+    if (!fillP.levels.length) throw new Error("no raster levels baked");
+    var out = { levels: fillP.levels, bounds: b, yearBase: 1799, bytes: fillP.bytes, bakedAt: new Date().toISOString(),
+                url: fillP.levels[0].url, width: fillP.levels[0].width, height: fillP.levels[0].height };   // legacy single-image fields
+    // companion BORDER raster (option B, 8/8): polygon layers only — mid-drag borders are the only
+    // way to tell contiguous features apart. Best-effort: a border-bake failure never voids the fill bake.
+    var hasPolys = shapes.some(function (s) { return s.poly; });
+    if (hasPolys) {
+      try {
+        var bp = await bakePyramid(true, "b");
+        if (bp.levels.length) { out.borders = { levels: bp.levels, bytes: bp.bytes }; out.bytes += bp.bytes; }
+      } catch (e) { console.warn("tilegen: border raster bake failed (fill raster unaffected)", e); }
+    }
+    // the LUT ships last and alone — its ids are shared by both pyramids above
+    var L = buildLut();
+    var upL = await uploadPng(L.cv, "lut");
+    if (!upL) throw new Error("instant-scrub raster: lookup table upload failed");
+    out.indexed = true;
+    out.lut = { url: upL.url, width: 2048, height: L.rows, bytes: upL.bytes };
+    out.bytes += upL.bytes;
+    out.ids = nodes.length - 1;          // distinct shape sets — the LUT's real size on record
+    out.shapes = shapes.length;
+    out.lutCapped = lutCapped;           // ids whose timeline needed more than 8 stretches
+    out.bakeMs = Date.now() - t0;
+    if (lutCapped) console.warn("tilegen: " + lutCapped + " of " + out.ids + " pixel timelines held more than 8 stretches — kept the 8 longest");
+    console.log("tilegen: indexed instant-scrub raster — " + out.shapes + " shapes, " + out.ids + " ids, LUT " + L.rows + " rows, " + Math.round(out.bakeMs / 1000) + "s");
+    return out;
   }
 
   /* ── storage + layer stamping ──────────────────────────────────────────── */

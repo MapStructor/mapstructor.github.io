@@ -197,6 +197,18 @@ var ConfigLoader = (function () {
       if ((row.enabled_by_default === false || raw.instanceOf) && (!features || !features.length)) leaf._deferred = true;
       if (leaf.type == null) leaf.type = "circle";
       if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
+    } else if (raw.convertedFrom && leaf.type === "fill" && leaf.paint == null) {
+      // OUR converted tileset fills store no paint unless styled, which skipped the outline block
+      // below entirely — the layer had 0.5 borders all through its import session and came back
+      // borderless on the next load (8/8, CShapes). Seed the FULL default paint, not just the
+      // outline: a partial paint object suppresses the engine's own defaults and mapbox-gl's
+      // fallbacks for the missing keys are BLACK at opacity 1 (the first cut here seeded only
+      // fill-outline-color and every converted country rendered as a black world — caught by the
+      // vid.mjs sweep, invisible to the colour-blind delta gates). Fill = layer colour at 0.4;
+      // outline = REAL BLACK, because that is what the styling panel's default swatch has always
+      // displayed — a layer-colour outline rendered blue-on-blue while the UI claimed black, and
+      // at width exactly 1 (the native-outline path) it vanished outright (owner 8/8).
+      leaf.paint = { "fill-color": leaf.iconColor || "#3bb2d0", "fill-opacity": 0.4, "fill-outline-color": "#000000" };
     }
 
     // A fill's border renders as a separate line layer at every width EXCEPT exactly 1 — width 1 is
@@ -204,10 +216,14 @@ var ConfigLoader = (function () {
     // thicker values, by-column expressions, per-feature ms_thickness) needs the line layer, and
     // then it OWNS the outline (the native one goes transparent so widths read exactly). Applies to
     // DRAWN and TILESET fills alike (the engine shares the fill's source, adding source-layer for
-    // vector tilesets); tilesets without an outline color stay outline-less. Skipped when the
-    // outline was split into its own standalone layer (raw.outlineSplit).
+    // vector tilesets). OUR OWN converted tilesets (raw.convertedFrom) get the same 0.5 default as
+    // live fills — the layer showed borders all through its import session, and losing them on the
+    // next load because the bake stored no paint was a silent per-render-mode capability loss
+    // (8/8, CShapes: a country layer whose whole point is borders came back borderless). FOREIGN
+    // tilesets without an outline color stay outline-less. Skipped when the outline was split into
+    // its own standalone layer (raw.outlineSplit).
     if (leaf.type === "fill" && leaf.paint && !raw.outlineSplit &&
-        (row.source_type === "geojson-supabase" || leaf.paint["fill-outline-color"])) {
+        (row.source_type === "geojson-supabase" || raw.convertedFrom || leaf.paint["fill-outline-color"])) {
       var ow = leaf.paint["line-width"];
       var effW = ow != null ? ow : 0.5;   // fills default to a 0.5 border
       var perFeatW = row.source_type === "geojson-supabase" &&
