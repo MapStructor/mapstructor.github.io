@@ -210,13 +210,23 @@
       });
       return { layer: base };
     }
-    // TILESET POLYGONS AND POINTS (8/7): a symbol layer over the SAME vector source. Mapbox puts
-    // one label per feature — inside the polygon for a fill, on the point for a circle — so there
-    // is nothing to compute and no second source to keep in step. It also makes the labels
-    // timeline-correct for free: they ride the very tiles the shapes ride, and mapinit's `-label-`
-    // filter hides each one with its own feature. The catch is that the text must be physically IN
-    // the tile — the editor re-bakes when the chosen column isn't there yet, because a tileset
-    // label can only ever say what the tiler wrote.
+    // TILESET POLYGONS (8/13): the "one label per feature" the shared-source symbol promised was
+    // really one per TILE-CLIPPED CHUNK — a country spanning four tiles said its name four times
+    // (owner: "for now let's just have there be one label"). Fills now ride the same group-anchor
+    // system as tileset lines: ONE anchor per name family, at the centroid of its largest RENDERED
+    // piece, recomputed on idle — timeline-correct because it reads the date-filtered render.
+    if (srcType === 'vector' && map && layer.type === 'fill') {
+      var gsrcF = layer.id + '-glabels-' + side;
+      base.source = gsrcF;
+      base.layout['text-field'] = ['get', 't'];
+      base.layout['text-size'] = sizeFor(function (v) { return v; });
+      msWireGroupLabelAnchors(map, layer, side, gsrcF);
+      return { sourceId: gsrcF, source: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }, layer: base };
+    }
+    // TILESET POINTS (8/7): a symbol layer over the SAME vector source — a point lives in exactly
+    // one tile, so per-feature placement is truly one label. Timeline-correct for free (mapinit's
+    // `-label-` filter hides each with its own feature). The text must be physically IN the tile —
+    // the editor re-bakes when the chosen column isn't there yet.
     if (srcType === 'vector') {
       base.source = layer.id + '-' + side;
       base['source-layer'] = layer['source-layer'] || 'features';
@@ -260,6 +270,23 @@
       }
       return L;
     }
+    // polygons (8/13, owner: "for now let's just have there be one label"): rendered pieces are
+    // TILE-CLIPPED, so per-feature symbol placement repeated the name once per chunk. Same cure as
+    // lines — one anchor per name family, at the centroid of its largest visible piece.
+    function ringArea(c) {
+      var A = 0;
+      for (var i = 0, j = c.length - 1; i < c.length; j = i++) A += c[j][0] * c[i][1] - c[i][0] * c[j][1];
+      return Math.abs(A / 2);
+    }
+    function ringCentroid(c) {
+      var A = 0, cx = 0, cy = 0;
+      for (var i = 0, j = c.length - 1; i < c.length; j = i++) {
+        var f = c[j][0] * c[i][1] - c[i][0] * c[j][1];
+        A += f; cx += (c[j][0] + c[i][0]) * f; cy += (c[j][1] + c[i][1]) * f;
+      }
+      if (!A) return c[0];
+      return [cx / (3 * A), cy / (3 * A)];
+    }
     function recompute() {
       try {
         if (!map.getLayer(lineId) || !map.getSource(gsrcId)) return;
@@ -277,10 +304,21 @@
             var L = lineLen(lines[j]);
             if (!best[nv] || L > best[nv].len) best[nv] = { len: L, coords: lines[j], raw: String(v).trim() };
           }
+          // polygons: rank families by the AREA of their largest visible piece; anchor = its centroid
+          var rings = g.type === 'Polygon' ? [g.coordinates[0]] : (g.type === 'MultiPolygon' ? g.coordinates.map(function (pp) { return pp[0]; }) : []);
+          for (var k2 = 0; k2 < rings.length; k2++) {
+            if (!rings[k2] || rings[k2].length < 4) continue;
+            var A2 = ringArea(rings[k2]);
+            if (!best[nv] || A2 > best[nv].len) best[nv] = { len: A2, ring: rings[k2], raw: String(v).trim() };
+          }
         }
         var out = [];
         Object.keys(best).forEach(function (v0) {
           var v = best[v0].raw;
+          if (best[v0].ring) {   // polygon family — centroid of the biggest visible piece, no rotation
+            out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: ringCentroid(best[v0].ring) }, properties: { t: v, r: 0 } });
+            return;
+          }
           var c = best[v0].coords;
           var m2 = Math.floor(c.length / 2);
           var a = c[Math.max(0, m2 - 1)], b = c[Math.min(c.length - 1, m2 + 1)], mid = c[m2];

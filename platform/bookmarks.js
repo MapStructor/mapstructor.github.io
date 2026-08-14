@@ -11,17 +11,23 @@
   var SUPABASE_URL = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co';
   var SUPABASE_KEY = 'sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD';
   var LS_KEY = 'msBookmarks';
+  // datasets bookmark exactly like maps (owner 8/11) — same module, second backend triple:
+  // table dataset_bookmarks · column dataset_id · localStorage msDsBookmarks
+  var KINDS = {
+    map:     { table: 'map_bookmarks',     col: 'project_id', ls: LS_KEY },
+    dataset: { table: 'dataset_bookmarks', col: 'dataset_id', ls: 'msDsBookmarks' }
+  };
 
   // reuse auth.js's client (always loaded first on every page that includes us) — one client,
   // one session. Fallback builds our own only if a page ever includes us without auth.js.
   var db = (window.MapAuth && MapAuth.db)
     || ((window.supabase && window.supabase.createClient) ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null);
 
-  function localList() {
-    try { var a = JSON.parse(localStorage.getItem(LS_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  function localList(kind) {
+    try { var a = JSON.parse(localStorage.getItem(KINDS[kind].ls) || '[]'); return Array.isArray(a) ? a : []; }
     catch (e) { return []; }
   }
-  function localSave(a) { try { localStorage.setItem(LS_KEY, JSON.stringify(a)); } catch (e) {} }
+  function localSave(kind, a) { try { localStorage.setItem(KINDS[kind].ls, JSON.stringify(a)); } catch (e) {} }
 
   // real user = DB backend; anonymous or logged-out = localStorage
   function realUser() {
@@ -32,70 +38,80 @@
   }
 
   // one-time carry-in: local bookmarks become account rows on real login (ignore dup conflicts)
-  var carried = false;
-  function carryIn(u) {
-    if (carried) return Promise.resolve();
-    var ids = localList();
-    if (!ids.length) { carried = true; return Promise.resolve(); }
-    carried = true;
-    var rows = ids.map(function (id) { return { user_id: u.id, project_id: id }; });
-    return db.from('map_bookmarks').upsert(rows, { onConflict: 'user_id,project_id', ignoreDuplicates: true })
+  var carried = {};
+  function carryIn(kind, u) {
+    if (carried[kind]) return Promise.resolve();
+    var K = KINDS[kind], ids = localList(kind);
+    if (!ids.length) { carried[kind] = true; return Promise.resolve(); }
+    carried[kind] = true;
+    var onC = 'user_id,' + K.col;
+    var rows = ids.map(function (id) { var o = { user_id: u.id }; o[K.col] = id; return o; });
+    return db.from(K.table).upsert(rows, { onConflict: onC, ignoreDuplicates: true })
       .then(function (r) {
-        // rows referencing DELETED maps violate the FK — fall back to one-by-one, drop the dead
-        if (r.error) return Promise.all(rows.map(function (row) { return db.from('map_bookmarks').upsert(row, { onConflict: 'user_id,project_id', ignoreDuplicates: true }); }));
+        // rows referencing DELETED targets violate the FK — fall back to one-by-one, drop the dead
+        if (r.error) return Promise.all(rows.map(function (row) { return db.from(K.table).upsert(row, { onConflict: onC, ignoreDuplicates: true }); }));
       })
-      .then(function () { localSave([]); })
+      .then(function () { localSave(kind, []); })
       .catch(function () {});
   }
 
-  function list() {
+  function listKind(kind) {
+    var K = KINDS[kind];
     return realUser().then(function (u) {
-      if (!u) return localList();
-      return carryIn(u).then(function () {
-        return db.from('map_bookmarks').select('project_id').order('created_at', { ascending: false });
+      if (!u) return localList(kind);
+      return carryIn(kind, u).then(function () {
+        return db.from(K.table).select(K.col).order('created_at', { ascending: false });
       }).then(function (r) {
-        return (r && !r.error && r.data) ? r.data.map(function (x) { return x.project_id; }) : [];
+        return (r && !r.error && r.data) ? r.data.map(function (x) { return x[K.col]; }) : [];
       });
     });
   }
-  function has(id) { return list().then(function (ids) { return ids.indexOf(id) > -1; }); }
-  function toggle(id) {
+  function hasKind(kind, id) { return listKind(kind).then(function (ids) { return ids.indexOf(id) > -1; }); }
+  function toggleKind(kind, id) {
+    var K = KINDS[kind];
     return realUser().then(function (u) {
       if (!u) {
-        var a = localList(), i = a.indexOf(id);
+        var a = localList(kind), i = a.indexOf(id);
         if (i > -1) a.splice(i, 1); else a.unshift(id);
-        localSave(a);
+        localSave(kind, a);
         return i === -1;
       }
-      return has(id).then(function (on) {
-        if (on) return db.from('map_bookmarks').delete().eq('user_id', u.id).eq('project_id', id).then(function () { return false; });
-        return db.from('map_bookmarks').insert({ user_id: u.id, project_id: id }).then(function (r) { return !r.error; });
+      return hasKind(kind, id).then(function (on) {
+        if (on) return db.from(K.table).delete().eq('user_id', u.id).eq(K.col, id).then(function () { return false; });
+        var row = { user_id: u.id }; row[K.col] = id;
+        return db.from(K.table).insert(row).then(function (r) { return !r.error; });
       });
     });
   }
+  // the original map-only names stay as-is — every existing caller keeps working
+  function list() { return listKind('map'); }
+  function has(id) { return hasKind('map', id); }
+  function toggle(id) { return toggleKind('map', id); }
 
   // ── the ★ itself: paint one element as a live bookmark toggle ─────────────
-  function star(el, projectId) {
+  function starKind(kind, el, id) {
+    var word = kind === 'dataset' ? 'dataset' : 'map';
     function paint(on) {
       el.textContent = on ? '★' : '☆';
-      el.title = on ? 'Bookmarked — click to remove' : 'Bookmark this map';
+      el.title = on ? 'Bookmarked — click to remove' : 'Bookmark this ' + word;
       el.style.color = on ? '#b0691d' : '#888';
     }
     el.style.cursor = 'pointer';
-    el.setAttribute('aria-label', 'Bookmark this map');
+    el.setAttribute('aria-label', 'Bookmark this ' + word);
     paint(false);
-    has(projectId).then(paint);
+    hasKind(kind, id).then(paint);
     el.addEventListener('click', function (e) {
       e.preventDefault(); e.stopPropagation();
-      toggle(projectId).then(function (on) {
+      toggleKind(kind, id).then(function (on) {
         paint(on);
         // let any list of bookmarks on the page redraw itself immediately (dashboard's
         // Bookmarks strip) — starring your own map should show up without a refresh (8/6)
-        try { window.dispatchEvent(new CustomEvent('ms-bookmarks-changed', { detail: { projectId: projectId, on: on } })); } catch (e2) {}
+        try { window.dispatchEvent(new CustomEvent('ms-bookmarks-changed', { detail: { kind: kind, projectId: id, on: on } })); } catch (e2) {}
       });
     });
     return el;
   }
+  function star(el, projectId) { return starKind('map', el, projectId); }
 
   // ── topbar injection on map pages (viewer + editor share #ms-topbar) ──────
   function mountTopbarStar() {
@@ -120,5 +136,11 @@
     var iv = setInterval(function () { if (mountTopbarStar() || ++tries > 40) clearInterval(iv); }, 250);
   }
 
-  window.MSBookmarks = { list: list, has: has, toggle: toggle, star: star };
+  window.MSBookmarks = {
+    list: list, has: has, toggle: toggle, star: star,
+    listDatasets: function () { return listKind('dataset'); },
+    hasDataset: function (id) { return hasKind('dataset', id); },
+    toggleDataset: function (id) { return toggleKind('dataset', id); },
+    starDataset: function (el, id) { return starKind('dataset', el, id); }
+  };
 })();

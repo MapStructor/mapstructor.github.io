@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dataset — MapStructor</title>
+  <link rel="icon" href="images/logo-transparent.png">
+  <style>
+    /* One dataset: what it is, where it came from, what you may do with it, the frozen copy,
+       and which maps are using it. Every value here is user-written — built with textContent. */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --p: #7c5cbf; --p-dark: #6246a8; }
+    body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #f0eaff; color: #1e1b2e; min-height: 100vh; }
+    nav { position: fixed; top: 0; right: 0; display: flex; align-items: center; gap: 4px; padding: 16px clamp(16px, 4vw, 40px); z-index: 20; }
+    nav a { color: #6e6585; text-decoration: none; font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 6px; white-space: nowrap; }
+
+    main { max-width: 860px; margin: 0 auto; padding: clamp(72px, 10vw, 110px) clamp(20px, 5vw, 64px) 80px; }
+    .crumb { color: #9490a8; font-size: 13px; text-decoration: none; }
+    .crumb:hover { color: var(--p); }
+    h1 { margin-top: 10px; font-size: clamp(26px, 4.5vw, 40px); font-weight: 800; letter-spacing: -0.02em; }
+    .sub { margin-top: 8px; color: #6e6585; font-size: 15px; }
+
+    .tags { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 7px; }
+    .tag { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 20px; background: #efeaf8; color: #5b4b9a; }
+    .tag.warn { background: #fdf1ef; color: #b4453a; }
+    .tag.ok { background: #eef8ef; color: #2f6b3a; }
+
+    .panel { margin-top: 22px; background: #fff; border: 1px solid rgba(124,92,191,0.18); border-radius: 12px; padding: 18px 20px; }
+    .panel h2 { font-size: 15px; letter-spacing: .03em; text-transform: uppercase; color: #9490a8; }
+    dl { margin-top: 12px; display: grid; grid-template-columns: minmax(120px, 170px) 1fr; gap: 9px 16px; font-size: 14.5px; }
+    dt { color: #6e6585; font-weight: 600; }
+    dd { word-break: break-word; }
+    dd a { color: var(--p); }
+    .muted { color: #9490a8; }
+    .perm { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin-top: 12px; }
+    .perm div { font-size: 13.5px; padding: 8px 10px; border-radius: 8px; background: #faf8ff; }
+    .btn { display: inline-block; margin-top: 14px; text-decoration: none; font-weight: 700; font-size: 14px;
+           padding: 10px 20px; border-radius: 8px; background: var(--p); color: #fff; }
+    .btn:hover { background: var(--p-dark); }
+    .use { display: block; text-decoration: none; color: inherit; padding: 10px 12px; border: 1px solid rgba(124,92,191,0.16);
+           border-radius: 9px; margin-top: 8px; }
+    .use:hover { background: #faf8ff; }
+    .use b { font-size: 14.5px; }
+    .use small { display: block; color: #6e6585; margin-top: 2px; }
+    footer { display: flex; justify-content: center; gap: 18px; padding: 24px; }
+    footer a { color: #9490a8; text-decoration: none; font-size: 12.5px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js?v=20260728a"></script>
+  <script src="platform/veil.js?v=20260731a"></script>
+  <script src="platform/topbar.js?v=20260728a"></script>
+  <script src="platform/bookmarks.js?v=20260811a"></script>
+</head>
+<body>
+  <nav>
+    <a href="index.html">Home</a>
+    <a href="portal.html">Portal</a>
+    <a href="#" class="btn-nav" id="nav-auth" style="display:none;">Login</a>
+  </nav>
+
+  <main>
+    <a class="crumb" href="datasets.html">&larr; Data Repository</a>
+    <!-- the name is its OWN span: the loader sets d-name.textContent, which would erase a star
+         living inside the same element -->
+    <h1 style="display:flex;align-items:baseline;gap:10px;"><span id="d-name">Loading…</span><span id="d-star" style="font-size:22px;"></span></h1>
+    <div class="sub" id="d-sub"></div>
+    <div class="tags" id="d-tags"></div>
+
+    <div class="panel" id="p-about" style="display:none;">
+      <h2>Where it came from</h2>
+      <dl id="d-about"></dl>
+    </div>
+
+    <div class="panel" id="p-lic" style="display:none;">
+      <h2>What you may do with it</h2>
+      <div class="perm" id="d-perm"></div>
+      <div class="sub" id="d-attr" style="margin-top:12px;font-size:13.5px;"></div>
+    </div>
+
+    <div class="panel" id="p-copy" style="display:none;">
+      <h2>The read-only copy</h2>
+      <div class="sub" id="d-copy" style="font-size:14px;"></div>
+      <a class="btn" id="d-dl" href="#" style="display:none;">Download the frozen copy</a>
+    </div>
+
+    <div class="panel" id="p-use" style="display:none;">
+      <h2>Maps using this data</h2>
+      <div id="d-use"></div>
+    </div>
+  </main>
+
+  <footer>
+    <a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="report.html">Report a map</a>
+  </footer>
+
+  <script>
+    (function () {
+      var SUPABASE_URL = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co';
+      var BUCKET = 'tiles';
+      var qs = new URLSearchParams(location.search);
+      var key = qs.get('id') || '';
+      var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      var MADE = { published: 'Published by an outside source',
+                   traced: 'Traced or digitised from a source that may be traced',
+                   'traced-unsure': 'Traced from something the submitter was unsure about',
+                   own: 'Original survey, or drawn from scratch' };
+      function txt(tag, s, cls) { var n = document.createElement(tag); n.textContent = s; if (cls) n.className = cls; return n; }
+      function row(dl, label, value, href) {
+        dl.appendChild(txt('dt', label));
+        var dd = document.createElement('dd');
+        if (value == null || value === '') { dd.appendChild(txt('span', 'Not recorded', 'muted')); }
+        else if (href) {
+          // only ever linkify http(s) — a javascript: URL out of a text field must never become a link
+          if (/^https?:\/\//i.test(value)) { var a = document.createElement('a'); a.href = value; a.target = '_blank'; a.rel = 'noopener nofollow'; a.textContent = value; dd.appendChild(a); }
+          else dd.textContent = value;
+        } else dd.textContent = value;
+        dl.appendChild(dd);
+      }
+      function permCell(label, v) {
+        var d = document.createElement('div');
+        var mark = v === true ? '✓ ' : (v === false ? '✗ ' : '? ');
+        d.textContent = mark + label + (v == null ? ' (not known)' : '');
+        d.style.background = v === true ? '#eef8ef' : (v === false ? '#fdf1ef' : '#f6f4fb');
+        return d;
+      }
+      function fmtBytes(n) {
+        if (!n && n !== 0) return '';
+        if (n < 1024) return n + ' B';
+        if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+        return (n / 1048576).toFixed(1) + ' MB';
+      }
+
+      async function load() {
+        if (!(window.MapAuth && MapAuth.db)) return setTimeout(load, 150);
+        if (!key) { document.getElementById('d-name').textContent = 'No dataset asked for'; return; }
+        var db = MapAuth.db;
+        var q = db.from('datasets').select('*');
+        q = UUID.test(key) ? q.eq('id', key) : q.eq('slug', key);
+        var r = await q.maybeSingle();
+        var d = r.data;
+        if (r.error || !d) {
+          document.getElementById('d-name').textContent = 'Dataset not found';
+          document.getElementById('d-sub').textContent = 'It may have been removed, or the link may be wrong.';
+          return;
+        }
+        document.title = (d.name || 'Dataset') + ' — MapStructor';
+        document.getElementById('d-name').textContent = d.name || 'Untitled dataset';
+        (function wireStar() {
+          if (window.MSBookmarks) MSBookmarks.starDataset(document.getElementById('d-star'), d.id);
+          else setTimeout(wireStar, 150);
+        })();
+        var bits = [];
+        if (d.source) bits.push(d.source);
+        if (d.feature_count) bits.push(Number(d.feature_count).toLocaleString() + ' features');
+        if (d.geom_types && d.geom_types.length) bits.push(d.geom_types.join(', '));
+        document.getElementById('d-sub').textContent = bits.join(' · ');
+
+        var tags = document.getElementById('d-tags');
+        var lic = document.createElement('span');
+        lic.className = 'tag' + ((!d.licence || d.licence === 'unknown') ? ' warn' : '');
+        lic.textContent = (!d.licence || d.licence === 'unknown') ? 'licence unknown' : d.licence;
+        tags.appendChild(lic);
+        if (d.lic_share_alike) tags.appendChild(txt('span', 'share-alike', 'tag'));
+        if (d.lic_commercial === false) tags.appendChild(txt('span', 'no commercial use', 'tag warn'));
+        if (d.snapshot_key) tags.appendChild(txt('span', 'read-only copy kept', 'tag ok'));
+        if (d.curated) tags.appendChild(txt('span', 'curated', 'tag ok'));
+        if (d.msd) { var msdTag = txt('span', 'MSD', 'tag ok'); msdTag.title = 'MapStructor Dataset — a first-party designation'; msdTag.style.fontWeight = '700'; tags.appendChild(msdTag); }
+
+        var dl = document.getElementById('d-about');
+        row(dl, 'Source', d.source);
+        row(dl, 'Link', d.link, true);
+        row(dl, 'Citation', d.citation);
+        row(dl, 'More info on source', d.source_more_info || d.traced_sources);
+        row(dl, 'How it was made', MADE[d.made_how] ||
+          (d.traced_only_open === true ? 'Traced from a source that may be traced'
+            : (d.traced_only_open === false ? 'Traced from something unconfirmed' : null)));
+        row(dl, 'More info', d.more_info);
+        row(dl, 'Notes by submitter', d.submitter_notes);
+        row(dl, 'Submitted by', d.submitted_by_email);
+        row(dl, 'Dataset id', d.id);
+        row(dl, 'Registered', d.created_at ? new Date(d.created_at).toLocaleDateString() : null);
+        document.getElementById('p-about').style.display = '';
+
+        var perm = document.getElementById('d-perm');
+        perm.appendChild(permCell('may redistribute', d.lic_redistribute));
+        perm.appendChild(permCell('may modify', d.lic_modify));
+        perm.appendChild(permCell('commercial use', d.lic_commercial));
+        perm.appendChild(permCell('share-alike required', d.lic_share_alike));
+        perm.appendChild(permCell('attribution required', d.lic_attribution));
+        document.getElementById('d-attr').textContent = d.attribution_text
+          ? 'Credit as: ' + d.attribution_text
+          : 'No attribution line recorded — credit the source named above.';
+        document.getElementById('p-lic').style.display = '';
+
+        var copy = document.getElementById('d-copy');
+        if (d.snapshot_key) {
+          copy.textContent = 'Frozen ' + (d.snapshot_at ? new Date(d.snapshot_at).toLocaleString() : '') +
+            ' · ' + fmtBytes(d.snapshot_bytes) + ' · ' + (d.snapshot_format || 'zip') +
+            '. This is the data exactly as it stood when the dataset was registered, and it never changes.';
+          var a = document.getElementById('d-dl');
+          a.href = SUPABASE_URL + '/storage/v1/object/public/' + BUCKET + '/' + d.snapshot_key;
+          a.style.display = '';
+        } else {
+          copy.textContent = 'No frozen copy has been stored for this dataset yet.';
+        }
+        document.getElementById('p-copy').style.display = '';
+
+        // free, because the dataset id sits on the FEATURES rather than on the layer
+        try {
+          var u = await db.rpc('ms_dataset_usage', { p_dataset: d.id });
+          var box = document.getElementById('d-use');
+          var rows = (u.data || []).filter(function (x) { return x.is_public; });
+          if (rows.length) {
+            rows.forEach(function (x) {
+              var a2 = document.createElement('a');
+              a2.className = 'use'; a2.href = 'map/index.html?id=' + encodeURIComponent(x.project_id);
+              a2.appendChild(txt('b', x.project_name || 'Untitled Map'));
+              var whole = d.feature_count && Number(x.features_used) >= Number(d.feature_count);
+              a2.appendChild(txt('small', whole
+                ? 'uses the whole dataset'
+                : 'uses ' + Number(x.features_used).toLocaleString() + ' of ' + Number(d.feature_count || 0).toLocaleString() + ' features'));
+              box.appendChild(a2);
+            });
+          } else {
+            box.appendChild(txt('div', 'No public map is using this dataset yet.', 'muted'));
+          }
+          document.getElementById('p-use').style.display = '';
+        } catch (e) { /* usage is a bonus, never a blocker */ }
+
+        // ── Delete (admin only, 8/13): server-guarded — ms_delete_dataset REFUSES while any live
+        //    map still holds or mirrors the data, naming the maps. Remove it from those maps first,
+        //    then deletion unregisters the dataset and un-stamps every remaining row (FK). ──
+        try {
+          var uD = await db.auth.getUser();
+          var em = uD && uD.data && uD.data.user && (uD.data.user.email || '').toLowerCase();
+          if (em === 'nittyjee@gmail.com') {
+            var pAbout = document.getElementById('p-about');
+            // ── MSD designation (8/13, owner: "a special designation for certain datasets as
+            //    MSD… promoted… for now it might be just a tag") — a boolean the admin toggles;
+            //    shows as an MSD tag here and wherever datasets are listed. ──
+            var msdWrap = document.createElement('div');
+            msdWrap.style.cssText = 'margin-top:14px;padding-top:10px;border-top:1px solid #eee;';
+            var msdBtn = document.createElement('button');
+            msdBtn.textContent = d.msd ? 'Remove MSD designation' : 'Promote to MSD';
+            msdBtn.style.cssText = 'padding:7px 14px;border:1px solid #a3c293;border-radius:6px;background:#eafaea;color:#2d7a2d;font-weight:600;cursor:pointer;';
+            var msdNote = document.createElement('div');
+            msdNote.className = 'muted';
+            msdNote.style.cssText = 'margin-top:6px;font-size:12px;';
+            msdNote.textContent = 'MSD = MapStructor Dataset — the first-party designation. A tag for now.';
+            msdBtn.addEventListener('click', async function () {
+              msdBtn.disabled = true;
+              var rr = await db.from('datasets').update({ msd: !d.msd }).eq('id', d.id).select('msd');
+              msdBtn.disabled = false;
+              if (rr.error || !rr.data || !rr.data.length) { msdNote.textContent = 'Failed: ' + (rr.error ? rr.error.message : 'no row updated'); msdNote.style.color = '#8f3a31'; return; }
+              d.msd = rr.data[0].msd;
+              msdBtn.textContent = d.msd ? 'Remove MSD designation' : 'Promote to MSD';
+              msdNote.textContent = d.msd ? 'Designated MSD.' : 'MSD designation removed.';
+            });
+            msdWrap.appendChild(msdBtn); msdWrap.appendChild(msdNote);
+            pAbout.appendChild(msdWrap);
+            var delWrap = document.createElement('div');
+            delWrap.style.cssText = 'margin-top:14px;padding-top:10px;border-top:1px solid #eee;';
+            var delBtn = document.createElement('button');
+            delBtn.textContent = 'Delete this dataset';
+            delBtn.style.cssText = 'padding:7px 14px;border:1px solid #d9a09a;border-radius:6px;background:#fdf3f3;color:#8f3a31;font-weight:600;cursor:pointer;';
+            var delNote = document.createElement('div');
+            delNote.className = 'muted';
+            delNote.style.cssText = 'margin-top:6px;font-size:12px;';
+            delNote.textContent = 'Allowed only once no map uses it — the server refuses otherwise and names the maps.';
+            delBtn.addEventListener('click', async function () {
+              if (!confirm('Delete the dataset "' + (d.name || '') + '"? Its frozen copy is removed and every remaining stamp is cleared. Maps keep their own layers.')) return;
+              delBtn.disabled = true; delBtn.textContent = 'Deleting…';
+              var rr = await db.rpc('ms_delete_dataset', { p_dataset: d.id });
+              if (rr.error) {
+                delBtn.disabled = false; delBtn.textContent = 'Delete this dataset';
+                delNote.textContent = rr.error.message;
+                delNote.style.color = '#8f3a31';
+                return;
+              }
+              var snap = rr.data && rr.data.snapshot_key;
+              if (snap) { try { await db.storage.from(BUCKET).remove([snap]); } catch (e2) {} }
+              delBtn.textContent = 'Deleted';
+              delNote.textContent = 'Dataset removed. This page will stop resolving.';
+            });
+            delWrap.appendChild(delBtn); delWrap.appendChild(delNote);
+            pAbout.appendChild(delWrap);
+          }
+        } catch (eDel) {}
+      }
+      load();
+    })();
+  </script>
+</body>
+</html>

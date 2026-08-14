@@ -98,6 +98,25 @@
         ((tr && tr.data) || []).forEach(function (e) { thumbs[e.project_id] = e.thumb; });
       } catch (eT) {}
     }
+    // ── bookmarked DATASETS (8/11) — a starred dataset is a starred layer; Add opens the same
+    //    per-layer picker as a map, pre-narrowed to just that dataset's origin layer ──
+    var dsRows = [];
+    try {
+      var dsIds = MSBookmarks.listDatasets ? (await MSBookmarks.listDatasets()) : [];
+      if (dsIds.length) {
+        var dr = await db.from('datasets')
+          .select('id,slug,name,licence,feature_count,origin_layer_id,origin_project_id,msd')
+          .in('id', dsIds);
+        if (!dr.error && dr.data) {
+          var byId = {}; dr.data.forEach(function (d) { byId[d.id] = d; });
+          // NO same-map filter (8/11): a dataset whose origin IS this map still shows — adding
+          // it makes a same-map mirror, which is a real feature (Create-instance does the same).
+          // The owner starred NARN, whose origin was the open map, and it silently vanished.
+          dsRows = dsIds.map(function (id) { return byId[id]; })
+            .filter(function (d) { return d && d.origin_project_id && d.origin_layer_id; });
+        }
+      }
+    } catch (eDs) {}
     var THUMB_OK = /^(data:image\/|images\/|\.\.\/images\/|https?:\/\/)/;
     function rows(list, empty) {
       if (!list.length) return '<div class="pp-empty">' + empty + '</div>';
@@ -114,11 +133,32 @@
           '</div>';
       }).join('');
     }
+    function dsRowsHtml(list) {
+      if (!list.length) return '';
+      return '<div class="pp-sec">🏷 Bookmarked datasets</div>' + list.map(function (d) {
+        var meta = [];
+        if (d.licence && d.licence !== 'unknown') meta.push(d.licence);
+        if (d.feature_count) meta.push(Number(d.feature_count).toLocaleString() + ' features');
+        return '<div class="pp-row">' +
+          '<span class="nm" title="' + esc(d.name) + '">' + esc(d.name || 'Untitled dataset') +
+          (d.msd ? ' <span title="MapStructor Dataset — first-party designation" style="display:inline-block;padding:0 5px;border-radius:4px;background:#2d7a2d;color:#fff;font-size:10px;font-weight:700;vertical-align:1px;">MSD</span>' : '') +
+          (meta.length ? '<span style="display:block;font-size:11px;color:#9a94ad;">' + esc(meta.join(' · ')) + '</span>' : '') + '</span>' +
+          '<a class="pp-view" href="../dataset.html?id=' + esc(d.slug || d.id) + '" target="_blank" rel="noopener" title="Open this dataset\'s page in a new tab">View</a>' +
+          '<button class="pp-add" data-ds-proj="' + esc(d.origin_project_id) + '" data-ds-layer="' + esc(d.origin_layer_id) + '" data-name="' + esc(d.name || 'Untitled dataset') + '">Add</button>' +
+          '</div>';
+      }).join('');
+    }
     body.innerHTML =
       '<div class="pp-sec">★ Bookmarked maps</div>' + rows(bmRows, 'Nothing starred yet — ★ any map (yours included: star them on your dashboard or user page), or browse the portal.') +
-      '<div class="pp-foot"><a href="../portal.html" target="_blank" rel="noopener" style="color:#7c5cbf;font-weight:700;text-decoration:none;">Open Portal ↗</a></div>';
+      dsRowsHtml(dsRows) +
+      '<div class="pp-foot"><a href="../portal.html" target="_blank" rel="noopener" style="color:#7c5cbf;font-weight:700;text-decoration:none;">Open Portal ↗</a>' +
+      '<a href="../datasets.html" target="_blank" rel="noopener" style="color:#7c5cbf;font-weight:700;text-decoration:none;">Search All Datasets ↗</a></div>';
     body.querySelectorAll('.pp-add').forEach(function (b) {
-      b.onclick = function () { openPicker(b.getAttribute('data-id'), b.getAttribute('data-name')); };
+      b.onclick = function () {
+        var dsProj = b.getAttribute('data-ds-proj');
+        if (dsProj) openPicker(dsProj, b.getAttribute('data-name'), b.getAttribute('data-ds-layer'));
+        else openPicker(b.getAttribute('data-id'), b.getAttribute('data-name'));
+      };
     });
   }
 
@@ -142,7 +182,9 @@
     } catch (e) { return false; }
   }
 
-  async function openPicker(srcId, srcName) {
+  // onlyLid (8/11): a bookmarked DATASET adds through this same picker, narrowed to its origin
+  // layer — one row, same three modes, same merge.
+  async function openPicker(srcId, srcName, onlyLid) {
     var body = shell('Add “' + srcName + '”');
     body.innerHTML = '<div class="pp-empty">Loading its layers…</div>';
     // Which of this source's layers are ALREADY here? (8/6 — the owner re-added a map to get MORE
@@ -162,7 +204,8 @@
     function isHere(L) { return !!here[L.id] || !!hereNames[String(L.name || '').replace(/\s*\(view\)\s*$/, '')]; }
     var pls = await db.from('project_layers').select('layer_id, layers(id,name,r2_bytes,fold_state,source_type)').eq('project_id', srcId).order('sort_order');
     if (pls.error || !pls.data || !pls.data.length) { body.innerHTML = '<div class="pp-empty">Could not read that map’s layers' + (pls.error ? ' (' + esc(pls.error.message) + ')' : ' — it has none') + '.</div>'; return; }
-    var rows = pls.data.filter(function (x) { return x.layers; });
+    var rows = pls.data.filter(function (x) { return x.layers && (!onlyLid || x.layers.id === onlyLid); });
+    if (onlyLid && !rows.length) { body.innerHTML = '<div class="pp-empty">That dataset’s source layer is no longer in its map — nothing to add.</div>'; return; }
     // 8/6: PICK WHICH LAYERS COME OVER. The ✓ column decides what is added at all; the
     // mode radios only matter for the layers you keep ticked.
     var html =

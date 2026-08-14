@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Data Repository — MapStructor</title>
+  <link rel="icon" href="images/logo-transparent.png">
+  <style>
+    /* Data Repository (8/11) — the datasets moved OUT of the portal front page (owner: datasets
+       are numerous and mean little without context, so they live in a plain repo reached from a
+       link at the bottom of the portal). Search on top, the whole catalogue underneath. */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --p: #7c5cbf; --p-dark: #6246a8; }
+    body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #f0eaff; color: #1e1b2e; min-height: 100vh; }
+    nav { position: fixed; top: 0; right: 0; display: flex; align-items: center; gap: 4px; padding: 16px clamp(16px, 4vw, 40px); z-index: 20; }
+    nav a { color: #6e6585; text-decoration: none; font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 6px; white-space: nowrap; }
+
+    /* the back link lives IN the page header, not fixed at the viewport corner — the injected
+       site topbar owns that corner and was covering it (owner, 8/11) */
+    .crumb { display: inline-block; margin-bottom: clamp(10px, 2vw, 18px); padding: 8px 18px;
+             color: #5b4b9a; background: #fff; border: 1px solid rgba(124,92,191,0.30); border-radius: 8px;
+             text-decoration: none; font-size: 14px; font-weight: 700; white-space: nowrap; }
+    .crumb:hover { background: #f6f2ff; border-color: #b9a9ee; }
+    .head { text-align: center; padding: clamp(48px, 8vw, 84px) 20px clamp(20px, 3vw, 32px); }
+    .head h1 { font-size: clamp(28px, 5vw, 44px); font-weight: 800; letter-spacing: -0.03em; }
+    .head p { margin-top: 10px; color: #9490a8; font-size: clamp(13.5px, 1.7vw, 16px); max-width: 640px; margin-left: auto; margin-right: auto; }
+
+    main { max-width: 860px; margin: 0 auto; padding: 0 clamp(20px, 5vw, 64px) clamp(56px, 8vw, 88px); }
+    .ds-search { width: 100%; padding: 12px 15px; border: 1px solid rgba(124,92,191,0.28);
+                 border-radius: 9px; font-size: 15px; font-family: inherit; background: #fff; color: #1e1b2e; }
+    .ds-search:focus { outline: 2px solid #b9a9ee; border-color: #b9a9ee; }
+    .ds-list { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .ds-row { display: block; text-decoration: none; color: inherit; background: #fff; border: 1px solid rgba(124,92,191,0.18);
+              border-radius: 10px; padding: 13px 16px; transition: transform .1s, box-shadow .1s; }
+    .ds-row:hover { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(30,27,46,0.09); }
+    .ds-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .ds-name { font-weight: 700; font-size: 15.5px; }
+    .ds-star { font-size: 18px; line-height: 1; flex: none; }
+    .ds-meta { margin-top: 4px; color: #6e6585; font-size: 13px; }
+    .ds-tags { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .ds-tag { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 20px; background: #efeaf8; color: #5b4b9a; }
+    .ds-tag.warn { background: #fdf1ef; color: #b4453a; }
+    .ds-group { margin-top: 22px; font-size: 12.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #9490a8; }
+    .note { margin-top: 20px; text-align: center; color: #9490a8; font-size: 13.5px; }
+    footer { display: flex; justify-content: center; gap: 18px; padding: 24px; }
+    footer a { color: #9490a8; text-decoration: none; font-size: 12.5px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js?v=20260728a"></script>
+  <script src="platform/veil.js?v=20260731a"></script>
+  <script src="platform/topbar.js?v=20260728a"></script>
+  <script src="platform/bookmarks.js?v=20260811a"></script>
+</head>
+<body>
+
+  <nav>
+    <a href="portal.html">Map Portal</a>
+    <a href="index.html">Home</a>
+    <a href="#" class="btn-nav" id="nav-auth" style="display:none;">Login</a>
+  </nav>
+
+  <div class="head">
+    <a class="crumb" href="portal.html">&larr; Back to portal</a>
+    <h1>Data Repository</h1>
+    <p>Every registered dataset — individual layers with a permanent id, a recorded source and licence, and a frozen read-only copy. Tap ☆ to bookmark one.</p>
+  </div>
+
+  <main>
+    <div style="display:flex;gap:10px;align-items:center;">
+      <input class="ds-search" id="ds-search" type="search" placeholder="Search datasets and maps — name, source, description" autocomplete="off" style="flex:1;">
+      <select class="ds-search" id="ds-sort" title="Sort the repository" style="width:auto;flex:none;">
+        <option value="created-desc">Newest first</option>
+        <option value="created-asc">Oldest first</option>
+        <option value="name-asc">Name A–Z</option>
+        <option value="name-desc">Name Z–A</option>
+      </select>
+    </div>
+    <div class="ds-list" id="ds-list"></div>
+    <div class="note" id="ds-note">Loading…</div>
+  </main>
+
+  <footer>
+    <a href="portal.html">Map Portal</a>
+    <a href="index.html">MapStructor</a>
+  </footer>
+
+  <script>
+    (function () {
+      'use strict';
+      // Every field here is user-written, so rows are built with textContent throughout.
+      var LIC_OPEN = { 'CC0-1.0':1, 'PDDL-1.0':1, 'public-domain':1, 'CC-BY-4.0':1, 'CC-BY-SA-4.0':1, 'ODbL-1.0':1, 'OGL-3.0':1 };
+      function dsRow(d) {
+        var a = document.createElement('a');
+        a.className = 'ds-row';
+        a.href = 'dataset.html?id=' + encodeURIComponent(d.slug || d.id);
+        var top = document.createElement('div'); top.className = 'ds-top';
+        var n = document.createElement('div'); n.className = 'ds-name'; n.textContent = d.name || 'Untitled dataset';
+        top.appendChild(n);
+        var st = document.createElement('span'); st.className = 'ds-star';
+        top.appendChild(st);
+        a.appendChild(top);
+        if (window.MSBookmarks) MSBookmarks.starDataset(st, d.id);
+        var bits = [];
+        if (d.source) bits.push(d.source);
+        if (d.feature_count) bits.push(Number(d.feature_count).toLocaleString() + ' features');
+        if (d.snapshot_bytes) bits.push(d.snapshot_bytes >= 1048576 ? (Math.round(d.snapshot_bytes / 104857.6) / 10) + ' MB' : Math.max(1, Math.round(d.snapshot_bytes / 1024)) + ' KB');
+        if (d.created_at) bits.push('registered ' + new Date(d.created_at).toLocaleDateString());
+        var m = document.createElement('div'); m.className = 'ds-meta';
+        m.textContent = bits.join(' · ') || 'No source recorded yet';
+        a.appendChild(m);
+        var tags = document.createElement('div'); tags.className = 'ds-tags';
+        var lt = document.createElement('span');
+        lt.className = 'ds-tag' + (LIC_OPEN[d.licence] ? '' : ' warn');
+        lt.textContent = (!d.licence || d.licence === 'unknown') ? 'licence unknown' : d.licence;
+        tags.appendChild(lt);
+        if (d.lic_share_alike) { var sa = document.createElement('span'); sa.className = 'ds-tag'; sa.textContent = 'share-alike'; tags.appendChild(sa); }
+        if (d.lic_commercial === false) { var nc = document.createElement('span'); nc.className = 'ds-tag warn'; nc.textContent = 'no commercial use'; tags.appendChild(nc); }
+        if (d.snapshot_key) { var fz = document.createElement('span'); fz.className = 'ds-tag'; fz.textContent = 'read-only copy kept'; tags.appendChild(fz); }
+        if (d.curated) { var cu = document.createElement('span'); cu.className = 'ds-tag'; cu.textContent = 'curated'; tags.appendChild(cu); }
+        if (d.msd) { var mt = document.createElement('span'); mt.className = 'ds-tag'; mt.textContent = 'MSD'; mt.title = 'MapStructor Dataset — first-party designation'; mt.style.cssText = 'background:#2d7a2d;color:#fff;font-weight:700;'; tags.appendChild(mt); }
+        a.appendChild(tags);
+        return a;
+      }
+      function mapRow(p) {
+        var a = document.createElement('a');
+        a.className = 'ds-row';
+        a.href = 'map/index.html?id=' + encodeURIComponent(p.project_id);
+        var n = document.createElement('div'); n.className = 'ds-name';
+        n.textContent = ((p.projects && p.projects.name) || 'Untitled Map');
+        a.appendChild(n);
+        var m = document.createElement('div'); m.className = 'ds-meta'; m.textContent = p.blurb || 'Map'; a.appendChild(m);
+        return a;
+      }
+      function group(list, label) {
+        var h = document.createElement('div'); h.className = 'ds-group'; h.textContent = label;
+        list.appendChild(h);
+      }
+      var listEl = document.getElementById('ds-list'), noteEl = document.getElementById('ds-note');
+      var searchEl = document.getElementById('ds-search'), sortEl = document.getElementById('ds-sort'), tmr = null, seq = 0;
+
+      async function loadDatasets(q) {
+        if (!(window.MapAuth && MapAuth.db)) return setTimeout(function () { loadDatasets(q); }, 150);
+        var my = ++seq;
+        listEl.textContent = '';
+        try {
+          var sel = 'id, slug, name, source, licence, lic_share_alike, lic_commercial, feature_count, snapshot_bytes, snapshot_key, curated, sort_order, msd, created_at';
+          var qb = MapAuth.db.from('datasets').select(sel);
+          var safe = q ? q.replace(/[,()*]/g, ' ').trim() : '';
+          if (q && !safe) { noteEl.textContent = 'Type a little more to search.'; return; }
+          // this page IS the repository — with no search it lists everything. Sortable by name
+          // and registration date; NEWEST FIRST by default (owner, 8/13).
+          if (safe) qb = qb.or('name.ilike.*' + safe + '*,source.ilike.*' + safe + '*,more_info.ilike.*' + safe + '*');
+          var srt = (sortEl && sortEl.value) || 'created-desc';
+          if (srt === 'created-asc')       qb = qb.order('created_at', { ascending: true });
+          else if (srt === 'name-asc')     qb = qb.order('name', { ascending: true });
+          else if (srt === 'name-desc')    qb = qb.order('name', { ascending: false });
+          else                             qb = qb.order('created_at', { ascending: false });
+          var r = await qb.order('name', { ascending: true }).limit(500);
+          if (my !== seq) return;
+          if (r.error) throw new Error(r.error.message);
+          var ds = r.data || [];
+
+          var maps = [];
+          if (safe) {
+            var rm = await MapAuth.db.from('portal_entries')
+              .select('project_id, blurb, projects!inner(name, is_public, deleted_at)')
+              .eq('projects.is_public', true).is('projects.deleted_at', null)
+              .ilike('projects.name', '*' + safe + '*').limit(50);
+            if (!rm.error) maps = rm.data || [];
+          }
+          if (my !== seq) return;
+
+          if (ds.length) { if (safe && maps.length) group(listEl, 'Datasets'); ds.forEach(function (d) { listEl.appendChild(dsRow(d)); }); }
+          if (maps.length) { group(listEl, 'Maps'); maps.forEach(function (p) { listEl.appendChild(mapRow(p)); }); }
+
+          var total = ds.length + maps.length;
+          noteEl.textContent = total
+            ? (safe ? total + ' result' + (total === 1 ? '' : 's') : total + ' dataset' + (total === 1 ? '' : 's'))
+            : (safe ? 'Nothing matched that.' : 'No datasets registered yet — open a map, click a layer, and use “Register as dataset”.');
+        } catch (e) {
+          if (my !== seq) return;
+          noteEl.textContent = 'Datasets could not load — please try again in a moment.';
+        }
+      }
+      if (searchEl) searchEl.addEventListener('input', function () {
+        clearTimeout(tmr);
+        var q = searchEl.value.trim();
+        tmr = setTimeout(function () { loadDatasets(q.length >= 2 ? q : ''); }, 220);
+      });
+      if (sortEl) sortEl.addEventListener('change', function () {
+        var q = searchEl ? searchEl.value.trim() : '';
+        loadDatasets(q.length >= 2 ? q : '');
+      });
+      loadDatasets('');
+    })();
+  </script>
+</body>
+</html>

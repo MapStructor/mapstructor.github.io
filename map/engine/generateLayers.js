@@ -123,6 +123,18 @@ function setupGroupListeners(groupNode) {
 }
 
 function buildContainerHTML(node) {
+  if (node.type === "section" && node.msDivider) {
+    // divider: a section row that renders as plain text — no caret, no checkbox, no children.
+    // The (hidden, empty) container div stays so anything addressing #cont-<id> keeps working.
+    // Size (8/13): small (default) / medium / large — how far the rules stretch.
+    var dsz = node.msDividerSize === "medium" ? " md" : node.msDividerSize === "large" ? " lg" : "";
+    return (
+      '<div class="ms-section-block ms-divider-block' + dsz + '" id="' + node.id + '">' +
+        '<div class="layer-list-row ms-divider-row"><label class="ms-divider-label">' + (node.label || '') + '</label></div>' +
+        '<div id="' + node.containerId + '" style="display:none"></div>' +
+      '</div>'
+    );
+  }
   if (node.type === "section") {
     var childHTML = node.children.map(buildContainerHTML).join('');
     return (

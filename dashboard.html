@@ -42,6 +42,11 @@
     .bm-body { padding: 8px 10px; display: flex; align-items: center; gap: 6px; }
     .bm-name { font-size: 13px; font-weight: 600; color: #2a2a33; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
     .bm-star { font-size: 15px; line-height: 1; }
+    /* dataset bookmark cards (8/11): no thumbnail — a 🏷 badge strip + the licence, so a
+       glance never confuses them with map cards */
+    .bm-card.ds .bm-thumb { height: 34px; background: linear-gradient(135deg, #efeaf8, #e4dcf4); position: relative; }
+    .bm-card.ds .bm-thumb::after { content: '🏷 dataset'; position: absolute; left: 10px; top: 8px; font-size: 11px; font-weight: 700; letter-spacing: .03em; color: #5b4b9a; }
+    .bm-lic { font-size: 11px; color: #6b6580; padding: 0 10px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .danger-box { border-color: #e9c4c0; }
     #anon-note { background: #fff7e6; border: 1px solid #f0dca8; border-radius: 10px; padding: 12px 14px; font-size: 14px; margin-bottom: 20px; }
     /* ── Pricing table (same look as services-pricing-preview.html) ── */
@@ -69,11 +74,12 @@
   <script src="platform/auth.js?v=20260728a"></script>
   <script src="platform/veil.js?v=20260731a"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
   <script src="platform/topbar.js?v=20260728a"></script>
-  <script src="platform/bookmarks.js?v=20260806a"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
+  <script src="platform/bookmarks.js?v=20260811a"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
   <script src="platform/pricing.js?v=20260729a"></script>
   <script src="platform/sanitize.js?v=20260709"></script>
-  <script src="platform/share.js?v=20260806b"></script>
-  <script src="platform/configLoader.js?v=20260714e"></script>   <!-- freeBasemapDefaults for New-map stamping -->
+  <script src="platform/datasets.js?v=20260813c"></script>   <!-- datasets & provenance: layers as the atoms -->
+  <script src="platform/share.js?v=20260813c"></script>
+  <script src="platform/configLoader.js?v=20260813b"></script>   <!-- freeBasemapDefaults for New-map stamping -->
 </head>
 <body>
   <nav>
@@ -101,6 +107,12 @@
       <div id="bm-mine-wrap" style="display:none;">
         <div class="bm-rowtitle">My Maps</div>
         <div class="bm-row" id="bm-mine"></div>
+      </div>
+      <!-- dataset bookmarks (8/11) — kept apart from map bookmarks and dressed differently
+           (🏷 + licence line) so the two are never confused -->
+      <div id="bm-ds-wrap" style="display:none;">
+        <div class="bm-rowtitle">Datasets</div>
+        <div class="bm-row" id="bm-ds"></div>
       </div>
       <p class="sub" id="bm-empty" style="margin:0;">Nothing starred yet — tap ☆ on any map here or in the <a href="portal.html">Map Portal</a>.</p>
     </section>
@@ -238,8 +250,10 @@
         if (!pRow || !window.MSBookmarks) return;
         var ids = [];
         try { ids = await MSBookmarks.list(); } catch (e) { ids = []; }
+        var dsCount = 0;
+        try { dsCount = await loadDatasetBookmarks(); } catch (e) { dsCount = 0; }
         pRow.innerHTML = ''; mRow.innerHTML = '';
-        if (!ids.length) { pWrap.style.display = 'none'; mWrap.style.display = 'none'; empty.style.display = ''; return; }
+        if (!ids.length) { pWrap.style.display = 'none'; mWrap.style.display = 'none'; empty.style.display = dsCount ? 'none' : ''; return; }
         var rows = [], thumbs = {}, inPortal = {};
         try {
           var r = await db.from('projects').select('id,name,user_id,deleted_at').in('id', ids).is('deleted_at', null);
@@ -259,7 +273,7 @@
           var t = await db.from('portal_entries').select('project_id,thumb').in('project_id', ids);
           ((t && t.data) || []).forEach(function (e) { thumbs[e.project_id] = e.thumb; inPortal[e.project_id] = 1; });
         } catch (e) {}
-        if (!rows.length) { pWrap.style.display = 'none'; mWrap.style.display = 'none'; empty.style.display = ''; empty.textContent = 'Your starred maps are no longer available.'; return; }
+        if (!rows.length) { pWrap.style.display = 'none'; mWrap.style.display = 'none'; empty.style.display = dsCount ? 'none' : ''; empty.textContent = 'Your starred maps are no longer available.'; return; }
         rows.forEach(function (m) {
           // a map that IS in the portal belongs in the Portal row even when you own it (8/6)
           var mine = m.user_id === user.id && !inPortal[m.id];
@@ -282,14 +296,87 @@
         });
         pWrap.style.display = pRow.children.length ? '' : 'none';
         mWrap.style.display = mRow.children.length ? '' : 'none';
-        empty.style.display = (pRow.children.length || mRow.children.length) ? 'none' : '';
+        empty.style.display = (pRow.children.length || mRow.children.length || dsCount) ? 'none' : '';
+      }
+      // dataset bookmarks get their own row, drawn differently (🏷 strip + licence) so maps and
+      // datasets never read as the same thing (owner 8/11). Returns how many cards it drew.
+      async function loadDatasetBookmarks() {
+        var wrap = document.getElementById('bm-ds-wrap'), row = document.getElementById('bm-ds');
+        if (!row || !MSBookmarks.listDatasets) return 0;
+        var ids = [];
+        try { ids = await MSBookmarks.listDatasets(); } catch (e) { ids = []; }
+        row.innerHTML = '';
+        if (!ids.length) { wrap.style.display = 'none'; return 0; }
+        var rows = [];
+        try {
+          var r = await db.from('datasets').select('id,slug,name,source,licence,feature_count').in('id', ids);
+          rows = (r && r.data) || [];
+        } catch (e) {}
+        rows.forEach(function (d) {
+          var card = document.createElement('a');
+          card.className = 'bm-card ds';
+          card.href = 'dataset.html?id=' + encodeURIComponent(d.slug || d.id);
+          var th = document.createElement('span'); th.className = 'bm-thumb'; card.appendChild(th);
+          var body = document.createElement('div'); body.className = 'bm-body';
+          var nm = document.createElement('span'); nm.className = 'bm-name'; nm.textContent = d.name || 'Untitled dataset';
+          body.appendChild(nm);
+          var st = document.createElement('span'); st.className = 'bm-star';
+          st.addEventListener('click', function (e) { e.preventDefault(); });
+          body.appendChild(st);
+          card.appendChild(body);
+          var lic = document.createElement('div'); lic.className = 'bm-lic';
+          var bits = [];
+          if (d.licence && d.licence !== 'unknown') bits.push(d.licence);
+          if (d.source) bits.push(d.source);
+          lic.textContent = bits.join(' · ') || 'licence unknown';
+          card.appendChild(lic);
+          row.appendChild(card);
+          MSBookmarks.starDataset(st, d.id);
+        });
+        wrap.style.display = row.children.length ? '' : 'none';
+        return row.children.length;
       }
       // starring anywhere on this page redraws the strip immediately (no refresh)
       window.addEventListener('ms-bookmarks-changed', function () { loadBookmarks(); });
 
+      // trash/restore go through definer RPCs (8/13): the projects_update RLS policy requires
+      // ms_edit_lock_free, so a LOCKED map refused even a deleted_at update — the server-side
+      // half of "the locked map still does not allow deletion". Falls back to the direct
+      // update when the migration isn't applied.
+      async function trashProject(id) {
+        var r = await db.rpc('ms_trash_project', { p_project: id });
+        if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
+          r = await db.from('projects').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+          if (!r.error) { try { await db.from('project_snapshots').delete().eq('project_id', id).eq('label', 'published'); } catch (e) {} }
+        }
+        return r;
+      }
+      async function restoreProject(id) {
+        var r = await db.rpc('ms_restore_project', { p_project: id });
+        if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
+          r = await db.from('projects').update({ deleted_at: null }).eq('id', id);
+        }
+        return r;
+      }
       var _portalMine = {};   // my maps that are listed in the Map Portal → "Portal Item" badge
+      // stored per-map stats (8/13): ms_my_map_stats reads layers.feature_count/data_bytes —
+      // maintained by triggers, never a row scan. Covers trashed maps too (Trash shows sizes).
+      var _mapStats = {};
+      function fmtStat(st) {
+        if (!st) return '';
+        var n = Number(st.feature_count || 0), b = Number(st.data_bytes || 0) + Number(st.tile_bytes || 0);
+        if (!n && !b) return '';
+        return (n ? n.toLocaleString() + ' features' : '') + (n && b ? ' · ' : '') + (b ? (window.P && P.fmtBytes ? P.fmtBytes(b) : Math.round(b / 1048576) + ' MB') : '');
+      }
+      async function loadMapStats() {
+        try {
+          var r = await db.rpc('ms_my_map_stats');
+          ((r && !r.error && r.data) || []).forEach(function (s) { _mapStats[s.project_id] = s; });
+        } catch (e) {}
+      }
       async function loadMaps() {
         var sel = 'id,name,updated_at,is_public,visibility:raw_config->>visibility,editLock:raw_config->>editLock';   // only THIS user's maps (RLS still permissive — tighten at Step 25)
+        var statsP = loadMapStats();
         var res = await db.from('projects').select(sel).eq('user_id', user.id).is('deleted_at', null).order('updated_at', { ascending: false });   // ACTIVE maps (trashed = deleted_at set)
         if (res.error) res = await db.from('projects').select(sel).eq('user_id', user.id).order('updated_at', { ascending: false });   // deleted_at not migrated yet → show all (run trash-soft-delete-setup.sql to enable Trash)
         if (res.error) { listEl.innerHTML = '<p class="msg err">Could not load your maps.</p>'; return; }
@@ -298,11 +385,53 @@
           var pe = await db.from('portal_entries').select('project_id').eq('user_id', user.id);
           ((pe && pe.data) || []).forEach(function (e) { _portalMine[e.project_id] = 1; });
         } catch (e) {}
+        try { await statsP; } catch (e) {}
         render(res.data || []);
+      }
+      // multi-select (8/13): tick maps → one "Move N to Trash" action. LOCKED maps are
+      // SKIPPED, by the owner's rule (8/13): a locked map can't be trashed — unlocking
+      // happens only inside the map, in editing mode. The RPC refuses them server-side too.
+      function updateMapsBulkBar() {
+        var bar = document.getElementById('maps-bulkbar'); if (!bar) return;
+        var ticked = Array.prototype.slice.call(listEl.querySelectorAll('.ms-selmap:checked'));
+        if (!ticked.length) { bar.style.display = 'none'; return; }
+        bar.style.display = 'flex';
+        bar.querySelector('#maps-bulk-n').textContent = ticked.length + ' selected';
+      }
+      async function bulkTrashMaps() {
+        var all = Array.prototype.slice.call(listEl.querySelectorAll('.ms-selmap:checked'));
+        if (!all.length) return;
+        var lockedNames = all.filter(function (cb) { return cb.getAttribute('data-locked') === '1'; })
+                             .map(function (cb) { return cb.getAttribute('data-name') || 'Untitled Map'; });
+        var ticked = all.filter(function (cb) { return cb.getAttribute('data-locked') !== '1'; });
+        if (!ticked.length) {
+          alert('🔒 ' + lockedNames.join(', ') + (lockedNames.length === 1 ? ' is' : ' are') + ' locked. Open the map and unlock it in Settings before deleting.');
+          return;
+        }
+        var names = ticked.map(function (cb) { return cb.getAttribute('data-name') || 'Untitled Map'; });
+        var msg = 'Move ' + ticked.length + ' map' + (ticked.length === 1 ? '' : 's') + ' to Trash?\n\n• ' + names.join('\n• ')
+          + (lockedNames.length ? '\n\n🔒 Skipped (locked — unlock inside the map first): ' + lockedNames.join(', ') : '')
+          + '\n\nYou can restore them — or delete permanently from Trash.';
+        if (!confirm(msg)) return;
+        for (var i = 0; i < ticked.length; i++) {
+          var id = ticked[i].getAttribute('data-id');
+          var r = await trashProject(id);
+          if (r.error) { alert('Could not move "' + (ticked[i].getAttribute('data-name') || id) + '" to Trash: ' + r.error.message); continue; }
+          removeR2Snapshot(id);
+        }
+        loadMaps(); loadTrash();
       }
       function render(maps) {
         if (!maps.length) { listEl.innerHTML = '<p class="sub">No maps yet — create your first one below.</p>'; return; }
-        listEl.innerHTML = '';
+        listEl.innerHTML = '<div id="maps-bulkbar" style="display:none;align-items:center;gap:10px;margin-bottom:8px;padding:8px 12px;background:#f6f3fb;border:1px solid #d9cff1;border-radius:8px;">'
+          + '<span id="maps-bulk-n" style="font-size:13px;color:#5c4a86;font-weight:600;"></span>'
+          + '<button class="btn btn-danger" id="maps-bulk-trash">Move to Trash</button>'
+          + '<button class="btn btn-light" id="maps-bulk-clear">Clear</button></div>';
+        document.getElementById('maps-bulk-trash').onclick = bulkTrashMaps;
+        document.getElementById('maps-bulk-clear').onclick = function () {
+          listEl.querySelectorAll('.ms-selmap:checked').forEach(function (cb) { cb.checked = false; });
+          updateMapsBulkBar();
+        };
         maps.forEach(function (m) {
           // effective visibility mirrors MapShare: explicit value wins; older maps = the behavior they had
           var vis = (m.visibility === 'private' || m.visibility === 'link' || m.visibility === 'public') ? m.visibility : (m.is_public ? 'public' : 'link');
@@ -315,11 +444,14 @@
           var openHref = 'map/editor.html?id=' + encodeURIComponent(m.id);
           // 🔒 status only — locking/unlocking lives in the map's own Settings (user 7/22)
           var locked = m.editLock === 'true' || m.editLock === true;
-          row.innerHTML = '<a class="map-name" href="' + openHref + '" style="color:inherit;text-decoration:none;">' + esc(m.name || 'Untitled Map') + '</a>'
+          var stat = fmtStat(_mapStats[m.id]);
+          row.innerHTML = '<input type="checkbox" class="ms-selmap" data-id="' + m.id + '" data-name="' + esc(m.name || 'Untitled Map') + '" data-locked="' + (locked ? '1' : '0') + '" title="Select for bulk actions" style="width:15px;height:15px;flex:none;cursor:pointer;" />'
+            + '<a class="map-name" href="' + openHref + '" style="color:inherit;text-decoration:none;">' + esc(m.name || 'Untitled Map') + '</a>'
             + '<span class="ms-bm" style="font-size:16px;line-height:1;"></span>'   // ★ bookmark (Map Portal) — starred maps show in the editor's Portal window
             + (locked ? '<span class="pill" style="cursor:default;background:#fdeaea;color:#b4453a;" title="Locked — editing is off; unlock inside the map’s Settings">🔒 locked</span>' : '')
             + (_portalMine[m.id] ? '<span class="pill" style="cursor:default;background:#efeaf8;color:#5c4a86;border-color:#d9cff1;" title="Listed in the Map Portal — anyone can find and add it">Portal Item</span>' : '')
             + '<span class="pill' + (vis === 'public' ? ' pub' : '') + '" style="cursor:default;">' + visLabel + '</span>'
+            + (stat ? '<span class="map-meta" title="Stored counts — features and data size">' + stat + '</span>' : '')
             + '<span class="map-meta">' + fmtDate(m.updated_at) + '</span>'
             + '<div class="row-actions">'
             + '<a class="btn" data-act="open" href="' + openHref + '" style="display:inline-block;text-decoration:none;">Open</a>'
@@ -338,16 +470,17 @@
           };
           row.querySelector('[data-act=delete]').onclick = async function () {
             // a LOCKED map cannot be deleted from here — deletion must happen deliberately inside
-            // the map itself (unlock in its Settings first). (user 7/22)
+            // the map itself (unlock in its Settings first). (user 7/22, re-affirmed 8/13; the
+            // RPC refuses server-side too)
             if (locked) { alert('"' + (m.name || 'Untitled Map') + '" is locked. Open the map and unlock it in Settings before deleting.'); return; }
             if (!confirm('Move "' + (m.name || 'Untitled Map') + '" to Trash? You can restore it — or delete it permanently from Trash.')) return;
-            var r = await db.from('projects').update({ deleted_at: new Date().toISOString() }).eq('id', m.id);   // soft-delete (9i) — recoverable from Trash
+            var r = await trashProject(m.id);   // soft-delete (9i) — recoverable from Trash; RPC so locked maps work too
             if (r.error) { alert('Could not move to Trash: ' + r.error.message); return; }
-            try { await db.from('project_snapshots').delete().eq('project_id', m.id).eq('label', 'published'); } catch (e) {}   // a trashed map must not stay publicly viewable
             removeR2Snapshot(m.id);
             loadMaps(); loadTrash();
           };
           listEl.appendChild(row);
+          row.querySelector('.ms-selmap').addEventListener('change', updateMapsBulkBar);
           var bmEl = row.querySelector('.ms-bm');
           if (bmEl && window.MSBookmarks) MSBookmarks.star(bmEl, m.id);
         });
@@ -361,6 +494,54 @@
           if (tok) await fetch('https://mapstructor-worker.mapstructor.workers.dev/upload/snapshots/' + pid + '.json', { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } });
         } catch (e) {}
       }
+      // ── Delete forever is INSTANT now (8/13): ms_queue_purge validates + enqueues, a pg_cron
+      //    drain (ms_purge_tick, smallest-first) removes the rows in the background, and the row
+      //    vanishes from Trash immediately. Falls back to the old interactive chunk loop when the
+      //    queue migration isn't applied. Dataset-backing layers are never purged — they detach
+      //    and live on as archive layers (the datasets stay downloadable).
+      async function queuePurge(kind, target) {
+        var r = await db.rpc('ms_queue_purge', { p_kind: kind, p_target: target });
+        if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) return null;   // no migration → interactive fallback
+        if (r.error) throw new Error(r.error.message);
+        return r.data || { queued: true };
+      }
+      // the pre-queue chunk loop (8/8), kept as the fallback path
+      async function purgeInteractive(kind, id, btn) {
+        var fn = kind === 'project' ? 'ms_delete_project_forever' : 'ms_delete_layer_forever';
+        var arg = kind === 'project' ? { p_project: id } : { p_layer: id };
+        var total = 0, fin = null, r = null, slow = 0, after = 0;
+        for (var guard = 0; guard < 400; guard++) {
+          var a = Object.assign({}, arg, { p_after: after });
+          r = await db.rpc(fn, a);
+          if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
+            r = await db.rpc(fn, arg);   // pre-keyset chunked fn
+            if (r.error && kind === 'project' && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
+              r = await db.from('projects').delete().eq('id', id);   // no migration at all — old behaviour
+              break;
+            }
+          }
+          if (r.error && /57014|statement timeout/i.test(r.error.message || '')) {
+            if (++slow >= 3) break;   // persistent — surface it
+            continue;                 // one chunk overshot this call's window — the NEXT call gets a fresh 8s
+          }
+          if (r.error) break;
+          slow = 0;
+          fin = (r.data && r.data[0]) || null;
+          if (fin && fin.last_id) after = fin.last_id;
+          total += (fin && fin.features_removed) || 0;
+          if (!fin || fin.done !== false) break;   // finished — or a pre-`done` function that did it in one shot
+          if (btn) btn.textContent = 'Deleting… ' + total.toLocaleString();
+        }
+        if (r && r.error) throw new Error(r.error.message);
+        return fin;
+      }
+      async function purgeOne(kind, id, btn) {   // queue first; interactive only when the queue is absent
+        var q = await queuePurge(kind, id);
+        if (q) return { queued: true, kept: q.layers_kept || 0 };
+        var fin = await purgeInteractive(kind, id, btn);
+        return { queued: false, bytes: (fin && fin.bytes_released) || 0 };
+      }
+      var _trashPollTimer = null;
       async function loadTrash() {
         var el = document.getElementById('trash-section'); if (!el) return;
         var res = await db.from('projects').select('id,name,deleted_at').eq('user_id', user.id).not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
@@ -368,72 +549,95 @@
         // trashed LAYERS too (8/5): a layer removed from its last map parks here, still billed,
         // until "Delete forever" releases its bytes — before this it became an INVISIBLE orphan
         // billing its owner forever (see mapstructor_docs/sql/setup/layer-trash-setup.sql).
-        var lres = await db.from('layers').select('id,name,r2_bytes,deleted_at').eq('user_id', user.id).not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
+        var lres = await db.from('layers').select('id,name,r2_bytes,deleted_at,feature_count,data_bytes').eq('user_id', user.id).not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
+        if (lres.error) lres = await db.from('layers').select('id,name,r2_bytes,deleted_at').eq('user_id', user.id).not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
         var lrows = ((lres && !lres.error && lres.data) || []);   // column absent pre-migration → maps only
-        if (!rows.length && !lrows.length) { el.innerHTML = ''; return; }
+        // background deletes: hide queued items from the list, show one status line instead
+        var queued = {}, inFlight = [], failed = [];
+        try {
+          var qr = await db.from('ms_purge_queue').select('kind,target,name,features_removed,finished_at,error').order('enqueued_at');
+          ((qr && !qr.error && qr.data) || []).forEach(function (q) {
+            if (!q.finished_at) { queued[q.kind + ':' + q.target] = 1; inFlight.push(q); }
+            else if (q.error) failed.push(q);
+          });
+        } catch (e) {}
+        rows = rows.filter(function (m) { return !queued['project:' + m.id]; });
+        lrows = lrows.filter(function (L) { return !queued['layer:' + L.id]; });
+        if (!rows.length && !lrows.length && !inFlight.length && !failed.length) { el.innerHTML = ''; return; }
         el.innerHTML = '<h3 class="sub" style="margin:14px 0 6px;">🗑 Trash <span style="font-weight:400;color:#999;">(' + (rows.length + lrows.length) + ' — restorable)</span></h3>';
-        rows.forEach(function (m) {
+        if (inFlight.length) {
+          var removed = inFlight.reduce(function (a, q) { return a + Number(q.features_removed || 0); }, 0);
+          var bg = document.createElement('p'); bg.className = 'sub';
+          bg.style.cssText = 'margin:0 0 8px;color:#5c4a86;';
+          bg.textContent = '🔄 ' + inFlight.length + ' delete' + (inFlight.length === 1 ? '' : 's') + ' running in the background'
+            + (removed ? ' — ' + removed.toLocaleString() + ' features removed so far' : '') + '. Storage frees automatically.';
+          el.appendChild(bg);
+          if (_trashPollTimer) clearTimeout(_trashPollTimer);
+          _trashPollTimer = setTimeout(function () { loadTrash(); loadStorage && loadStorage(); }, 20000);
+        }
+        failed.forEach(function (q) {
+          var w = document.createElement('p'); w.className = 'sub';
+          w.style.cssText = 'margin:0 0 8px;color:#b4453a;';
+          w.textContent = '⚠ Could not delete "' + (q.name || q.target) + '": ' + q.error;
+          el.appendChild(w);
+        });
+        // bulk bar: Select all / Restore / Delete forever over the ticked rows (user 8/12)
+        if (rows.length || lrows.length) {
+          var bulk = document.createElement('div');
+          bulk.id = 'trash-bulkbar';
+          bulk.style.cssText = 'display:flex;align-items:center;gap:8px;margin:0 0 8px;flex-wrap:wrap;';
+          bulk.innerHTML = '<button class="btn btn-light" id="trash-selall">Select all</button>'
+            + '<span id="trash-bulk-n" class="map-meta"></span>'
+            + '<button class="btn btn-light" id="trash-bulk-restore" style="display:none;">Restore selected</button>'
+            + '<button class="btn btn-danger" id="trash-bulk-purge" style="display:none;">Delete selected forever</button>';
+          el.appendChild(bulk);
+        }
+        function tickedRows() { return Array.prototype.slice.call(el.querySelectorAll('.ms-seltrash:checked')); }
+        function syncTrashBar() {
+          var n = tickedRows().length;
+          var nEl = document.getElementById('trash-bulk-n'); if (nEl) nEl.textContent = n ? n + ' selected' : '';
+          ['trash-bulk-restore', 'trash-bulk-purge'].forEach(function (bid) {
+            var b = document.getElementById(bid); if (b) b.style.display = n ? '' : 'none';
+          });
+          var sa = document.getElementById('trash-selall');
+          if (sa) sa.textContent = (n && n === el.querySelectorAll('.ms-seltrash').length) ? 'Select none' : 'Select all';
+        }
+        function trashRow(kind, item, label, meta) {
           var row = document.createElement('div'); row.className = 'map-row';
-          row.innerHTML = '<span class="map-name" style="opacity:.65;">' + esc(m.name || 'Untitled Map') + '</span>'
-            + '<span class="map-meta">trashed ' + fmtDate(m.deleted_at) + '</span>'
+          row.innerHTML = '<input type="checkbox" class="ms-seltrash" data-kind="' + kind + '" data-id="' + item.id + '" data-name="' + esc(item.name || label) + '" data-bytes="' + (Number(item.data_bytes || item.r2_bytes || 0)) + '" style="width:15px;height:15px;flex:none;cursor:pointer;" />'
+            + '<span class="map-name" style="opacity:.65;">' + esc(item.name || label) + (meta ? ' <span style="color:#999;font-weight:400;">(' + meta + ')</span>' : '') + '</span>'
+            + '<span class="map-meta">trashed ' + fmtDate(item.deleted_at) + '</span>'
             + '<div class="row-actions"><button class="btn btn-light" data-act="restore">Restore</button>'
             + '<button class="btn btn-danger" data-act="purge">Delete forever</button></div>';
+          row.querySelector('.ms-seltrash').addEventListener('change', syncTrashBar);
+          return row;
+        }
+        async function afterPurge(out) {
+          if (out && out.queued) { /* instant — row disappears, drain runs behind the scenes */ }
+          else if (out && out.bytes > 0) alert(Math.round(out.bytes / 1048576) + ' MB released back to your storage.');
+          loadTrash(); loadMaps();
+        }
+        rows.forEach(function (m) {
+          var stat = fmtStat(_mapStats[m.id]);
+          var row = trashRow('project', m, 'Untitled Map', stat);
           row.querySelector('[data-act=restore]').onclick = async function () {
-            var r = await db.from('projects').update({ deleted_at: null }).eq('id', m.id);
+            var r = await restoreProject(m.id);
             if (r.error) { alert('Could not restore: ' + r.error.message); return; }
             loadMaps(); loadTrash();
           };
           row.querySelector('[data-act=purge]').onclick = async function () {
             if (!confirm('Permanently delete "' + (m.name || 'Untitled Map') + '"? This CANNOT be undone.')) return;
-            // 8/5: deleting the project row ALONE orphaned this map's layers — `layers` has no FK to
-            // `projects`, so they survived carrying their r2_bytes and kept billing their owner for
-            // a map they had destroyed. The RPC removes the layers this map owns alone (a shared
-            // layer stays), their features in chunks, and lets the pricing-v5 trigger release the
-            // bytes. See mapstructor_docs/sql/setup/delete-forever-setup.sql.
-            // 8/8: the RPC is RESUMABLE (delete-forever-chunked.sql) — one 8s statement could never
-            // finish a big map, and its rollback erased even the partial work. Each call now commits
-            // a ~3s slice and returns done=false until drained, so we LOOP it and show progress.
             var btn = row.querySelector('[data-act=purge]'); btn.disabled = true;
-            var total = 0, fin = null, r = null, slow = 0, after = 0;
-            for (var guard = 0; guard < 400; guard++) {
-              // p_after = keyset watermark from the last slice: scans never re-walk dead index
-              // space, so throughput can't decay mid-purge (the freshly-dead-tuple stall, 8/8)
-              r = await db.rpc('ms_delete_project_forever', { p_project: m.id, p_after: after });
-              if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
-                r = await db.rpc('ms_delete_project_forever', { p_project: m.id });   // pre-keyset chunked fn
-                if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
-                  r = await db.from('projects').delete().eq('id', m.id);   // no migration at all — old behaviour
-                  break;
-                }
-              }
-              if (r.error && /57014|statement timeout/i.test(r.error.message || '')) {
-                if (++slow >= 3) break;   // persistent — surface it
-                continue;                 // one chunk overshot this call's window — the NEXT call gets a fresh 8s
-              }
-              if (r.error) break;
-              slow = 0;
-              fin = (r.data && r.data[0]) || null;
-              if (fin && fin.last_id) after = fin.last_id;
-              total += (fin && fin.features_removed) || 0;
-              if (!fin || fin.done !== false) break;   // finished — or a pre-`done` function that did it in one shot
-              btn.textContent = 'Deleting… ' + total.toLocaleString();
-            }
-            if (r && r.error) { alert('Could not delete: ' + r.error.message); btn.disabled = false; btn.textContent = 'Delete forever'; return; }
-            if (fin && fin.bytes_released > 0) {
-              alert(Math.round(fin.bytes_released / 1048576) + ' MB released back to your storage.');
-            }
-            loadTrash(); loadMaps();
+            try { await afterPurge(await purgeOne('project', m.id, btn)); }
+            catch (e) { alert('Could not delete: ' + e.message); btn.disabled = false; btn.textContent = 'Delete forever'; }
           };
           el.appendChild(row);
         });
         lrows.forEach(function (L) {
-          var mb = Math.round((L.r2_bytes || 0) / 1048576);
-          var row = document.createElement('div'); row.className = 'map-row';
-          row.innerHTML = '<span class="map-name" style="opacity:.65;">' + esc(L.name || 'Untitled layer')
-            + ' <span style="color:#999;font-weight:400;">(layer' + (mb ? ' · ' + mb + ' MB' : '') + ')</span></span>'
-            + '<span class="map-meta">trashed ' + fmtDate(L.deleted_at) + '</span>'
-            + '<div class="row-actions"><button class="btn btn-light" data-act="restore">Restore</button>'
-            + '<button class="btn btn-danger" data-act="purge">Delete forever</button></div>';
+          var bytes = Number(L.data_bytes || 0) + Number(L.r2_bytes || 0);
+          var meta = 'layer' + (L.feature_count ? ' · ' + Number(L.feature_count).toLocaleString() + ' features' : '')
+            + (bytes ? ' · ' + (window.P && P.fmtBytes ? P.fmtBytes(bytes) : Math.round(bytes / 1048576) + ' MB') : '');
+          var row = trashRow('layer', L, 'Untitled layer', meta);
           row.querySelector('[data-act=restore]').onclick = async function () {
             // back into the map it was deleted from — or a fresh "Restored: …" map if that map is gone
             var r = await db.rpc('ms_restore_layer', { p_layer: L.id });
@@ -442,32 +646,53 @@
           };
           row.querySelector('[data-act=purge]').onclick = async function () {
             if (!confirm('Permanently delete the layer "' + (L.name || 'Untitled layer') + '" and its data? This CANNOT be undone.')) return;
-            // 8/8: resumable RPC, same loop as the map purge above (delete-forever-chunked.sql)
             var btn = row.querySelector('[data-act=purge]'); btn.disabled = true;
-            var total = 0, fin = null, r = null, slow = 0, after = 0;
-            for (var guard = 0; guard < 400; guard++) {
-              r = await db.rpc('ms_delete_layer_forever', { p_layer: L.id, p_after: after });
-              if (r.error && /PGRST202|does not exist|schema cache/i.test(r.error.message || '')) {
-                r = await db.rpc('ms_delete_layer_forever', { p_layer: L.id });   // pre-keyset fn
-              }
-              if (r.error && /57014|statement timeout/i.test(r.error.message || '')) {
-                if (++slow >= 3) break;   // persistent — surface it
-                continue;                 // transient overshoot — next call gets a fresh window
-              }
-              if (r.error) break;
-              slow = 0;
-              fin = (r.data && r.data[0]) || null;
-              if (fin && fin.last_id) after = fin.last_id;
-              total += (fin && fin.features_removed) || 0;
-              if (!fin || fin.done !== false) break;   // finished — or a pre-`done` function that did it in one shot
-              btn.textContent = 'Deleting… ' + total.toLocaleString();
-            }
-            if (r && r.error) { alert('Could not delete: ' + r.error.message); btn.disabled = false; btn.textContent = 'Delete forever'; return; }
-            if (fin && fin.bytes_released > 0) alert(Math.round(fin.bytes_released / 1048576) + ' MB released back to your storage.');
-            loadTrash();
+            try { await afterPurge(await purgeOne('layer', L.id, btn)); }
+            catch (e) { alert('Could not delete: ' + e.message); btn.disabled = false; btn.textContent = 'Delete forever'; }
           };
           el.appendChild(row);
         });
+        var selAll = document.getElementById('trash-selall');
+        if (selAll) selAll.onclick = function () {
+          var boxes = el.querySelectorAll('.ms-seltrash');
+          var allOn = tickedRows().length === boxes.length && boxes.length > 0;
+          boxes.forEach(function (cb) { cb.checked = !allOn; });
+          syncTrashBar();
+        };
+        var bulkRestore = document.getElementById('trash-bulk-restore');
+        if (bulkRestore) bulkRestore.onclick = async function () {
+          var sel = tickedRows(); if (!sel.length) return;
+          for (var i = 0; i < sel.length; i++) {
+            var kind = sel[i].getAttribute('data-kind'), id = sel[i].getAttribute('data-id');
+            var r = kind === 'project'
+              ? await restoreProject(id)
+              : await db.rpc('ms_restore_layer', { p_layer: id });
+            if (r.error) alert('Could not restore "' + sel[i].getAttribute('data-name') + '": ' + r.error.message);
+          }
+          loadMaps(); loadTrash();
+        };
+        var bulkPurge = document.getElementById('trash-bulk-purge');
+        if (bulkPurge) bulkPurge.onclick = async function () {
+          var sel = tickedRows(); if (!sel.length) return;
+          var names = sel.map(function (cb) { return cb.getAttribute('data-name'); });
+          if (!confirm('Permanently delete ' + sel.length + ' item' + (sel.length === 1 ? '' : 's') + '? This CANNOT be undone.\n\n• ' + names.join('\n• '))) return;
+          // smallest first (user 8/12) — matters most on the interactive fallback path, where
+          // clearing the small ones fast is visible progress
+          sel.sort(function (a, b) { return Number(a.getAttribute('data-bytes')) - Number(b.getAttribute('data-bytes')); });
+          bulkPurge.disabled = true;
+          var freed = 0, errs = [];
+          for (var i = 0; i < sel.length; i++) {
+            bulkPurge.textContent = 'Deleting… ' + (i + 1) + '/' + sel.length;
+            try {
+              var out = await purgeOne(sel[i].getAttribute('data-kind'), sel[i].getAttribute('data-id'), null);
+              if (out && !out.queued) freed += out.bytes || 0;
+            } catch (e) { errs.push(sel[i].getAttribute('data-name') + ': ' + e.message); }
+          }
+          if (freed > 0) alert(Math.round(freed / 1048576) + ' MB released back to your storage.');
+          if (errs.length) alert('Some items could not be deleted:\n' + errs.join('\n'));
+          loadTrash(); loadMaps();
+        };
+        syncTrashBar();
       }
       loadMaps();
       loadTrash();

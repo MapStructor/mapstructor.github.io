@@ -276,14 +276,22 @@ var MapShare = (function () {
       var st = ov.querySelector('#msshare-pstatus');
       if (st) { st.textContent = 'Saving…'; st.style.color = '#6b6680'; }
       try {
+        // a DELIBERATE thumbnail (Settings → 📸 Set current view as portal thumbnail, stored in
+        // raw_config.thumbnail) always beats the automatic capture of whatever is on screen
+        var thumb = null;
+        try {
+          var rr = await db.from('projects').select('raw_config').eq('id', projectId).single();
+          var tt = rr.data && rr.data.raw_config && rr.data.raw_config.thumbnail;
+          if (tt && /^(data:image\/|https?:\/\/)/.test(tt)) thumb = tt;
+        } catch (eT) {}
+        if (!thumb) thumb = captureThumb();
         if (isUpdate) {
-          var thumb = captureThumb();
           var payload = { blurb: blurb }; if (thumb) payload.thumb = thumb;   // keep an existing thumb when capture fails
           var r = await db.from('portal_entries').update(payload).eq('project_id', projectId);
           if (r.error) throw new Error(r.error.message);
         } else {
           var me2 = await MapAuth.currentUser();
-          var r2 = await db.from('portal_entries').insert({ project_id: projectId, user_id: me2.id, blurb: blurb, thumb: captureThumb() });
+          var r2 = await db.from('portal_entries').insert({ project_id: projectId, user_id: me2.id, blurb: blurb, thumb: thumb });
           if (r2.error) throw new Error(r2.error.message);
         }
         loadPortal();
@@ -301,16 +309,16 @@ var MapShare = (function () {
       var pub = !!fresh && !fresh.deleted_at && effectiveVisibility(fresh) === 'public';
       var published = false;
       try { var rs = await db.from('project_snapshots').select('id').eq('project_id', projectId).eq('label', 'published').limit(1); published = !!(rs.data && rs.data.length); } catch (e) {}
-      var clean = true;
+      // 8/10 — the old "no Linked or Instance layers" condition is GONE (it blocked the flagship
+      // Global Railways map, which is an MPD over raw layers as instances, and a stable dataset_id
+      // solves the duplicate-catalogue problem it was standing in for). The condition now is the
+      // owner's point 6: every layer of this map must already be a registered dataset. Companions
+      // inherit and are skipped. Server-side this is ms_portal_eligible() in datasets-setup.sql.
+      var missing = [], checked = false;
       try {
-        var rl = await db.from('project_layers').select('layers(id, parquet_key, raw_config)').eq('project_id', projectId);
-        (rl.data || []).forEach(function (x) {
-          var l = x.layers; if (!l) return;
-          var rc = l.raw_config || {};
-          if (rc.instanceOf || rc.editable === false) clean = false;
-          else if (l.parquet_key && String(l.parquet_key).indexOf(l.id) === -1) clean = false;   // C7 pointer: key names another layer's artifacts
-        });
-      } catch (e) {}
+        if (window.MSDatasets) { missing = await MSDatasets.missingForProject(projectId); checked = true; }
+      } catch (e) { checked = false; }   // a failed check must never read as "nothing is missing"
+      var clean = checked && missing.length === 0;
 
       if (entry) {
         pBox.innerHTML =
@@ -335,7 +343,11 @@ var MapShare = (function () {
         pLine(own, 'You own this map') +
         pLine(pub, 'Visibility is Public (set it above)') +
         pLine(published, 'Published at least once') +
-        pLine(clean, 'No Linked or Instance layers — the portal lists originals only') +
+        pLine(clean, !checked
+          ? 'Dataset check unavailable right now — try again in a moment'
+          : (clean ? 'Every layer is a registered dataset'
+                   : missing.length + ' layer' + (missing.length === 1 ? '' : 's') + ' not registered as a dataset yet')) +
+        ((checked && !clean) ? '<button id="msshare-pdatasets" style="' + PBTN + ';margin-top:6px;">Share info + register…</button>' : '') +
         (all
           ? '<textarea id="msshare-pblurb" maxlength="300" rows="2" placeholder="Short description shown on the portal card" style="' + PTA + '"></textarea>' +
             '<button id="msshare-padd" style="' + PBTN + ';margin-top:6px;">Add to Portal</button>' +
@@ -343,6 +355,11 @@ var MapShare = (function () {
           : '<div style="color:#9a93ad;margin-top:4px;">Fix the ✗ items, then reopen Share.</div>');
       var addBtn = ov.querySelector('#msshare-padd');
       if (addBtn) addBtn.addEventListener('click', function () { submitPortal(false); });
+      var dsBtn = ov.querySelector('#msshare-pdatasets');
+      if (dsBtn) dsBtn.addEventListener('click', function () {
+        if (!window.MSDatasets) return;
+        MSDatasets.openBulk(projectId, function () { loadPortal(); });   // re-check when the modal closes
+      });
     }
     loadPortal();
   }

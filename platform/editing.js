@@ -175,6 +175,10 @@
   }
   function makeNode(type, name) {
     var id = uid();
+    // a divider IS a section row (same table, same drag/rename/delete plumbing) that renders as
+    // plain text — msDivider rides in raw_config and round-trips through synthesize (user 8/12:
+    // "simply text, that I can drag between items … to delineate Raw Layers")
+    if (type === 'divider') return { type: 'section', msDivider: true, id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, children: [] };
     if (type === 'section') return { type: 'section', id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, children: [] };
     if (type === 'group')   return { type: 'group', id: id, label: name, caretId: 'caret-' + id, containerId: 'cont-' + id, itemSelector: '.' + id + '_item', children: [], checked: true, collapsed: false };
     var col = nextColor();
@@ -229,6 +233,7 @@
   }
   function containers(arr, depth, out) {
     (arr || []).forEach(function (n) {
+      if (n.msDivider) return;   // dividers hold nothing — never a parent option
       if (n.type === 'section' || n.type === 'group') { out.push({ node: n, depth: depth, type: n.type }); containers(n.children, depth + 1, out); }
     });
     return out;
@@ -412,6 +417,49 @@
     });
     label.addEventListener('blur', function () { finish(true); }, { once: true });
   }
+  // ── divider size (8/13): Small (default, the original look) · Medium · Large (near end-to-end).
+  //    Rides in raw_config.msDividerSize on the layer_sections row, like msDivider itself. ──
+  function showDividerSizeRow(node) {
+    var row = document.getElementById('elp-divsize');
+    if (!row) {
+      row = document.createElement('div');
+      row.id = 'elp-divsize';
+      row.style.cssText = 'display:none;margin:2px 0 8px;';
+      row.innerHTML = '<div style="font-size:11px;color:#555;margin-bottom:3px;">Size</div>' +
+        '<div style="display:flex;gap:5px;">' +
+        ['small', 'medium', 'large'].map(function (s) {
+          return '<button data-dsz="' + s + '" style="flex:1;padding:5px 0;border:1px solid #bbbbbb;border-radius:4px;background:#fff;color:#333;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;text-transform:capitalize;">' + s + '</button>';
+        }).join('') + '</div>';
+      var nameEl = document.getElementById('elp-name');
+      if (nameEl && nameEl.parentNode) nameEl.parentNode.insertBefore(row, nameEl.nextSibling);
+      row.addEventListener('click', async function (e) {
+        var b = e.target && e.target.closest && e.target.closest('button[data-dsz]'); if (!b) return;
+        var n = _divSizeNode; if (!n || !n._dbId) return;
+        n.msDividerSize = b.getAttribute('data-dsz');
+        markDividerSize(n.msDividerSize);
+        setStatus('Saving…');
+        try {
+          var r = await db.from('layer_sections').update({ raw_config: rawFrom(n, SECTION_CONSUMED) }).eq('id', n._dbId);
+          if (r.error) throw new Error(r.error.message);
+          setStatus('Saved');
+        } catch (eS) { setStatus('Save failed: ' + eS.message); }
+        rerender();
+      });
+    }
+    _divSizeNode = node;
+    markDividerSize(node.msDividerSize || 'small');
+    row.style.display = 'block';
+  }
+  var _divSizeNode = null;
+  function markDividerSize(size) {
+    var row = document.getElementById('elp-divsize'); if (!row) return;
+    row.querySelectorAll('button[data-dsz]').forEach(function (b) {
+      var on = b.getAttribute('data-dsz') === size;
+      b.style.background = on ? '#5b458f' : '#fff';
+      b.style.color = on ? '#fff' : '#333';
+      b.style.borderColor = on ? '#5b458f' : '#bbbbbb';
+    });
+  }
   // Set a layer/group's zoom-to target to the CURRENT view, so its (always-rendered) crosshairs ◎ flies here.
   async function onSetZoom(id) {
     var node = findNodeById(layers, id); if (!node || !beforeMap) return;
@@ -530,7 +578,16 @@
   }
   function moveNode(dragNode, targetNode, pos) {
     if (dragNode === targetNode || isAncestor(dragNode, targetNode)) return false;
-    if (dragNode.type === 'section' && pos === 'into') return false;               // sections stay top-level
+    if (dragNode.type === 'section') {                                             // sections + dividers stay top-level
+      if (pos === 'into') return false;
+      // HOIST (8/13): layer_sections rows have no parent columns, so a section/divider dropped
+      // before/after a NESTED row would show nested now and snap top-level on reload. Re-target
+      // the drop to the target's top-level ancestor so what you see is what persists.
+      var anc = targetNode, ap = findParent(layers, anc);
+      while (ap) { anc = ap; ap = findParent(layers, anc); }
+      if (anc && anc !== targetNode) { targetNode = anc; if (isAncestor(dragNode, targetNode)) return false; }
+    }
+    if (pos === 'into' && targetNode.msDivider) pos = 'after';                     // a divider holds nothing
     if (pos === 'into' && targetNode.type !== 'section' && targetNode.type !== 'group') pos = 'after';
     removeFromTree(layers, dragNode);
     if (pos === 'into') { targetNode.children = targetNode.children || []; targetNode.children.push(dragNode); targetNode.collapsed = false; }
@@ -571,7 +628,7 @@
   function dropPos(row, targetNode, clientY) {
     var rect = row.getBoundingClientRect();
     var frac = rect.height ? (clientY - rect.top) / rect.height : 0.5;
-    var isC = targetNode.type === 'section' || targetNode.type === 'group';
+    var isC = (targetNode.type === 'section' || targetNode.type === 'group') && !targetNode.msDivider;
     return frac < 0.3 ? 'before' : (frac > 0.7 ? 'after' : (isC ? 'into' : 'after'));
   }
   function clearDropMarks() {
@@ -590,7 +647,7 @@
     var sort = nextSort++;
     setStatus('Saving…');
     try {
-      if (type === 'section') {
+      if (type === 'section' || type === 'divider') {   // a divider persists as a layer_sections row (raw_config.msDivider)
         node._dbId = await insertOne('layer_sections', sectionRow(node, sort));
       } else if (type === 'group') {
         var secId = (parent && parent.type === 'section') ? parent._dbId : null;
@@ -1279,7 +1336,8 @@
       '<button data-type="export">Export</button></div>' +
       '<div class="erow">' +
       '<button data-type="group">+ Group</button>' +
-      '<button data-type="section">+ Section</button></div>' +
+      '<button data-type="section">+ Section</button>' +
+      '<button data-type="divider" title="A plain text line you can drag between items (e.g. to delineate Raw Layers)">+ Divider</button></div>' +
       // the Portal lives with the other add-things buttons (user 8/5) — it ADDS a whole map
       '<div class="erow" style="margin-top:6px;"><button data-type="portal" title="Add a bookmarked map into this one (All / Linked / Instance per layer)">⊞ Portal</button></div>' +
       // admin-only: Mapbox needs a token, so it's gated to the owner on the hosted site (the multi-library
@@ -1392,12 +1450,12 @@
         if (status) status.textContent = 'Fetched ' + feats.length + ' features…';
       }
       var rows = [];
-      if (!feats) for (var from = 0; from < 1000000; from += 1000) {   // paginate — Supabase caps each request at 1000 rows
-        var res = await db.from('features').select('feature_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url').eq('layer_id', lid).order('feature_id').range(from, from + 999);
-        if (res.error) throw new Error(res.error.message);
-        var batch = res.data || []; rows = rows.concat(batch);
-        if (status) status.textContent = 'Fetched ' + rows.length + ' features…';
-        if (batch.length < 1000) break;
+      if (!feats) {   // keyset + adaptive pages (8/13) — fixed offset pages time out on heavy layers
+        var exres = await window.MSFetchRows(db, 'feature_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url',
+          function (q) { return q.eq('layer_id', lid); },
+          { onPage: function (n) { if (status) status.textContent = 'Fetched ' + n + ' features…'; } });
+        if (exres.error) throw new Error(exres.error.message);
+        rows = exres.rows;
       }
       // property order = the layer's attribute-table column order when one is saved (raw_config.attrView),
       // else the default display order (msid first, ms_* last). GeoJSON/KML/DBF all honor insertion order.
@@ -2359,25 +2417,24 @@
             var lid2 = slugToLayerDbId[bn.id];
             if (!lid2 || !window.MSTileGen) continue;
             importStatus('Auto-converting "' + (bn.label || 'layer') + '" to tiles…');
-            // read the rows back so tile feature ids = features.feature_id (the editor's tile↔DB key)
-            var feats2 = [], from2 = 0;
-            for (;;) {
-              var fr2 = await db.from('features').select('feature_id, geom, start_date, end_date, label').eq('layer_id', lid2).order('feature_id').range(from2, from2 + 999);
-              if (fr2.error || !fr2.data || !fr2.data.length) break;
-              fr2.data.forEach(function (f) {
-                // SKINNY TILES (7/16): id + timeline days (+ label, for map labels on tileset
-                // lines) — other attributes are fetched by id on click; the days must stay baked
-                // (the slider filter reads them inside the tile)
-                var props = {
-                  DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, '') || 0 : 0,
-                  DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, '') || 99999999 : 99999999
-                };
-                if (f.label != null && f.label !== '') props.label = f.label;
-                feats2.push({ type: 'Feature', id: f.feature_id, properties: props, geometry: f.geom });
-              });
-              if (fr2.data.length < 1000) break;
-              from2 += 1000;
-            }
+            // read the rows back so tile feature ids = features.feature_id (the editor's tile↔DB key).
+            // ADAPTIVE pages (8/13): heavy geometry blew the fixed 1000-row page (statement timeout)
+            // and this loop silently skipped the bake — the whole reason the fresh CShapes upload
+            // stayed live and rendered nothing.
+            var feats2 = [];
+            var fr2 = await window.MSFetchRows(db, 'feature_id, geom, start_date, end_date, label', (function (lidX) { return function (q) { return q.eq('layer_id', lidX); }; })(lid2));
+            (fr2.rows || []).forEach(function (f) {
+              // SKINNY TILES (7/16): id + timeline days (+ label, for map labels on tileset
+              // lines) — other attributes are fetched by id on click; the days must stay baked
+              // (the slider filter reads them inside the tile)
+              var props = {
+                DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, '') || 0 : 0,
+                DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, '') || 99999999 : 99999999
+              };
+              if (f.label != null && f.label !== '') props.label = f.label;
+              feats2.push({ type: 'Feature', id: f.feature_id, properties: props, geometry: f.geom });
+            });
+            if (fr2.error) importStatus('Could not read "' + (bn.label || 'layer') + '" back for tiling — use the layer panel’s Bake button.');
             if (!feats2.length) continue;
             await MSTileGen.convertLayer(db, projectId, lid2, feats2, { name: bn.label, geomKind: bn.type, status: importStatus });
             // DATES-DURING-CONVERT (8/8): this convert read its rows back BEFORE baking, and the
@@ -2396,14 +2453,8 @@
               try { did8 = !!(await rebakeLayerTiles(lid2, 'Re-baking')); } catch (e8) {}
               if (!did8) { importStatus('Could not re-bake automatically — use the layer panel’s Re-bake button to bake the new dates in.'); break; }
               feats2 = [];   // refresh the read-back so the next comparison reflects this bake
-              var from8 = 0;
-              for (;;) {
-                var fr8 = await db.from('features').select('feature_id, start_date').eq('layer_id', lid2).order('feature_id').range(from8, from8 + 999);
-                if (fr8.error || !fr8.data || !fr8.data.length) break;
-                fr8.data.forEach(function (f8) { feats2.push({ properties: { DayStart: f8.start_date ? 1 : 0 } }); });
-                if (fr8.data.length < 1000) break;
-                from8 += 1000;
-              }
+              var fr8 = await window.MSFetchRows(db, 'feature_id, start_date', function (q) { return q.eq('layer_id', lid2); });
+              (fr8.rows || []).forEach(function (f8) { feats2.push({ properties: { DayStart: f8.start_date ? 1 : 0 } }); });
             }
             importStatus('"' + (bn.label || 'layer') + '" now renders from tiles (from the next load).');
           }
@@ -2560,7 +2611,7 @@
   function showForm(type) {
     var bar = addFormEl();   // #2: fill the form area under the buttons — the buttons stay visible
     var picker = '';
-    if (type !== 'section') {
+    if (type !== 'section' && type !== 'divider') {   // both live at top level — no parent to pick
       var opts = '<option value="">Top level</option>';
       containers(layers, 0, []).forEach(function (c) {
         if (type === 'group' && c.type !== 'section') return; // groups only nest in sections
@@ -2569,7 +2620,7 @@
       picker = '<select id="editor-parent">' + opts + '</select>';
     }
     bar.innerHTML =
-      '<input id="editor-name" type="text" placeholder="' + type + ' name…" />' + picker +
+      '<input id="editor-name" type="text" placeholder="' + (type === 'divider' ? 'divider text…' : type + ' name…') + '" />' + picker +
       '<div class="erow"><button id="editor-ok">Add ' + type + '</button>' +
       '<button id="editor-cancel">Cancel</button></div>';
     var input = document.getElementById('editor-name');
@@ -2812,6 +2863,11 @@
       '<input id="esp-name" type="text" placeholder="Map name" title="Rename this map" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:6px 8px;border:1px solid #bbbbbb;border-radius:4px;font-size:15px;font-weight:600;" />' +
       '<button id="esp-setview" class="mss-btn">Set current view as default</button>' +
       '<div id="esp-viewinfo" class="mss-note"></div>' +
+      // 📸 portal thumbnail (8/13, owner picked option 1: capture the CURRENT view on demand —
+      // no auto-capture at publish). Stored in tiles/thumbs/<project>.jpg; the portal card
+      // shows it through portal_entries.thumb.
+      '<button id="esp-thumb" class="mss-btn">📸 Set current view as portal thumbnail</button>' +
+      '<div id="esp-thumb-note" class="mss-note"></div>' +
       // ── TIMELINE ──
       '<div class="mss-sectop">' +
         MSEC('Timeline') +
@@ -2845,6 +2901,7 @@
     document.getElementById('esp-close').addEventListener('click', function () { p.style.display = 'none'; });
     document.getElementById('esp-name').addEventListener('change', onSettingsName);
     document.getElementById('esp-setview').addEventListener('click', onSetDefaultView);
+    document.getElementById('esp-thumb').addEventListener('click', onSetThumbnail);
     document.getElementById('esp-tl-start').addEventListener('change', onTimelineSave);
     document.getElementById('esp-tl-end').addEventListener('change', onTimelineSave);
     document.getElementById('esp-tl-today').addEventListener('change', function () { document.getElementById('esp-tl-end').disabled = this.checked; onTimelineSave(); });
@@ -2875,6 +2932,11 @@
       nl.raw_config = JSON.parse(JSON.stringify(nl.raw_config));
       if (L.fold_state !== 'folded') { delete nl.raw_config.tilesGeneratedAt; delete nl.raw_config.tilesFeatureCount; delete nl.raw_config.tilesMaxFid; }
     }
+    // lineage stamp (8/12): every copy remembers which layer it came from. ms_dataset_usage
+    // reads this so a POINTER copy (folded — owns no rows) still counts as using the source's
+    // dataset. Row-copying layers carry dataset_id on the rows too; this covers the rest.
+    nl.raw_config = nl.raw_config || {};
+    nl.raw_config._msCopyOf = L.id;
     if (L.fold_state === 'folded') {
       // C7 pointer copy: stamps stay (they carry the source-keyed artifact URLs the copy
       // renders from) and the copy bills nothing until it materializes at first fold-merge.
@@ -2897,6 +2959,18 @@
       // C7: a folded layer's only meaningful rows are DELTAS (ms_foldsrc). Anything else is
       // soak-period dead weight (C6 keeps pre-fold rows until their hard-delete) — cloning
       // those would re-inflate the copy with rows nothing reads.
+      // FAST PATH (8/11): `features` is a VIEW that rebuilds custom_fields per row, so the
+      // client's "custom_fields->>ms_foldsrc is not null" filter could never use an index — it
+      // had to materialize every row of the layer first. On the 302k-row Current Rail Network
+      // that was 47s spent proving the layer has ZERO deltas, i.e. a guaranteed statement
+      // timeout. The RPC asks the BASE TABLE, where the predicate is indexed (0.04ms).
+      var dRpc = -1;
+      try {
+        var rpcD = await db.rpc('ms_copy_layer_deltas', { p_src: L.id, p_dst: newLid });
+        if (!rpcD.error && typeof rpcD.data === 'number') dRpc = rpcD.data;
+      } catch (eRpcD) {}
+      if (dRpc >= 0) { featCount += dRpc; }
+      else {
       var dLast = null;
       for (;;) {
         var dq = db.from('features').select('*').eq('layer_id', L.id).not('custom_fields->>ms_foldsrc', 'is', null).order('feature_id').limit(1000);
@@ -2909,6 +2983,7 @@
         var dIns = await db.from('features').insert(dRows); if (dIns.error) throw new Error(dIns.error.message);
         featCount += dRows.length;
         if (dr.data.length < 1000) break;
+      }
       }
     } else if (L.source_type === 'geojson-supabase' || (L.raw_config && L.raw_config.pmtiles)) {
       // FAST PATH (7/22): one server-side INSERT…SELECT copies the whole layer in seconds with
@@ -2944,6 +3019,34 @@
   // ── Copy map (Google-My-Maps-style): clone the WHOLE project — sections, groups, layers (new rows, so
   //    edits never touch the original), project_layers links, and every feature — into a new private map
   //    owned by the CURRENT account. Solves "started the map before logging in" too. ──
+  // The confirm gate (8/13): the Copy button sits between Preview and Settings and was too easy
+  // to hit by accident — a whole map would clone before the mistake registered. The copy now
+  // needs a second, deliberate click inside a modal.
+  function confirmCopyMap() {
+    if (document.getElementById('ms-copy-confirm')) return;
+    var back = document.createElement('div');
+    back.id = 'ms-copy-confirm';
+    back.style.cssText = 'position:fixed;inset:0;background:rgba(20,18,30,0.45);z-index:20000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    var box = document.createElement('div');
+    box.style.cssText = 'background:#ffffff;border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,0.3);width:min(420px,94vw);padding:18px 20px;font:14px Source Sans Pro,Arial,sans-serif;color:#2c2836;';
+    var h = document.createElement('b'); h.textContent = 'Copy this map?'; h.style.cssText = 'font-size:16px;display:block;margin-bottom:8px;';
+    var p = document.createElement('div');
+    p.textContent = 'This clones the whole map — layers, features, styling and info — as a new private map owned by you. The original is untouched.';
+    p.style.cssText = 'color:#514c66;line-height:1.5;margin-bottom:14px;';
+    var row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    var no = document.createElement('button'); no.textContent = 'Cancel';
+    no.style.cssText = 'padding:7px 14px;border:1px solid #c9c4d8;border-radius:6px;background:#ffffff;font:600 13px inherit;cursor:pointer;color:#443f58;';
+    var yes = document.createElement('button'); yes.textContent = '⧉ Copy the map';
+    yes.style.cssText = 'padding:7px 14px;border:1px solid #5b4b9a;border-radius:6px;background:#5b4b9a;font:600 13px inherit;cursor:pointer;color:#ffffff;';
+    row.appendChild(no); row.appendChild(yes);
+    box.appendChild(h); box.appendChild(p); box.appendChild(row);
+    back.appendChild(box);
+    document.body.appendChild(back);
+    function close() { try { back.remove(); } catch (e) {} }
+    no.addEventListener('click', close);
+    back.addEventListener('mousedown', function (e) { if (e.target === back) close(); });
+    yes.addEventListener('click', function () { close(); copyMapToMyAccount(); });
+  }
   async function copyMapToMyAccount() {
     var btn = document.getElementById('editor-copy-btn');
     var u = window.MapAuth ? await MapAuth.currentUser() : null;
@@ -2985,8 +3088,18 @@
       //     runs the exact same code)
       var featTotal = 0;
       var copyMaps = { secMap: secMap, grpMap: grpMap, layerIdMap: layerIdMap, slugMap: slugMap };
+      var copyFails = [];
       for (var k = 0; k < (bundle.projectLayers || []).length; k++) {
-        featTotal += await copyLayerInto(bundle.projectLayers[k], newId, copyMaps, u.id);
+        var plK = bundle.projectLayers[k];
+        try {
+          featTotal += await copyLayerInto(plK, newId, copyMaps, u.id);
+        } catch (eLayer) {
+          // ONE layer failing must not cost the other fifteen (8/11). This loop used to let the
+          // throw escape, so a single timeout abandoned every layer after it and handed back a
+          // map that LOOKED complete. Record it, keep going, and say so plainly at the end.
+          console.warn('layer copy failed', (plK.layers || {}).name, eLayer);
+          copyFails.push({ name: ((plK.layers || {}).name) || 'unnamed layer', why: (eLayer && eLayer.message) || String(eLayer) });
+        }
         setStatus('Copying… ' + (k + 1) + '/' + bundle.projectLayers.length + ' layers');
       }
       // Remap cross-layer references the raw copy carried verbatim: instanceOf (a source layer's
@@ -3004,7 +3117,12 @@
           var ru = await db.from('layers').update({ raw_config: rcC }).eq('id', layerIdMap[oL.id]); if (ru.error) throw new Error(ru.error.message);
         }
       }
-      setStatus('Copied ✓ (' + featTotal + ' features)');
+      if (copyFails.length) {
+        setStatus('Copied, but ' + copyFails.length + ' layer(s) failed - see the message');
+        var lines = copyFails.map(function (c) { return '  - ' + c.name + '  (' + c.why + ')'; }).join('\n');
+        alert('The copy finished, but these layers could NOT be copied:'+'\n\n'+lines+'\n\n'+
+              'Everything else came across. Delete this copy and try again, or add those layers separately.');
+      } else setStatus('Copied ✓ (' + featTotal + ' features)');
       window.location.href = 'editor.html?id=' + newId;
     } catch (e) {
       console.warn('copy failed', e); setStatus('Copy failed: ' + (e && e.message));
@@ -3163,6 +3281,59 @@
     } catch (e) { setStatus('Save failed'); showToast('Lock change failed: ' + (e && e.message)); if (box) box.checked = !on; }
   }
   async function onSettingsName() { return saveMapName(document.getElementById('esp-name').value); }
+  // 📸 the portal thumbnail = the map exactly as framed right now. WebGL canvases read back
+  // blank between frames (no preserveDrawingBuffer), so the pixels are grabbed inside a
+  // 'render' tick forced by triggerRepaint — the same trick the download button uses.
+  async function onSetThumbnail() {
+    var note = document.getElementById('esp-thumb-note');
+    try {
+      if (typeof beforeMap === 'undefined' || !beforeMap) throw new Error('map not ready');
+      if (note) note.textContent = 'Capturing…';
+      var dataUrl = await new Promise(function (res, rej) {
+        var to = setTimeout(function () { rej(new Error('capture timed out')); }, 8000);
+        try {
+          beforeMap.once('render', function () {
+            try {
+              clearTimeout(to);
+              var src = beforeMap.getCanvas();
+              var cw = 640, ch = Math.max(1, Math.round(src.height / src.width * 640));
+              var cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+              cv.getContext('2d').drawImage(src, 0, 0, cw, ch);
+              res(cv.toDataURL('image/jpeg', 0.85));
+            } catch (e) { rej(e); }
+          });
+          beforeMap.triggerRepaint();
+        } catch (e) { clearTimeout(to); rej(e); }
+      });
+      var blob = await (await fetch(dataUrl)).blob();
+      var key = 'thumbs/' + projectId + '.jpg';
+      // never upsert:true — storage's upsert path needs SELECT on storage.objects and fails as
+      // a bogus RLS error (tilegen-setup.sql trap). Insert; on conflict delete and retry.
+      var up = await db.storage.from('tiles').upload(key, blob, { upsert: false, contentType: 'image/jpeg' });
+      if (up.error && /exist|duplicate/i.test(up.error.message || '')) {
+        await db.storage.from('tiles').remove([key]);
+        up = await db.storage.from('tiles').upload(key, blob, { upsert: false, contentType: 'image/jpeg' });
+      }
+      if (up.error) throw new Error(up.error.message);
+      var pub = db.storage.from('tiles').getPublicUrl(key);
+      var url = ((pub && pub.data && pub.data.publicUrl) || '') + '?v=' + Date.now();   // bust the old card image
+      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      rc.thumbnail = url;
+      var u = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
+      if (u.error) throw new Error(u.error.message);
+      // on the portal already? the card reads portal_entries.thumb — point it at the capture
+      var pe = await db.from('portal_entries').update({ thumb: url }).eq('project_id', projectId).select('project_id');
+      var onPortal = !pe.error && pe.data && pe.data.length > 0;
+      if (note) note.textContent = onPortal
+        ? 'Saved — the portal card now shows this view.'
+        : 'Saved — used as the portal card when this map joins the portal.';
+      setStatus('Thumbnail saved');
+    } catch (e) {
+      if (note) note.textContent = '';
+      setStatus('Thumbnail failed: ' + (e && e.message));
+    }
+  }
   // Feature: header on/off — persists raw_config.features.header and applies live (msApplyHeaderFeature
   // moves the logo/title/About into the sidebar; a resize event re-seats the tool dock + save callout).
   async function onFeatureHeader() {
@@ -3981,7 +4152,9 @@
     document.getElementById('editor-split').addEventListener('click', enterSplitMode);
     document.getElementById('editor-settings').addEventListener('click', openSettingsPanel);
     var pubBtn = document.getElementById('editor-publish-btn'); if (pubBtn) pubBtn.addEventListener('click', onPublish);
-    var copyBtn = document.getElementById('editor-copy-btn'); if (copyBtn) copyBtn.addEventListener('click', copyMapToMyAccount);
+    // Copy asks first (8/13, owner: "It's too easy to hit that copy button by accident") —
+    // a small confirm modal; the copy only runs on the second, deliberate click.
+    var copyBtn = document.getElementById('editor-copy-btn'); if (copyBtn) copyBtn.addEventListener('click', confirmCopyMap);
     // ── Editor swipe start position (EDITOR ONLY — the viewer keeps the plugin's centered default) ──
     // The swipe handle opens 1/10th in from the RIGHT edge: ~90% of the screen is the LEFT (editable)
     // map, with only a sliver of the right/mirror side — first of the "make right-side non-editability
@@ -4998,14 +5171,10 @@
       _hydrating[lid6] = true;
       if (!quiet) setStatus('Loading features…');
       try {
-        var ok6 = true;
-        for (var f6 = 0; f6 < 200000; f6 += 1000) {
-          var r6 = await db.from('features').select(FEAT_SEL).eq('layer_id', lid6).order('feature_id').range(f6, f6 + 999);
-          if (r6.error) { ok6 = false; break; }   // a failed page (transient 500) must NOT mark the layer hydrated-but-empty — the sweep retry / next toggle refetches
-          if (!r6.data || !r6.data.length) break;
-          r6.data.forEach(function (row) { var m6 = mapRow(row); if (m6) featureCache[m6.did] = m6.fo; });
-          if (r6.data.length < 1000) break;
-        }
+        // adaptive pages (8/13): heavy geometry breaks fixed 1000-row pages (statement timeout)
+        var r6 = await window.MSFetchRows(db, FEAT_SEL, function (q) { return q.eq('layer_id', lid6); });
+        var ok6 = !r6.error;   // a failed fetch must NOT mark the layer hydrated-but-empty — the sweep retry / next toggle refetches
+        (r6.rows || []).forEach(function (row) { var m6 = mapRow(row); if (m6) featureCache[m6.did] = m6.fo; });
         if (ok6) { _hydratedLayers[lid6] = true; addCachedLayerToDraw(lid6); rebuildLabelsFor([lid6]); }
         if (!quiet) setStatus(ok6 ? '' : 'Load failed');
       } catch (e) { console.warn('editing: layer hydrate failed', e); if (!quiet) setStatus('Load failed'); }
@@ -5014,12 +5183,10 @@
     try {
       var feats = [];
       if (onIds.length) {
-        for (var from = 0; from < 200000; from += 1000) {
-          var res = await db.from('features').select(FEAT_SEL).in('layer_id', onIds).order('feature_id').range(from, from + 999);
-          if (res.error) { console.warn('editing: load features failed', res.error); break; }
-          (res.data || []).forEach(function (row) { var m = mapRow(row); if (!m) return; if (m.hidden) featureCache[m.did] = m.fo; else feats.push(m.fo); });
-          if (!res.data || res.data.length < 1000) break;
-        }
+        // adaptive pages (8/13): heavy geometry breaks fixed 1000-row pages (statement timeout)
+        var res = await window.MSFetchRows(db, FEAT_SEL, function (q) { return q.in('layer_id', onIds); });
+        if (res.error) console.warn('editing: load features failed', res.error);
+        (res.rows || []).forEach(function (row) { var m = mapRow(row); if (!m) return; if (m.hidden) featureCache[m.did] = m.fo; else feats.push(m.fo); });
       }
       draw.set({ type: 'FeatureCollection', features: feats });
       syncMirrorRight();   // show the loaded drawn features on the right swipe side too
@@ -5494,6 +5661,14 @@
       '<div id="efp-group-note" style="display:none;font-size:11px;color:#7a5cc9;background:#f4f1fb;border-radius:4px;padding:4px 6px;margin-bottom:6px;"></div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label</label>' +
       '<input id="efp-label" type="text" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
+      // per-feature color (8/13, owner: "I should be able to select features and change their colors")
+      // — writes the UNIVERSAL ms_color column, same as editing it in the attribute table
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Color — this feature only</label>' +
+      '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">' +
+        '<input id="efp-color" type="color" style="flex:0 0 46px;width:46px;height:26px;padding:0;border:1px solid #bbbbbb;border-radius:4px;background:#fff;cursor:pointer;" />' +
+        '<button id="efp-color-clear" type="button" title="Back to the layer\'s color" style="flex:0 0 auto;padding:4px 8px;border:1px solid #bbbbbb;border-radius:4px;background:#e8e8e8;color:#222222;cursor:pointer;font-size:11px;">Reset</button>' +
+        '<span id="efp-color-note" style="font-size:10px;color:#888888;"></span>' +
+      '</div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Notes</label>' +
       '<div id="efp-notes-tools" style="display:flex;gap:3px;margin-bottom:3px;flex-wrap:wrap;">' +
         '<button type="button" data-cmd="bold" title="Bold" style="min-width:24px;height:22px;border:1px solid #bbb;border-radius:3px;background:#fff;cursor:pointer;font-weight:bold;font-size:11px;line-height:1;">B</button>' +
@@ -5529,6 +5704,8 @@
     document.getElementById('efp-pageid').addEventListener('input', function () { onFeatureField('pageid', this.value); });
     document.getElementById('efp-done').addEventListener('click', function () { var n = _engineEditNode[selectedDrawId]; if (n) finishEngineEdit(n, featureToDb[selectedDrawId]); });
     document.getElementById('efp-label').addEventListener('input', function () { onFeatureField('label', this.value); });
+    document.getElementById('efp-color').addEventListener('input', function () { onFeatureColor(this.value); });
+    document.getElementById('efp-color-clear').addEventListener('click', function () { onFeatureColor(null); });
     var efpNotes = document.getElementById('efp-notes');
     efpNotes.addEventListener('input', function () { onFeatureField('notes', this.innerHTML); });   // contenteditable → store HTML (WYSIWYG)
     Array.prototype.forEach.call(document.querySelectorAll('#efp-notes-tools button[data-cmd]'), function (b) {
@@ -5553,6 +5730,66 @@
     document.getElementById('efp-start').addEventListener('change', function () { onFeatureField('start', this.value); });
     document.getElementById('efp-end').addEventListener('change', function () { onFeatureField('end', this.value); });
   }
+  // ── per-feature color (8/13): the panel's Color input writes the feature's ms_color — the same
+  //    UNIVERSAL style column the attribute table edits, so ONE write path serves every layer kind.
+  //    Draw-resident copies repaint instantly (delete+add — the only thing that repaints draw);
+  //    tiled layers fold the override into their persisted by-id paint once the save lands.
+  //    Reset stores "none" = explicit no-override, renders as the layer color. ──
+  var _featColorT = null;
+  function syncFeatColorUi(meta, node) {
+    var inp = document.getElementById('efp-color'), note = document.getElementById('efp-color-note');
+    if (!inp) return;
+    var ov = (meta && meta.custom && meta.custom.ms_color != null) ? String(meta.custom.ms_color).trim() : '';
+    if (ov.toLowerCase() === 'none') ov = '';
+    // no override → show what the feature ACTUALLY renders as: its CATEGORY color under an
+    // active color-by, else the layer color (owner 8/13: "Colors don't match in the feature popup")
+    var catC = null;
+    try { if (!ov && node && node.colorBy && node.colorBy.mapping && meta && meta.custom) { var cvS = meta.custom[node.colorBy.prop]; if (cvS != null) catC = node.colorBy.mapping[String(cvS)] || null; } } catch (eS) {}
+    var show = ov || catC || (node && node.iconColor) || '#3bb2d0';
+    inp.value = looksHex(show) ? normHex(show) : '#888888';
+    if (note) note.textContent = ov ? 'overriding the layer color' : (catC ? 'category color — pick to override' : 'layer color — pick to override');
+  }
+  function onFeatureColor(hex) {
+    var did = selectedDrawId; if (!did) return;
+    var fid = featureToDb[did];
+    var lidC = featureLayer[did] || (activeLayerId ? slugToLayerDbId[activeLayerId] : null);
+    var nodeC = lidC ? nodeByLayerDbId(lidC) : null;
+    var m = featureMeta[did] = featureMeta[did] || { label: '', notes: '' };
+    m.custom = m.custom || {};
+    m.custom.ms_color = hex || 'none';
+    syncFeatColorUi(m, nodeC);
+    try {
+      var f = draw && draw.get && draw.get(did);
+      if (f) {
+        var backC = (nodeC && nodeC.iconColor) || '#3bb2d0';
+        // Reset under an active color-by goes back to the feature's CATEGORY color, not the
+        // layer fallback (same rule the engine-edit pull-in applies when it builds the copy)
+        try { if (!hex && nodeC && nodeC.colorBy && nodeC.colorBy.mapping && m.custom) { var cbv3 = m.custom[nodeC.colorBy.prop]; var mc3 = cbv3 != null ? nodeC.colorBy.mapping[String(cbv3)] : null; if (mc3) backC = mc3; } } catch (e3) {}
+        f.properties.color = hex || backC;
+        _suppressFeatureDelete = true;
+        draw.delete(did); draw.add(f);
+        setTimeout(function () { _suppressFeatureDelete = false; }, 0);
+      }
+    } catch (e) {}
+    if (_featColorT) clearTimeout(_featColorT);
+    _featColorT = setTimeout(async function () {
+      if (fid == null) { setStatus('Color saves once the feature itself is saved'); return; }
+      setStatus('Saving…');
+      try {
+        // read-modify-write THROUGH the features view — its triggers split ms_* into
+        // feature_styles and strip identity keys, so echoing the whole object back loses nothing
+        var r0 = await db.from('features').select('custom_fields').eq('feature_id', fid).single();
+        if (r0.error) throw new Error(r0.error.message);
+        var cf = (r0.data && r0.data.custom_fields) ? r0.data.custom_fields : {};
+        cf.ms_color = hex || 'none';
+        var r1 = await db.from('features').update({ custom_fields: cf }).eq('feature_id', fid);
+        if (r1.error) throw new Error(r1.error.message);
+        setStatus('Saved');
+        if (_attrCustom[fid]) _attrCustom[fid].ms_color = hex || 'none';   // an open table stays in sync
+        if (nodeC && isTilesetNode(nodeC)) scheduleTiledOverrideRefresh(nodeC.id);
+      } catch (e) { setStatus('Save failed: ' + ((e && e.message) || e)); }
+    }, 450);
+  }
   function showFeaturePanel(drawId) {
     if (drawId !== selectedDrawId) flushFeatureMeta();   // switching features → persist the outgoing one's pending edit first
     selectedDrawId = drawId;
@@ -5571,6 +5808,7 @@
     updateImagePreview(meta.image_url || '');
     var lnode = featureLayer[drawId] ? nodeByLayerDbId(featureLayer[drawId]) : null;   // Page ID + encyclopedia preview only when the layer links to an encyclopedia
     if (!lnode && activeLayerId) lnode = findNodeById(layers, activeLayerId);   // a JUST-DRAWN feature: its DB insert hasn't resolved featureLayer yet — the active layer is where it's going
+    syncFeatColorUi(meta, lnode);   // per-feature Color swatch: current override, else the layer color
     var hasEnc = !!(lnode && lnode.panel && lnode.panel.encyclopediaBase);
     var pmode = (lnode && lnode.panel) ? (lnode.panel.mode || (hasEnc ? 'drupal' : 'notes')) : null;
     document.getElementById('efp-page-row').style.display = (pmode === 'drupal' || pmode === 'both') ? 'block' : 'none';
@@ -5822,9 +6060,10 @@
     if (!row || !sel) return;
     syncColorInputForColorBy(node);
     var isDrawn = node && node.source_type === 'geojson-supabase';
-    // color-by works on TILESET LINE layers too (values come from server counts; the paint match
-    // expression evaluates against tile properties) — polygons/points stay drawn-only for now
-    var tsColorable = node && isTilesetNode(node) && node.type === 'line' && slugToLayerDbId[node.id];
+    // color-by works on EVERY tileset geometry (8/13, owner on CShapes: "I don't see a style by
+    // data column option here… I need to be able to see countries separately") — the match
+    // expression is geometry-agnostic; the old line-only gate was the whole restriction
+    var tsColorable = node && isTilesetNode(node) && ['line', 'fill', 'circle'].indexOf(node.type) > -1 && slugToLayerDbId[node.id];
     row.style.display = (isDrawn || tsColorable) ? 'block' : 'none';
     var gbRow = document.getElementById('elp-groupby-row'); if (gbRow) gbRow.style.display = 'none';   // (re)shown by fillGroupBySelect on drawn layers only
     ['elp-opacityby-row', 'elp-thickby-row'].forEach(function (rid) { var r2 = document.getElementById(rid); if (r2) r2.style.display = isDrawn ? 'block' : 'none'; });   // the by-column selects live NEXT TO their sliders now (paired groups)
@@ -5868,10 +6107,12 @@
         fillMapLabelControls(node, lblCols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
         // "Treat as one" works on tilesets too: members come from the loaded tiles (which carry the baked columns)
         fillGroupBySelect(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));
-        // color-by for tileset LINES: same control, values later fetched from server counts
+        // color-by on tilesets: ALL columns, not just what a past bake happened to write into the
+        // tiles (owner 8/13: "I should be able to choose the column … not a special entry") — same
+        // tile∪DB union the label picker gets; picking an unbaked column auto-rebakes it in.
         if (tsColorable) {
           sel.innerHTML = '<option value="">Single color</option>';
-          tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }).forEach(function (k) { var oc2 = document.createElement('option'); oc2.value = k; oc2.textContent = k; sel.appendChild(oc2); });
+          lblCols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }).forEach(function (k) { var oc2 = document.createElement('option'); oc2.value = k; oc2.textContent = k; sel.appendChild(oc2); });
           var cbt = node.colorBy;
           if (cbt && cbt.prop) { if (![].slice.call(sel.options).some(function (o) { return o.value === cbt.prop; })) { var oc3 = document.createElement('option'); oc3.value = cbt.prop; oc3.textContent = cbt.prop; sel.appendChild(oc3); } sel.value = cbt.prop; info.textContent = cbt.mode === 'hex' ? "Using the column's own hex colors." : (Object.keys(cbt.mapping || {}).length + ' categories, one color each.'); }
           else { sel.value = ''; info.textContent = ''; }
@@ -6213,6 +6454,12 @@
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    // OUTLINE SPLITS colour by their PARENT's rows (owner 8/14, "that column has no values"):
+    // the split owns no features by design — it draws the fill's edges — so value sampling and
+    // the by-id categorical expression both read the FILL's data layer. The colour-by meta and
+    // paint still persist on the OUTLINE's own row (it is the layer being styled).
+    var dataNode = node.outlineOf ? (findNodeById(layers, node.outlineOf) || node) : node;
+    var dataLid = dataNode === node ? lid : (slugToLayerDbId[dataNode.id] || lid);
     var info = document.getElementById('elp-colorby-info');
     var key = colorKeyFor(node.type);
     var fallback = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
@@ -6227,19 +6474,13 @@
         var seen = {}, order = [];
         if (isTilesetNode(node)) {
           // tileset layers: distinct values from ONE server call (paging 78k rows would be heavy)
-          var cr9 = await db.rpc('ms_layer_key_counts', { p_layer: lid, p_key: prop });
+          var cr9 = await db.rpc('ms_layer_key_counts', { p_layer: dataLid, p_key: prop });
           if (cr9.error) throw new Error(cr9.error.message + (/function|does not exist/.test(cr9.error.message) ? ' — run sql/setup/query-ops-setup.sql first' : ''));
           ((cr9.data) || []).slice().sort(function (a, b) { return b.n - a.n; }).forEach(function (c9) { var s9 = String(c9.k); if (!(s9 in seen)) { seen[s9] = 1; order.push(s9); } });
         } else {
-          var dataLid2 = node.instanceOf || lid;   // mirrors sample their SOURCE's rows (Portal 5b)
-          var rows = [];
-          for (var off = 0; ; off += 1000) {   // all values (paged)
-            var fr = await db.from('features').select('custom_fields').eq('layer_id', dataLid2).order('feature_id').range(off, off + 999);
-            if (fr.error || !fr.data || !fr.data.length) break;
-            rows = rows.concat(fr.data);
-            if (fr.data.length < 1000) break;
-          }
-          rows.forEach(function (f) { var v = f.custom_fields ? f.custom_fields[prop] : null; if (v == null) return; var s = String(v); if (!(s in seen)) { seen[s] = 1; order.push(s); } });
+          var dataLid2 = dataNode.instanceOf || dataLid;   // mirrors sample their SOURCE's rows (Portal 5b)
+          var fr = await window.MSFetchRows(db, 'custom_fields', function (q) { return q.eq('layer_id', dataLid2); });
+          (fr.rows || []).forEach(function (f) { var v = f.custom_fields ? f.custom_fields[prop] : null; if (v == null) return; var s = String(v); if (!(s in seen)) { seen[s] = 1; order.push(s); } });
           // the mirror's own added columns (Portal 5b): values live in layer_overlay, not features
           if (window.MSOverlay && (node.overlayCols || []).indexOf(prop) > -1) {
             var ovv = await MSOverlay.load(lid);
@@ -6263,8 +6504,26 @@
         var expr = ['match', ['to-string', ['get', prop]]];
         order.forEach(function (v) { expr.push(v, mapping[v]); });
         expr.push(fallback);
+        // TILED layers colour INSTANTLY, bake or no bake (owner 8/13: "it should be immediate
+        // for vectors — I should just click rebake if I change the styling"): when the column
+        // isn't in the tiles the categories ride a by-id match built from the DB instead.
+        var unbakedNote = '';
+        if (isTilesetNode(node)) {
+          var built = await buildTiledColorByExpr(node, dataLid, fallback);
+          if (built === 'toobig') unbakedNote = ' “' + prop + '” isn’t in the tiles and the layer is too large to color by id — click Re-bake to bake the column in.';
+          else if (built) expr = built;
+        }
+        // per-FEATURE overrides survive categorical colors (owner 8/13: "I should be able to
+        // select features and change their colors after choosing colors"): overridden features
+        // wrap the category match in a by-id match, so the persisted paint renders the override
+        // EVERYWHERE (editor, viewer, downloads) with no runtime state.
+        if (isTilesetNode(node) && !node.outlineOf) {
+          // (8/14) overrides stay off outline splits: ms_color is the FILL's per-feature colour —
+          // leaking it into the border's line-color would tint borders nobody recoloured
+          try { expr = wrapTiledColorOverrides(await fetchTiledColorOverrides(lid), expr); } catch (eOv) {}
+        }
         paint[key] = expr;
-        if (info) info.textContent = allHex ? ("Using the column's own hex colors (" + order.length + " values)." + (mapping['none'] ? " 'none' renders un-filled (outline only)." : '')) : (order.length + ' categories, one color each.');
+        if (info) info.textContent = (allHex ? ("Using the column's own hex colors (" + order.length + " values)." + (mapping['none'] ? " 'none' renders un-filled (outline only)." : '')) : (order.length + ' categories, one color each.')) + unbakedNote;
       }
       node.paint = paint;
       // persist: paint renders everywhere (incl. the public viewer); colorBy meta drives this UI + draw colors
@@ -6283,7 +6542,95 @@
       syncColorInputForColorBy(node);   // panel swatch ↔ multicolor strip
       renderLegend();   // legend swatches follow the new colors
       setStatus('Saved');
+      // NOTHING auto-bakes here (owner 8/13: "I'll rebake it myself, when I want") — unbaked
+      // columns colour instantly via the by-id match above; a MANUAL Re-bake later compacts it.
     } catch (e) { console.warn('colorBy failed', e); setStatus('Save failed'); }
+  }
+  // ── colour-by on TILED layers WITHOUT baking (owner 8/13: "Is there a way to not have it
+  //    have to bake just to color it?"). Tiles always carry the feature id, so when the column
+  //    isn't baked in, the categories ride a by-ID match built from the DB — instant, persisted,
+  //    viewer-safe. A get-based match is used only when the tiles verifiably carry the column
+  //    (compact — the win a MANUAL Re-bake buys on very large layers; nothing ever auto-bakes).
+  var TILECAT_BYID_CAP = 30000;
+  function tiledColorByGetExpr(cb, fallback) {
+    var eg = ['match', ['to-string', ['get', cb.prop]]];
+    Object.keys(cb.mapping).forEach(function (v) { eg.push(v, cb.mapping[v]); });
+    eg.push(fallback);
+    return eg;
+  }
+  async function buildTiledColorByExpr(node, lid, fallback) {
+    var cb = node.colorBy; if (!cb || !cb.prop || !cb.mapping) return null;
+    var inTiles = false;
+    try {
+      var fs9 = beforeMap.querySourceFeatures(node.id + '-left', node['source-layer'] ? { sourceLayer: node['source-layer'] } : undefined) || [];
+      for (var i9 = 0; i9 < fs9.length && i9 < 200; i9++) if (fs9[i9].properties && (cb.prop in fs9[i9].properties)) { inTiles = true; break; }
+    } catch (e9) {}
+    if (inTiles) return tiledColorByGetExpr(cb, fallback);
+    var pairs = [], lastFid = null, size = 1000;
+    for (;;) {   // light select (no geom) — keyset pages so deep pages stay cheap (8/13)
+      var qb = db.from('features').select('feature_id, v:custom_fields->>' + cb.prop).eq('layer_id', lid);
+      if (lastFid !== null) qb = qb.gt('feature_id', lastFid);
+      var q = await qb.order('feature_id').limit(size);
+      if (q.error) break;
+      (q.data || []).forEach(function (x) { var c = x.v != null ? cb.mapping[String(x.v)] : null; if (c) { pairs.push(Number(x.feature_id)); pairs.push(c); } });
+      if (!q.data || q.data.length < size) break;
+      lastFid = q.data[q.data.length - 1].feature_id;
+      if (pairs.length / 2 > TILECAT_BYID_CAP) return 'toobig';
+    }
+    if (!pairs.length) return null;
+    return ['match', ['id']].concat(pairs, [fallback]);
+  }
+  // ── per-feature colour overrides on TILESET layers (8/13) ───────────────────
+  // ms_color set on a feature (attr table / style pipeline) must WIN over the layer's single
+  // or categorical colour. Tiles carry the feature id (= msid), so overrides fold into the
+  // persisted paint as a by-id match — durable, viewer-safe, no runtime feature-state.
+  async function fetchTiledColorOverrides(lid) {
+    var out = [];
+    var r = await db.from('features').select('feature_id, c:custom_fields->>ms_color').eq('layer_id', lid)
+      .neq('custom_fields->>ms_color', 'none').limit(2000);
+    ((r && !r.error && r.data) || []).forEach(function (x) {
+      var c = String(x.c || '').trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(c) || /^rgba?\([^)]+\)$/i.test(c)) out.push([Number(x.feature_id), c]);
+    });
+    return out;
+  }
+  function wrapTiledColorOverrides(ovr, base) {
+    if (!ovr || !ovr.length) return base;
+    var e = ['match', ['id']];
+    ovr.forEach(function (o) { e.push(o[0], o[1]); });
+    e.push(base);
+    return e;
+  }
+  // rebuild the tiled layer's colour paint from scratch: overrides → colorBy match → single colour
+  var _tiledStyleT = null;
+  function scheduleTiledOverrideRefresh(slug) {
+    if (_tiledStyleT) clearTimeout(_tiledStyleT);
+    _tiledStyleT = setTimeout(function () { _tiledStyleT = null; refreshTiledOverridePaint(slug); }, 600);
+  }
+  async function refreshTiledOverridePaint(slug) {
+    var node = findNodeById(layers, slug); if (!node || !isTilesetNode(node)) return;
+    var lid = slugToLayerDbId[slug]; if (!lid) return;
+    var key = colorKeyFor(node.type);
+    var fallback = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
+    try {
+      var base = fallback;
+      if (node.colorBy && node.colorBy.prop && node.colorBy.mapping) {
+        // same instant rule as onColorBy: unbaked columns ride a by-id match, never a bake
+        var bb = null;
+        try { bb = await buildTiledColorByExpr(node, lid, fallback); } catch (eBB) {}
+        base = (bb && bb !== 'toobig') ? bb : tiledColorByGetExpr(node.colorBy, fallback);
+      } else if (node.paint && typeof node.paint[key] === 'string') base = node.paint[key];
+      var expr = wrapTiledColorOverrides(await fetchTiledColorOverrides(lid), base);
+      var paint = JSON.parse(JSON.stringify(node.paint || {}));
+      paint[key] = expr;
+      node.paint = paint;
+      var r2 = await db.from('layers').update({ paint: paint }).eq('id', lid);
+      if (r2.error) throw new Error(r2.error.message);
+      [[beforeMap, '-left'], [typeof afterMap !== 'undefined' ? afterMap : null, '-right']].forEach(function (ms) {
+        var m = ms[0]; if (!m) return;
+        try { if (m.getLayer(node.id + ms[1])) m.setPaintProperty(node.id + ms[1], key, expr); } catch (e) {}
+      });
+    } catch (e) { console.warn('tiled override paint failed', e); }
   }
   // ── Map labels: raw_config.labels = {field}. The engine adds the symbol layers on load (addLayers.js
   //    via labels.js); here we persist + rebuild them live on BOTH maps. Anchors come from the freshest
@@ -6632,15 +6979,12 @@
   // 18700101), groups rows by the computed value, and writes in batched .in() UPDATEs (features is a
   // VIEW — no upsert/ON CONFLICT; repeated year values collapse to a handful of requests).
   async function applyDatesToLayer(lid, slug, node, start, end) {
-    var rows = [], from9 = 0;
-    for (;;) {
-      msProgress('Reading features… ' + nfmt(rows.length));
-      var r9 = await db.from('features').select('feature_id, start_date, end_date, custom_fields').eq('layer_id', lid).order('feature_id').range(from9, from9 + 999);
-      if (r9.error) throw new Error(r9.error.message);
-      Array.prototype.push.apply(rows, r9.data || []);
-      if (!r9.data || r9.data.length < 1000) break;
-      from9 += 1000;
-    }
+    // keyset + adaptive pages (8/13) — fixed offset pages time out on heavy layers
+    var r9 = await window.MSFetchRows(db, 'feature_id, start_date, end_date, custom_fields',
+      function (q) { return q.eq('layer_id', lid); },
+      { onPage: function (n) { msProgress('Reading features… ' + nfmt(n)); } });
+    if (r9.error) throw new Error(r9.error.message);
+    var rows = r9.rows;
     if (!rows.length) { msProgress(''); setStatus('No features'); return 0; }
     var clobber = [];
     if (start) { var ns = rows.filter(function (r) { return r.start_date != null; }).length; if (ns) clobber.push(nfmt(ns) + ' features already have a Start date'); }
@@ -6873,7 +7217,17 @@
     var lrow = await db.from('layers').select('*').eq('id', lid).single();   // * so fold_state rides along pre/post C0
     var L = lrow.data;
     if (!L) return false;
-    if (L.fold_state === 'folded') { msProgress('“' + (L.name || 'layer') + '” is folded (R2-backed) — re-baking from rows is disabled.'); return false; }
+    if (L.fold_state === 'folded') {
+      // A REAL folded layer owns no rows anywhere — artifacts are truth, re-bake stays disabled.
+      // A folded POINTER COPY (portal-add of a folded source, 8/13: "the 1826-1911 layer is not
+      // baked there") has a data root that still owns live rows — bake from those instead.
+      var rootOk = false;
+      try {
+        var rt = await db.rpc('ms_layer_data_root', { p_layer: lid });
+        rootOk = !!(rt && !rt.error && rt.data && rt.data !== lid);
+      } catch (eRt) {}
+      if (!rootOk) { msProgress('“' + (L.name || 'layer') + '” is folded (R2-backed) — re-baking from rows is disabled.'); return false; }
+    }
     var isTiled = !!(L.raw_config && L.raw_config.pmtiles);
     if (!isTiled && !(allowConvert && L.source_type === 'geojson-supabase')) return false;
     await loadScript('../platform/tilegen.js?v=' + Date.now());   // MSTileGen isn't on the page until loaded
@@ -7007,12 +7361,8 @@
         node[metaKey] = { prop: prop }; var ex = numColExpr(prop, fallback); pkeys.forEach(function (k) { paint[k] = ex; });
         // feedback like the multicolor strip: say what engaged and how many features actually carry a value
         var withVal = 0, total = 0;
-        for (var off = 0; ; off += 1000) {
-          var fr = await db.from('features').select('custom_fields').eq('layer_id', lid).order('feature_id').range(off, off + 999);
-          if (fr.error || !fr.data || !fr.data.length) break;
-          fr.data.forEach(function (f) { total++; var v = f.custom_fields ? f.custom_fields[prop] : null; if (v != null && String(v) !== '' && !isNaN(parseFloat(v))) withVal++; });
-          if (fr.data.length < 1000) break;
-        }
+        var fr = await window.MSFetchRows(db, 'custom_fields', function (q) { return q.eq('layer_id', lid); });
+        (fr.rows || []).forEach(function (f) { total++; var v = f.custom_fields ? f.custom_fields[prop] : null; if (v != null && String(v) !== '' && !isNaN(parseFloat(v))) withVal++; });
         if (info) info.textContent = withVal
           ? ('Per-feature ' + kind + ' from ' + prop + ' (' + withVal + ' of ' + total + ' features have a value; the slider is the fallback for the rest).')
           : ('No numeric values in ' + prop + ' yet — everything uses the slider until features get values.');
@@ -7351,6 +7701,11 @@
       '<input id="elp-outline" type="color" class="ms-color" style="height:28px;" /></div>' +
       '<div id="elp-width-row" style="margin-top:6px;"><label class="ms-lbl"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
       '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" class="ms-range" /></div>' +
+      // (8/14) sideways offset — "colored offset borders tend to be a great way to show divisions":
+      // shifts the line off the shared edge so two bordering features' colours both stay readable.
+      // Engine-rendered lines only (MapboxDraw's fixed styles can't offset).
+      '<div id="elp-offset-row" style="margin-top:6px;display:none;"><label class="ms-lbl" title="Shift the line sideways from the edge it traces — 0 sits on the edge">Offset <span id="elp-offset-val"></span></label>' +
+      '<input id="elp-offset" type="range" min="-10" max="10" step="0.5" class="ms-range" /></div>' +
       // 7/21: zoom-varied line width — checkbox expands 3 zoom→px stops (interpolate); unchecked = the uniform slider above
       '<div id="elp-wzoom-row" style="margin-top:4px;display:none;">' +
         '<label class="ms-check" title="Line width follows the zoom level (thin when zoomed out, thick when zoomed in)"><input id="elp-wzoom-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Vary width by zoom</label>' +
@@ -7461,6 +7816,7 @@
     document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
     document.getElementById('elp-outline').addEventListener('input', function () { onLayerStyle('outline', this.value); });
     document.getElementById('elp-width').addEventListener('input', function () { document.getElementById('elp-width-val').textContent = this.value; onLayerStyle('width', parseFloat(this.value)); });
+    document.getElementById('elp-offset').addEventListener('input', function () { document.getElementById('elp-offset-val').textContent = this.value; onLayerStyle('offset', parseFloat(this.value)); });
     document.getElementById('elp-wzoom-on').addEventListener('change', onWzoom);
     [0, 1, 2].forEach(function (wi) { ['elp-wz-z' + wi, 'elp-wz-w' + wi].forEach(function (wid) { document.getElementById(wid).addEventListener('input', function () { if (document.getElementById('elp-wzoom-on').checked) onWzoom(); }); }); });
     document.getElementById('elp-radius').addEventListener('input', function () { document.getElementById('elp-radius-val').textContent = this.value; onLayerStyle('radius', parseFloat(this.value)); });
@@ -7649,15 +8005,33 @@
     var fillStroke = (isGeojson || isTilesetNode(node)) && node.type === 'fill';  // drawn AND tileset fills get the real line outline + its width/show toggles
     injectLayerPanel();
     var p = document.getElementById('editor-layer-panel'); if (!p) return;
+    // sections/dividers have no layer config — layerJson.js hides its "{ } JSON" chip off this stamp
+    p.setAttribute('data-ms-kind', (node.type === 'section' || node.type === 'group') ? 'container' : 'layer');
+    try { if (window._msLayerJsonSync) window._msLayerJsonSync(); } catch (e) {}
     try { if (window._elpDelReset) window._elpDelReset(); } catch (e) {}   // switching items collapses a half-open delete confirm
     var elpName = document.getElementById('elp-name'); if (elpName) elpName.value = node.label || '';   // top name field — all node types
     var elpSz = document.getElementById('elp-size'); if (elpSz) elpSz.style.display = 'none';   // shown per-leaf by fillLayerSize
+    var elpDsz = document.getElementById('elp-divsize'); if (elpDsz) elpDsz.style.display = 'none';   // divider-only size row
     if (node.type !== 'section' && node.type !== 'group') fillLayerSize(node);
+    // ── containers must RESET the per-layer dynamic chrome (8/13, "when I click a divider,
+    //    it shows stuff from the previous layer") — these are toggled per-LAYER further down,
+    //    so the section/group/divider early-returns left whatever the last layer showed:
+    //    kind note, re-bake, dataset chip, instance button/notes, dates section, size picker.
+    if (node.type === 'section' || node.type === 'group') {
+      ['elp-kind', 'elp-rebake', 'elp-rebake-note', 'elp-instance', 'elp-instance-note', 'elp-dataset', 'elp-dataset-fork', 'elp-dates-sec', 'elp-divsize']
+        .forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
+    }
     if (node.type === 'section') {   // #4: sections get a minimal panel — title + defaults + Delete (no style/zoom)
-      document.getElementById('elp-title').textContent = node.label || 'Section';
+      document.getElementById('elp-title').textContent = node.label || (node.msDivider ? 'Divider' : 'Section');
       document.getElementById('elp-style-section').style.display = 'none';
       ['elp-labels-sec', 'elp-interact-row', 'elp-enc-row', 'elp-src-row', 'elp-panel-row', 'elp-zoom-sec'].forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
-      populateDefaults(node);
+      // sections/dividers have no ℹ popup — hide the whole Layer info section (re-shown per layer)
+      var infS = document.getElementById('elp-info'); if (infS && infS.closest) { var iw = infS.closest('.ms-sectop'); if (iw) iw.style.display = 'none'; }
+      if (!node.msDivider) populateDefaults(node);   // a divider has no checkbox — visibility defaults don't apply
+      else {
+        var ddr = document.getElementById('elp-defaults-row'); if (ddr) ddr.style.display = 'none';   // and hide the previous item's defaults row
+        showDividerSizeRow(node);   // the divider's ONLY controls: text (above) + size + Delete
+      }
       p.style.display = 'block';
       return;
     }
@@ -7780,6 +8154,10 @@
     // "Style it independently here" is true of a LINKED mirror only — on a locked one it sat
     // directly above the lock note saying the opposite (owner 8/7, both visible at once)
     if (instNote) instNote.style.display = (node.instanceOf && !node.styleLocked) ? 'block' : 'none';
+    // Datasets (8/10): the "Register as dataset" button lives in platform/datasets.js, which owns
+    // its own show/hide (admins only, real data layers only — companions inherit their parent's id).
+    // Injected rather than templated because injectLayerPanel() runs once and never rebuilds.
+    try { if (window.MSDatasets) MSDatasets.onLayerPanel(node); } catch (eDs) {}
     document.getElementById('elp-color').value = color;
     var legOn = document.getElementById('elp-legend-on'); if (legOn) legOn.checked = !!node.legend;
     var srOn = document.getElementById('elp-stylerows-on'); if (srOn) srOn.checked = !!node.styleRows;
@@ -7806,12 +8184,23 @@
     fillWzoomUI(node);   // 7/21: "Vary width by zoom" checkbox + stops (lines only; parses the stored expression)
     // width = line/outline thickness: lines, un-split polygons (auto-outline), and circles (circle-stroke-width — uncapped, no split needed)
     document.getElementById('elp-width-row').style.display = ((node.type === 'line') || (fillStroke && !node.outlineSplit) || node.type === 'circle') ? 'block' : 'none';
+    // offset (8/14): engine-rendered lines only — MapboxDraw's fixed styles can't shift a line sideways
+    (function () {
+      var offRow = document.getElementById('elp-offset-row'); if (!offRow) return;
+      var showOff = node.type === 'line' && (isTilesetNode(node) || node.outlineOf || !_drawLayerSlugs[node.id]);
+      offRow.style.display = showOff ? 'block' : 'none';
+      var offv = (node.paint && typeof node.paint['line-offset'] === 'number') ? node.paint['line-offset'] : 0;
+      document.getElementById('elp-offset').value = offv;
+      document.getElementById('elp-offset-val').textContent = offv;
+    })();
     var radius = (node.paint && node.paint['circle-radius'] != null) ? node.paint['circle-radius'] : 5;
     document.getElementById('elp-radius').value = radius;
     document.getElementById('elp-radius-val').textContent = radius;
     document.getElementById('elp-radius-row').style.display = (node.type === 'circle') ? 'block' : 'none';
     // attribute table: drawn + ALL tilesets (stored features → editable; pure tilesets → read-only from loaded tiles)
     document.getElementById('elp-info').style.display = 'block';
+    // the section/divider branch hides the whole Layer-info section — re-show it for layers
+    (function () { var ib = document.getElementById('elp-info'); if (ib && ib.closest) { var iw = ib.closest('.ms-sectop'); if (iw) iw.style.display = ''; } })();
     var canPanel = isGeojson || isTilesetNode(node);   // layers that can show a feature info panel
     var pmodeUI = (node.panel && node.panel.mode) || ((node.panel && node.panel.encyclopediaBase) ? 'drupal' : 'notes');
     document.getElementById('elp-panel-row').style.display = canPanel ? 'block' : 'none';
@@ -8127,11 +8516,17 @@
     (async function () {
       try {
         var all = rows.slice();
-        for (var from = all.length; from < MSBigTable.BAKE_MAX; from += 1000) {
-          var res = await db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, content_id').eq('layer_id', lid).order('feature_id').range(from, from + 999);
+        // keyset resume from the last streamed row (rows arrive feature_id ASC) — offset pages
+        // deep into a big layer each re-walk everything before them (8/13)
+        var lastFid9 = all.length ? all[all.length - 1].feature_id : null;
+        while (all.length < MSBigTable.BAKE_MAX) {
+          var qb9 = db.from('features').select('feature_id, label, description, start_date, end_date, custom_fields, content_id').eq('layer_id', lid);
+          if (lastFid9 !== null) qb9 = qb9.gt('feature_id', lastFid9);
+          var res = await qb9.order('feature_id').limit(1000);
           if (res.error) return;
           Array.prototype.push.apply(all, res.data || []);
           if (!res.data || res.data.length < 1000) break;
+          lastFid9 = res.data[res.data.length - 1].feature_id;
         }
         await MSBigTable.bakeFromRows(db, projectId, lid, all, attrBakeStatus);
       } catch (e) { console.warn('sidecar backfill bake failed', e); }
@@ -8198,6 +8593,47 @@
       if (_attrWin) _attrWin.update();   // re-render → onMissing re-fires fetchAttrPage for visible gaps
     };
   }
+  // ── ms_dataset in EVERY table (8/13, owner: "I don't see the ms_dataset in attribute
+  //    tables still"): live rows carry it from the features view, but SIDECAR-backed tables
+  //    (big/virtual/folded) read a parquet baked before the view change. When the layer's
+  //    stamps are uniform (one dataset covers every row — the normal case), fill the column
+  //    client-side; mixed stamps wait for the next sidecar bake (per-row truth only). ──
+  async function ensureMsDatasetColumn(lid, gen) {
+    try {
+      if (gen !== _attrLoadGen) return;
+      var have = _attrCols.some(function (c) { return c.kind === 'custom' && c.key === 'ms_dataset'; });
+      var sample = (_attrRows || []).find(function (r) { return r && r.custom_fields && r.custom_fields.ms_dataset != null && r.custom_fields.ms_dataset !== 'none'; });
+      if (have && sample) return;   // rows already carry it (live view rows)
+      // THE ROWS' ORIGIN, never the layer's registration (8/13b — the fundamental fix). After
+      // a fork/MSD registration the two legitimately DIFFER: rows keep pointing at where the
+      // data CAME FROM (immutable provenance) while the layer's own dataset entry is just its
+      // registration — resolving via datasets.origin_layer_id here showed the registration id
+      // on every row of the owner's fresh MSD. Sample the FIRST and LAST row's dataset_id
+      // (two 1-row indexed queries — sidesteps the count-scan flake of 8/13): equal and
+      // non-null → the stamps are uniform, fill with that. Pointer copies own no rows — their
+      // table shows the DATA ROOT's rows, so the sample comes from the root.
+      var dataLid = lid;
+      var s1 = await db.from('features').select('dataset_id').eq('layer_id', dataLid).order('feature_id').limit(1);
+      if (!s1.data || !s1.data.length) {
+        var rt = await db.rpc('ms_layer_data_root', { p_layer: lid });
+        if (!rt.error && rt.data && rt.data !== lid) {
+          dataLid = rt.data;
+          s1 = await db.from('features').select('dataset_id').eq('layer_id', dataLid).order('feature_id').limit(1);
+        }
+      }
+      if (!s1.data || !s1.data.length || gen !== _attrLoadGen) return;   // no rows anywhere — nothing to show
+      var s2 = await db.from('features').select('dataset_id').eq('layer_id', dataLid).order('feature_id', { ascending: false }).limit(1);
+      var a0 = s1.data[0].dataset_id, b0 = s2.data && s2.data[0] && s2.data[0].dataset_id;
+      // unstamped or mixed stamps → per-row truth only (the next sidecar bake carries it)
+      if (!a0 || a0 !== b0 || gen !== _attrLoadGen) return;
+      var dsid = a0;
+      if (gen !== _attrLoadGen) return;
+      (_attrRows || []).forEach(function (r) { if (r) { r.custom_fields = r.custom_fields || {}; if (r.custom_fields.ms_dataset == null) r.custom_fields.ms_dataset = dsid; } });
+      if (_attrVirtual) _attrVirtual.msDatasetFill = dsid;             // pages that land later get it too
+      if (!have) { _attrCols.push({ title: 'ms_dataset', kind: 'custom', key: 'ms_dataset', type: 'text', w: 130 }); buildAttrHead(); }
+      renderAttrBody(true);
+    } catch (e) { console.warn('ms_dataset column backfill failed:', e && e.message); }
+  }
   function fetchAttrPage(start, end) {
     var v = _attrVirtual; if (!v) return;
     if (!v.fails) v.fails = {};
@@ -8210,7 +8646,10 @@
         v.prov.range(s0, 200, v.order).then(function (rs) {
           if (_attrVirtual !== v || v.gen !== _attrLoadGen) return;
           delete v.pending[s0]; delete v.fails[s0];
-          for (var i = 0; i < rs.length; i++) { _attrRows[s0 + i] = rs[i]; _attrById[String(rs[i].feature_id)] = rs[i]; }
+          for (var i = 0; i < rs.length; i++) {
+            if (v.msDatasetFill) { rs[i].custom_fields = rs[i].custom_fields || {}; if (rs[i].custom_fields.ms_dataset == null) rs[i].custom_fields.ms_dataset = v.msDatasetFill; }
+            _attrRows[s0 + i] = rs[i]; _attrById[String(rs[i].feature_id)] = rs[i];
+          }
           if (v.failed) { v.failed = false; updateAttrVirtualFoot(); }
           if (_attrWin) _attrWin.update();
         }, function (err) {   // failed page: auto-retry a few times with backoff, then surface it
@@ -8231,6 +8670,8 @@
     injectAttrModal();
     var modal = document.getElementById('editor-attr-modal');
     document.getElementById('editor-attr-title').textContent = (node.label || 'Layer') + ' — attributes';
+    // (8/13b) the registered-dataset summary lives in the DATASET MODAL, not here — the owner:
+    // "I wanted it in the registration modal, not in the attribute table."
     var thead = document.getElementById('editor-attr-thead'), tbody = document.getElementById('editor-attr-tbody'), foot = document.getElementById('editor-attr-foot');
     thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">Loading…</td></tr>'; foot.textContent = '';
     modal.style.display = 'block';
@@ -8292,10 +8733,11 @@
               rows = srows; total = srows.length;
               if (foldedA) _attrReadonly = true;   // folded: cell edits would UPDATE missing rows (silent no-op) — read-only until the delta editor (C4)
               buildTable(true);
+              ensureMsDatasetColumn(lid, gen);   // sidecars baked pre-8/13 lack ms_dataset — backfill uniform stamps
               return;
             } catch (eSc) { console.warn('sidecar load failed — falling back to stream', eSc); }
           } else if (fresh) {   // > display cap: VIRTUAL mode — rows page in on demand, sorts run as SQL in the worker
-            try { await openVirtualAttr(node, slug, lid, arc, gen); return; }
+            try { await openVirtualAttr(node, slug, lid, arc, gen); ensureMsDatasetColumn(lid, gen); return; }
             catch (eV) { console.warn('virtual table failed — falling back to stream', eV); }
           }
         }
@@ -8511,7 +8953,10 @@
       if (c.kind === 'sel') return '<td class="attr-sel-cell' + (c._left != null ? ' attr-pin-cell' : '') + '"' + (c._left != null ? ' style="left:' + c._left + 'px;"' : '') + ' title="Select / deselect this feature"></td>';
       var bind = c.kind === 'custom' ? 'data-fc="' + attrEsc(c.key) + '"' : 'data-f="' + attrEsc(c.field) + '"';
       var v = attrEsc(attrDisp(r, c));
-      if (_attrReadonly || !isSel) return '<td' + stick + '><span ' + bind + ' style="display:block;padding:5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + v + '</span></td>';
+      // msid + ms_dataset are IDENTITY, never editable (owner 8/13: "extremely important") —
+      // the server strips them from writes anyway; the UI must not pretend otherwise
+      var lockedCol = c.kind === 'custom' && (c.key === 'msid' || c.key === 'ms_dataset');
+      if (_attrReadonly || !isSel || lockedCol) return '<td' + stick + '><span ' + bind + ' style="display:block;padding:5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (lockedCol ? 'color:#8a8499;' : '') + '"' + (lockedCol ? ' title="Identity column — read-only"' : '') + '>' + v + '</span></td>';
       return '<td' + stick + '><input ' + bind + ' type="' + c.type + '" value="' + v + '" /></td>';
     }).join('') + '</tr>';
   }
@@ -8831,7 +9276,7 @@
       var opts = [];
       _attrCols.forEach(function (c) {
         if (c.kind === 'std' && c.field === 'label') opts.push({ v: 'label', t: 'Label' });
-        else if (c.kind === 'custom' && c.key) opts.push({ v: c.key, t: c.key });
+        else if (c.kind === 'custom' && c.key && c.key !== 'msid' && c.key !== 'ms_dataset') opts.push({ v: c.key, t: c.key });   // identity columns: never a transfer source/target
       });
       ['attr-tr-from', 'attr-tr-to'].forEach(function (id9) {
         var s9 = document.getElementById(id9);
@@ -8849,6 +9294,7 @@
     var slug9 = _attrSlug, lid = slug9 && slugToLayerDbId[slug9];
     if (!lid) { st9.textContent = 'No database layer.'; return; }
     if (from === to) { st9.textContent = 'Pick two different columns.'; return; }
+    if (to === 'msid' || to === 'ms_dataset') { st9.textContent = 'That is an identity column — read-only.'; return; }
     if (!confirm('Copy "' + from + '" into "' + to + '"' + (onlyEmpty ? ' where "' + to + '" is empty' : ' — OVERWRITING existing values') + '?\n\nThis changes the layer everywhere it is used.')) return;
     try {
       st9.textContent = 'Listing rows…';
@@ -8975,14 +9421,18 @@
       } catch (e) {}
     }
     // fallback: stream just feature_id + label (light — no geometry, no custom fields)
-    var out = [];
-    for (var from = 0; from < 1000000; from += 1000) {
-      var res = await db.from('features').select('feature_id, label').eq('layer_id', lid).order('feature_id').range(from, from + 999);
+    var out = [], lastFidF = null, firstPage = true;
+    for (;;) {   // keyset pages — deep offsets re-walk every skipped row server-side (8/13)
+      var qbF = db.from('features').select('feature_id, label').eq('layer_id', lid);
+      if (lastFidF !== null) qbF = qbF.gt('feature_id', lastFidF);
+      var res = await qbF.order('feature_id').limit(1000);
       if (gen !== _attrLoadGen) return null;
       if (res.error) throw new Error(res.error.message);
       Array.prototype.push.apply(out, res.data || []);
-      if (from === 0 && out.length) { _attrRows = out.slice(); rebuildFlistIndex(); renderFlist(); document.getElementById('editor-flist-foot').textContent = 'Loading ' + nfmt(out.length) + '…'; }
+      if (firstPage && out.length) { _attrRows = out.slice(); rebuildFlistIndex(); renderFlist(); document.getElementById('editor-flist-foot').textContent = 'Loading ' + nfmt(out.length) + '…'; }
+      firstPage = false;
       if (!res.data || res.data.length < 1000) break;
+      lastFidF = res.data[res.data.length - 1].feature_id;
       if (out.length >= ATTR_LOAD_CAP) break;
     }
     return out;
@@ -9027,6 +9477,8 @@
     document.getElementById('editor-flist-foot').textContent = nfmt(rows.length) + ' feature' + (rows.length === 1 ? '' : 's');
   }
   async function saveAttrCustomCell(fid, key, value) {
+    // identity columns are NEVER writable (owner 8/13) — belt to the render-side lock's braces
+    if (key === 'msid' || key === 'ms_dataset') { setStatus(key + ' is an identity column — read-only'); return; }
     var cf = _attrCustom[fid];
     if (!cf) { cf = _attrCustom[fid] = {}; var row0 = findAttrRow(fid); if (row0) row0.custom_fields = cf; }   // link a fresh object back to the row so re-sort shows the edit
     var v = value.trim();
@@ -9034,7 +9486,11 @@
     else if (/^-?\d+(\.\d+)?$/.test(v)) cf[key] = Number(v);   // keep numbers numeric
     else cf[key] = value;
     setStatus('Saving…');
-    try { var r = await db.from('features').update({ custom_fields: Object.keys(cf).length ? cf : null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); scheduleAttrRebake(); }
+    try {
+      var r = await db.from('features').update({ custom_fields: Object.keys(cf).length ? cf : null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); scheduleAttrRebake();
+      // tiled layers render per-feature colours through the persisted paint (by-id match) — refresh it
+      if (key === 'ms_color') { var n9 = _attrSlug && findNodeById(layers, _attrSlug); if (n9 && isTilesetNode(n9)) scheduleTiledOverrideRefresh(_attrSlug); }
+    }
     catch (e) { setStatus('Save failed'); }
   }
   async function saveAttrCell(fid, field, value) {
@@ -9159,7 +9615,11 @@
     var _thExpr = (node.thicknessBy && node.paint && Array.isArray(node.paint[_tk2])) ? node.paint[_tk2] : null;
     // zoom-varied width (7/21): survives unrelated edits; moving the uniform width slider EXITS it
     var _wzExpr = (node.type === 'line' && node.paint && Array.isArray(node.paint['line-width']) && node.paint['line-width'][0] === 'interpolate') ? node.paint['line-width'] : null;
+    // (8/14) line-offset survives the rebuild — buildLayerPaint knows nothing about it
+    var _loffPrev = (node.type === 'line' && node.paint && node.paint['line-offset'] != null) ? node.paint['line-offset'] : null;
     node.paint = buildLayerPaint(node.type, color, op, outline, outlineVis, width, radius);
+    if (field === 'offset') { if (value) node.paint['line-offset'] = value; else delete node.paint['line-offset']; }
+    else if (_loffPrev != null) node.paint['line-offset'] = _loffPrev;
     if (field === 'width' && node.widthZoom) {
       delete node.widthZoom; _wzExpr = null;
       var _wzCb = document.getElementById('elp-wzoom-on'); if (_wzCb) { _wzCb.checked = false; var _wzBox = document.getElementById('elp-wzoom-box'); if (_wzBox) _wzBox.style.display = 'none'; }
@@ -9201,8 +9661,12 @@
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
         var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0]; if (!m.getLayer(id)) return;
         try {
-          if (node.iconColor) m.setPaintProperty(id, 'line-color', node.iconColor);
+          // (8/14) colour-by owns line-color when active — repainting iconColor over the
+          // categorical expression flattened a coloured border on every unrelated slider move
+          if (node.colorBy && Array.isArray(pp['line-color'])) m.setPaintProperty(id, 'line-color', pp['line-color']);
+          else if (node.iconColor) m.setPaintProperty(id, 'line-color', node.iconColor);
           if (pp['line-width'] != null) m.setPaintProperty(id, 'line-width', pp['line-width']);
+          m.setPaintProperty(id, 'line-offset', pp['line-offset'] != null ? pp['line-offset'] : 0);
           if (op != null) m.setPaintProperty(id, 'line-opacity', op);
         } catch (e) {}
       });
@@ -9213,6 +9677,7 @@
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
         var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0]; var ml = m.getLayer(id); if (!ml) return;
         Object.keys(tp).forEach(function (k) { if (k.indexOf(ml.type + '-') === 0) { try { m.setPaintProperty(id, k, tp[k]); } catch (e) {} } });
+        if (ml.type === 'line') { try { m.setPaintProperty(id, 'line-offset', tp['line-offset'] != null ? tp['line-offset'] : 0); } catch (e) {} }   // offset back to 0 needs an explicit reset — the keys loop skips deleted keys
         if (ml.type === 'fill') {
           // outline lifecycle, LIVE: width ≤ 1 → native fill-outline only; width > 1 → a stroke line
           // layer owns the outline (native blanked) — created/removed here so the preview always
@@ -9245,6 +9710,7 @@
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
         var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0]; var ml = m.getLayer(id); if (!ml) return;
         Object.keys(gp).forEach(function (k) { if (k.indexOf(ml.type + '-') === 0) { try { m.setPaintProperty(id, k, gp[k]); } catch (e) {} } });
+        if (ml.type === 'line') { try { m.setPaintProperty(id, 'line-offset', gp['line-offset'] != null ? gp['line-offset'] : 0); } catch (e) {} }
         if (node.iconColor && !node.colorBy) { try { m.setPaintProperty(id, ml.type + '-color', node.iconColor); } catch (e) {} }
       });
     } else if (draw) {

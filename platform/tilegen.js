@@ -354,19 +354,38 @@
   //     at its pixel grid, so scrubbing visibly loses points that pop back on release. And points
   //     are the cheapest thing the vector paint path animates; the raster solves a problem point
   //     layers don't have.
-  //   · PRE-1800 YEARS. One byte per year from base 1799 means the earliest representable start
-  //     is 1800 — every earlier year clamps to it. The owner's data runs 1111-1810: during a drag
-  //     the shader saw "everything starts 1800 / everything ended by 1800", i.e. an empty or
-  //     wrong map for 99% of their timeline, corrected only at release by the real filter.
-  //     A wider encoding is a future change; until then the honest answer is no raster.
-  function rasterUnfitReason(geomKind, fc) {
-    if (geomKind === "circle" || geomKind === "Point") return "point layers animate directly";
-    var minYs = Infinity;
+  //   · A SPAN WIDER THAN 255 YEARS. One byte per year means the codec holds a 255-year window.
+  //     The window's BASE now follows the data (8/13): the reader has always taken cfg.yearBase,
+  //     so pre-1800 data simply bakes with a lower base — Steamboat (1787) was refused outright
+  //     by the old fixed-1799 floor and vanished mid-drag ("These layers are not baking").
+  //     What still cannot bake honestly is data whose real span EXCEEDS the window (the owner's
+  //     1111-1810 gazetteer): during a drag the shader would show an empty or wrong map for most
+  //     of the timeline, corrected only at release — the honest answer there stays no raster.
+  function rasterYearBase(fc) {
+    // −2 not −1 (8/13): start byte 1 is RESERVED as the "since forever" sentinel for dateless
+    // features (yearsV2), so the oldest real start must land on byte 2.
+    var yb = 1799;
     (fc.features || []).forEach(function (f) {
       var d = f.properties && f.properties.DayStart;
-      if (d) { var y = Math.floor(d / 10000); if (y < minYs) minYs = y; }
+      if (d) { var y = Math.floor(d / 10000); if (y > 0 && y - 2 < yb) yb = y - 2; }
     });
-    if (minYs < 1800) return "this data reaches back to " + minYs + ", before the raster's earliest representable year (1800)";
+    return yb;
+  }
+  function rasterUnfitReason(geomKind, fc) {
+    if (geomKind === "circle" || geomKind === "Point") return "point layers animate directly";
+    // Only STARTS must truly fit the 255-year window — a start outside it paints features into
+    // years they didn't exist in. ENDS have always clamped silently to the ceiling (the old codec
+    // capped them at 2054): an end on the ceiling reads "still alive at every reachable year",
+    // which is exact until the slider passes base+255 — and stray far-future end dates exist in
+    // real data (Steamboat carries an end year of 2101; refusing on ends killed its raster, 8/13).
+    var minYs = Infinity, maxYs = -Infinity;
+    (fc.features || []).forEach(function (f) {
+      var d = f.properties && f.properties.DayStart;
+      if (d) { var y = Math.floor(d / 10000); if (y > 0) { if (y < minYs) minYs = y; if (y > maxYs) maxYs = y; } }
+    });
+    if (isFinite(minYs) && maxYs - Math.min(1799, minYs - 2) > 255) {
+      return "starts span " + minYs + "–" + maxYs + ", wider than the raster's 255-year window";
+    }
     return null;
   }
   async function bakeYearsRaster(db, projectId, layerDbId, fc) {
@@ -429,17 +448,60 @@
       var a = list.slice().sort(function (x, y) { return (x[0] - y[0]) || (x[1] - y[1]); }), out = [];
       for (var i = 0; i < a.length; i++) {
         var cur = out.length ? out[out.length - 1] : null;
-        if (cur && a[i][0] <= cur[1] + 1) { if (a[i][1] > cur[1]) cur[1] = a[i][1]; }
-        else out.push([a[i][0], a[i][1]]);
+        // same-COLOUR spans merge as before; a colour change keeps its own stretch — that is
+        // the whole point (each stretch paints in its own palette colour). Same-time overlaps
+        // of different colours both survive; the reader paints the earlier-starting one.
+        if (cur && a[i][0] <= cur[1] + 1 && (a[i][2] || 0) === (cur[2] || 0)) { if (a[i][1] > cur[1]) cur[1] = a[i][1]; }
+        else out.push([a[i][0], a[i][1], a[i][2] || 0]);
       }
       return out;
     }
     // DayStart/DayEnd are YYYYMMDD integers. An UNKNOWN or malformed month resolves in the
     // direction that never shortens an era — January for a start, December for an end — which is
     // the same instinct as the reader's "an era ending in month M lives through all of M".
-    var MIDX = function (y, mo) { return (y - 1799) * 12 + mo; };
+    // YB (8/13): the codec's year base follows the data down below 1799 when needed — the reader
+    // has always decoded years as uBase + byte (cfg.yearBase), so old bakes are untouched.
+    var YB = rasterYearBase(fc);
+    var MIDX = function (y, mo) { return (y - YB) * 12 + mo; };
     var monOf = function (d, dflt) { var mo = Math.floor(d / 100) % 100 - 1; return (mo >= 0 && mo <= 11) ? mo : dflt; };
     var OPEN = MIDX(9999, 11);        // DayEnd 99999999 — the open-ended sentinel, clamped at write time
+
+    /* ── PER-ERA COLOURS (8/14, owner: "I don't want one color, I want all the colors!!") ──
+       Each era bakes with the colour the VECTOR would paint it — the feature's ms_color
+       override first, else the active colour-by category, else the layer colour. Spans become
+       [start, end, colourIdx]; the LUT's long-reserved alpha byte finally earns its keep
+       (255 − index, 0 stays the stop marker) and cfg.palette ships index → hex for the reader.
+       Fully backward compatible: an OLD reader treats any alpha > 0 as "in use" and paints its
+       single uCol; a bake with no colour-by writes index 0 everywhere and looks exactly as
+       before. Colours are frozen at BAKE time — restyling then Re-baking refreshes them, which
+       is the same contract as the label bake. */
+    var palBase = "#4a9eff", cbProp = null, cbMap = null;
+    try {
+      var lrw = await db.from("layers").select("color, raw_config").eq("id", layerDbId).single();
+      if (lrw.data) {
+        if (lrw.data.color && /^#[0-9a-f]{6}$/i.test(String(lrw.data.color).trim())) palBase = String(lrw.data.color).trim();
+        var cb0 = lrw.data.raw_config && lrw.data.raw_config.colorBy;
+        if (cb0 && cb0.prop && cb0.mapping) { cbProp = cb0.prop; cbMap = cb0.mapping; }
+      }
+    } catch (ePal) {}
+    var palette = [palBase.toLowerCase()], palIdx = {};
+    palIdx[palette[0]] = 0;
+    var palOverflow = 0;
+    function normHex(v) {
+      var s = String(v == null ? "" : v).trim();
+      if (/^[0-9a-f]{6}$/i.test(s)) s = "#" + s;
+      return /^#[0-9a-f]{6}$/i.test(s) ? s.toLowerCase() : null;
+    }
+    function colorIdxOf(p) {
+      var v = normHex(p.ms_color);   // per-feature override outranks the category, like the vector
+      if (!v && cbMap && cbProp != null && p[cbProp] != null) v = normHex(cbMap[String(p[cbProp])]);
+      if (!v) return 0;
+      if (palIdx[v] != null) return palIdx[v];
+      if (palette.length >= 250) { palOverflow++; return 0; }   // palette full — overflow paints the layer colour
+      palIdx[v] = palette.length; palette.push(v);
+      return palIdx[v];
+    }
+
     var bySig = {}, shapes = [];
     (fc.features || []).forEach(function (f) {
       if (!f || !f.geometry) return;
@@ -453,7 +515,7 @@
         if (bucket[bi].g.type === f.geometry.type && sameCoords(bucket[bi].g.coordinates, f.geometry.coordinates)) { e = bucket[bi]; break; }
       }
       if (!e) { e = { g: f.geometry, spans: [] }; bucket.push(e); shapes.push(e); }
-      e.spans.push([ys, ye]);
+      e.spans.push([ys, ye, colorIdxOf(p)]);
     });
     shapes.forEach(function (s) {
       s.spans = mergeSpans(s.spans);
@@ -631,19 +693,23 @@
         var row = Math.floor(id / 256), colBase = (id % 256) * 8;
         for (var c2 = 0; c2 < sp.length; c2++) {
           var i4 = (row * 2048 + colBase + c2) * 4;
-          // month index → year byte + month nibble. Math.floor is correct for the negative
-          // indices a pre-1799 start produces; both ends are then clamped into the byte range,
-          // a start never LATER than reality and an end never EARLIER.
-          var sY = 1799 + Math.floor(sp[c2][0] / 12), sM = sp[c2][0] - (sY - 1799) * 12;
-          var eY = 1799 + Math.floor(sp[c2][1] / 12), eM = sp[c2][1] - (eY - 1799) * 12;
-          if (sY <= 1800) { sY = 1800; sM = 0; }      // 1800 is the encoding's floor
-          if (sY > 2054) { sY = 2054; sM = 11; }
-          if (eY >= 2054) { eY = 2054; eM = 11; }     // …and 2054 its ceiling (open-ended lands here)
-          if (eY < 1800) { eY = 1800; eM = 0; }
-          d[i4] = sY - 1799;          // 1..255
-          d[i4 + 1] = eY - 1799;
+          // month index → year byte + month nibble. SENTINELS (8/13, yearsV2): a DATELESS start
+          // (span begins at MIDX(0,0)) writes byte 1 = "since forever" — real starts live in
+          // bytes 2..255 (rasterYearBase leaves byte 2 for the oldest real year). End byte 255 =
+          // open-ended / beyond the window. The reader treats both as ±infinity, so a dateless
+          // feature (e.g. Current Rail Network) is PERMANENT instead of clamping to the floor
+          // and vanishing when the slider goes below it.
+          var dateless = sp[c2][0] <= MIDX(0, 0);
+          var sY = YB + Math.floor(sp[c2][0] / 12), sM = sp[c2][0] - (sY - YB) * 12;
+          var eY = YB + Math.floor(sp[c2][1] / 12), eM = sp[c2][1] - (eY - YB) * 12;
+          if (sY <= YB + 2) { sY = YB + 2; sM = 0; }          // base+2 is the floor for REAL dates
+          if (sY > YB + 255) { sY = YB + 255; sM = 11; }
+          if (eY >= YB + 255) { eY = YB + 255; eM = 11; }     // …and base+255 the ceiling (open-ended lands here)
+          if (eY < YB + 2) { eY = YB + 2; eM = 0; }
+          d[i4] = dateless ? 1 : (sY - YB);   // 1 = sentinel, 2..255 = real
+          d[i4 + 1] = eY - YB;
           d[i4 + 2] = (sM << 4) | eM; // two 4-bit month fields, 0-11 each
-          d[i4 + 3] = 255;            // in use · colour index = 255 − alpha, reserved 0 today
+          d[i4 + 3] = 255 - (sp[c2][2] || 0);   // in use · colour index = 255 − alpha (the reserved byte, live 8/14)
         }
       }
       ctx.putImageData(im, 0, 0);
@@ -703,7 +769,7 @@
 
     var fillP = await bakePyramid(false, "");
     if (!fillP.levels.length) throw new Error("no raster levels baked");
-    var out = { levels: fillP.levels, bounds: b, yearBase: 1799, bytes: fillP.bytes, bakedAt: new Date().toISOString(),
+    var out = { levels: fillP.levels, bounds: b, yearBase: YB, yearsV2: true, bytes: fillP.bytes, bakedAt: new Date().toISOString(),
                 url: fillP.levels[0].url, width: fillP.levels[0].width, height: fillP.levels[0].height };   // legacy single-image fields
     // companion BORDER raster (option B, 8/8): polygon layers only — mid-drag borders are the only
     // way to tell contiguous features apart. Best-effort: a border-bake failure never voids the fill bake.
@@ -724,9 +790,11 @@
     out.ids = nodes.length - 1;          // distinct shape sets — the LUT's real size on record
     out.shapes = shapes.length;
     out.lutCapped = lutCapped;           // ids whose timeline needed more than 8 stretches
+    out.palette = palette;               // index → hex; the reader paints each stretch in its own colour (8/14)
     out.bakeMs = Date.now() - t0;
     if (lutCapped) console.warn("tilegen: " + lutCapped + " of " + out.ids + " pixel timelines held more than 8 stretches — kept the 8 longest");
-    console.log("tilegen: indexed instant-scrub raster — " + out.shapes + " shapes, " + out.ids + " ids, LUT " + L.rows + " rows, " + Math.round(out.bakeMs / 1000) + "s");
+    if (palOverflow) console.warn("tilegen: raster palette full (250) — " + palOverflow + " era colours fell back to the layer colour");
+    console.log("tilegen: indexed instant-scrub raster — " + out.shapes + " shapes, " + out.ids + " ids, LUT " + L.rows + " rows, " + palette.length + " colours, " + Math.round(out.bakeMs / 1000) + "s");
     return out;
   }
 
@@ -831,6 +899,10 @@
     }).eq("id", layerDbId);
     if (upd.error) throw new Error(upd.error.message);
     status("Tiles ready — " + mb + " MB, up to z" + built.maxZoom + ".");
+    // tell the RUNNING scrub the bake landed (8/13, "I rebaked, it all went black"): its items
+    // and textures otherwise keep pointing at the artifacts this bake just replaced/deleted,
+    // and the session scrubs from stale state until a page reload
+    try { if (window.MSRasterScrub && window.MSRasterScrub.reload) window.MSRasterScrub.reload(); } catch (eRS) {}
     return { tilesUrl: rc.pmtiles, bytes: bytes.length, maxZoom: built.maxZoom };
   }
 
@@ -848,16 +920,36 @@
     // map-labels config points at (fetched surgically via the JSON arrow — never all of custom_fields).
     var lblField = (L.raw_config && L.raw_config.labels && L.raw_config.labels.field) || null;
     if (lblField === "label") lblField = null;
-    var sel = "feature_id, geom, start_date, end_date, label" + (lblField ? ", lblv:custom_fields->>" + lblField : "");
+    // the colour-by column rides along too (8/13 — tileset color-by on every geometry): the
+    // paint match reads it from tile properties, exactly like the label column
+    var cbField = (L.raw_config && L.raw_config.colorBy && L.raw_config.colorBy.prop) || null;
+    if (cbField === "label" || cbField === lblField) cbField = null;
+    var sel = "feature_id, geom, start_date, end_date, label" + (lblField ? ", lblv:custom_fields->>" + lblField : "") + (cbField ? ", cbv:custom_fields->>" + cbField : "");
+    // POINTER COPIES (8/13, "These layers are not baking"): a portal-added/copied layer renders
+    // the SOURCE's tiles and owns no rows, so baking from L.id found nothing and reported
+    // "Nothing to bake". Bake from the layer's DATA ROOT instead (ms_layer_data_root — the same
+    // lineage resolver the datasets system uses), writing the tiles under THIS layer's own keys,
+    // so a re-baked copy becomes self-sufficient.
+    var dataLid = L.id;
+    try {
+      var probe = await db.from("features").select("feature_id").eq("layer_id", L.id).limit(1);
+      if (!probe.error && (!probe.data || !probe.data.length)) {
+        var rt = await db.rpc("ms_layer_data_root", { p_layer: L.id });
+        if (!rt.error && rt.data && rt.data !== L.id) { dataLid = rt.data; status("“" + (L.name || "layer") + "” is a copy — baking from its source's rows…"); }
+      }
+    } catch (eRoot) {}
     // KEYSET pagination (feature_id > last) — OFFSET paging hit the DB statement timeout at depth
     // and SILENTLY truncated big layers (NTAD 7/23: baked 214k of 302,771 and called it success).
     // Errors now retry once, then ABORT LOUDLY — a partial archive must never look like a bake.
-    var feats = [], lastFid = null, retried = false;
+    // ADAPTIVE page size (8/13): heavy geometry (CShapes ~70KB/row) blows the statement timeout at
+    // limit(1000) — shrink the bite on failure instead of aborting; abort only at the floor.
+    var feats = [], lastFid = null, retried = false, pageSz = 1000;
     for (;;) {
-      var q = db.from("features").select(sel).eq("layer_id", L.id).order("feature_id").limit(1000);
+      var q = db.from("features").select(sel).eq("layer_id", dataLid).order("feature_id").limit(pageSz);
       if (lastFid != null) q = q.gt("feature_id", lastFid);
       var r = await q;
       if (r.error) {
+        if (pageSz > 25) { pageSz = Math.max(25, Math.floor(pageSz / 4)); status("Heavy rows — retrying in pages of " + pageSz + "…"); continue; }
         if (!retried) { retried = true; status("Row fetch hiccup — retrying…"); await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }
         status("⚠ Tile bake ABORTED for “" + (L.name || "layer") + "” — row fetch failed at " + feats.length.toLocaleString() + " rows (" + r.error.message + "). The existing archive is kept; try again.");
         throw new Error("bake aborted: feature fetch failed at " + feats.length + " (" + r.error.message + ")");
@@ -874,10 +966,11 @@
         };
         if (f.label != null && f.label !== "") props.label = f.label;
         if (lblField && f.lblv != null && f.lblv !== "") props[lblField] = f.lblv;
+        if (cbField && f.cbv != null && f.cbv !== "") props[cbField] = f.cbv;
         feats.push({ type: "Feature", id: f.feature_id, properties: props, geometry: f.geom });
       });
       if (feats.length % 25000 < 1000) status("Fetching rows… " + feats.length.toLocaleString());
-      if (r.data.length < 1000) break;
+      if (r.data.length < pageSz) break;
     }
     if (!feats.length) return 0;
     await convertLayer(db, projectId, L.id, feats, { name: L.name, geomKind: L.type, status: status, labelField: lblField });
@@ -896,17 +989,27 @@
       // COUNT-TIMEOUT TOLERANCE (7/23 eve): exact counts time out on 300k layers; a timeout must
       // NOT read as "dirty" — that silently re-baked the tippecanoe archive with the browser
       // tiler. On timeout, judge by max-fid + updated_at alone (both cheap + index-backed).
+      // pointer copies own no rows — cleanliness is judged against the DATA ROOT's rows (8/13),
+      // otherwise 0 ≠ tilesFeatureCount read as "dirty" and every Publish re-baked every copy
+      var lid = L.id;
+      if (rc.tilesFeatureCount > 0) {
+        var p0 = await db.from("features").select("feature_id").eq("layer_id", lid).limit(1);
+        if (!p0.error && (!p0.data || !p0.data.length)) {
+          var rt = await db.rpc("ms_layer_data_root", { p_layer: lid });
+          if (!rt.error && rt.data) lid = rt.data;
+        }
+      }
       var cnt = null, mfid = null;
-      var mf = await db.from("features").select("feature_id", { count: "exact" }).eq("layer_id", L.id).order("feature_id", { ascending: false }).limit(1);
+      var mf = await db.from("features").select("feature_id", { count: "exact" }).eq("layer_id", lid).order("feature_id", { ascending: false }).limit(1);
       if (!mf.error) { cnt = mf.count; mfid = mf.data && mf.data[0] && mf.data[0].feature_id; }
       else {
-        var mf2 = await db.from("features").select("feature_id").eq("layer_id", L.id).order("feature_id", { ascending: false }).limit(1);
+        var mf2 = await db.from("features").select("feature_id").eq("layer_id", lid).order("feature_id", { ascending: false }).limit(1);
         mfid = mf2.data && mf2.data[0] && mf2.data[0].feature_id;
       }
       if (cnt != null && cnt !== rc.tilesFeatureCount) return false;
       if (rc.tilesMaxFid != null && mfid != null && Number(mfid) !== Number(rc.tilesMaxFid)) return false;
       if (cnt == null && mfid == null) return false;   // could verify NOTHING — doubt still re-bakes
-      var nu = await db.from("features").select("updated_at").eq("layer_id", L.id).not("updated_at", "is", null).order("updated_at", { ascending: false }).limit(1);
+      var nu = await db.from("features").select("updated_at").eq("layer_id", lid).not("updated_at", "is", null).order("updated_at", { ascending: false }).limit(1);
       var newest = nu.data && nu.data[0] && nu.data[0].updated_at;
       if (newest && new Date(newest).getTime() > new Date(rc.tilesGeneratedAt).getTime() - 120000) return false;
       return true;

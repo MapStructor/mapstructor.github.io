@@ -447,6 +447,29 @@ div.layer-list-row {
 .ms-section-block { margin-top: 18px; }
 .ms-section-block:first-child { margin-top: 0; }
 
+/* Divider (8/13): plain text between items — muted small caps with a thin rule either side.
+   Deliberately quieter than a section header (those are bold); it delineates, it doesn't contain.
+   Sizes: small (default) / .md / .lg — the TEXT grows (owner 8/13: "the text needs to be
+   bigger"), and the rules stretch a little further with it. */
+.ms-divider-block { margin-top: 12px; }
+/* div.layer-list-row (above) forces width:100% at higher specificity — the divider width
+   rules must match it (div + two classes) or Small/Medium/Large all render full-width */
+div.layer-list-row.ms-divider-row { display: flex; align-items: center; gap: 8px; width: 45%; margin: 0 auto; }
+.ms-divider-block.md div.layer-list-row.ms-divider-row { width: 72%; }
+.ms-divider-block.lg div.layer-list-row.ms-divider-row { width: 98%; }
+.ms-divider-row::before, .ms-divider-row::after { content: ""; flex: 1; border-top: 1px solid #cfcadb; }
+.ms-divider-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8a8499;
+  white-space: nowrap;
+}
+.ms-divider-block.md .ms-divider-label { font-size: 15px; }
+.ms-divider-block.lg .ms-divider-label { font-size: 19px; letter-spacing: 0.09em; }
+
 /* ▦ still reads as a table, struck through + amber = "hidden in view mode" (editor-only state;
    set by raw_config.tableBtn === false via the layer panel's "Table button shown in view" box). */
 .ms-tbl-off { color: #c9762b !important; position: relative; }

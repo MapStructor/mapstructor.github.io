@@ -46,7 +46,7 @@
   <script src="platform/auth.js?v=20260728a"></script>
   <script src="platform/veil.js?v=20260731a"></script>
   <script src="platform/topbar.js?v=20260728a"></script>
-  <script src="platform/bookmarks.js?v=20260806a"></script>
+  <script src="platform/bookmarks.js?v=20260811a"></script>
 </head>
 <body>
 
@@ -57,7 +57,7 @@
 
   <div class="head">
     <h1>Map Portal</h1>
-    <p>Curated maps and datasets to explore — and to add straight into your own maps.</p>
+    <p>Curated maps to explore — and to add straight into your own maps.</p>
     <a class="btn-contrib" href="#" id="btn-contrib" title="Start a new map to contribute">＋ Contribute a map</a>
     <div class="contrib-hint">Starts a fresh map — build it, then <b>Share</b> → <b>Add to Portal</b>. Already have one? <a href="dashboard.html" style="color:inherit;">Open it from your maps</a>.</div>
   </div>
@@ -67,6 +67,12 @@
          private or were deleted drop out of the join automatically -->
     <div class="grid" id="portal-grid"></div>
     <div class="coming" id="portal-note">Loading…</div>
+
+    <!-- DATASETS moved to their own page (8/11): they are numerous and mean little without
+         context, so the catalogue lives at datasets.html — reached from this one link. -->
+    <div style="text-align:center;margin-top:clamp(36px,5vw,56px);">
+      <a href="datasets.html" style="color:#6e6585;text-decoration:none;font-size:14.5px;font-weight:600;border-bottom:1px solid rgba(124,92,191,.35);padding-bottom:2px;">Search All Datasets →</a>
+    </div>
   </main>
 
   <footer>

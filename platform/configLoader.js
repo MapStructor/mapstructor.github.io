@@ -59,6 +59,39 @@ var ConfigLoader = (function () {
     return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: props };
   }
 
+  // ── Adaptive row pager (8/13). Heavy-geometry layers break FIXED 1000-row pages: CShapes 2.0 is
+  //    ~70KB of MultiPolygon per row, so one 1000-row page ≈ 70MB and Postgres cancels it
+  //    (57014 statement timeout) — the fresh upload rendered NOTHING, and the import's own
+  //    auto-convert read-back died on the same page size and silently skipped baking. On any
+  //    page failure the page size divides by 4 (floor 25) and the same cursor retries, so every
+  //    layer loads at whatever bite its geometry can afford.
+  //    KEYSET pages (8/13b): offset paging makes the server re-walk every skipped row, so deep
+  //    pages of a big layer each cost seconds on their own — paging past the last seen feature_id
+  //    keeps every page the same price. Order: feature_id ASC, always (it IS the cursor).
+  //    opts.onPage(rowsSoFar) reports progress for long reads (the dataset freeze shows it). ──
+  async function fetchRowsAdaptive(db, sel, applyFilter, opts) {
+    var rows = [], size = (opts && opts.startSize) || 1000, minSize = 25, last = null;
+    // the cursor column must ride along even when the caller didn't ask for it
+    var sel2 = /\bfeature_id\b/.test(sel) ? sel : "feature_id, " + sel;
+    for (;;) {
+      var q = applyFilter(db.from("features").select(sel2));
+      if (last !== null) q = q.gt("feature_id", last);
+      q = q.order("feature_id").limit(size);
+      var r; try { r = await q; } catch (e) { r = { error: e }; }
+      if (r.error) {
+        if (size <= minSize) return { rows: rows, error: r.error };   // genuinely failing, not just heavy
+        size = Math.max(minSize, Math.floor(size / 4));
+        continue;   // same cursor, smaller bite
+      }
+      var got = r.data || [];
+      rows = rows.concat(got);
+      if (got.length) last = got[got.length - 1].feature_id;
+      if (opts && opts.onPage) { try { opts.onPage(rows.length); } catch (e) {} }
+      if (got.length < size) return { rows: rows, error: null };
+    }
+  }
+  try { window.MSFetchRows = fetchRowsAdaptive; } catch (e) {}   // editing.js/tilegen/datasets reuse the same pager
+
   // Off-by-default drawn layers boot with EMPTY sources (marked _deferred) so the visible map paints fast;
   // call this after boot to fetch their features and fill the live sources (they're hidden — no flash).
   // PER-LAYER: each layer fetches its own rows and fills its sources the moment THEY arrive — the old
@@ -68,15 +101,10 @@ var ConfigLoader = (function () {
     if (!n || !n._deferred || !n._layerDbId || n._hydrating) return false;
     n._hydrating = true;
     var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url, custom_fields";
-    var rows = [];
-    try {
-      for (var off = 0; ; off += 1000) {
-        var r = await db.from("features").select(sel).eq("layer_id", n._dataLayerId || n._layerDbId).order("feature_id").range(off, off + 999);
-        if (r.error) { n._hydrating = false; return false; }   // stays _deferred → the next toggle retries
-        rows = rows.concat(r.data || []);
-        if (!r.data || r.data.length < 1000) break;
-      }
-    } catch (e) { n._hydrating = false; return false; }
+    var hydLid = n._dataLayerId || n._layerDbId;
+    var fr = await fetchRowsAdaptive(db, sel, function (q) { return q.eq("layer_id", hydLid); });
+    if (fr.error) { n._hydrating = false; return false; }   // stays _deferred → the next toggle retries
+    var rows = fr.rows;
     var fc = { type: "FeatureCollection", features: rows.map(featureToGeo) };
     if (n.source && n.source.type === "geojson") n.source.data = fc;   // style switches re-add with the data
     n._deferred = false; n._hydrating = false;
@@ -419,16 +447,10 @@ var ConfigLoader = (function () {
     if (drawnIds.length) {
       var push = function (data) { (data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); }); };
       var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url, custom_fields";   // custom_fields feed data-driven styling (color-by-attribute)
-      // Supabase caps a select at 1000 rows; get the total, then page through (the rest in parallel)
-      // so layers with many features (e.g. imported datasets) render fully, not just the first 1000.
-      var first = await db.from("features").select(sel, { count: "exact" }).in("layer_id", drawnIds).order("feature_id").range(0, 999);
-      if (!first.error) {
-        push(first.data);
-        var total = first.count || (first.data ? first.data.length : 0);
-        var pages = [];
-        for (var off = 1000; off < total; off += 1000) pages.push(db.from("features").select(sel).in("layer_id", drawnIds).order("feature_id").range(off, off + 999));
-        if (pages.length) { var results = await Promise.all(pages); results.forEach(function (r) { if (!r.error) push(r.data); }); }
-      }
+      // Adaptive paging (8/13): a fixed 1000-row page dies on heavy geometry (statement timeout —
+      // the fresh CShapes upload booted to an EMPTY map). The pager shrinks the page until it fits.
+      var bootRows = await fetchRowsAdaptive(db, sel, function (q) { return q.in("layer_id", drawnIds); });
+      push(bootRows.rows);
     }
     return bundle;
   }

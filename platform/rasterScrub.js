@@ -49,16 +49,29 @@
     // converted layers carry their db id inside their tile URL (pmt/{pid}/{lid}/…) — works on
     // viewer AND editor, no dependency on editing.js internals
     try {
-      var hit = null;
+      var hits = [];
       (function walk(a) {
         (a || []).forEach(function (n) {
-          if (hit) return;
           var u = n.source && (n.source.url || (n.source.tiles && n.source.tiles[0]) || "");
-          if (u && String(u).indexOf(lid) !== -1) hit = n.id;
+          if (u && String(u).indexOf(lid) !== -1) hits.push(n);
           if (n.children) walk(n.children);
         });
       })(typeof layers !== "undefined" ? layers : []);
-      if (hit) return hit;
+      if (hits.length) {
+        // MULTIPLE nodes can share one tileset URL: an OUTLINE SPLIT renders from its fill's
+        // tiles. Taking the FIRST hit let the fill's raster item adopt the OUTLINE's identity —
+        // and its line-color — so the scrub painted the whole world BLACK (owner 8/13,
+        // reproduced pixel-for-pixel on the CShapes map, outline sorted above the fill).
+        // The node that OWNS this bake wins (its rasterYears IS this cfg); then any
+        // non-companion node; the first hit only as a last resort.
+        var want0 = cfg ? cfgKey(cfg) : "";
+        var own = null, plain = null;
+        hits.forEach(function (n) {
+          if (!own && want0 && n.rasterYears && cfgKey(n.rasterYears) === want0) own = n;
+          if (!plain && !n.outlineOf) plain = n;
+        });
+        return (own || plain || hits[0]).id;
+      }
       // COPIED maps (7/22): cloned layers keep the SOURCE map's ids inside their tile URLs, so
       // the id-in-URL match above never hits — every checkbox/colour lookup failed and rasters
       // drew for switched-off layers, all in fallback purple. The node itself carries the same
@@ -101,11 +114,32 @@
       if (slug && typeof layers !== "undefined") {
         var node = findNode(slug);
         var p = (node && node.paint) || {};
-        var c = hexIn(p["line-color"]) || hexIn(p["fill-color"]) || hexIn(p["circle-color"]) || (node && hexIn(node.iconColor)) || (node && hexIn(node.color));
+        // TYPE-AWARE order (8/13 — "it all went black"): the node's OWN paint key first. The old
+        // fixed order tried line-color before fill-color, so a FILL layer whose paint carried a
+        // stray line-color (#000000 via the outline machinery) scrubbed the whole world BLACK.
+        var ty = (node && node.type) || "";
+        var keys = ty === "line" ? ["line-color", "fill-color", "circle-color"]
+                 : ty === "circle" ? ["circle-color", "fill-color", "line-color"]
+                 : ["fill-color", "circle-color", "line-color"];
+        var c = hexIn(p[keys[0]]) || hexIn(p[keys[1]]) || hexIn(p[keys[2]]) || (node && hexIn(node.iconColor)) || (node && hexIn(node.color));
         if (c) return hexToRgb(c);
       }
     } catch (e) {}
     return hexToRgb(null);   // fallback: the site purple — only when nothing resolvable
+  }
+  function alphaOf(lid, cfg) {   // the vector's own translucency (8/14 "match the fill"): mid-drag
+    // paints at the SAME opacity the at-rest layer uses, so release no longer pops brighter→dimmer.
+    // Numeric paint values only — a data-driven opacity expression can't be one uniform, so those
+    // layers keep the legacy 0.9. Borders never call this (they stay solid by contract).
+    try {
+      var slug = slugOf(lid, cfg);
+      var node = slug ? findNode(slug) : null;
+      var p = (node && node.paint) || {};
+      var ty = (node && node.type) || "";
+      var v = p[ty === "line" ? "line-opacity" : ty === "circle" ? "circle-opacity" : "fill-opacity"];
+      if (typeof v === "number" && v >= 0 && v <= 1) return v;
+    } catch (e) {}
+    return 0.9;   // no resolvable vector opacity — the long-standing raster default
   }
   // BORDER companion raster (option B, 8/8 — "shapes are defined by their outlines"): each baked
   // polygon layer may carry cfg.borders (ring-only pyramid, same year encoding) drawn OVER the flat
@@ -155,15 +189,17 @@
   // made thin lines look washed out and, because a line's texels pass the year test at slightly
   // different dates, made borders dissolve in and out instead of switching cleanly (owner:
   // "borders should instantly appear and disappear").
-  var FS = "precision mediump float;varying vec2 v;uniform sampler2D t;uniform float uYear,uBase,uCov;uniform vec3 uCol;" +
+  var FS = "precision mediump float;varying vec2 v;uniform sampler2D t;uniform float uYear,uBase,uCov,uAlpha;uniform vec3 uCol;" +
     "void main(){vec4 s=texture2D(t,v);if(s.a<0.5)discard;float ys=uBase+s.r*255.0;float ye=uBase+s.g*255.0;" +
     // ye is a WHOLE year and uYear is fractional (year + month/12), so `uYear > ye` hid every
     // feature whose end year is the year being viewed, from February onward — at the end of the
     // CShapes span that emptied the map for most of 2019 (owner 8/8). A year-ending era lives
     // through the WHOLE of that year: alive while ys ≤ uYear < ye+1.
-    "if(uYear<ys||uYear>=ye+1.0)discard;float a=0.9;" +
-    "if(uCov>0.5){a=1.0;}" +
-    "gl_FragColor=vec4(uCol,a);}";
+    // uAlpha = the layer's own paint opacity (borders force 1.0). PREMULTIPLIED (8/14): the canvas
+    // composites premultiplied, and the old straight write vec4(c, 0.9) over-added — displayed
+    // colour was c + 0.1·bg instead of 0.9·c + 0.1·bg, which is why mid-drag read "more vivid".
+    "if(uYear<ys||uYear>=ye+1.0)discard;float a=uCov>0.5?1.0:uAlpha;" +
+    "gl_FragColor=vec4(uCol*a,a);}";
   // INDEXED shader (8/9) — used only for bakes stamped cfg.indexed. The texel is an ID, not a date
   // range: id = R*65536 + G*256 + B, which indexes the LUT's row of up to 8 time stretches for that
   // exact patch of ground. A pixel can now be ON, OFF, ON — which is the whole point: the old single
@@ -172,7 +208,7 @@
   // exactly. mediump (10-bit minimum) would round ids together and colour ground with a stranger's
   // timeline, so the guarded #ifdef takes highp wherever the fragment stage offers it.
   var FS2 = "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" +
-    "varying vec2 v;uniform sampler2D t;uniform sampler2D tl;uniform float uYear,uBase,uCov;uniform vec2 uLutSize;uniform vec3 uCol;" +
+    "varying vec2 v;uniform sampler2D t;uniform sampler2D tl;uniform sampler2D tp;uniform float uYear,uBase,uCov,uV2,uPal,uAlpha;uniform vec2 uLutSize;uniform vec3 uCol;" +
     "void main(){vec4 s=texture2D(t,v);if(s.a<0.5)discard;" +
     "float id=floor(s.r*255.0+0.5)*65536.0+floor(s.g*255.0+0.5)*256.0+floor(s.b*255.0+0.5);" +
     "if(id<0.5)discard;" +
@@ -186,13 +222,26 @@
     // at 1920 (Trianon, 4 Jun) and 2114 at 1945 (Oder-Neisse, 8 May). Months are as fine as this
     // reader can go: uYear is the slider's own getUTCFullYear() + getUTCMonth()/12.
     "float b255=floor(e.b*255.0+0.5);float sm=floor(b255/16.0);float em=b255-sm*16.0;" +
-    "float ys=uBase+floor(e.r*255.0+0.5)+sm/12.0;float ye=uBase+floor(e.g*255.0+0.5)+em/12.0;" +
+    "float ysb=floor(e.r*255.0+0.5);float yeb=floor(e.g*255.0+0.5);" +
+    "float ys=uBase+ysb+sm/12.0;float ye=uBase+yeb+em/12.0;" +
+    // DATELESS = PERMANENT (8/13, "if a feature has no dates, it should be shown the whole
+    // time"): on uV2 bakes, start byte 1 is the reserved "since forever" sentinel (real starts
+    // begin at byte 2) and end byte 255 means "open-ended" — dateless CRN used to clamp to the
+    // codec floor and vanish when the slider went below 1800.
+    "if(uV2>0.5){if(ysb<1.5)ys=-1e6;if(yeb>254.5)ye=1e6;}" +
     // the 8/8 fractional-slider rule, now at month granularity: an era whose END month is the
     // viewed month lives through the WHOLE of that month, so the test is ye + one month, not
     // ye + one year. EPS is 1.2% of a month — far too small to admit or drop a month of its own,
     // large enough that a float32 rounding wobble can never make a border a month late.
     "float EPS=0.001;" +
-    "if(uYear>=ys-EPS&&uYear<ye+1.0/12.0-EPS){gl_FragColor=vec4(uCol,uCov>0.5?1.0:0.9);return;}}" +
+    // PER-ERA COLOURS (8/14): the texel's alpha byte carries 255 − palette index — when this
+    // bake ships a palette (uPal), the alive stretch paints in ITS OWN colour; single-colour
+    // bakes (and all borders) keep uCol exactly as before.
+    "if(uYear>=ys-EPS&&uYear<ye+1.0/12.0-EPS){" +
+    "vec3 cc=uCol;" +
+    "if(uPal>0.5){float ci=255.0-floor(e.a*255.0+0.5);cc=texture2D(tp,vec2((ci+0.5)/256.0,0.5)).rgb;}" +
+    // same premultiplied uAlpha contract as the legacy shader (see FS comment)
+    "float aa=uCov>0.5?1.0:uAlpha;gl_FragColor=vec4(cc*aa,aa);return;}}" +
     "discard;}";
 
   function makeView(m) {
@@ -212,7 +261,7 @@
       gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fsrc));
       gl.bindAttribLocation(p, 0, "q");
       gl.linkProgram(p);
-      return { pr: p, U: { year: gl.getUniformLocation(p, "uYear"), base: gl.getUniformLocation(p, "uBase"), col: gl.getUniformLocation(p, "uCol"), cov: gl.getUniformLocation(p, "uCov"), p0: gl.getUniformLocation(p, "p0"), p1: gl.getUniformLocation(p, "p1"), lutSize: gl.getUniformLocation(p, "uLutSize") } };
+      return { pr: p, U: { year: gl.getUniformLocation(p, "uYear"), base: gl.getUniformLocation(p, "uBase"), col: gl.getUniformLocation(p, "uCol"), cov: gl.getUniformLocation(p, "uCov"), v2: gl.getUniformLocation(p, "uV2"), pal: gl.getUniformLocation(p, "uPal"), alpha: gl.getUniformLocation(p, "uAlpha"), p0: gl.getUniformLocation(p, "p0"), p1: gl.getUniformLocation(p, "p1"), lutSize: gl.getUniformLocation(p, "uLutSize") } };
     }
     var P1 = mkProg(FS), P2 = mkProg(FS2);
     // A silent link failure would draw NOTHING for indexed layers and look like "the bake is
@@ -225,10 +274,11 @@
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    if (P2) {                                                    // index texture on unit 0, LUT on unit 1
+    if (P2) {                                                    // index texture on unit 0, LUT on unit 1, palette on unit 2
       gl.useProgram(P2.pr);
       gl.uniform1i(gl.getUniformLocation(P2.pr, "t"), 0);
       gl.uniform1i(gl.getUniformLocation(P2.pr, "tl"), 1);
+      gl.uniform1i(gl.getUniformLocation(P2.pr, "tp"), 2);
     }
     gl.useProgram(P1.pr);
     gl.clearColor(0, 0, 0, 0);
@@ -312,6 +362,34 @@
     img.src = lu.url + "?v=" + encodeURIComponent(it.cfg.bakedAt || "1");
     return null;
   }
+  // The PALETTE of a coloured bake (8/14): a 256×1 texture built synchronously from
+  // cfg.palette — no fetch, exact bytes (raw texImage2D, no 2D-canvas premultiply round trip).
+  // Unused indices repeat the base colour so a stray index can never paint garbage.
+  function ensurePalette(view, it) {
+    var pal = it.cfg && it.cfg.palette;
+    if (!pal || !pal.length || it.isBorder) return null;
+    var key = "pal|" + cfgKey(it.cfg);
+    if (view.tex[key]) return view.tex[key];
+    var gl = view.gl;
+    function rgb(h) { var n = parseInt(String(h).replace("#", ""), 16); return isNaN(n) ? [86, 74, 154] : [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+    var data = new Uint8Array(256 * 4), base = rgb(pal[0]);
+    for (var i = 0; i < 256; i++) {
+      var c = i < pal.length ? rgb(pal[i]) : base;
+      data[i * 4] = c[0]; data[i * 4 + 1] = c[1]; data[i * 4 + 2] = c[2]; data[i * 4 + 3] = 255;
+    }
+    var tx = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, tx);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE0);
+    view.tex[key] = tx;
+    return tx;
+  }
   function pickLevel(m, it) {   // the level whose pixels ≈ the screen's pixels for this span
     var span = it.cfg.bounds[2] - it.cfg.bounds[0];
     var need = 512 * Math.pow(2, m.getZoom()) * span / 360;
@@ -348,12 +426,18 @@
       if (idx) {
         gl.uniform2f(P.U.lutSize, (it.cfg.lut && it.cfg.lut.width) || 2048, (it.cfg.lut && it.cfg.lut.height) || 1);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, lutTex);
+        // colour palette (8/14): fills of a coloured bake paint per-era colours; borders keep uCol
+        var palTex = ensurePalette(view, it);
+        if (P.U.pal) gl.uniform1f(P.U.pal, palTex ? 1 : 0);
+        if (palTex) { gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, palTex); }
         gl.activeTexture(gl.TEXTURE0);   // level textures bind here, below
       }
       gl.uniform1f(P.U.year, year);
       gl.uniform1f(P.U.base, it.cfg.yearBase || 1799);
+      gl.uniform1f(P.U.v2, it.cfg.yearsV2 ? 1 : 0);   // sentinel bytes (dateless-permanent) — uV2 is null on the legacy program, silently ignored
       gl.uniform3f(P.U.col, it.color[0], it.color[1], it.color[2]);
       gl.uniform1f(P.U.cov, it.isBorder ? 1 : 0);
+      gl.uniform1f(P.U.alpha, it.isBorder ? 1 : (it.alpha == null ? 0.9 : it.alpha));
       // Draw exactly ONE level: the finest whose visible tiles are ALL loaded. NEVER stack levels —
       // fine levels are transparent where there's no ink, so a coarse level underneath shows
       // through as giant solid blobs (the 7/16 purple-flood bug). Loads ladder upward: every
@@ -454,9 +538,13 @@
   function hook() {
     var $s = $("#slider");
     $s.on("slidestart", function (e, ui) {
+      mergeNodeItems();   // published/copied maps: the DB rows may not match the rendered nodes — adopt node-carried bakes (8/13)
       if (!S.on || !S.items.length || !S.views.length) return;
       if (S.views[0].m.getZoom() > S.maxZoom) return;   // deep zoom: vector animates natively — raster stays out entirely
-      S.items.forEach(function (it) { if (it.isBorder) resolveBorder(it); else if (!it.slug) { it.slug = slugOf(it.lid, it.cfg); it.color = colorOf(it.lid, it.cfg); } });   // slug map may not exist at load time; borders re-resolve every drag (split/recolour are live)
+      // EVERY item re-resolves EVERY drag (8/13): colours change live in a session (colour-by,
+      // engine edits) — a colour cached once at load can go stale, and a stale black stuck until
+      // reload. resolveBorder already did this for borders; fills now match.
+      S.items.forEach(function (it) { if (it.isBorder) resolveBorder(it); else { if (!it.slug) it.slug = slugOf(it.lid, it.cfg); it.color = colorOf(it.lid, it.cfg); it.alpha = alphaOf(it.lid, it.cfg); } });
       S.dragging = true; clearTimeout(S.hideT);
       // draw the CURRENT year BEFORE revealing the canvas — it otherwise flashed its stale
       // last-drag frame (looked like "all the data") for the whole click-hold until the first
@@ -497,7 +585,49 @@
     });
   }
 
-  async function load(pid) {
+  // PUBLISHED / COPIED maps (8/13): the DB's live project_layers rows can name DIFFERENT layer
+  // ids than the nodes this page actually renders (a published viewer renders the snapshot's
+  // layers) — every slug lookup missed and the scrub was a silent NO-OP for the public. The
+  // rendered nodes carry their own rasterYears (raw_config spreads onto nodes), so adopt any
+  // node bake the DB pass didn't cover. Idempotent (cfgKey-deduped); called at load AND at every
+  // slidestart (the layers global may not exist yet at load time).
+  function mergeNodeItems() {
+    try {
+      if (typeof layers === "undefined") return;
+      var have = {};
+      S.items.forEach(function (it) { var k = cfgKey(it.cfg); if (k) have[k] = 1; });
+      var add = [];
+      (function walk(a) {
+        (a || []).forEach(function (n) {
+          var ry = n.rasterYears;
+          if (ry && (ry.url || ry.levels) && ry.bounds) {
+            var k = cfgKey(ry);
+            if (k && !have[k]) {
+              have[k] = 1;
+              var lid = n._layerDbId || n._dataLayerId || n.id;
+              add.push({ lid: lid, cfg: ry, color: colorOf(lid, ry), alpha: alphaOf(lid, ry), slug: n.id,
+                levels: (ry.levels || [{ url: ry.url, width: ry.width, height: ry.height }]).map(function (lv) {
+                  return { width: lv.width, height: lv.height, tiles: lv.tiles || [{ url: lv.url, bounds: ry.bounds }] };
+                }) });
+              if (ry.borders && ry.borders.levels && ry.borders.levels.length) add.push({
+                lid: lid + "|b", fillLid: lid, isBorder: true, cfg: ry, slug: null, color: [0, 0, 0],
+                levels: ry.borders.levels.map(function (lv) {
+                  return { width: lv.width, height: lv.height, tiles: lv.tiles || [{ url: lv.url, bounds: ry.bounds }] };
+                }) });
+            }
+          }
+          if (n.children) walk(n.children);
+        });
+      })(layers);
+      if (add.length) {
+        add.forEach(function (it) { S.items.push(it); });
+        S.views.forEach(function (v) { add.forEach(function (it) { ensureTex(v, it, 0, 0); if (it.cfg && it.cfg.indexed) ensureLut(v, it); }); });
+      }
+    } catch (e) {}
+  }
+
+  var _pid = null;
+  async function buildItems(pid) {
     // standalone downloads carry the baked configs as a generated global (URLs point at files
     // inside the zip) — same rows the platform reads from Supabase, no MapAuth/db needed
     var rows;
@@ -507,6 +637,7 @@
       var r = await MapAuth.db.from("project_layers").select("layers(id, raw_config)").eq("project_id", pid);
       rows = (r && r.data) || [];
     }
+    var items = [];
     var borderItems = [];   // appended AFTER every fill item — array order is draw order, borders sit on top
     rows.forEach(function (row) {
       var L = row.layers, ry = L && L.raw_config && L.raw_config.rasterYears;
@@ -525,8 +656,8 @@
       // isn't one" — they even re-baked it, and this line threw the bake away). Whether a layer
       // has an instant-scrub raster is decided where it is BAKED, not second-guessed at load: if
       // a bake exists, the person who made it wanted it.
-      if (ry && (ry.url || ry.levels) && ry.bounds) S.items.push({
-        lid: L.id, cfg: ry, color: colorOf(L.id, ry), slug: slugOf(L.id, ry),
+      if (ry && (ry.url || ry.levels) && ry.bounds) items.push({
+        lid: L.id, cfg: ry, color: colorOf(L.id, ry), alpha: alphaOf(L.id, ry), slug: slugOf(L.id, ry),
         // every level normalizes to a TILE LIST: whole-image levels = one tile with the full
         // bounds; the finest level ships real quadrant tiles (pre-pyramid bakes still work)
         levels: (ry.levels || [{ url: ry.url, width: ry.width, height: ry.height }]).map(function (lv) {
@@ -540,7 +671,14 @@
         })
       });
     });
-    borderItems.forEach(function (bi) { S.items.push(bi); });
+    borderItems.forEach(function (bi) { items.push(bi); });
+    return items;
+  }
+
+  async function load(pid) {
+    _pid = pid;
+    S.items = await buildItems(pid);
+    mergeNodeItems();
     if (!S.items.length) return;   // nothing baked yet — the next convert/Publish bakes one per tiled layer
     [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null].forEach(function (m) {
       if (m && m.getContainer) { var v = makeView(m); if (v) S.views.push(v); }
@@ -549,6 +687,31 @@
     if (IS_EDITOR) chip();
     hook();
   }
+
+  // RELOAD after a bake (8/13, "I rebaked, it all went black"): nothing told the running scrub
+  // that a re-bake replaced (and deleted) its artifacts, so the session kept drawing from stale
+  // configs and textures until a page reload. tilegen calls this when a bake lands; items and
+  // the smallest textures rebuild from the fresh configs (stale GPU textures are keyed by the
+  // old URLs and simply never referenced again).
+  S.reload = async function () {
+    try {
+      if (_pid == null && !Array.isArray(window.rasterScrubData)) return;
+      var fresh = await buildItems(_pid);
+      S.items.length = 0;
+      fresh.forEach(function (it) { S.items.push(it); });
+      mergeNodeItems();
+      if (S.items.length && !S.views.length) {   // first-ever bake this session: views/hook don't exist yet
+        [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null].forEach(function (m) {
+          if (m && m.getContainer) { var v = makeView(m); if (v) S.views.push(v); }
+        });
+        if (S.views.length) { if (IS_EDITOR) chip(); hook(); }
+        return;
+      }
+      S.views.forEach(function (v) {
+        S.items.forEach(function (it) { ensureTex(v, it, 0, 0); if (it.cfg && it.cfg.indexed) ensureLut(v, it); });
+      });
+    } catch (e) { console.warn("rasterScrub: reload failed", e && e.message); }
+  };
 
   var tries = 0;
   function boot() {

@@ -210,19 +210,23 @@
       document.getElementById("ms-vl-foot").textContent = "List unavailable — this layer's data file didn't load. Try again.";
       return;
     }
-    if (!rows) {   // no (fresh) sidecar, or it failed → the original paged stream, unchanged
+    if (!rows) {   // no (fresh) sidecar, or it failed → the paged stream (keyset pages, 8/13)
       rows = [];
+      var lastFid = null;
       try {
-        while (from < CAP) {
-          var r = await db.from("features").select("feature_id, label").eq("layer_id", lid).order("feature_id").range(from, from + PAGE - 1);
+        while (rows.length < CAP) {
+          var qb = db.from("features").select("feature_id, label").eq("layer_id", lid);
+          if (lastFid !== null) qb = qb.gt("feature_id", lastFid);
+          var r = await qb.order("feature_id").limit(PAGE);
           if (gen !== _gen) return;   // closed / another layer opened mid-load
           if (r.error) throw new Error(r.error.message);
           var got = r.data || [];
           rows = rows.concat(got);
           document.getElementById("ms-vl-foot").textContent = rows.length.toLocaleString() + " features…";
           if (got.length < PAGE) break;
-          from += PAGE;
+          lastFid = got[got.length - 1].feature_id;
         }
+        from = rows.length;   // the "(first N)" cap note below keys off this
       } catch (e) { document.getElementById("ms-vl-foot").textContent = "Load failed: " + (e && e.message); return; }
     }
     if (gen !== _gen) return;

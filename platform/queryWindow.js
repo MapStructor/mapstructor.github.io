@@ -89,18 +89,27 @@
         throw new Error("the layer's data file is malformed");
       }
     } catch (eF) { if (eF && /data file/.test(String(eF.message || ""))) throw eF; }   // folded + no file = loud; a transient layers-read hiccup falls through to the stream
-    var feats = [], from = 0;
+    // keyset + adaptive pages (8/13): fixed offset pages time out on heavy layers — cursor on
+    // feature_id, and on a page failure the size divides by 4 (floor 25) and the cursor retries
+    var feats = [], lastFid = null, size = 1000, minSize = 25;
     for (;;) {
-      var r = await db().from("features").select("feature_id, geom, label, description, start_date, end_date, custom_fields").eq("layer_id", lid).order("feature_id").range(from, from + 999);
-      if (r.error) throw new Error(r.error.message);
+      var qb = db().from("features").select("feature_id, geom, label, description, start_date, end_date, custom_fields").eq("layer_id", lid);
+      if (lastFid !== null) qb = qb.gt("feature_id", lastFid);
+      var r; try { r = await qb.order("feature_id").limit(size); } catch (e) { r = { error: e }; }
+      if (r.error) {
+        if (size <= minSize) throw new Error(r.error.message);
+        size = Math.max(minSize, Math.floor(size / 4));
+        status("Heavy rows — retrying in pages of " + size + "…");
+        continue;
+      }
       (r.data || []).forEach(function (f) {
         var p = { feature_id: f.feature_id, label: f.label, description: f.description, start_date: f.start_date, end_date: f.end_date };
         Object.keys(f.custom_fields || {}).forEach(function (k) { if (!(k in p)) p[k] = f.custom_fields[k]; });
         feats.push({ type: "Feature", id: f.feature_id, geometry: f.geom, properties: p });
       });
       status("Loading layer… " + nfmt(feats.length) + " features");
-      if (!r.data || r.data.length < 1000) break;
-      from += 1000;
+      if (!r.data || r.data.length < size) break;
+      lastFid = r.data[r.data.length - 1].feature_id;
     }
     return { type: "FeatureCollection", features: feats };
   }

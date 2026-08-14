@@ -238,7 +238,9 @@
   }
   window._msLayerJsonOpen = open;
 
-  // "{ } JSON" chip in the layer panel header (next to Close) — re-injected per panel render
+  // "{ } JSON" chip in the layer panel header (next to Close) — re-injected per panel render.
+  // Only on LAYERS: sections and dividers have no layer config, so editing.js stamps the panel
+  // with data-ms-kind="container" and the chip stays hidden there (owner 8/13: "what's with the json").
   function inject() {
     var close = document.getElementById("elp-close");
     if (close && !document.getElementById("msj-open")) {
@@ -253,9 +255,15 @@
       });
       close.parentNode.insertBefore(b, close);
     }
+    var chip = document.getElementById("msj-open");
+    if (chip) {
+      var pnl = document.getElementById("editor-layer-panel");
+      chip.style.display = (pnl && pnl.getAttribute("data-ms-kind") === "container") ? "none" : "";
+    }
   }
   setInterval(inject, 1500);
   inject();
+  window._msLayerJsonSync = inject;   // editing.js calls this on every panel open — no 1.5s flash
 
   // boot: re-apply every stored customJson once the engine layers exist
   var tries = 0;
