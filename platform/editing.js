@@ -1095,7 +1095,14 @@
     var lid = slugToLayerDbId[node.id]; if (!lid) return;
     try {
       await foldSleep(4000);   // let the maps finish booting
-      var r = await db.from('features').select('feature_id, geom, custom_fields, start_date, end_date').eq('layer_id', lid).limit(500);
+      // FILTER DELTAS SERVER-SIDE (8/15). This asked for 500 rows WITH GEOMETRY and only then
+      // checked ms_foldsrc in the browser — so on a folded layer whose rows are heavy it pulled
+      // the WHOLE layer on every load: measured 71 seconds and a Cloudflare 520 against the
+      // owner's AtlasHCB (350 MB of geometry), 4 seconds into every boot, which is what "taking
+      // a while to load, seems stuck" was. Only delta rows carry ms_foldsrc, so ask for those:
+      // same result, 1.1s and 0 rows on that layer.
+      var r = await db.from('features').select('feature_id, geom, custom_fields, start_date, end_date')
+        .eq('layer_id', lid).not('custom_fields->>ms_foldsrc', 'is', null).limit(500);
       if (r.error || !r.data || !r.data.length) return;
       var eo = (_engineEdited[node.id] = _engineEdited[node.id] || {});
       var eod = (_engineEditedDays[node.id] = _engineEditedDays[node.id] || {});
@@ -7639,6 +7646,23 @@
     try {
       var didBake = await rebakeLayerTiles(lid, 'Baking the dates into');
       if (didBake) { msProgress('Done — dates baked into the tiles. Refresh the map to see the timeline filter this layer.'); setStatus('Dates baked into tiles'); }
+      // A FOLDED layer refuses a local re-bake — artifacts are truth there. But its rows are still
+      // present and they now carry the dates, so those artifacts are merely STALE, and the user is
+      // left with a timeline that cannot filter AND a table whose date columns are empty, with the
+      // only feedback being "re-baking from rows is disabled" (owner 8/15, AtlasHCB). Rebuild them
+      // in the cloud from the very rows we just wrote — the same path the importer uses.
+      else if (node && (node.fold_state === 'folded' || isTilesetNode(node))) {
+        var sentFold = false;
+        try { sentFold = await foldImportDispatch(lid, node, { length: upserts.length }); } catch (eFd) { console.warn('cloud re-bake dispatch failed', eFd); }
+        if (sentFold) {
+          node.fold_state = 'folding'; pollFoldDone(node, lid);
+          msProgress('Dates saved. This layer renders from tiles baked BEFORE them, so its tiles and table are rebuilding in the cloud — they update automatically when it finishes (usually a few minutes).');
+          setStatus('Dates saved — tiles rebuilding');
+        } else {
+          msProgress('⚠ Dates ARE saved on every feature, but this layer renders from tiles baked BEFORE them — so the timeline cannot filter it and the table shows the older snapshot until they are rebuilt. The cloud re-bake could not be started; try Publish, or ask for a re-bake.');
+          setStatus('Dates saved — tiles stale');
+        }
+      }
       // 7/21: a small layer that WAS in MapboxDraw is now dated → on next load it re-classifies to
       // engine-rendered (draw copies can't animate). Tell the user the one step that makes it live.
       else if (_drawLayerSlugs[slug]) { msProgress('Dates set on ' + nfmt(upserts.length) + ' features. Refresh the page — dated layers render like the viewer and animate with the timeline.'); }
