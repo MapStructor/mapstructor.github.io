@@ -45,10 +45,12 @@ const LAYER_ID = process.env.LAYER_ID;
 const MODE = (process.env.MODE || "retile").trim();
 const RAW_KEY = (process.env.RAW_KEY || "").trim();
 const MAX_ZOOM = (process.env.MAX_ZOOM || "").trim();
-// Tile-level simplification (8/15). tippecanoe simplifies zooms BELOW max zoom with tolerance 1 by
-// default and keeps full detail at max zoom; raising the multiplier thins the low zooms, which is
-// exactly where a timeline scrub re-tessellates the whole country. It touches the TILES ONLY — the
-// stored geometry, the downloads and the dataset keep every vertex. Empty = tippecanoe's default.
+// Tile-level simplification (8/15). Raising the multiplier thins the low zooms, which is exactly
+// where a timeline scrub re-tessellates the whole country. tippecanoe simplifies the MAX zoom too
+// unless told not to — measured on AtlasHCB: --simplification=6 alone left z12 carrying 73% of the
+// source vertices, so every bake that thins also passes --simplify-only-low-zooms to pin the top
+// zoom back to full detail. It touches the TILES ONLY — the stored geometry, the downloads and the
+// dataset keep every vertex. Empty = tippecanoe's default.
 const SIMPLIFY = (process.env.SIMPLIFY || "").trim();
 const LAYER_NAME = "features";   // every archive uses this source-layer name
 const BUCKET = "tiles";          // Supabase Storage bucket
@@ -358,11 +360,12 @@ try {
   // heavy layers default to 6 (measured: 670ms per date step at tippecanoe's default) — an explicit
   // SIMPLIFY always wins, including "1" to ask for tippecanoe's untouched default.
   const simplifyArg = SIMPLIFY || (heavyBake ? "6" : "");
-  if (simplifyArg) console.log("tile simplification: --simplification=" + simplifyArg + " (tiles only; stored geometry untouched)");
+  if (simplifyArg) console.log("tile simplification: --simplification=" + simplifyArg + " on low zooms only — max zoom keeps full detail (tiles only; stored geometry untouched)");
   if (heavyBake) console.log(`heavy geometry (${nfmt(rc0.heavyVertices || 0)} vertices) — baking to z${MAX_ZOOM || 12} without zoom extension`);
   const args = ["-o", "layer.pmtiles", "--force", "-l", LAYER_NAME, ...zoomArgs,
     "--drop-densest-as-needed", ...(heavyBake ? [] : ["--extend-zooms-if-still-dropping"]),
-    ...(simplifyArg ? ["--simplification=" + simplifyArg] : []), "--read-parallel", "layer.geojson"];
+    ...(simplifyArg ? ["--simplification=" + simplifyArg, "--simplify-only-low-zooms"] : []),
+    "--read-parallel", "layer.geojson"];
   console.log("tippecanoe " + args.join(" "));
   execFileSync("tippecanoe", args, { stdio: "inherit" });
   const pmBytes = readFileSync("layer.pmtiles");
