@@ -302,6 +302,8 @@ try {
   }
   if (!rows.length) throw new Error("layer has no features");
   console.log(nfmt(rows.length) + " features (" + MODE + ")");
+  const tPhase = Date.now();
+  const phase = (name) => { console.log(`⏱  ${name} at ${((Date.now() - tPhase) / 1000).toFixed(0)}s`); };
 
   /* ── 2. skinny tile FC (sewUpLayer's exact contract) → tippecanoe → PMTiles ── */
   const skinny = rows.map((r) => {
@@ -314,9 +316,19 @@ try {
   // fold modes match the browser tiler's depth (points 13, else 15 — tilegen.js convertLayer):
   // -zg guessed z8 for a sparse metro layer and every deeper view rode ~75m-quantized geometry.
   // retile keeps -zg (its existing deep-retile behavior for huge datasets); MAX_ZOOM overrides both.
-  const zoomArgs = MAX_ZOOM ? ["-z" + MAX_ZOOM] : FOLD ? ["-z" + (layerRow.type === "circle" ? 13 : 15)] : ["-zg"];
+  // ZOOM DEPTH IS THE BAKE'S REAL COST (8/15). Every extra level roughly doubles the work, and
+  // --extend-zooms-if-still-dropping keeps ADDING levels while anything is still being dropped —
+  // which on survey-resolution polygons never settles. The owner's AtlasHCB bake fetched its rows
+  // in 106s and then spent 27 minutes inside tippecanoe at z15 before the job cap killed it.
+  // State and county outlines carry no detail worth a z15 tile, so heavy geometry bakes shallower
+  // (an explicit MAX_ZOOM from the caller still wins, and nothing else changes).
+  const heavyBake = !!(rc0.heavyGeom || (rc0.heavyVertices || 0) > 2000000);
+  const zoomArgs = MAX_ZOOM ? ["-z" + MAX_ZOOM]
+    : FOLD ? ["-z" + (layerRow.type === "circle" ? 13 : heavyBake ? 12 : 15)]
+    : ["-zg"];
+  if (heavyBake) console.log(`heavy geometry (${nfmt(rc0.heavyVertices || 0)} vertices) — baking to z${MAX_ZOOM || 12} without zoom extension`);
   const args = ["-o", "layer.pmtiles", "--force", "-l", LAYER_NAME, ...zoomArgs,
-    "--drop-densest-as-needed", "--extend-zooms-if-still-dropping", "--read-parallel", "layer.geojson"];
+    "--drop-densest-as-needed", ...(heavyBake ? [] : ["--extend-zooms-if-still-dropping"]), "--read-parallel", "layer.geojson"];
   console.log("tippecanoe " + args.join(" "));
   execFileSync("tippecanoe", args, { stdio: "inherit" });
   const pmBytes = readFileSync("layer.pmtiles");

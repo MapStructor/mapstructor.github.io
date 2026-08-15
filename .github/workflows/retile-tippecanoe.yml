@@ -46,7 +46,10 @@ concurrency:
 jobs:
   retile:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 minutes fit tiles-only retiles; a FOLD of survey-resolution geometry legitimately needs
+    # longer (8/15: rows read in 106s, then tippecanoe was killed mid-bake at the cap). Runner
+    # minutes are free on a public repo, so the cap should catch a hang, not honest work.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
