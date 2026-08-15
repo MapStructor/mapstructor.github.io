@@ -45,6 +45,11 @@ const LAYER_ID = process.env.LAYER_ID;
 const MODE = (process.env.MODE || "retile").trim();
 const RAW_KEY = (process.env.RAW_KEY || "").trim();
 const MAX_ZOOM = (process.env.MAX_ZOOM || "").trim();
+// Tile-level simplification (8/15). tippecanoe simplifies zooms BELOW max zoom with tolerance 1 by
+// default and keeps full detail at max zoom; raising the multiplier thins the low zooms, which is
+// exactly where a timeline scrub re-tessellates the whole country. It touches the TILES ONLY — the
+// stored geometry, the downloads and the dataset keep every vertex. Empty = tippecanoe's default.
+const SIMPLIFY = (process.env.SIMPLIFY || "").trim();
 const LAYER_NAME = "features";   // every archive uses this source-layer name
 const BUCKET = "tiles";          // Supabase Storage bucket
 const R2_BUCKET = process.env.R2_BUCKET || "mapstructor-tiles";
@@ -350,9 +355,14 @@ try {
   const zoomArgs = MAX_ZOOM ? ["-z" + MAX_ZOOM]
     : FOLD ? ["-z" + (layerRow.type === "circle" ? 13 : heavyBake ? 12 : 15)]
     : ["-zg"];
+  // heavy layers default to 6 (measured: 670ms per date step at tippecanoe's default) — an explicit
+  // SIMPLIFY always wins, including "1" to ask for tippecanoe's untouched default.
+  const simplifyArg = SIMPLIFY || (heavyBake ? "6" : "");
+  if (simplifyArg) console.log("tile simplification: --simplification=" + simplifyArg + " (tiles only; stored geometry untouched)");
   if (heavyBake) console.log(`heavy geometry (${nfmt(rc0.heavyVertices || 0)} vertices) — baking to z${MAX_ZOOM || 12} without zoom extension`);
   const args = ["-o", "layer.pmtiles", "--force", "-l", LAYER_NAME, ...zoomArgs,
-    "--drop-densest-as-needed", ...(heavyBake ? [] : ["--extend-zooms-if-still-dropping"]), "--read-parallel", "layer.geojson"];
+    "--drop-densest-as-needed", ...(heavyBake ? [] : ["--extend-zooms-if-still-dropping"]),
+    ...(simplifyArg ? ["--simplification=" + simplifyArg] : []), "--read-parallel", "layer.geojson"];
   console.log("tippecanoe " + args.join(" "));
   execFileSync("tippecanoe", args, { stdio: "inherit" });
   const pmBytes = readFileSync("layer.pmtiles");
