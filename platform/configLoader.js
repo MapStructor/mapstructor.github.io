@@ -256,7 +256,18 @@ var ConfigLoader = (function () {
       var effW = ow != null ? ow : 0.5;   // fills default to a 0.5 border
       var perFeatW = row.source_type === "geojson-supabase" &&
         (features || []).some(function (f) { return f && f.custom_fields && f.custom_fields.ms_thickness != null; });
-      var oc = leaf.paint["fill-outline-color"] || leaf.iconColor || "#3bb2d0";
+      // A STORED transparent fill-outline-color is OUR OWN "the stroke companion owns this border"
+      // sentinel written back by saveLayerStyle — never a colour anyone chose. Reading it as one
+      // handed the companion (and anything splitting off it) an invisible colour: 8/14, "I just
+      // split off the lines for CShapes-Europe and there is no line". Hiding a border is
+      // line-opacity 0, which is handled on its own below, so treating it as unset is safe.
+      var focRaw = leaf.paint["fill-outline-color"];
+      if (focRaw != null && String(focRaw).replace(/\s+/g, "") === "rgba(0,0,0,0)") focRaw = null;
+      var oc = focRaw || leaf.iconColor || "#3bb2d0";
+      // "Match fill colors": the border takes the fill's own colour value — a hex on a
+      // single-colour layer, the colour-by match expression on a categorical one, so every
+      // polygon's border comes out its own colour.
+      if (raw.outlineMatchFill && leaf.paint["fill-color"] != null) oc = leaf.paint["fill-color"];
       if ((typeof effW !== "number" || effW !== 1) || perFeatW) {
         leaf.stroke = {
           "line-color": oc,
@@ -267,8 +278,8 @@ var ConfigLoader = (function () {
         leaf.paint = Object.assign({}, leaf.paint, { "fill-outline-color": "rgba(0,0,0,0)" });
       } else if (leaf.paint["line-opacity"] === 0) {
         leaf.paint = Object.assign({}, leaf.paint, { "fill-outline-color": "rgba(0,0,0,0)" });   // outline toggled off — hide the native one too
-      } else if (row.source_type === "geojson-supabase" && !leaf.paint["fill-outline-color"]) {
-        leaf.paint = Object.assign({}, leaf.paint, { "fill-outline-color": oc });   // drawn fill at exactly width 1 with no stored color — native outline in the layer colour
+      } else if (raw.outlineMatchFill || (row.source_type === "geojson-supabase" && !leaf.paint["fill-outline-color"])) {
+        leaf.paint = Object.assign({}, leaf.paint, { "fill-outline-color": oc });   // native outline (width exactly 1) in the layer colour — or the fill's own, when matched
       }
     }
 
@@ -443,7 +454,18 @@ var ConfigLoader = (function () {
     }
     // Pull features for drawn (geojson-supabase) layers so synthesize can build their source.
     // Off-by-default layers are SKIPPED here (fast first paint) — hydrateDeferredFeatures loads them post-boot.
-    var drawnIds = (l.data || []).filter(function (pl) { return pl.layers && pl.layers.source_type === "geojson-supabase" && pl.layers.enabled_by_default !== false; }).map(function (pl) { return pl.layers.id; });
+    // HEAVY-GEOMETRY LAYERS DON'T HYDRATE FROM ROWS (8/15). A streamed import can hold far more
+    // geometry than a tab can turn into GeoJSON objects — that is the whole reason it streams —
+    // so pulling its rows back at boot would reproduce the Out-of-Memory the import just avoided,
+    // on every visit, for anyone. Those layers render from their tiles; until the bake lands they
+    // render nothing rather than killing the page. (The stamp is written only by the streaming
+    // importer, so nothing that loads fine today changes.)
+    var drawnIds = (l.data || []).filter(function (pl) {
+      if (!pl.layers || pl.layers.source_type !== "geojson-supabase" || pl.layers.enabled_by_default === false) return false;
+      var hraw = pl.layers.raw_config || {};
+      if (hraw.heavyGeom && !hraw.pmtiles) return false;
+      return true;
+    }).map(function (pl) { return pl.layers.id; });
     if (drawnIds.length) {
       var push = function (data) { (data || []).forEach(function (row) { (bundle.featuresByLayer[row.layer_id] = bundle.featuresByLayer[row.layer_id] || []).push(row); }); };
       var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url, custom_fields";   // custom_fields feed data-driven styling (color-by-attribute)

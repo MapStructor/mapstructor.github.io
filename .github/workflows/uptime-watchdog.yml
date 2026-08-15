@@ -41,10 +41,14 @@ jobs:
           }
           check "site (apex)"           "https://mapstructor.com/"                                                            "MapStructor"
           check "railways showcase"     "https://mapstructor.com/maps/railways/"                                              "<html"
-          check "tiles custom domain"   "https://tiles.mapstructor.com/snapshots/f914d5e6-7aad-477d-8613-5bd4aac350d5.json"   "layers"
+          check "tiles custom domain"   "https://tiles.mapstructor.com/snapshots/86d3286c-e075-4bcd-9085-25336450e36b.json"   "layers"
           check "worker health"         "https://mapstructor-worker.mapstructor.workers.dev/health"                           '"ok":true'
           check "AHM encyclopedia"      "https://mapstructor.com/ames/encyclopedia/rendered-export-single?nid=45894"          "rendered_entity"
-          check "public map (DB path)"  "https://mapstructor.com/map/index.html?id=f914d5e6-7aad-477d-8613-5bd4aac350d5"      "layers-panel"
+          # The page shell renders identically whether or not Postgres answers, so probing it
+          # proves nothing about the database (it stayed green through a 30-minute outage on
+          # 8/15). Read a public row through PostgREST instead — the publishable key is the same
+          # one the site ships to every browser, so there is no secret here to leak.
+          check "public map (DB path)"  "https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/projects?select=name&id=eq.86d3286c-e075-4bcd-9085-25336450e36b&apikey=sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD"  "Global Railways Map"
           check "legal pages"           "https://mapstructor.com/terms.html"                                                  "Terms of Service"
           if [ -n "$FAILS" ]; then
             printf "fails<<EOF\n%b\nEOF\n" "$FAILS" >> "$GITHUB_OUTPUT"

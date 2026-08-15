@@ -886,6 +886,12 @@
   }
 
   async function doSave() {
+    // ownerless-layer guard (8/14, same trap as editing.js insertOne): the boot-time userId
+    // cache can be null in a tab that booted offline — re-resolve from the live session so a
+    // layers row never ships without its owner
+    if (!userId) {
+      try { var sN = await db.auth.getSession(); if (sN.data && sN.data.session) userId = sN.data.session.user.id; } catch (eN) {}
+    }
     // 1. Project name
     var name = document.getElementById('project-name').textContent.trim() || 'Untitled Map';
     fail(await db.from('projects')

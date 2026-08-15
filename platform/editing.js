@@ -83,7 +83,43 @@
           });
         })(typeof layers !== 'undefined' ? layers : []);
       } catch (eFw) {}
+      try { healInvisibleOutlines(); } catch (eHo) {}
     } catch (e) { console.warn('editing: could not load project ids', e); }
+  }
+  // SELF-HEAL (8/14): split-off outline layers stored before the transparent-sentinel fix carry
+  // line-color 'rgba(0,0,0,0)' — a line that paints nothing ("I just split off the lines and
+  // there is no line"). A transparent line is never a choice (hiding one is line-opacity 0), so
+  // any such layer takes its parent's colour — matched when the parent is coloured by column.
+  function healInvisibleOutlines(tries) {
+    var fix = [], seen = 0, total = 0;
+    (function walk(a) { (a || []).forEach(function (n) { total++; if (n.outlineOf) { seen++; if (n.paint && isTransparentColor(n.paint['line-color'])) fix.push(n); } if (n.children) walk(n.children); }); })(typeof layers !== 'undefined' ? layers : []);
+    // loadIds can win the race against the map page's own config build, so an early pass sees an
+    // EMPTY tree and heals nothing (measured: outlines 0 on a project that has one). Wait for it.
+    if (!total && (tries || 0) < 10) { setTimeout(function () { healInvisibleOutlines((tries || 0) + 1); }, 1200); return; }
+    try { window.__msHeal = { nodes: total, outlines: seen, broken: fix.length, tries: tries || 0 }; } catch (eW) {}
+    fix.forEach(function (O) {
+      var P = findNodeById(layers, O.outlineOf); if (!P) return;
+      var val = fillColorValue(P);
+      O.paint = Object.assign({}, O.paint, { 'line-color': val });
+      if (P.colorBy) { O.colorBy = JSON.parse(JSON.stringify(P.colorBy)); O.outlineMatchFill = true; }
+      if (isTransparentColor(O.iconColor)) O.iconColor = (typeof val === 'string' && /^#[0-9a-fA-F]{6}$/.test(val)) ? val : ((P.iconColor && /^#[0-9a-fA-F]{6}$/.test(P.iconColor)) ? P.iconColor : '#3bb2d0');
+      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+        var m = pair[1]; if (!m) return;
+        try { if (m.getLayer(O.id + '-' + pair[0])) m.setPaintProperty(O.id + '-' + pair[0], 'line-color', val); } catch (e) {}
+      });
+      var oLid = slugToLayerDbId[O.id]; if (!oLid) return;
+      (async function () {
+        try {
+          var cur = await db.from('layers').select('raw_config').eq('id', oLid).single();
+          var orc = (cur.data && cur.data.raw_config) || {};
+          if (O.colorBy) { orc.colorBy = O.colorBy; orc.outlineMatchFill = true; }
+          var up = await db.from('layers').update({ paint: O.paint, color: O.iconColor, raw_config: orc }).eq('id', oLid);
+          if (up.error) throw new Error(up.error.message);
+          console.log('[heal] outline', O.id, 'repaired from', P.id);
+          try { rerender(); } catch (e) {}
+        } catch (e) { console.warn('editing: outline heal save failed', e && e.message); }
+      })();
+    });
   }
   // Stamp the db id onto each existing container node so we can nest under it.
   function attachIds(arr, sMap, gMap, stMap) {
@@ -143,6 +179,17 @@
     return { project_id: projectId, section_id: sectionId, name: val(node.label), sort_order: sort, slug: node.id, collapsed: val(node.collapsed), checked: val(node.checked), info_id: val(node.infoId), raw_config: Object.keys(gRaw).length ? gRaw : null };
   }
   async function insertOne(table, row) {
+    // OWNERLESS-LAYER GUARD (8/14, "Import failed: … row-level security policy for table
+    // layers"): userId is cached ONCE at boot — a tab that booted moments after a laptop woke
+    // (no network yet) caches null forever, and every later layer insert ships user_id null:
+    // the row passes the INSERT check but fails the read-back, surfacing as an RLS violation.
+    // Re-resolve from the LIVE session at insert time; the cache is just a fast path.
+    if (table === 'layers' && !row.user_id) {
+      try {
+        var sNow = await db.auth.getSession();
+        if (sNow.data && sNow.data.session) { userId = sNow.data.session.user.id; row.user_id = userId; }
+      } catch (eS) {}
+    }
     var res = await db.from(table).insert(row).select('id').single();
     if (res.error) throw new Error(table + ' insert: ' + res.error.message);
     return res.data.id;
@@ -1116,7 +1163,7 @@
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
     var epProps = featureProps(node) || {};
     // colorBy layers: the editable copy keeps the FEATURE's own category color (not the layer default)
-    try { if (node.colorBy && node.colorBy.mapping && row.custom_fields) { var cbv2 = row.custom_fields[node.colorBy.prop]; var mc2 = cbv2 != null ? node.colorBy.mapping[String(cbv2)] : null; if (mc2) epProps.color = mc2; } } catch (e) {}
+    try { if (node.colorBy && node.colorBy.mapping) { var cbv2 = cbValueOf(row, node.colorBy.prop); var mc2 = cbv2 != null ? node.colorBy.mapping[String(cbv2)] : null; if (mc2) epProps.color = mc2; } } catch (e) {}
     try { draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: epProps }); } catch (e) { setStatus('Edit failed'); return; }
     (_engineEditIds[node.id] = _engineEditIds[node.id] || []); if (_engineEditIds[node.id].indexOf(fid) < 0) _engineEditIds[node.id].push(fid);   // hide the TILE copy by its own id (folded: the artifact id)
     if (_engineEdited[node.id] && _engineEdited[node.id][rowFid] != null) { delete _engineEdited[node.id][rowFid]; refreshEditedOverlay(node); }   // pull it back off the overlay while editing (keyed by the row id finishEngineEdit uses)
@@ -2014,8 +2061,31 @@
       fc = window.toGeoJSON.kml(kdom);
     }
     else if (ext === 'zip') {
-      await loadScript(LIB.shp);
       var zbuf = await file.arrayBuffer();
+      // Unzip FIRST so the .shp's real size is known: past SHP_STREAM_MIN_BYTES the file is read
+      // record by record (shpjs would materialise the whole thing and kill the tab — 8/15).
+      var zfAll = null;
+      try { await loadScript(LIB.fflate); zfAll = window.fflate.unzipSync(new Uint8Array(zbuf)); } catch (eUz) { zfAll = null; }
+      if (zfAll) {
+        var keep = Object.keys(zfAll).filter(function (k) { return !/(^|\/)__MACOSX\//.test(k); });
+        var shps = keep.filter(function (k) { return /\.shp$/i.test(k); });
+        var heavy = shps.filter(function (k) { return zfAll[k].byteLength > SHP_STREAM_MIN_BYTES; });
+        if (heavy.length) {
+          zbuf = null;   // the streaming reader works off the unzipped members — drop the archive copy
+          var madeAll = [];
+          for (var si = 0; si < shps.length; si++) {
+            var stem = shps[si].replace(/\.shp$/i, '');
+            var pick = function (ext2) { var hit = keep.filter(function (k) { return k.toLowerCase() === (stem + ext2).toLowerCase(); })[0]; return hit ? zfAll[hit] : null; };
+            var partName = shps.length > 1 ? stripExt(file.name) + ' — ' + stem.split('/').pop() : stripExt(file.name);
+            importStatus('Reading ' + partName + ' (' + (zfAll[shps[si]].byteLength / 1048576).toFixed(0) + ' MB) without loading it all at once…');
+            var mp = await importShapefileStreaming({ shp: zfAll[shps[si]], dbf: pick('.dbf'), prj: pick('.prj'), cpg: pick('.cpg') }, partName, parent);
+            (mp || []).forEach(function (n) { madeAll.push(n); });
+          }
+          rerender();
+          return madeAll;
+        }
+      }
+      await loadScript(LIB.shp);
       var r = await window.shp(zbuf);
       fc = Array.isArray(r) ? { type: 'FeatureCollection', features: r.reduce(function (a, c) { return a.concat(c.features || []); }, []) } : r;
       // Read the .prj OURSELVES. shpjs only reprojects when it recognises the projection, and
@@ -2024,8 +2094,7 @@
       // that WKT directly, so ANY grid (UTM, Lambert, state plane, national) can be placed
       // correctly instead of only the ones shpjs happens to know. This is what QGIS is doing.
       try {
-        await loadScript(LIB.fflate);
-        var zf = window.fflate.unzipSync(new Uint8Array(zbuf));
+        var zf = zfAll || (await loadScript(LIB.fflate), window.fflate.unzipSync(new Uint8Array(zbuf)));
         var prjName = Object.keys(zf).filter(function (k) { return /\.prj$/i.test(k) && !/(^|\/)__MACOSX\//.test(k); })[0];
         if (prjName) fc.__msPrj = new TextDecoder().decode(zf[prjName]).trim();
       } catch (ePrj) { console.warn('could not read .prj', ePrj); }
@@ -2034,6 +2103,231 @@
     else throw new Error('unsupported format .' + ext);
     if (!fc || !fc.features || !fc.features.length) throw new Error('no features found');
     return await importFeatureCollection(fc, stripExt(file.name), parent);
+  }
+  // ── STREAMING SHAPEFILE IMPORT (8/15) ───────────────────────────────────────────────────
+  //    Owner: US_AtlasHCB_StateTerr.zip — 220 features, 149 MB — "Aw, Snap! Out of Memory",
+  //    twice. Nothing about the DATA is big: it is 220 polygons. The size is vertex DENSITY
+  //    (AtlasHCB traces coastlines at survey resolution), and shpjs materialises the WHOLE
+  //    file as GeoJSON before the importer is even reached. A coordinate pair costs 16 bytes
+  //    on disk and roughly 96 as a JS [x, y] array, so that file wants ~1 GB of objects in
+  //    one go and Chrome kills the tab.
+  //    So read the records ourselves and hand the existing pipeline SMALL chunks: peak memory
+  //    becomes the file's bytes plus one chunk, and file size stops being a ceiling. Chunks go
+  //    through normalizeImportFC exactly like any other import, so the .prj reprojection, the
+  //    pole snap and the Multi* rules are the same code, not a second copy of them.
+  var SHP_STREAM_MIN_BYTES = 24 * 1024 * 1024;   // .shp over this streams; smaller files keep the proven shpjs path
+  var SHP_CHUNK_VERTICES = 120000;               // vertices per chunk handed to the pipeline
+  var SHP_RENDER_VERTEX_BUDGET = 500000;         // stop feeding the LIVE map past this — the same memory wall, one step later
+  function dbfEncLabel(cpg) {
+    var c = String(cpg || '').trim().toLowerCase();
+    if (!c) return 'windows-1252';
+    if (/utf-?8/.test(c)) return 'utf-8';
+    var m = c.match(/(\d{3,5})/);
+    if (m) { var n = m[1]; if (n === '65001') return 'utf-8'; return (n === '1252' || n === '1250' || n === '1251') ? 'windows-' + n : 'windows-1252'; }
+    return 'windows-1252';
+  }
+  // .dbf = fixed-length records behind a field table. Read one record at a time — the whole
+  // point is that nothing holds every row at once.
+  function dbfReader(buf, encLabel) {
+    if (!buf || buf.byteLength < 32) return null;
+    var dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    var count = dv.getUint32(4, true), headerLen = dv.getUint16(8, true), recLen = dv.getUint16(10, true);
+    var dec; try { dec = new TextDecoder(encLabel); } catch (e) { dec = new TextDecoder('windows-1252'); }
+    var fields = [], off = 32;
+    while (off + 32 <= headerLen && buf[off] !== 0x0d) {
+      var ne = off; while (ne < off + 11 && buf[ne] !== 0) ne++;
+      fields.push({ name: dec.decode(buf.subarray(off, ne)).trim(), type: String.fromCharCode(buf[off + 11]), len: buf[off + 16] });
+      off += 32;
+    }
+    if (!fields.length || !recLen) return null;
+    return {
+      count: count,
+      read: function (i) {
+        var at = headerLen + i * recLen;
+        if (i >= count || at + recLen > buf.byteLength) return null;
+        if (buf[at] === 0x2a) return null;   // deletion flag
+        var o = at + 1, out = {};
+        for (var fi = 0; fi < fields.length; fi++) {
+          var f = fields[fi], raw = dec.decode(buf.subarray(o, o + f.len)).trim();
+          o += f.len;
+          if (raw === '') continue;
+          if (f.type === 'N' || f.type === 'F') { var n = parseFloat(raw); if (!isNaN(n)) out[f.name] = n; }
+          else if (f.type === 'L') { if (/^[TtYy]$/.test(raw)) out[f.name] = true; else if (/^[FfNn]$/.test(raw)) out[f.name] = false; }
+          else if (f.type === 'D') {
+            // A DATE column becomes a Date built from LOCAL parts — the shape importCustomFields
+            // already knows how to write (shpjs did the same, and a UTC render moves the day
+            // backwards east of Greenwich).
+            var dm = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+            if (dm) { var d = new Date(+dm[1], +dm[2] - 1, +dm[3]); if (!isNaN(d.getTime())) out[f.name] = d; }
+            else out[f.name] = raw;
+          } else out[f.name] = raw;
+        }
+        return out;
+      }
+    };
+  }
+  function shpRingArea(r) {   // signed area — sign IS the winding
+    var a = 0;
+    for (var i = 0, j = r.length - 1; i < r.length; j = i++) a += (r[j][0] * r[i][1]) - (r[i][0] * r[j][1]);
+    return a / 2;
+  }
+  // A shapefile polygon record is a FLAT ring list; which rings are holes is re-derived from
+  // signed area — the same classification vector tiles do, and the same trap (see the ring-winding
+  // reference): a ring that would be a hole while enclosing MORE area than its outer is a
+  // mis-wound outer, so it starts a new polygon instead of punching a hole through everything.
+  function shpRingsToPolygons(rings) {
+    var polys = [], cur = null, outerSign = 0, curArea = 0;
+    for (var i = 0; i < rings.length; i++) {
+      var r = rings[i], a = shpRingArea(r), abs = Math.abs(a);
+      if (!a) { if (cur) cur.push(r); else { cur = [r]; polys.push(cur); } continue; }
+      var sgn = a < 0 ? -1 : 1;
+      if (!outerSign) outerSign = sgn;
+      if (sgn === outerSign || !cur || abs > curArea) { cur = [r]; polys.push(cur); curArea = abs; }
+      else cur.push(r);
+    }
+    if (!polys.length) return null;
+    return polys.length === 1 ? { type: 'Polygon', coordinates: polys[0] } : { type: 'MultiPolygon', coordinates: polys };
+  }
+  // Walks .shp record headers without decoding anything it isn't asked for.
+  function shpCursor(buf) {
+    var dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    var pos = 100, end = buf.byteLength;
+    var pts = function (at, n) {
+      var out = [];
+      for (var i = 0; i < n; i++) out.push([dv.getFloat64(at + i * 16, true), dv.getFloat64(at + i * 16 + 8, true)]);
+      return out;
+    };
+    return { next: function () {
+      if (pos + 8 > end) return null;
+      var words = dv.getInt32(pos + 4, false), cAt = pos + 8, cLen = words * 2;
+      pos = cAt + cLen;
+      if (cLen < 4 || cAt + cLen > end) return { geometry: null, verts: 0 };
+      var t = dv.getInt32(cAt, true), kind = t % 10;   // 11/21 are Point too, 13/23 PolyLine, 15/25 Polygon, 18/28 MultiPoint
+      try {
+        if (kind === 1) return { geometry: { type: 'Point', coordinates: [dv.getFloat64(cAt + 4, true), dv.getFloat64(cAt + 12, true)] }, verts: 1 };
+        if (kind === 8) {
+          var np8 = dv.getInt32(cAt + 36, true), cs = pts(cAt + 40, np8);
+          return { geometry: cs.length ? { type: 'MultiPoint', coordinates: cs } : null, verts: cs.length };
+        }
+        if (kind === 3 || kind === 5) {
+          var nParts = dv.getInt32(cAt + 36, true), nPts = dv.getInt32(cAt + 40, true);
+          var partsAt = cAt + 44, ptsAt = partsAt + 4 * nParts, parts = [];
+          for (var p = 0; p < nParts; p++) parts.push(dv.getInt32(partsAt + p * 4, true));
+          var rings = [];
+          for (var q = 0; q < nParts; q++) {
+            var from = parts[q], to = (q + 1 < nParts) ? parts[q + 1] : nPts;
+            if (to > from) rings.push(pts(ptsAt + from * 16, to - from));
+          }
+          if (!rings.length) return { geometry: null, verts: 0 };
+          if (kind === 3) return { geometry: rings.length === 1 ? { type: 'LineString', coordinates: rings[0] } : { type: 'MultiLineString', coordinates: rings }, verts: nPts };
+          return { geometry: shpRingsToPolygons(rings), verts: nPts };
+        }
+      } catch (e) { return { geometry: null, verts: 0 }; }
+      return { geometry: null, verts: 0 };   // null shape / unsupported (Z-only MultiPatch)
+    } };
+  }
+  // Insert one more chunk into the layers the FIRST chunk created.
+  async function appendImportChunk(made, fc, state) {
+    var norm = await normalizeImportFC(fc);
+    for (var i = 0; i < norm.kinds.length; i++) {
+      var kind = norm.kinds[i], node = null;
+      made.forEach(function (n) { if (n.type === kind) node = n; });
+      if (!node) { state.skipped += norm.groups[kind].length; continue; }   // a geometry kind absent from chunk 1
+      var lid = slugToLayerDbId[node.id]; if (!lid) continue;
+      var feats = norm.groups[kind];
+      var ids = await batchInsertFeatures(lid, feats);
+      // Keep feeding the LIVE map until the render budget is spent. Past it the rows are still
+      // saved — the layer just renders from its tiles instead, which is what tiles are for.
+      if (state.verts < SHP_RENDER_VERTEX_BUDGET && node.source && node.source.data && node.source.data.features) {
+        var arr = node.source.data.features;
+        for (var f2 = 0; f2 < feats.length; f2++) {
+          // same property shape the boot path builds (featureToGeo): label + custom fields ride
+          // along, so colour-by-column and labels work on streamed features in THIS session too
+          var pr2 = Object.assign({ DayStart: 0, DayEnd: 99999999, label: importLabel(feats[f2].properties) }, importCustomFields(feats[f2].properties) || {});
+          arr.push({ type: 'Feature', id: ids[f2], geometry: feats[f2].geometry, properties: pr2 });
+        }
+        [['left', typeof beforeMap !== 'undefined' ? beforeMap : null], ['right', typeof afterMap !== 'undefined' ? afterMap : null]].forEach(function (pr) {
+          var m = pr[1]; if (!m) return;
+          try { var s = m.getSource(node.id + '-' + pr[0]); if (s && s.setData) s.setData(node.source.data); } catch (e) {}
+        });
+      }
+    }
+  }
+  // Stream ONE shapefile (already unzipped) into a layer, chunk by chunk.
+  async function importShapefileStreaming(part, baseName, parent) {
+    var dbf = part.dbf ? dbfReader(part.dbf, dbfEncLabel(part.cpg && new TextDecoder().decode(part.cpg))) : null;
+    var prj = part.prj ? new TextDecoder().decode(part.prj).trim() : null;
+    var cur = shpCursor(part.shp);
+    var expect = dbf ? dbf.count : 0;
+    var made = null, idx = 0, chunk = [], chunkVerts = 0;
+    var state = { verts: 0, feats: 0, skipped: 0, bounds: null };
+    var grow = function (b) {
+      if (!b) return;
+      if (!state.bounds) { state.bounds = [[b[0][0], b[0][1]], [b[1][0], b[1][1]]]; return; }
+      var s = state.bounds;
+      if (b[0][0] < s[0][0]) s[0][0] = b[0][0]; if (b[0][1] < s[0][1]) s[0][1] = b[0][1];
+      if (b[1][0] > s[1][0]) s[1][0] = b[1][0]; if (b[1][1] > s[1][1]) s[1][1] = b[1][1];
+    };
+    var flush = async function () {
+      if (!chunk.length) return;
+      var fcC = { type: 'FeatureCollection', features: chunk };
+      if (prj) fcC.__msPrj = prj;
+      if (!made) {
+        made = (await importFeatureCollection(fcC, baseName, parent)) || [];
+        if (!made.length) throw new Error('could not create the layer');
+      } else await appendImportChunk(made, fcC, state);
+      grow(computeImportBounds(fcC));   // coords are lng/lat by now (normalizeImportFC ran inside)
+      chunk = []; chunkVerts = 0;
+    };
+    window.__msStreamingImport = true;
+    try {
+      for (;;) {
+        var rec = cur.next(); if (!rec) break;
+        var props = dbf ? dbf.read(idx) : null;
+        idx++;
+        if (!rec.geometry) continue;
+        chunk.push({ type: 'Feature', geometry: rec.geometry, properties: props || {} });
+        chunkVerts += rec.verts; state.verts += rec.verts; state.feats++;
+        if (chunkVerts >= SHP_CHUNK_VERTICES) {
+          importStatus('Reading "' + baseName + '" — ' + nfmt(state.feats) + (expect ? ' of ' + nfmt(expect) : '') + ' features, ' + nfmt(Math.round(state.verts / 1000)) + 'k points…');
+          await flush();
+          await new Promise(function (r) { setTimeout(r, 0); });   // let the tab breathe (and paint) between chunks
+        }
+      }
+      await flush();
+    } finally { window.__msStreamingImport = false; }
+    if (!made || !made.length) throw new Error('no features found');
+    // Fit to everything that arrived, not just the first chunk.
+    if (state.bounds && typeof beforeMap !== 'undefined' && beforeMap) { try { beforeMap.fitBounds(state.bounds, { padding: 60, maxZoom: 16 }); } catch (e) {} }
+    // TILES. Reading a heavy layer's rows back into this tab to tile them would rebuild exactly
+    // the object graph streaming just avoided, so past the render budget the bake goes to the
+    // cloud Action (fold-rows reads the rows we just wrote — no upload, ids already match).
+    for (var mi = 0; mi < made.length; mi++) {
+      var node = made[mi], lid = slugToLayerDbId[node.id];
+      if (!lid) continue;
+      if (state.verts > SHP_RENDER_VERTEX_BUDGET) {
+        // Stamp it BEFORE dispatching: a layer holding more geometry than a tab can rebuild must
+        // never be hydrated from rows at boot again (configLoader honours this), whether or not
+        // the bake below succeeds. Without it, one failed dispatch leaves a map that kills the
+        // tab on every future load.
+        try {
+          var curH = await db.from('layers').select('raw_config').eq('id', lid).single();
+          var rcH = (curH.data && curH.data.raw_config) || {};
+          rcH.heavyGeom = true; rcH.heavyVertices = state.verts;
+          await db.from('layers').update({ raw_config: rcH }).eq('id', lid);
+          node.heavyGeom = true;
+        } catch (eH) { console.warn('import: could not stamp heavyGeom', eH); }
+        var dispatched = false;
+        try { dispatched = await foldImportDispatch(lid, node, { length: state.feats }); } catch (eF) {}
+        if (dispatched) { node.fold_state = 'folding'; pollFoldDone(node, lid); }
+        else importStatus('Imported ' + nfmt(state.feats) + ' features. Tiles could not be built in the cloud — use the layer panel’s Bake button when you are ready.');
+      } else {
+        try { await rebakeLayerTiles(lid, 'Building tiles', true); } catch (eB) {}   // allowConvert: a fresh geojson layer has no tiles yet
+      }
+    }
+    setStatus('Imported ' + nfmt(state.feats) + ' feature' + (state.feats !== 1 ? 's' : '') +
+      (state.skipped ? ' · ' + state.skipped + ' skipped (mixed geometry types)' : ''));
+    return made;
   }
   // Single-file import (the file input's default path) — swallows errors into the status line.
   async function handleImportFile(file, parent) {
@@ -2079,6 +2373,19 @@
   // ITSELF be the slow part go to the cloud; everything below imports rows and is visible and
   // editable immediately, with the browser tiler baking its tiles right after (auto-convert).
   var FOLD_RAW_MIN = 50000;
+  var FOLD_BYTES_MIN = 48 * 1024 * 1024;     // …or this much geometry, however few features carry it (8/15)
+  // Cheap size estimate: sample coordinates rather than stringify (stringifying to measure would
+  // cost the memory the measurement exists to protect).
+  function importGeomBytes(feats) {
+    if (!feats || !feats.length) return 0;
+    var step = Math.max(1, Math.floor(feats.length / 40)), seen = 0, pts = 0;
+    for (var i = 0; i < feats.length; i += step) {
+      seen++;
+      collectImportCoords(feats[i] && feats[i].geometry, function () { pts++; });
+    }
+    if (!seen) return 0;
+    return Math.round((pts / seen) * feats.length * 40);   // ~40 bytes per pair as transported JSON
+  }
   var _foldWatch = [];                       // {node, layerId} queued by the import loop, drained into polls
   function foldSleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   // projectLoader registers pmt-sw ONLY when the boot config already has a /pmt/ layer — a map
@@ -2176,10 +2483,12 @@
     } catch (e) { console.warn('applyFoldedRow failed', e); importStatus('"' + (node.label || 'layer') + '" folded — reload to see it.'); }
   }
   // Split a FeatureCollection by geometry type (one type per layer) → persist layers + features.
-  async function importFeatureCollection(fc, baseName, parent) {
-    if (typeof layers === 'undefined') return;
-    if (idsReady) { try { await idsReady; } catch (e) {} }
-    if (!loaded) { importStatus('Still loading — try again'); return; }
+  // ── ONE definition of the import edge cases (8/15) ─────────────────────────────────────
+  //    Extracted from importFeatureCollection so the STREAMING importer runs the identical
+  //    rules chunk by chunk: pole snapping, the .prj/CRS reprojection with its probe, the
+  //    refusal to guess a projection from magnitudes, and Multi* explosion. Two importers
+  //    with two copies of these would drift, and every one of them was paid for in a bug.
+  async function normalizeImportFC(fc) {
     // Multi-line/point geometries explode into single pieces; MultiPolygons stay whole (see explodeMulti).
     var groups = { circle: [], line: [], fill: [] };
     (fc.features || []).forEach(function (f) {
@@ -2319,8 +2628,16 @@
       if (inLngLat(bnds)) { eachImportCoord(snapCoord); bnds = computeImportBounds(fc); }
       if (!inLngLat(bnds)) throw new Error('coordinates look projected, not lng/lat — re-export as WGS84 / EPSG:4326');
     }
+    return { groups: groups, kinds: kinds, bounds: bnds };
+  }
+  async function importFeatureCollection(fc, baseName, parent) {
+    if (typeof layers === 'undefined') return;
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    if (!loaded) { importStatus('Still loading — try again'); return; }
+    var _norm = await normalizeImportFC(fc);
+    var groups = _norm.groups, kinds = _norm.kinds;
     var total = kinds.reduce(function (n, k) { return n + groups[k].length; }, 0);
-    if (total > 3000 && !window.confirm('Import ' + total + ' features? Large layers auto-convert to tiles for fast viewing; editing that many features may still be slow.')) { importStatus('Cancelled'); return; }
+    if (total > 3000 && !window.__msStreamingImport && !window.confirm('Import ' + total + ' features? Large layers auto-convert to tiles for fast viewing; editing that many features may still be slow.')) { importStatus('Cancelled'); return; }
     var TYPE_LABEL = { circle: 'points', line: 'lines', fill: 'polygons' };
     var sId = null, gId = null;
     if (parent && parent.type === 'group') { gId = parent._dbId; var ps = findParent(layers, parent); if (ps && ps.type === 'section') sId = ps._dbId; }
@@ -2335,8 +2652,11 @@
         // THE FOLD (C3): past FOLD_RAW_MIN the data goes to R2 + the cloud Action and Postgres
         // gets the layer row only. foldImportDispatch flips wantsFold off on ANY failure and the
         // classic row import below runs instead.
+        // The cloud reroute measured FEATURE COUNT only, so a 149 MB / 220-feature file
+        // qualified for nothing at all (owner 8/15). Weigh the bytes too: what makes a layer
+        // heavy is geometry, and a handful of survey-resolution coastlines outweighs 40,000 pins.
         var wantsFold = CLOUD_FOLD_IMPORTS && !window.__msForceRowImport &&
-          groups[type].length > FOLD_RAW_MIN;
+          (groups[type].length > FOLD_RAW_MIN || importGeomBytes(groups[type]) > FOLD_BYTES_MIN);
         var lrow = leafRow(node); if (wantsFold) lrow.fold_state = 'folding';
         var layerId = await insertOne('layers', lrow);
         slugToLayerDbId[node.id] = layerId;
@@ -2405,7 +2725,9 @@
       // NEXT load + for every visitor; this session keeps its live geojson). Fire-and-await so the
       // status line reflects real progress; a failure leaves the layer working as plain geojson.
       try {
-        var bigOnes = made.filter(function (n) {
+        var bigOnes = window.__msStreamingImport ? [] : made.filter(function (n) {
+          // a STREAMING import is one chunk of many — tiling here would bake a fraction of the
+          // file and then be thrown away; importShapefileStreaming bakes once, at the end
           if (n.fold_state === 'folding' || n.fold_state === 'folded') return false;   // cloud fold — the Action bakes these tiles
           var feats = groups[n.type] || [];   // import groups are keyed by the same kinds as node.type (circle/line/fill)
           return feats.length > (n.type === 'circle' ? 2000 : 500);
@@ -2463,7 +2785,7 @@
       // big-data table sidecar: layers past the big-table threshold get their Parquet baked NOW,
       // in the background — the fast attribute table works immediately after import, no Publish needed
       try {
-        if (window.MSBigTable) made.forEach(function (nB) {
+        if (window.MSBigTable && !window.__msStreamingImport) made.forEach(function (nB) {
           if (nB.fold_state === 'folding' || nB.fold_state === 'folded') return;   // the Action bakes the fold sidecar
           var featsB = groups[nB.type] || [], lidB = slugToLayerDbId[nB.id];
           if (lidB && featsB.length > MSBigTable.BIG_ROWS) MSBigTable.bakeFromDb(db, projectId, lidB, importStatus).catch(function (eB2) { console.warn('sidecar bake skipped', eB2); });
@@ -5071,7 +5393,11 @@
     }
     setStatus('Saved');
   }
+  var _lfGen = 0;   // loadFeatures generation — overlapping calls raced on draw.set (8/14): a
+  // slow earlier call could land its rows AFTER a newer one (e.g. the recolour that follows a
+  // colour-by pick), silently reverting the store to pre-pick colours. Newest call wins, always.
   async function loadFeatures() {
+    var _gen = ++_lfGen;
     if (idsReady) { try { await idsReady; } catch (e) {} }
     if (!draw) return;
 
@@ -5128,8 +5454,8 @@
       var props = { color: dbColor[row.layer_id] || '#3bb2d0' };
       // color-by-attribute: the feature's own column value decides its color in the draw copies too
       var cbNode = nodeByLayerDbId(row.layer_id);
-      if (cbNode && cbNode.colorBy && row.custom_fields) {
-        var cbv = row.custom_fields[cbNode.colorBy.prop];
+      if (cbNode && cbNode.colorBy && cbNode.colorBy.mapping) {
+        var cbv = cbValueOf(row, cbNode.colorBy.prop);   // dedicated columns (label…) resolve too (8/14)
         var cbc = cbv != null ? cbNode.colorBy.mapping[String(cbv)] : null;
         if (cbc) props.color = cbc;
       }
@@ -5154,6 +5480,14 @@
         if (row.custom_fields.ms_opacity != null && String(row.custom_fields.ms_opacity) !== '' && !isNaN(sov)) props.opacity = sov;
         var stv = parseFloat(row.custom_fields.ms_thickness);
         if (row.custom_fields.ms_thickness != null && String(row.custom_fields.ms_thickness) !== '' && !isNaN(stv)) { props.strokewidth = stv; props.radius = stv; }
+      }
+      // "Match fill colors" (8/14): the border is THIS feature's own fill colour — applied after
+      // every override so a categorical or per-feature colour carries into the border too. An
+      // explicit ms_linecolor still wins (it names the border colour outright).
+      if (cbNode && cbNode.outlineMatchFill) {
+        var msLC = row.custom_fields && row.custom_fields.ms_linecolor;
+        var lcSet = msLC != null && String(msLC).trim() !== '' && String(msLC).trim().toLowerCase() !== 'none';
+        if (!lcSet) props.outline = props.color;
       }
       var fo = { type: 'Feature', id: did, geometry: { type: row.geom.type, coordinates: row.geom.coordinates }, properties: props };
       _geomSnap[did] = { type: row.geom.type, coordinates: row.geom.coordinates };
@@ -5188,6 +5522,7 @@
         if (res.error) console.warn('editing: load features failed', res.error);
         (res.rows || []).forEach(function (row) { var m = mapRow(row); if (!m) return; if (m.hidden) featureCache[m.did] = m.fo; else feats.push(m.fo); });
       }
+      if (_gen !== _lfGen) return;   // a newer loadFeatures started while we fetched — it owns the store
       draw.set({ type: 'FeatureCollection', features: feats });
       syncMirrorRight();   // show the loaded drawn features on the right swipe side too
       // labels ride ABOVE everything — MapboxDraw's fills and the right mirror are added after the
@@ -5744,7 +6079,7 @@
     // no override → show what the feature ACTUALLY renders as: its CATEGORY color under an
     // active color-by, else the layer color (owner 8/13: "Colors don't match in the feature popup")
     var catC = null;
-    try { if (!ov && node && node.colorBy && node.colorBy.mapping && meta && meta.custom) { var cvS = meta.custom[node.colorBy.prop]; if (cvS != null) catC = node.colorBy.mapping[String(cvS)] || null; } } catch (eS) {}
+    try { if (!ov && node && node.colorBy && node.colorBy.mapping && meta) { var cvS = metaCbValue(meta, node.colorBy.prop); if (cvS != null) catC = node.colorBy.mapping[String(cvS)] || null; } } catch (eS) {}
     var show = ov || catC || (node && node.iconColor) || '#3bb2d0';
     inp.value = looksHex(show) ? normHex(show) : '#888888';
     if (note) note.textContent = ov ? 'overriding the layer color' : (catC ? 'category color — pick to override' : 'layer color — pick to override');
@@ -5764,7 +6099,7 @@
         var backC = (nodeC && nodeC.iconColor) || '#3bb2d0';
         // Reset under an active color-by goes back to the feature's CATEGORY color, not the
         // layer fallback (same rule the engine-edit pull-in applies when it builds the copy)
-        try { if (!hex && nodeC && nodeC.colorBy && nodeC.colorBy.mapping && m.custom) { var cbv3 = m.custom[nodeC.colorBy.prop]; var mc3 = cbv3 != null ? nodeC.colorBy.mapping[String(cbv3)] : null; if (mc3) backC = mc3; } } catch (e3) {}
+        try { if (!hex && nodeC && nodeC.colorBy && nodeC.colorBy.mapping) { var cbv3 = metaCbValue(m, nodeC.colorBy.prop); var mc3 = cbv3 != null ? nodeC.colorBy.mapping[String(cbv3)] : null; if (mc3) backC = mc3; } } catch (e3) {}
         f.properties.color = hex || backC;
         _suppressFeatureDelete = true;
         draw.delete(did); draw.add(f);
@@ -6034,6 +6369,16 @@
   //    Number RANGES (step expressions) are the planned follow-up.
   var COLORBY_PALETTE = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', '#ffe119'];
   function colorKeyFor(type) { return type === 'fill' ? 'fill-color' : type === 'line' ? 'line-color' : 'circle-color'; }
+  // 'rgba(0,0,0,0)' is a SENTINEL we write ("something else owns this border"), never a chosen colour
+  function isTransparentColor(v) { return v != null && String(v).replace(/\s+/g, '') === 'rgba(0,0,0,0)'; }
+  // "Match fill colors": the border's colour IS the fill's — a hex when the layer is one colour,
+  // the whole colour-by match expression when it isn't, so each polygon's border is its own colour.
+  function fillColorValue(node) {
+    var v = node && node.paint && node.paint[colorKeyFor(node.type)];
+    if (Array.isArray(v)) return JSON.parse(JSON.stringify(v));
+    if (typeof v === 'string' && !isTransparentColor(v)) return v;
+    return (node && node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
+  }
   function looksHex(v) { return /^#?[0-9a-fA-F]{6}$/.test(String(v == null ? '' : v).trim()); }
   function normHex(v) { v = String(v).trim(); return (v[0] === '#' ? v : '#' + v).toLowerCase(); }
   function syncColorInputForColorBy(node) {   // colour-by on → swap the single swatch for the multicolor strip (or the 2-swatch binary strip)
@@ -6055,11 +6400,47 @@
     if (want !== 'label' && sortedKeys.indexOf(want) < 0) { var oc = document.createElement('option'); oc.value = want; oc.textContent = want; lf.appendChild(oc); }   // keep a saved value that isn't a known column
     lf.value = want;
   }
+  // DEDICATED COLUMNS are style-by-able too (8/14, "not seeing label as an option haha"): the
+  // importer maps name-like source columns (cntry_name…) INTO features.label, so the one column
+  // a user most wants to colour by lives OUTSIDE custom_fields. These two resolvers make
+  // label/description/dates/image_url first-class wherever a colour-by value is read.
+  var CB_DEDICATED = ['label', 'description', 'start_date', 'end_date', 'image_url'];
+  function cbValueOf(row, prop) {   // row = a features row (dedicated cols + custom_fields)
+    if (!row) return null;
+    var cf = row.custom_fields;
+    if (cf && cf[prop] != null) return cf[prop];
+    if (prop === 'label') return (row.label != null && row.label !== '') ? row.label : null;
+    if (prop === 'description') return row.description || null;
+    if (prop === 'start_date') return row.start_date ? String(row.start_date).slice(0, 10) : null;
+    if (prop === 'end_date') return row.end_date ? String(row.end_date).slice(0, 10) : null;
+    if (prop === 'image_url') return row.image_url || null;
+    return null;
+  }
+  function metaCbValue(meta, prop) {   // meta = featureMeta shape {label, notes, start, end, image_url, custom}
+    if (!meta) return null;
+    if (meta.custom && meta.custom[prop] != null) return meta.custom[prop];
+    if (prop === 'label') return meta.label || null;
+    if (prop === 'description') return meta.notes || null;
+    if (prop === 'start_date') return meta.start || null;
+    if (prop === 'end_date') return meta.end || null;
+    if (prop === 'image_url') return meta.image_url || null;
+    return null;
+  }
   async function populateColorBy(node) {
     var row = document.getElementById('elp-colorby-row'), sel = document.getElementById('elp-colorby'), info = document.getElementById('elp-colorby-info');
     if (!row || !sel) return;
     syncColorInputForColorBy(node);
     var isDrawn = node && node.source_type === 'geojson-supabase';
+    // a split outline COLOURS LIKE ITS PARENT (8/14b, "can't seem to do the same thing with
+    // CShapes-Europe"): a drawn split's node carries an adapter source and NO source_type, so it
+    // classified as a tileset here and sampled its own EMPTY row set — empty dropdown. Take the
+    // PARENT's branch; the drawn sampler below already routes rows through outlineOf.
+    if (node && node.outlineOf) {
+      var _oPar = findNodeById(layers, node.outlineOf);
+      if (_oPar && _oPar.source_type === 'geojson-supabase') isDrawn = true;
+      // (a TILESET parent — e.g. a baked layer, source_type vector-tiles-url — keeps the
+      // tileset branch below; its DB sample routes through outlineOf there)
+    }
     // color-by works on EVERY tileset geometry (8/13, owner on CShapes: "I don't see a style by
     // data column option here… I need to be able to see countries separately") — the match
     // expression is geometry-agnostic; the old line-only gate was the whole restriction
@@ -6087,12 +6468,17 @@
         // valid there; groupBy stays tile-columns-only (group anchors key on tile properties).
         var lblCols = tcols.slice();
         try {
-          var lid5 = slugToLayerDbId[node.id];
+          // split outlines sample their PARENT's rows (8/14b, "can't seem to do the same thing
+          // with CShapes-Europe" — a baked parent routes the outline down THIS branch, and the
+          // outline's own layer has no rows by design)
+          var node5 = node.outlineOf ? (findNodeById(layers, node.outlineOf) || node) : node;
+          var lid5 = node5._dataLayerId || slugToLayerDbId[node5.id] || slugToLayerDbId[node.id];
           if (lid5) {
-            var r5 = await db.from('features').select('custom_fields').eq('layer_id', lid5).limit(60);
+            var r5 = await db.from('features').select('custom_fields, label, description, start_date, end_date, image_url').eq('layer_id', lid5).limit(60);
             (r5.data || []).forEach(function (row5) {
               var cf5 = row5.custom_fields;
               if (cf5 && typeof cf5 === 'object') Object.keys(cf5).forEach(function (k5) { if (lblCols.indexOf(k5) < 0) lblCols.push(k5); });
+              CB_DEDICATED.forEach(function (k5) { if (cbValueOf(row5, k5) != null && lblCols.indexOf(k5) < 0) lblCols.push(k5); });   // dedicated columns are options too (8/14)
             });
             lblCols = orderAttrKeys(lblCols, 40);
           }
@@ -6127,11 +6513,20 @@
     if (!lid) return;
     try {
       // Linked/instance mirrors have no rows of their own — sample the SOURCE layer's columns
-      // (instanceOf), and always offer the mirror's OWN added columns (overlayCols, Portal 5b)
-      var sampleLid = node.instanceOf || lid;
-      var r = await db.from('features').select('custom_fields').eq('layer_id', sampleLid).not('custom_fields', 'is', null).limit(100);
+      // (instanceOf), and always offer the mirror's OWN added columns (overlayCols, Portal 5b).
+      // DRAWN outline splits too (8/14b, "can't seem to do the same thing with CShapes-Europe"):
+      // the split borrows the FILL's features, so its dropdown must sample the fill's rows —
+      // the save path (onColorBy) already routed through outlineOf; this fills the dropdown.
+      var sampleNode = node.outlineOf ? (findNodeById(layers, node.outlineOf) || node) : node;
+      var sampleLid = sampleNode.instanceOf || (sampleNode === node ? lid : (slugToLayerDbId[sampleNode.id] || lid));
+      // dedicated columns ride along (8/14): the old sample read custom_fields ONLY — and
+      // filtered out rows whose only values were dedicated ones, hiding e.g. label entirely
+      var r = await db.from('features').select('custom_fields, label, description, start_date, end_date, image_url').eq('layer_id', sampleLid).limit(100);
       var keys = {};
-      (r.data || []).forEach(function (f) { Object.keys(f.custom_fields || {}).forEach(function (k) { keys[k] = 1; }); });
+      (r.data || []).forEach(function (f) {
+        Object.keys(f.custom_fields || {}).forEach(function (k) { keys[k] = 1; });
+        CB_DEDICATED.forEach(function (k) { if (cbValueOf(f, k) != null) keys[k] = 1; });
+      });
       (node.overlayCols || []).forEach(function (k) { keys[k] = 1; });
       // dropdowns lead with the UNIVERSAL style columns (the default styling home), then everything else
       var allKeys = Object.keys(keys).sort();
@@ -6479,8 +6874,8 @@
           ((cr9.data) || []).slice().sort(function (a, b) { return b.n - a.n; }).forEach(function (c9) { var s9 = String(c9.k); if (!(s9 in seen)) { seen[s9] = 1; order.push(s9); } });
         } else {
           var dataLid2 = dataNode.instanceOf || dataLid;   // mirrors sample their SOURCE's rows (Portal 5b)
-          var fr = await window.MSFetchRows(db, 'custom_fields', function (q) { return q.eq('layer_id', dataLid2); });
-          (fr.rows || []).forEach(function (f) { var v = f.custom_fields ? f.custom_fields[prop] : null; if (v == null) return; var s = String(v); if (!(s in seen)) { seen[s] = 1; order.push(s); } });
+          var fr = await window.MSFetchRows(db, 'custom_fields, label, description, start_date, end_date, image_url', function (q) { return q.eq('layer_id', dataLid2); });
+          (fr.rows || []).forEach(function (f) { var v = cbValueOf(f, prop); if (v == null) return; var s = String(v); if (!(s in seen)) { seen[s] = 1; order.push(s); } });
           // the mirror's own added columns (Portal 5b): values live in layer_overlay, not features
           if (window.MSOverlay && (node.overlayCols || []).indexOf(prop) > -1) {
             var ovv = await MSOverlay.load(lid);
@@ -6492,8 +6887,10 @@
         // source left these uncolored — ESRI renders them invisible; we keep the outline so the feature stays findable)
         var isColorVal = function (v) { var s2 = String(v == null ? '' : v).trim(); return looksHex(s2) || /^rgba?\([^)]+\)$/i.test(s2) || s2.toLowerCase() === 'none'; };
         var allHex = order.every(isColorVal);
-        var catCap = isTilesetNode(node) ? 600 : 60;   // tileset lines (e.g. 491 railroad companies) legitimately cycle the palette
-        if (!allHex && order.length > catCap) { setStatus('Too many categories'); showToast('Too many distinct values to color by (' + order.length + ')'); return; }
+        // NO CATEGORY CAP (owner 8/14: "Can we just not have a cap?? … there could be thousands
+        // of things that match" — same philosophy as imports: no caps). The palette cycles;
+        // telling adjacent things APART is the point, not unique hues. The only remaining bound
+        // is TILECAT_BYID_CAP on unbaked tilesets (a paint-size guard with a Re-bake path out).
         var mapping = {};
         order.forEach(function (v, i) {
           if (!allHex) { mapping[v] = COLORBY_PALETTE[i % COLORBY_PALETTE.length]; return; }
@@ -6525,6 +6922,9 @@
         paint[key] = expr;
         if (info) info.textContent = (allHex ? ("Using the column's own hex colors (" + order.length + " values)." + (mapping['none'] ? " 'none' renders un-filled (outline only)." : '')) : (order.length + ' categories, one color each.')) + unbakedNote;
       }
+      // a border set to MATCH the fill takes the new colours with it (8/14) — same expression,
+      // stored on the same row, so the viewer renders matched borders with no runtime state
+      if (node.outlineMatchFill && node.type === 'fill' && paint[key] != null) paint['fill-outline-color'] = JSON.parse(JSON.stringify(paint[key]));
       node.paint = paint;
       // persist: paint renders everywhere (incl. the public viewer); colorBy meta drives this UI + draw colors
       var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
@@ -6536,7 +6936,11 @@
       [[beforeMap, '-left'], [typeof afterMap !== 'undefined' ? afterMap : null, '-right']].forEach(function (ms) {
         var m = ms[0]; if (!m) return;
         try { if (m.getLayer(node.id + ms[1])) m.setPaintProperty(node.id + ms[1], key, paint[key]); } catch (e) {}
+        if (node.outlineMatchFill && node.type === 'fill') {
+          try { if (m.getLayer(node.id + '-stroke' + ms[1])) m.setPaintProperty(node.id + '-stroke' + ms[1], 'line-color', paint['fill-outline-color']); } catch (e) {}
+        }
       });
+      await syncMatchedOutline(node);   // a split-off border that MATCHES follows the new colours
       if (!isTilesetNode(node)) await loadFeatures();   // draw copies re-color; tilesets recolor via paint alone
       rerender();   // sidebar icon flips to/from the multicolor gradient (generateLayers reads node.colorBy)
       syncColorInputForColorBy(node);   // panel swatch ↔ multicolor strip
@@ -6545,6 +6949,32 @@
       // NOTHING auto-bakes here (owner 8/13: "I'll rebake it myself, when I want") — unbaked
       // columns colour instantly via the by-id match above; a MANUAL Re-bake later compacts it.
     } catch (e) { console.warn('colorBy failed', e); setStatus('Save failed'); }
+  }
+  // A split-off outline layer set to "Match fill colors" re-takes its parent's colour value
+  // whenever the parent's colours change (8/14) — paint + colorBy meta persisted on the OUTLINE's
+  // own row, so the viewer needs no runtime state and a refresh keeps the match.
+  async function syncMatchedOutline(P) {
+    if (!P || P.type !== 'fill') return;
+    var O = null;
+    (function walk(a) { (a || []).forEach(function (n) { if (n.outlineOf === P.id) O = n; if (n.children) walk(n.children); }); })(layers);
+    if (!O || !O.outlineMatchFill) return;
+    var val = fillColorValue(P);
+    O.paint = Object.assign({}, O.paint || {}, { 'line-color': val });
+    if (P.colorBy) O.colorBy = JSON.parse(JSON.stringify(P.colorBy)); else delete O.colorBy;
+    var oLid = slugToLayerDbId[O.id];
+    if (oLid) {
+      try {
+        var cur = await db.from('layers').select('raw_config').eq('id', oLid).single();
+        var orc = (cur.data && cur.data.raw_config) || {};
+        if (O.colorBy) orc.colorBy = O.colorBy; else delete orc.colorBy;
+        orc.outlineMatchFill = true;
+        await db.from('layers').update({ paint: O.paint, raw_config: orc }).eq('id', oLid);
+      } catch (e) { console.warn('editing: matched outline sync failed', e); }
+    }
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var m = pair[1]; if (!m) return;
+      try { if (m.getLayer(O.id + '-' + pair[0])) m.setPaintProperty(O.id + '-' + pair[0], 'line-color', val); } catch (e) {}
+    });
   }
   // ── colour-by on TILED layers WITHOUT baking (owner 8/13: "Is there a way to not have it
   //    have to bake just to color it?"). Tiles always carry the feature id, so when the column
@@ -6566,13 +6996,20 @@
       for (var i9 = 0; i9 < fs9.length && i9 < 200; i9++) if (fs9[i9].properties && (cb.prop in fs9[i9].properties)) { inTiles = true; break; }
     } catch (e9) {}
     if (inTiles) return tiledColorByGetExpr(cb, fallback);
+    // dedicated columns select as themselves; everything else lives in custom_fields (8/14)
+    var vSel = CB_DEDICATED.indexOf(cb.prop) > -1 ? ('v:' + cb.prop) : ('v:custom_fields->>' + cb.prop);
     var pairs = [], lastFid = null, size = 1000;
     for (;;) {   // light select (no geom) — keyset pages so deep pages stay cheap (8/13)
-      var qb = db.from('features').select('feature_id, v:custom_fields->>' + cb.prop).eq('layer_id', lid);
+      var qb = db.from('features').select('feature_id, ' + vSel).eq('layer_id', lid);
       if (lastFid !== null) qb = qb.gt('feature_id', lastFid);
       var q = await qb.order('feature_id').limit(size);
       if (q.error) break;
-      (q.data || []).forEach(function (x) { var c = x.v != null ? cb.mapping[String(x.v)] : null; if (c) { pairs.push(Number(x.feature_id)); pairs.push(c); } });
+      (q.data || []).forEach(function (x) {
+        var vv = x.v;
+        if (vv != null && (cb.prop === 'start_date' || cb.prop === 'end_date')) vv = String(vv).slice(0, 10);   // mapping keys are date-only
+        var c = vv != null ? cb.mapping[String(vv)] : null;
+        if (c) { pairs.push(Number(x.feature_id)); pairs.push(c); }
+      });
       if (!q.data || q.data.length < size) break;
       lastFid = q.data[q.data.length - 1].feature_id;
       if (pairs.length / 2 > TILECAT_BYID_CAP) return 'toobig';
@@ -7334,6 +7771,14 @@
     if (kind === 'opacity') return [node.type === 'fill' ? 'fill-opacity' : node.type === 'line' ? 'line-opacity' : 'circle-opacity'];
     return node.type === 'circle' ? ['circle-radius'] : ['line-width'];   // thickness: line width / point radius / fill outline width
   }
+  function setStyleMetaRC(lid2, key, value) {   // style meta lives in raw_config; saveLayerStyle only carries color+paint
+    if (!lid2) return;
+    if (value == null) return clearStyleMetaRC(lid2, key);
+    db.from('layers').select('raw_config').eq('id', lid2).single().then(function (cur) {
+      var rc = (cur.data && cur.data.raw_config) || {}; rc[key] = value;
+      return db.from('layers').update({ raw_config: rc }).eq('id', lid2);
+    }).then(function () {}, function () {});
+  }
   function clearStyleMetaRC(lid2, key) {
     if (!lid2) return;
     db.from('layers').select('raw_config').eq('id', lid2).single().then(function (cur) {
@@ -7699,6 +8144,10 @@
       '<label id="elp-outline-vis-row" class="ms-check" style="display:none;margin-bottom:4px;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
       '<div id="elp-outline-row"><label class="ms-lbl">Outline color</label>' +
       '<input id="elp-outline" type="color" class="ms-color" style="height:28px;" /></div>' +
+      // (8/14) borders that follow the fill's colours — the ask was for coloured divisions without
+      // hand-matching every category. Lives with the fill, so it works BEFORE any outline split,
+      // and a later split inherits it.
+      '<label id="elp-outline-match-row" class="ms-check" style="display:none;margin:4px 0 0;"><input id="elp-outline-match" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Match fill colors</label>' +
       '<div id="elp-width-row" style="margin-top:6px;"><label class="ms-lbl"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
       '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" class="ms-range" /></div>' +
       // (8/14) sideways offset — "colored offset borders tend to be a great way to show divisions":
@@ -7815,6 +8264,7 @@
     document.getElementById('elp-lbl-halow').addEventListener('change', onMapLabelsChange);
     document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
     document.getElementById('elp-outline').addEventListener('input', function () { onLayerStyle('outline', this.value); });
+    document.getElementById('elp-outline-match').addEventListener('change', function () { onLayerStyle('outlineMatch', this.checked); });
     document.getElementById('elp-width').addEventListener('input', function () { document.getElementById('elp-width-val').textContent = this.value; onLayerStyle('width', parseFloat(this.value)); });
     document.getElementById('elp-offset').addEventListener('input', function () { document.getElementById('elp-offset-val').textContent = this.value; onLayerStyle('offset', parseFloat(this.value)); });
     document.getElementById('elp-wzoom-on').addEventListener('change', onWzoom);
@@ -8167,6 +8617,15 @@
     document.getElementById('elp-opacity-val').textContent = op;
     document.getElementById('elp-outline').value = /^#[0-9a-fA-F]{6}$/.test(outline) ? outline : '#000000';
     document.getElementById('elp-outline-row').style.display = (node.type === 'line' || node.outlineSplit) ? 'none' : 'block';  // lines + split polygons have no separate outline here
+    // "Match fill colors" (8/14): offered on the polygon itself (border follows the fill) AND on a
+    // split-off outline layer (border follows its parent's fill) — both are the same wish.
+    (function () {
+      var mRow = document.getElementById('elp-outline-match-row'), mCb = document.getElementById('elp-outline-match');
+      if (!mRow || !mCb) return;
+      var eligible = (node.type === 'fill' && !node.outlineSplit) || !!node.outlineOf;
+      mRow.style.display = eligible ? 'block' : 'none';
+      mCb.checked = !!node.outlineMatchFill;
+    })();
     var strokeVis = (node.paint && node.paint['line-opacity'] != null) ? node.paint['line-opacity'] : 1;
     document.getElementById('elp-fill-vis').checked = op > 0;
     document.getElementById('elp-outline-vis').checked = strokeVis !== 0;
@@ -9649,6 +10108,31 @@
     } else if (_colorExpr) {
       node.paint[_ck] = _colorExpr;
     }
+    // ── "Match fill colors" (8/14): the border's colour tracks the fill's, recomputed after every
+    //    paint rebuild so it can't drift. The flag is META (raw_config) — saveLayerStyle carries
+    //    only color + paint, so it's persisted here.
+    if (field === 'outlineMatch') {
+      node.outlineMatchFill = !!value;
+      setStyleMetaRC(slugToLayerDbId[node.id], 'outlineMatchFill', node.outlineMatchFill || null);
+      // a split-off outline borrows its parent's colorBy too, so its own panel opens on that
+      // column and the legend/back-colour lookups resolve
+      if (node.outlineOf && node.outlineMatchFill) {
+        var _pC = findNodeById(layers, node.outlineOf);
+        if (_pC && _pC.colorBy) {
+          node.colorBy = JSON.parse(JSON.stringify(_pC.colorBy));
+          setStyleMetaRC(slugToLayerDbId[node.id], 'colorBy', node.colorBy);
+        }
+      }
+    } else if (field === 'outline' && node.outlineMatchFill) {
+      node.outlineMatchFill = false;   // hand-picking a border colour exits matching
+      var _mCb2 = document.getElementById('elp-outline-match'); if (_mCb2) _mCb2.checked = false;
+      setStyleMetaRC(slugToLayerDbId[node.id], 'outlineMatchFill', null);
+    }
+    if (node.outlineMatchFill) {
+      var _pMatch = node.outlineOf ? findNodeById(layers, node.outlineOf) : null;
+      if (node.outlineOf) { if (_pMatch) node.paint['line-color'] = fillColorValue(_pMatch); }
+      else if (node.type === 'fill') node.paint['fill-outline-color'] = fillColorValue(node);
+    }
     applyLayerStylePreview(node, op, outline, outlineVis, width, radius);
     clearTimeout(_layerStyleTimer);
     _layerStyleTimer = setTimeout(function () { saveLayerStyle(node.id); }, 500);
@@ -9663,7 +10147,13 @@
         try {
           // (8/14) colour-by owns line-color when active — repainting iconColor over the
           // categorical expression flattened a coloured border on every unrelated slider move
-          if (node.colorBy && Array.isArray(pp['line-color'])) m.setPaintProperty(id, 'line-color', pp['line-color']);
+          if (node.colorBy && Array.isArray(pp['line-color'])) {
+            // a DRAWN parent's outline source carries resolved colours, not data columns (see
+            // addOutlineMapLayer) — pushing the column match there would paint the fallback
+            var drawnParent = node.outlineOf && _drawLayerSlugs[node.outlineOf];
+            var fbL = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
+            m.setPaintProperty(id, 'line-color', drawnParent ? ['to-color', ['coalesce', ['get', 'color'], fbL], fbL] : pp['line-color']);
+          }
           else if (node.iconColor) m.setPaintProperty(id, 'line-color', node.iconColor);
           if (pp['line-width'] != null) m.setPaintProperty(id, 'line-width', pp['line-width']);
           m.setPaintProperty(id, 'line-offset', pp['line-offset'] != null ? pp['line-offset'] : 0);
@@ -9727,6 +10217,7 @@
             if (node.iconColor && !node.colorBy) f.properties.color = node.iconColor;   // colour-by: per-feature colors stay
             if (op != null) f.properties.opacity = op;
             if (outline != null) f.properties.outline = outline;
+            if (node.outlineMatchFill) f.properties.outline = f.properties.color;   // border = this feature's own fill colour (8/14)
             if (outlineVis != null) f.properties.strokeopacity = outlineVis;
             if (width != null) f.properties.strokewidth = width;
             if (radius != null) f.properties.radius = radius;
@@ -9778,8 +10269,20 @@
       // every split outline layer INVISIBLE (8/8, caught by border-split-probe). The real colour
       // lives on the stroke companion (node.stroke) when the native one is blank.
       var poc = P.paint && P.paint['fill-outline-color'];
-      if (String(poc).replace(/\s+/g, '') === 'rgba(0,0,0,0)') poc = null;
-      var color = poc || (P.stroke && P.stroke['line-color']) || P.iconColor || '#3bb2d0';
+      if (isTransparentColor(poc)) poc = null;
+      // …and the companion's own colour can be that same sentinel, read back off a stored paint
+      // (8/14: the split came out invisible — "there is no line"). Refuse it at every step.
+      var pstroke = P.stroke && P.stroke['line-color'];
+      if (isTransparentColor(pstroke)) pstroke = null;
+      // A colour-by'd (or match-fill) polygon hands its WHOLE colour expression to the border, plus
+      // the colorBy meta itself, so the standalone outline layer comes out matching the polygons
+      // instead of flattening to one colour (owner 8/14: "same color as the fills… totally what I
+      // wanted"). Anything else keeps the border's own colour.
+      var matchFill = !!(P.outlineMatchFill || (P.colorBy && P.colorBy.mapping));
+      var color = matchFill ? fillColorValue(P) : (poc || pstroke || P.iconColor || '#3bb2d0');
+      // the sidebar icon needs a real hex even when line-color is an expression
+      var iconCol = (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) ? color
+        : ((P.iconColor && /^#[0-9a-fA-F]{6}$/.test(P.iconColor)) ? P.iconColor : '#3bb2d0');
       var owidth = (P.paint && P.paint['line-width']) || (isTs ? 1 : 2);
       var oNode;
       if (isTs) {
@@ -9787,16 +10290,19 @@
         var oid = uid();
         oNode = { id: oid, label: (P.label || 'Polygon') + ' outline', type: 'line', source: P.source, 'source-layer': P['source-layer'],
           paint: { 'line-color': color, 'line-width': owidth, 'line-opacity': 1 }, outlineOf: P.id, toggleElement: oid,
-          containerId: 'cont-' + oid, className: oid, topLayerClass: oid, iconType: 'slash', iconColor: color, isSolid: true, checked: true };
+          containerId: 'cont-' + oid, className: oid, topLayerClass: oid, iconType: 'slash', iconColor: iconCol, isSolid: true, checked: true };
       } else {
         oNode = makeNode('layer', (P.label || 'Polygon') + ' outline');
         oNode.type = 'line';
         oNode.iconType = 'slash';
         oNode.outlineOf = P.id;                 // borrows the polygon's features → adapter draws its edges
         oNode.toggleElement = oNode.id;         // so refreshLayers toggles the outline's engine layer
-        oNode.iconColor = color;
+        oNode.iconColor = iconCol;
         oNode.paint = { 'line-color': color, 'line-width': owidth, 'line-opacity': 1 };
       }
+      // carried so the outline's own panel opens on the same column, and a later re-colour of
+      // EITHER layer rebuilds from the same mapping (leafRow persists it into raw_config)
+      if (matchFill && P.colorBy) { oNode.colorBy = JSON.parse(JSON.stringify(P.colorBy)); oNode.outlineMatchFill = true; }
       // place the outline layer next to the polygon, under the same parent
       var pParent = findParent(layers, P);
       var sId = null, gId = null;
@@ -9948,17 +10454,49 @@
   // Add the outline layer's map layer to the editor, built from the polygon's live features
   // (a `line` layer over the polygon geometry draws its edges). Reloading rebuilds it via the adapter.
   function addOutlineMapLayer(oNode, P) {
+    // A geojson layer too big for MapboxDraw renders through the ENGINE, so the draw store holds
+    // NOTHING for it — building the border from `draw` gave an empty source and the split produced
+    // a layer that drew nothing at all (8/14, measured: 0 rendered features). Ride the parent's own
+    // source instead: same geometry, real feature properties, so a colour-by match works verbatim.
+    var usedEngine = false;
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var side = pair[0], m = pair[1]; if (!m) return;
+      var psrc = P.id + '-' + side;
+      try { if (!m.getSource(psrc)) return; } catch (e) { return; }
+      var id = oNode.id + '-' + side;
+      try {
+        if (m.getLayer(id)) m.removeLayer(id);
+        if (m.getSource(id)) m.removeSource(id);
+        var lyr = { id: id, type: 'line', source: psrc, paint: Object.assign({}, oNode.paint), layout: { 'line-cap': 'round', 'line-join': 'round' } };
+        if (P['source-layer']) lyr['source-layer'] = P['source-layer'];
+        m.addLayer(lyr);
+        usedEngine = true;
+      } catch (e) { console.warn('editing: engine outline layer failed', e); }
+    });
+    if (usedEngine) return;
     if (!draw) return;
     var dbId = slugToLayerDbId[P.id];
     var pFeats = Object.keys(featureLayer).filter(function (d) { return featureLayer[d] === dbId; }).map(function (d) { return draw.get(d); }).filter(Boolean);
-    var fc = { type: 'FeatureCollection', features: pFeats.map(function (f) { return { type: 'Feature', geometry: f.geometry, properties: { DayStart: 0, DayEnd: 99999999 } }; }) };
+    // Each polygon's OWN colour rides along (8/14). MapboxDraw features carry resolved styling,
+    // not data columns, so a match-on-column expression has nothing to read here — but every
+    // feature already knows the colour colour-by gave it, so the border reads that directly and
+    // a split-off outline comes out matching the fills instead of drawing one flat colour.
+    var fc = { type: 'FeatureCollection', features: pFeats.map(function (f) {
+      var fp = f.properties || {};
+      return { type: 'Feature', geometry: f.geometry, properties: { DayStart: 0, DayEnd: 99999999, color: fp.color || null, outline: fp.outline || null } };
+    }) };
+    var oPaint = Object.assign({}, oNode.paint);
+    if (Array.isArray(oPaint['line-color'])) {
+      var fbC = (oNode.iconColor && /^#[0-9a-fA-F]{6}$/.test(oNode.iconColor)) ? oNode.iconColor : '#3bb2d0';
+      oPaint['line-color'] = ['to-color', ['coalesce', ['get', 'color'], fbC], fbC];
+    }
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
       var side = pair[0], m = pair[1]; if (!m) return;
       var id = oNode.id + '-' + side;
       try {
         if (m.getLayer(id)) m.removeLayer(id);
         if (m.getSource(id)) m.removeSource(id);
-        m.addLayer({ id: id, type: 'line', source: { type: 'geojson', data: fc }, paint: oNode.paint, layout: { 'line-cap': 'round', 'line-join': 'round' } });
+        m.addLayer({ id: id, type: 'line', source: { type: 'geojson', data: fc }, paint: oPaint, layout: { 'line-cap': 'round', 'line-join': 'round' } });
       } catch (e) {}
     });
   }

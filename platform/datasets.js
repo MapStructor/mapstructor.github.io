@@ -390,6 +390,77 @@
     return SUPABASE_URL + '/storage/v1/object/public/' + BUCKET + '/' + key;
   }
 
+  // ── SERVER-SIDE FREEZE (8/14) ─────────────────────────────────────────────
+  // The freeze used to run wholly in this tab; the owner closed a laptop mid-freeze and woke to
+  // a registered dataset with no frozen copy. The edge function (supabase/functions/
+  // freeze-dataset) is the click-and-forget version: POST {dataset_id} → job id immediately;
+  // the tab may die, the job doesn't. Progress lives in freeze_jobs — polling it IS the
+  // progress readout, and it survives refresh (reopen the modal, the poll resumes).
+  var FN_URL = SUPABASE_URL + '/functions/v1/freeze-dataset';
+  async function serverFreeze(datasetId, say) {
+    say = say || function () {};
+    var tok = null;
+    try { var s = await db.auth.getSession(); tok = s && s.data && s.data.session && s.data.session.access_token; } catch (e) {}
+    if (!tok) throw new Error('freeze function: no session');
+    // remember the newest existing job so the discovery poll can tell a fresh row from history
+    var preId = null;
+    try {
+      var pre = await db.from('freeze_jobs').select('id').eq('dataset_id', datasetId).order('created_at', { ascending: false }).limit(1);
+      preId = pre.data && pre.data[0] && pre.data[0].id;
+    } catch (e0) {}
+    // FIRE, DON'T AWAIT (8/14): the function holds its response open until the freeze finishes —
+    // an in-flight request is the one thing the edge runtime never culls early (waitUntil alone
+    // let ~half the isolates die seconds after a 202). The JOB ROW is the source of truth; a
+    // fast non-2xx response still short-circuits to the fallback.
+    var httpFail = null;
+    fetch(FN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok, apikey: SUPABASE_KEY },
+      body: JSON.stringify({ dataset_id: datasetId })
+    }).then(function (r) { if (r.status >= 400) httpFail = 'freeze function: ' + r.status; })
+      .catch(function () { httpFail = 'freeze function: unreachable'; });
+    var job = null;
+    for (var d = 0; d < 20; d++) {
+      await new Promise(function (res) { setTimeout(res, 1000); });
+      if (httpFail) throw new Error(httpFail);
+      var jq = await db.from('freeze_jobs').select('id, status').eq('dataset_id', datasetId).order('created_at', { ascending: false }).limit(1);
+      var row = jq.data && jq.data[0];
+      if (row && (row.id !== preId || row.status === 'queued' || row.status === 'running')) { job = row.id; break; }
+    }
+    if (!job) throw new Error('freeze function: no job appeared');
+    var quiet = 0, lastState = '', stale = 0;
+    for (var i = 0; i < 900; i++) {   // 1s cadence, 15 min ceiling — far above any real freeze
+      await new Promise(function (res) { setTimeout(res, 1000); });
+      var j = await db.from('freeze_jobs').select('status, phase, error, updated_at').eq('id', job).single();
+      if (j.error || !j.data) { if (++quiet > 10) throw new Error('freeze job lost: ' + (j.error && j.error.message)); continue; }
+      quiet = 0;
+      if (j.data.phase) say(j.data.phase);
+      if (j.data.status === 'done') return { server: true };
+      if (j.data.status === 'error') throw new Error(j.data.error || 'freeze failed');
+      // STALL WATCHDOG (8/14): an edge isolate can die WITHOUT flipping the job to error (seen
+      // once right after a redeploy — stuck at "Counting features…" forever). No update for 45s
+      // = stalled → throw a fallback-eligible error so the in-tab freeze takes over.
+      var state = j.data.updated_at + '|' + j.data.phase;
+      if (state === lastState) { if (++stale >= 45) throw new Error('freeze function: job stalled'); }
+      else { lastState = state; stale = 0; }
+    }
+    throw new Error('freeze still running server-side — reopen this dialog later to check');
+  }
+  // server first, ONE server retry on a stall (the edge runtime culls young workers — a fresh
+  // POST lands on a warm survivor), then the in-tab snapshot() as the fallback. Auth refusals
+  // (401/403) do NOT fall back — the tab would hit the same wall slower.
+  function freezeVia(datasetId, ownerLayer, meta, say) {
+    return serverFreeze(datasetId, say).catch(function (e1) {
+      if (!/job stalled/.test(e1.message || '')) throw e1;
+      say('Freeze worker stalled — retrying…');
+      return serverFreeze(datasetId, say);
+    }).catch(function (e) {
+      if (/: 401|: 403/.test(e.message || '')) throw e;
+      say('Server freeze unavailable — freezing in this tab…');
+      return snapshot(ownerLayer, datasetId, meta, say);
+    });
+  }
+
   // register + freeze, with progress reported to a caller-supplied line
   function registerAndFreeze(layerDbId, meta, say, fork) {
     say = say || function () {};
@@ -401,7 +472,7 @@
       return db.from('datasets').select('origin_layer_id').eq('id', id).single().then(function (o) {
         return (o.data && o.data.origin_layer_id) || layerDbId;
       }).then(function (ownerLayer) {
-      return snapshot(ownerLayer, id, meta, say).then(function (s) {
+      return freezeVia(id, ownerLayer, meta, say).then(function (s) {
         return { id: id, snapshot: s };
       }).catch(function (e) {
         // the registration itself succeeded — say so rather than implying nothing happened
@@ -474,7 +545,7 @@
         // paged here is how NARN got a 724-byte zip of nothing (registerAndFreeze does the same)
         db.from('datasets').select('origin_layer_id').eq('id', existing.id).single()
           .then(function (o) { return (o.data && o.data.origin_layer_id) || lid; })
-          .then(function (ownerLayer) { return snapshot(ownerLayer, existing.id, form.read(), function (s) { prog.textContent = s; }); })
+          .then(function (ownerLayer) { return freezeVia(existing.id, ownerLayer, form.read(), function (s) { prog.textContent = s; }); })
           .then(function () { prog.textContent = 'Copy frozen.'; re.disabled = false; })
           .catch(function (e) { prog.textContent = ''; showErr(m, e.message); re.disabled = false; });
       });
