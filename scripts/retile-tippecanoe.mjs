@@ -135,6 +135,7 @@ function orderAttrKeys(keys) {   // msid FIRST, ms_* style columns LAST (editing
   const mid = keys.filter((k) => k !== "msid" && !style.includes(k));
   return msid.concat(mid).concat(style);
 }
+const exportRenames = {};   // source column -> artifact column, when a name collides case-insensitively
 function buildExportFC(rows, attrView) {
   const custKeys = [];
   for (const r of rows) if (r.custom_fields) for (const k of Object.keys(r.custom_fields)) if (!custKeys.includes(k)) custKeys.push(k);
@@ -149,12 +150,35 @@ function buildExportFC(rows, attrView) {
     if (r.end_date) raw.end_date = r.end_date;
     if (r.content_id != null) raw.content_id = r.content_id;
     if (r.image_url) raw.image_url = r.image_url;
-    if (r.custom_fields && typeof r.custom_fields === "object") for (const k of Object.keys(r.custom_fields)) if (!(k in raw)) raw[k] = r.custom_fields[k];
+    // CASE-INSENSITIVE uniqueness (8/15). GDAL/DuckDB fold column names case-insensitively, so a
+    // source column literally named END_DATE sitting beside the platform's own end_date is a
+    // DUPLICATE to them, and the GeoParquet step dies: 'Binder Error: table "st_read" has
+    // duplicate column name "END_DATE"'. It only appears AFTER dates are applied from those very
+    // columns, so a layer folds fine at import and fails on its first re-bake (owner's AtlasHCB,
+    // whose shapefile names its columns START_DATE/END_DATE — the normal case, not an exotic one).
+    // The platform keys keep their names (merges and tables read them); a colliding SOURCE key is
+    // carried under a suffix so nothing is dropped. The database and the attribute sidecar keep
+    // the original name either way — this rename exists only inside the fold artifacts.
+    if (r.custom_fields && typeof r.custom_fields === "object") {
+      const lower = new Set(Object.keys(raw).map((k) => k.toLowerCase()));
+      for (const k of Object.keys(r.custom_fields)) {
+        let key = k;
+        if (lower.has(k.toLowerCase())) {
+          let n = 1;
+          while (lower.has((k + "_src" + (n > 1 ? n : "")).toLowerCase())) n++;
+          key = k + "_src" + (n > 1 ? n : "");
+          if (!exportRenames[k]) exportRenames[k] = key;
+        }
+        if (!(key in raw)) { raw[key] = r.custom_fields[k]; lower.add(key.toLowerCase()); }
+      }
+    }
     const props = { feature_id: raw.feature_id };
     for (const k of ordKeys) if (k in raw && !(k in props)) props[k] = raw[k];
     for (const k of Object.keys(raw)) if (!(k in props)) props[k] = raw[k];
     return { type: "Feature", id: r.feature_id, geometry: r.geom, properties: props };
   });
+  const rn = Object.keys(exportRenames);
+  if (rn.length) console.log("export: renamed " + rn.length + " colliding source column(s) — " + rn.map((k) => k + " -> " + exportRenames[k]).join(", "));
   return { type: "FeatureCollection", features: feats };
 }
 
