@@ -265,24 +265,40 @@ try {
       custom_fields: importCustomFields(f.properties),
     }));
   } else {
-    console.log("Fetching features for layer " + LAYER_ID + " (keyset)…");
-    let lastFid = null, retried = false;
+    console.log("Fetching features for layer " + LAYER_ID + " (keyset, adaptive)…");
+    // ADAPTIVE PAGES (8/15). A fixed 1000-row page assumes rows are small. The owner's AtlasHCB
+    // layer is 220 rows carrying 9.3M vertices — ~1.7 MB of JSON PER ROW — so the very first page
+    // asked Postgres for the entire 370 MB layer in one statement and died on the timeout:
+    // "row fetch failed at 0 … canceling statement due to statement timeout", after a 25-minute
+    // import that had otherwise succeeded. Shrink the bite and retry the SAME cursor (the browser's
+    // MSFetchRows has done this since 8/13); a single row is always small enough to move.
+    // A layer the importer flagged as heavy-geometry starts SMALL rather than discovering the
+    // ceiling through three failed attempts (each of which costs 10-40s of the bake's clock).
+    let lastFid = null, size = rc0.heavyGeom ? 25 : 1000, shrinks = 0;
+    const tFetch = Date.now();
     for (;;) {
       const gt = lastFid != null ? `&feature_id=gt.${lastFid}` : "";
+      const tPage = Date.now();
       let batch;
       try {
-        batch = await (await rest(`/rest/v1/features?layer_id=eq.${LAYER_ID}${gt}&select=feature_id,geom,label,description,start_date,end_date,content_id,image_url,custom_fields&order=feature_id&limit=1000`)).json();
-        retried = false;
+        batch = await (await rest(`/rest/v1/features?layer_id=eq.${LAYER_ID}${gt}&select=feature_id,geom,label,description,start_date,end_date,content_id,image_url,custom_fields&order=feature_id&limit=${size}`)).json();
       } catch (e) {
-        if (retried) throw new Error("row fetch failed at " + rows.length + ": " + e.message);   // ABORT LOUDLY — a partial archive must never look like a bake
-        retried = true; console.warn("row fetch hiccup — retrying…"); await new Promise((rs) => setTimeout(rs, 2000)); continue;
+        if (size > 1) {
+          size = Math.max(1, Math.floor(size / 4)); shrinks++;
+          console.warn(`  page failed at ${nfmt(rows.length)} rows — retrying the same cursor at ${size} row(s)/page · ${String(e.message).slice(0, 90)}`);
+          await new Promise((rs) => setTimeout(rs, 2000));
+          continue;
+        }
+        throw new Error("row fetch failed at " + rows.length + " even at 1 row per page: " + e.message);   // ABORT LOUDLY — a partial archive must never look like a bake
       }
       if (!batch.length) break;
       rows.push(...batch);
       lastFid = batch[batch.length - 1].feature_id;
-      if (rows.length % 10000 < 1000) console.log("  " + nfmt(rows.length) + " so far…");
-      if (batch.length < 1000) break;
+      // per-page timings, so a slow bake can be READ rather than guessed at (owner 8/15)
+      console.log(`  +${batch.length} rows @${size}/page in ${((Date.now() - tPage) / 1000).toFixed(1)}s · ${nfmt(rows.length)} total · ${((Date.now() - tFetch) / 1000).toFixed(0)}s elapsed`);
+      if (batch.length < size) break;
     }
+    console.log(`rows fetched in ${((Date.now() - tFetch) / 1000).toFixed(0)}s${shrinks ? ` (page size shrank ${shrinks}× to ${size})` : ""}`);
   }
   if (!rows.length) throw new Error("layer has no features");
   console.log(nfmt(rows.length) + " features (" + MODE + ")");
