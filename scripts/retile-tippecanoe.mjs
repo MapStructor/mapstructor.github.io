@@ -209,6 +209,13 @@ try {
   const rc0 = layerRow.raw_config || {};
   let lblField = (rc0.labels && rc0.labels.field) || null;
   if (lblField === "label") lblField = null;
+  // The COLOUR-BY column has to ride into the tiles too — the paint match reads it from tile
+  // properties exactly like the label column does. The browser tiler has always carried it
+  // (tilegen.js sewUpLayer, `cbField`); this one never did, so any layer baked in the cloud
+  // came back with its colour column missing and categorical styling with nothing to match on
+  // (8/16, found while unblocking the owner's re-bake after they coloured this layer).
+  let cbField = (rc0.colorBy && rc0.colorBy.prop) || null;
+  if (cbField === "label" || cbField === lblField) cbField = null;
 
   /* ── 1. acquire rows (full attributes — artifacts need them; retile ignores extras) ── */
   let rows = [];
@@ -342,6 +349,7 @@ try {
     const props = { DayStart: day(r.start_date, 0), DayEnd: day(r.end_date, 99999999) };
     if (r.label != null && r.label !== "") props.label = r.label;
     if (lblField && r.custom_fields && r.custom_fields[lblField] != null && r.custom_fields[lblField] !== "") props[lblField] = String(r.custom_fields[lblField]);
+    if (cbField && r.custom_fields && r.custom_fields[cbField] != null && r.custom_fields[cbField] !== "") props[cbField] = String(r.custom_fields[cbField]);
     return { type: "Feature", id: r.feature_id, properties: props, geometry: r.geom };
   });
   writeFileSync("layer.geojson", JSON.stringify({ type: "FeatureCollection", features: skinny }));

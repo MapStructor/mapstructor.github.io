@@ -7645,7 +7645,11 @@
     // (geojson) layers need no bake — their config rebuilds DayStart/DayEnd from the DB on next load.
     try {
       var didBake = await rebakeLayerTiles(lid, 'Baking the dates into');
-      if (didBake) { msProgress('Done — dates baked into the tiles. Refresh the map to see the timeline filter this layer.'); setStatus('Dates baked into tiles'); }
+      // 8/16: a folded layer no longer refuses — rebakeLayerTiles dispatches the cloud itself and
+      // returns 'cloud'. That is NOT "done", so don't tell the user to refresh for tiles that are
+      // still baking; the dispatch already started the fold poll that updates the map when it lands.
+      if (didBake === 'cloud') { setStatus('Dates saved — tiles rebuilding in the cloud'); }
+      else if (didBake) { msProgress('Done — dates baked into the tiles. Refresh the map to see the timeline filter this layer.'); setStatus('Dates baked into tiles'); }
       // A FOLDED layer refuses a local re-bake — artifacts are truth there. But its rows are still
       // present and they now carry the dates, so those artifacts are merely STALE, and the user is
       // left with a timeline that cannot filter AND a table whose date columns are empty, with the
@@ -7687,7 +7691,31 @@
         var rt = await db.rpc('ms_layer_data_root', { p_layer: lid });
         rootOk = !!(rt && !rt.error && rt.data && rt.data !== lid);
       } catch (eRt) {}
-      if (!rootOk) { msProgress('“' + (L.name || 'layer') + '” is folded (R2-backed) — re-baking from rows is disabled.'); return false; }
+      // 8/16 — "I want to rebake now that I added coloring, and it's not letting me." Refusing was
+      // right when the BROWSER was the only tiler: a folded layer's rows are too heavy to re-bake
+      // in a tab. But the cloud tiler bakes folded layers from rows every day (mode fold-rows),
+      // and it now carries the colour-by column and the instant-scrub raster too — so the honest
+      // answer is not "disabled", it is "not here, over there". Dispatch it.
+      if (!rootOk) {
+        var nodeF = null;
+        try {
+          nodeF = (function find(arr) {
+            for (var i = 0; i < (arr || []).length; i++) {
+              var n = arr[i];
+              if (n.children) { var hit = find(n.children); if (hit) return hit; }
+              else if (slugToLayerDbId[n.id] === lid) return n;
+            }
+            return null;
+          })(typeof layers !== 'undefined' ? layers : []);
+        } catch (eN) {}
+        var sentR = false;
+        // reuse the importer's dispatch rather than a second copy of the same POST
+        try { sentR = await foldImportDispatch(lid, nodeF || { label: L.name }, { length: (L.raw_config && L.raw_config.tilesFeatureCount) || 0 }); } catch (eD) {}
+        if (!sentR) { msProgress('Cloud re-bake could not be started for “' + (L.name || 'layer') + '” — nothing changed, and the current tiles stay live.'); return false; }
+        if (nodeF) { nodeF.fold_state = 'folding'; pollFoldDone(nodeF, lid); }
+        msProgress('“' + (L.name || 'layer') + '” is re-baking in the cloud — tiles, the colour column and the instant-scrub raster. It takes several minutes, and the current tiles stay live until the new ones land.');
+        return 'cloud';
+      }
     }
     var isTiled = !!(L.raw_config && L.raw_config.pmtiles);
     if (!isTiled && !(allowConvert && L.source_type === 'geojson-supabase')) return false;
@@ -7706,7 +7734,8 @@
     if (btn) { btn.disabled = true; btn.textContent = '🧩 Baking…'; }
     try {
       var did = await rebakeLayerTiles(lid, 'Baking', true);   // allowConvert: live layers first-time bake here
-      if (did === 'converted') { msProgress('Done — “' + ((node && node.label) || 'layer') + '” baked to tiles. Refresh the page to load the tiled layer.'); setStatus('Baked to tiles'); }
+      if (did === 'cloud') { setStatus('Re-baking in the cloud'); }   // rebakeLayerTiles already said what is happening and why it takes minutes
+      else if (did === 'converted') { msProgress('Done — “' + ((node && node.label) || 'layer') + '” baked to tiles. Refresh the page to load the tiled layer.'); setStatus('Baked to tiles'); }
       else if (did) { msProgress('Done — “' + ((node && node.label) || 'layer') + '” re-baked. Refresh the map to see the updated tiles.'); setStatus('Tiles re-baked'); }
       else { setStatus('Nothing to bake for this layer'); }
     } catch (e) { console.warn('rebake failed', e); msProgress('Bake failed: ' + ((e && e.message) || e)); setStatus('Bake failed'); }
