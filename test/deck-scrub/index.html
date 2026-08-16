@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>deck.gl scrub lab — AtlasHCB</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; font: 13px system-ui, sans-serif; }
+  #wrap { position: absolute; inset: 0; }
+  #hud { position: absolute; top: 10px; left: 10px; z-index: 9; background: rgba(0,0,0,.75); color: #eee;
+         padding: 10px 14px; border-radius: 8px; min-width: 300px; }
+  #hud b { color: #7fd4ff; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 9; background: rgba(0,0,0,.8);
+         padding: 12px 18px; display: flex; gap: 14px; align-items: center; }
+  #day { flex: 1; }
+  #date { color: #fff; font-size: 22px; min-width: 130px; text-align: right; font-variant-numeric: tabular-nums; }
+  button { background: #2a6df4; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+</style>
+<script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js"></script>
+</head>
+<body>
+<div id="wrap"></div>
+<div id="hud">loading…</div>
+<div id="bar">
+  <button id="anim">▶ animate</button>
+  <input id="day" type="range">
+  <div id="date"></div>
+</div>
+<script>
+/* deck.gl DataFilterExtension as a NO-RASTER instant-scrub path — the isolated proof/kill test.
+   Geometry uploads to the GPU ONCE; every slider tick changes only a uniform (filterRange), so
+   per-tick cost should be ~0 and independent of vertex count.
+   FLOAT32 TRAP handled up front: YYYYMMDD ints (20,260,816) exceed fp32's 2^24 integer ceiling —
+   attributes would round by ±2 days. Dates rebase to a month-granular int, (y-1500)*372+m*31+d,
+   max ~2×10^5, exact in fp32. */
+var GEOJSON = "/FILES_DELETE_ANYTIME/US_HistStateTerr_simplified.geojson";
+var d2n = function (iso) {   // ISO date → rebased fp32-exact day number
+  var y = +iso.slice(0, 4), m = +iso.slice(5, 7), d = +iso.slice(8, 10);
+  return (y - 1500) * 372 + (m - 1) * 31 + (d - 1);
+};
+var n2label = function (n) {
+  var y = 1500 + Math.floor(n / 372), r = n % 372, m = Math.floor(r / 31) + 1, d = (r % 31) + 1;
+  return String(d).padStart(2, "0") + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m - 1] + " " + y;
+};
+var PALETTE = { "State": [42,109,244], "Territory": [232,146,42], "Unorganized Territory": [150,110,190],
+                "Military Government": [200,60,80], "Other": [90,170,110] };
+var colorOf = function (f) { return PALETTE[(f.properties || {}).TERR_TYPE] || PALETTE.Other; };
+
+var deckgl = null, layerData = null, MIN = 0, MAX = 0;
+var stats = { loadMs: 0, firstFrameMs: 0, ticks: [], frames: 0, frameT0: 0 };
+
+function makeLayer(day) {
+  return new deck.GeoJsonLayer({
+    id: "hcb",
+    data: layerData,
+    filled: true, stroked: true,
+    getFillColor: function (f) { return colorOf(f).concat(150); },
+    getLineColor: function (f) { return colorOf(f); },
+    getLineWidth: 1, lineWidthUnits: "pixels",
+    getFilterValue: function (f) { return [f.properties.__s, f.properties.__e]; },
+    filterRange: [[-1, day], [day, 1e6]],   // start ≤ day AND end ≥ day
+    extensions: [new deck.DataFilterExtension({ filterSize: 2 })],
+    updateTriggers: {},   // geometry/attributes never rebuild — only the filterRange uniform moves
+    pickable: false
+  });
+}
+
+function setDay(day) {
+  var t0 = performance.now();
+  deckgl.setProps({ layers: [makeLayer(day)] });
+  var ms = performance.now() - t0;
+  stats.ticks.push(ms);
+  if (stats.ticks.length > 400) stats.ticks.shift();
+  document.getElementById("date").textContent = n2label(day);
+  window.__lab.day = day;
+  window.__lab.lastTickMs = ms;
+  hud();
+}
+
+function hud() {
+  var t = stats.ticks.slice(-120);
+  var med = t.length ? t.slice().sort(function (a, b) { return a - b; })[Math.floor(t.length / 2)] : 0;
+  var expected = 0;
+  var day = window.__lab.day;
+  for (var i = 0; i < layerData.features.length; i++) {
+    var p = layerData.features[i].properties;
+    if (p.__s <= day && p.__e >= day) expected++;
+  }
+  window.__lab.expected = expected;
+  document.getElementById("hud").innerHTML =
+    "<b>deck.gl DataFilterExtension lab</b><br>" +
+    "220 polygons · 1.48M vertices · GPU-filtered<br>" +
+    "load+parse: <b>" + stats.loadMs.toFixed(0) + " ms</b> · first frame: <b>" + stats.firstFrameMs.toFixed(0) + " ms</b><br>" +
+    "setProps per tick (median of last 120): <b>" + med.toFixed(2) + " ms</b><br>" +
+    "fps while animating: <b>" + (window.__lab.fps || "—") + "</b><br>" +
+    "features passing filter now: <b>" + expected + "</b>";
+}
+
+window.__lab = { ready: false, day: 0, ticks: stats.ticks };
+
+var t0 = performance.now();
+fetch(GEOJSON).then(function (r) { return r.json(); }).then(function (j) {
+  j.features.forEach(function (f) {
+    f.properties.__s = d2n(f.properties.START_DATE);
+    f.properties.__e = d2n(f.properties.END_DATE);
+  });
+  layerData = j;
+  stats.loadMs = performance.now() - t0;
+  MIN = Math.min.apply(null, j.features.map(function (f) { return f.properties.__s; }));
+  MAX = Math.max.apply(null, j.features.map(function (f) { return f.properties.__e; }));
+  var slider = document.getElementById("day");
+  slider.min = MIN; slider.max = MAX; slider.value = MIN + Math.round((MAX - MIN) * 0.4);
+  var tf = performance.now();
+  deckgl = new deck.DeckGL({
+    container: "wrap",
+    views: new deck.MapView({ repeat: false }),
+    initialViewState: { longitude: -96.7, latitude: 37.7, zoom: 3.9 },
+    controller: true,
+    layers: [],
+    onAfterRender: function () {
+      if (!stats.firstFrameMs) { stats.firstFrameMs = performance.now() - tf; window.__lab.ready = true; }
+      if (stats.frameT0) stats.frames++;
+    }
+  });
+  window.__lab.deck = deckgl;
+  setDay(+slider.value);
+  slider.addEventListener("input", function () { setDay(+slider.value); });
+
+  // animate: sweep the whole range and report real fps (frames actually rendered / wall time)
+  var animOn = false, animReq = 0;
+  document.getElementById("anim").addEventListener("click", function () {
+    animOn = !animOn;
+    this.textContent = animOn ? "⏸ stop" : "▶ animate";
+    if (!animOn) { cancelAnimationFrame(animReq); stats.frameT0 = 0; return; }
+    var d = +slider.value, step = Math.max(1, Math.round((MAX - MIN) / 900));
+    stats.frames = 0; stats.frameT0 = performance.now();
+    (function tick() {
+      if (!animOn) return;
+      d += step; if (d > MAX) d = MIN;
+      slider.value = d; setDay(d);
+      var el = (performance.now() - stats.frameT0) / 1000;
+      if (el > 0.5) window.__lab.fps = (stats.frames / el).toFixed(1);
+      animReq = requestAnimationFrame(tick);
+    })();
+  });
+  window.__lab.setDay = setDay;
+  window.__lab.range = [MIN, MAX];
+});
+</script>
+</body>
+</html>
