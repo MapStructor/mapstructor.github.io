@@ -474,6 +474,10 @@ try {
       const baked = await bakeScrubRaster({
         projectId: PROJECT_ID, layerId: LAYER_ID, geojsonPath: "layer.geojson",
         geomKind: layerRow.type, tilegenPath: "platform/tilegen.js",
+        // the raster's PALETTE comes from this row — layer colour + colorBy prop/mapping. Without
+        // it the bake silently paints every shape one colour (8/16). The skinny FC already carries
+        // the colour column (cbField above), so each feature can find its own category.
+        layerRow: { color: layerRow.color || null, raw_config: { colorBy: rc0.colorBy || null } },
       });
       if (baked && baked.pngs.length) {
         for (const png of baked.pngs) {

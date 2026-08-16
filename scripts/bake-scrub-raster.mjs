@@ -90,7 +90,7 @@ function startSink(geojsonPath, outDir) {
  * @returns {Promise<{cfg:object, pngs:Array<{storagePath:string,file:string,bytes:number}>}|null>}
  *          null when the layer is legitimately unfit for a raster (caller keeps vector scrub).
  */
-export async function bakeScrubRaster({ projectId, layerId, geojsonPath, geomKind, tilegenPath, outDir = "scrub-raster", log = console.log }) {
+export async function bakeScrubRaster({ projectId, layerId, geojsonPath, geomKind, tilegenPath, layerRow = null, outDir = "scrub-raster", log = console.log }) {
   let puppeteer;
   try { puppeteer = require("puppeteer-core"); }
   catch (e) { log("scrub raster skipped — puppeteer-core is not installed on this runner"); return null; }
@@ -121,14 +121,21 @@ export async function bakeScrubRaster({ projectId, layerId, geojsonPath, geomKin
 
     // A silent ten-minute step reads like a hang in a CI log — say what is happening while it works.
     beat = setInterval(() => log(`  … raster bake running ${Math.round((Date.now() - t0) / 1000)}s (${sink.pngs.length} images so far)`), 60000);
-    const result = await page.evaluate(async (port, projectId, layerId, geomKind) => {
+    const result = await page.evaluate(async (port, projectId, layerId, geomKind, layerRow) => {
       if (!window.MSTileGen || !window.MSTileGen.bakeYearsRaster) return { error: "MSTileGen did not load" };
       const fc = await (await fetch("/layer.geojson")).json();
       // tilegen's OWN fitness rule — never a second copy of it here
       const why = window.MSTileGen.rasterUnfitReason ? window.MSTileGen.rasterUnfitReason(geomKind, fc) : null;
       if (why) return { unfit: why, features: (fc.features || []).length };
-      // stub storage: every PNG goes to the loopback sink, so Node owns the real upload
+      // The stub db must answer MORE than storage. bakeYearsRaster reads the layer row for its
+      // PALETTE — `db.from("layers").select("color, raw_config")` gives it the layer colour and
+      // the colorBy prop+mapping, and every feature is then painted by its own category. A stub
+      // that only did uploads made that call throw; the catch around it falls back to a SINGLE
+      // colour, so the scrub raster came out uniform blue while the vectors underneath were
+      // correctly coloured — "at rest it's coloured, press the knob and it all turns blue"
+      // (owner 8/16). My own gate output said `1 colours` and I did not read it.
       const db = {
+        from: () => ({ select: () => ({ eq: () => ({ single: async () => ({ data: layerRow || null, error: layerRow ? null : { message: "no layer row supplied" } }) }) }) }),
         storage: {
           from: () => ({
             upload: async (path, blob) => {
@@ -145,8 +152,9 @@ export async function bakeScrubRaster({ projectId, layerId, geojsonPath, geomKin
       } catch (e) {
         return { error: String((e && e.message) || e) };
       }
-    }, sink.port, projectId, layerId, geomKind);
+    }, sink.port, projectId, layerId, geomKind, layerRow);
     clearInterval(beat);
+    if (result.cfg) log(`  palette: ${(result.cfg.palette || []).length} colour(s)` + ((result.cfg.palette || []).length < 2 ? "  ← ONE colour means the category mapping did not reach the raster" : ""));
 
     if (result.unfit) { log(`scrub raster skipped — ${result.unfit}`); return null; }
     if (result.error) throw new Error(result.error);
