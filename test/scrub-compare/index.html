@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Timeline scrub — 4-way comparison</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d0d12; font: 13px system-ui, sans-serif; color: #eee; overflow: hidden; }
+  #grid { position: absolute; inset: 0 0 64px 0; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 4px; padding: 4px; box-sizing: border-box; }
+  .pane { position: relative; background: #16161d; border-radius: 6px; overflow: hidden; }
+  .pane .map { position: absolute; inset: 0; }
+  .pane h2 { position: absolute; z-index: 5; top: 6px; left: 10px; margin: 0; font-size: 14px; color: #7fd4ff; text-shadow: 0 1px 3px #000; }
+  .pane .stat { position: absolute; z-index: 5; bottom: 6px; left: 10px; right: 10px; font-size: 12px; color: #ccc; text-shadow: 0 1px 3px #000; white-space: pre-line; }
+  .pane .na { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #888; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; background: #000; display: flex; gap: 12px; align-items: center; padding: 0 16px; box-sizing: border-box; }
+  #day { flex: 1; }
+  #date { font-size: 22px; min-width: 132px; text-align: right; font-variant-numeric: tabular-nums; }
+  button, select { background: #2a6df4; color: #fff; border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; font-size: 13px; }
+  select { background: #333; }
+  canvas.rc { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+</style>
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js"></script>
+<script src="../mapbox-token.js"></script>
+<script>
+  // belt-and-braces: if the token file failed to load, fall back to the site token (public pk.)
+  if (!window.mapboxgl.accessToken) mapboxgl.accessToken = (typeof mapboxToken !== "undefined") ? mapboxToken : "pk.eyJ1Ijoibml0dHlqZWUiLCJhIjoiY21tcGlyeWt0MHExYzJ5b2VqcGJhdDRieSJ9.Ai9ymb2G5htA_2sUSB2GPg";
+</script>
+</head>
+<body>
+<div id="grid">
+  <div class="pane"><h2>Mapbox GL v3.1.2 (current engine)</h2><div id="m-mapbox" class="map"></div><div class="stat" id="s-mapbox"></div></div>
+  <div class="pane"><h2>MapLibre GL v4.7.1</h2><div id="m-maplibre" class="map"></div><div class="stat" id="s-maplibre"></div></div>
+  <div class="pane"><h2>deck.gl 8.9 · DataFilterExtension</h2><div id="m-deck" class="map"></div><div class="stat" id="s-deck"></div></div>
+  <div class="pane"><h2>Baked raster (CPU decode of the real bake)</h2><canvas id="m-raster" class="rc"></canvas><div class="na" id="raster-na" style="display:none">no baked raster exists for this dataset</div><div class="stat" id="s-raster"></div></div>
+</div>
+<div id="bar">
+  <select id="dataset"><option value="atlas">US Atlas (220 polys · 1.48M verts)</option><option value="ames">Ames Buildings (18.7k polys · 172k verts)</option></select>
+  <button id="anim">▶ animate</button>
+  <button id="step">⏱ step test</button>
+  <input id="day" type="range">
+  <div id="date"></div>
+</div>
+<script>
+/* FOUR renderers, ONE slider, TWO real datasets. The slider thumb must track the cursor exactly:
+   the input handler only records the target value; a rAF loop hands the latest value to each pane
+   once per frame. Every pane counts its actual renders/sec while animating, and the step test
+   measures full settle latency (change date → engine idle) per pane. */
+var DATASETS = {
+  atlas: { url: "/FILES_DELETE_ANYTIME/US_HistStateTerr_simplified.geojson",
+           view: { longitude: -96.7, latitude: 37.7, zoom: 3.4 },
+           raster: { url: "https://eqpxlwbjqiwfjlsuapvu.supabase.co/storage/v1/object/public/tiles/2c1863c4-166f-43c4-90ed-e2c71bd11641/c2c9dc8e-92a7-4f47-840b-1b7e1f33cff2.years2048.png",
+                     lut: "https://eqpxlwbjqiwfjlsuapvu.supabase.co/storage/v1/object/public/tiles/2c1863c4-166f-43c4-90ed-e2c71bd11641/c2c9dc8e-92a7-4f47-840b-1b7e1f33cff2.yearslut.png",
+                     yearBase: 1781, bounds: [-179.147, 18.911, -66.949, 71.390],
+                     palette: ["#4a9eff","#4363d8","#e6194b","#3cb44b","#911eb4","#f58231"] },
+           colorProp: "TERR_TYPE" },
+  ames:  { url: "/FILES_DELETE_ANYTIME/ames_buildings.geojson",
+           view: { longitude: -93.632, latitude: 42.025, zoom: 12.3 },
+           raster: null, colorProp: null }
+};
+var PAL = { "State": [42,109,244], "Territory": [232,146,42], "Unorganized Territory": [150,110,190], "Other": [90,170,110] };
+var d2n = function (y, m, d) { return (y - 1500) * 372 + (m - 1) * 31 + (d - 1); };
+var iso2n = function (iso) { return d2n(+iso.slice(0, 4), +iso.slice(5, 7), +iso.slice(8, 10)); };
+var ymd2n = function (n) { n = +n; if (!n) return null; var y = Math.floor(n / 10000); if (y > 2200) y = 2200; return d2n(y, Math.floor(n / 100) % 100 || 1, n % 100 || 1); };
+var n2label = function (n) {
+  var y = 1500 + Math.floor(n / 372), r = n % 372, m = Math.floor(r / 31) + 1, dd = (r % 31) + 1;
+  return String(dd).padStart(2, "0") + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m - 1] + " " + y;
+};
+var colorOf = function (f, prop) { return (prop && PAL[f.properties[prop]]) || PAL.Other; };
+var EMPTY = { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#16161d" } }] };
+var filterFor = function (day) { return ["all", ["<=", ["get", "__s"], day], [">=", ["get", "__e"], day]]; };
+
+var panes = {};   // name → {apply(day), stats:{ticks:[],renders:0}, settle(day)→Promise(ms)}
+function statLine(name, extra) {
+  var st = panes[name].stats, t = st.ticks.slice(-120).sort(function (a, b) { return a - b; });
+  var med = t.length ? t[Math.floor(t.length / 2)] : 0;
+  document.getElementById("s-" + name).textContent =
+    "main-thread cost/update: " + med.toFixed(2) + " ms median" +
+    (st.rps != null ? "\npage fps while animating: " + st.rps : "") +
+    (st.settle != null ? "\nsettle latency (step test): " + st.settle + " ms" : "") + (extra || "");
+}
+
+var mbMap = null, mlMap = null, deckgl = null, rasterCtx = null, rasterData = null, rasterCfg = null;
+var data = null, MIN = 0, MAX = 0, colorProp = null;
+
+function gjStyleAdd(map, gj, prop) {
+  map.addSource("d", { type: "geojson", data: gj });
+  var mc = ["match", ["get", prop || "___"], "State", "#2a6df4", "Territory", "#e89234", "Unorganized Territory", "#966ebe", "#5aaa6e"];
+  map.addLayer({ id: "f", type: "fill", source: "d", paint: { "fill-color": prop ? mc : "#5aaa6e", "fill-opacity": 0.6 } });
+  map.addLayer({ id: "l", type: "line", source: "d", paint: { "line-color": prop ? mc : "#5aaa6e", "line-width": 1 } });
+}
+
+function makeDeckLayer(day) {
+  return new deck.GeoJsonLayer({
+    id: "d", data: data, filled: true, stroked: true,
+    getFillColor: function (f) { return colorOf(f, colorProp).concat(150); },
+    getLineColor: function (f) { return colorOf(f, colorProp); },
+    getLineWidth: 1, lineWidthUnits: "pixels",
+    getFilterValue: function (f) { return [f.properties.__s, f.properties.__e]; },
+    filterRange: [[-1, day], [day, 1e7]],
+    extensions: [new deck.DataFilterExtension({ filterSize: 2 })], pickable: false
+  });
+}
+
+/* INDEXED decode — the real platform format (tilegen.js): fill pixel RGB = 24-bit feature id,
+   LUT texel for stretch c of id i sits at x=(i%256)*8+c, y=floor(i/256), holding
+   [startByte, endByte, startMonth<<4|endMonth, 255-colourIdx]; startByte 1 = dateless-forever,
+   end 255 = open-ended, alpha 0 = stop. Per tick: evaluate the ~7k ids once into an RGBA table,
+   then map the 3.1M pixels through it. The platform does the same decode in a GPU shader. */
+var _ids = null, _lut = null, _lutW = 0;
+function rasterPaint(day) {
+  if (!_ids || !_lut) return;
+  var t0 = performance.now();
+  var y = 1500 + Math.floor(day / 372), m = Math.floor((day % 372) / 31);
+  var yb = rasterCfg.yearBase, pal = rasterCtx._pal;
+  var maxId = rasterCtx._maxId, table = rasterCtx._table || (rasterCtx._table = new Uint32Array(maxId + 1));
+  for (var id = 1; id <= maxId; id++) {
+    table[id] = 0;
+    var row = Math.floor(id / 256), colBase = (id % 256) * 8;
+    for (var c = 0; c < 8; c++) {
+      var i4 = (row * _lutW + colBase + c) * 4;
+      var a = _lut[i4 + 3];
+      if (!a) break;   // stop marker
+      var s = _lut[i4], e = _lut[i4 + 1], mm = _lut[i4 + 2];
+      var sM = mm >> 4, eM = mm & 15;
+      var yy = y - yb;
+      var onS = s === 1 || yy > s || (yy === s && m >= sM);
+      var onE = e === 255 || yy < e || (yy === e && m <= eM);
+      if (onS && onE) {
+        var p = pal[(255 - a) % pal.length];
+        table[id] = (170 << 24) | (p[2] << 16) | (p[1] << 8) | p[0];   // ABGR for a Uint32 view
+        break;
+      }
+    }
+  }
+  var out = rasterCtx._out || (rasterCtx._out = rasterCtx.createImageData(rasterData.width, rasterData.height));
+  var o32 = rasterCtx._o32 || (rasterCtx._o32 = new Uint32Array(out.data.buffer));
+  for (var i = 0; i < _ids.length; i++) o32[i] = _ids[i] ? table[_ids[i]] : 0;
+  rasterCtx.putImageData(out, 0, 0);
+  panes.raster.stats.renders++;
+  return performance.now() - t0;
+}
+
+function build(dsKey) {
+  var DS = DATASETS[dsKey];
+  colorProp = DS.colorProp;
+  try { if (mbMap) mbMap.remove(); } catch (e) {} mbMap = null;
+  try { if (mlMap) mlMap.remove(); } catch (e) {} mlMap = null;
+  try { if (deckgl) deckgl.finalize(); } catch (e) {} deckgl = null;
+  rasterData = null; _ids = null; _lut = null;
+  ["m-mapbox", "m-maplibre", "m-deck"].forEach(function (id) { document.getElementById(id).innerHTML = ""; });
+  panes = {
+    mapbox: { stats: { ticks: [] } }, maplibre: { stats: { ticks: [] } },
+    deck: { stats: { ticks: [] } }, raster: { stats: { ticks: [] } }
+  };
+  fetch(DS.url).then(function (r) { return r.json(); }).then(function (j) {
+    j.features.forEach(function (f) {
+      var p = f.properties;
+      if (p.START_DATE) { p.__s = iso2n(p.START_DATE); p.__e = iso2n(p.END_DATE); }
+      else { p.__s = ymd2n(p.DayStart) == null ? -1 : ymd2n(p.DayStart); p.__e = ymd2n(p.DayEnd) == null ? 1e7 : ymd2n(p.DayEnd); }
+    });
+    data = j;
+    MIN = Infinity; MAX = -Infinity;
+    j.features.forEach(function (f) { if (f.properties.__s > 0) MIN = Math.min(MIN, f.properties.__s); if (f.properties.__e < 1e6) MAX = Math.max(MAX, f.properties.__e); });
+    MAX = Math.min(MAX, d2n(2027, 1, 1));   // open-ended sentinels (DayEnd 9999…) must not stretch the slider past the present
+    var slider = document.getElementById("day");
+    slider.min = MIN; slider.max = MAX; slider.value = MIN + Math.round((MAX - MIN) * 0.4);
+
+    // mapbox
+    mbMap = new mapboxgl.Map({ container: "m-mapbox", style: EMPTY, center: [DS.view.longitude, DS.view.latitude], zoom: DS.view.zoom, interactive: false, attributionControl: false });
+    mbMap.on("load", function () { gjStyleAdd(mbMap, data, colorProp); panes.mapbox.ready = true; });
+    mbMap.on("render", function () { panes.mapbox.stats.renders = (panes.mapbox.stats.renders || 0) + 1; });
+    panes.mapbox.apply = function (day) { mbMap.setFilter("f", filterFor(day)); mbMap.setFilter("l", filterFor(day)); };
+    panes.mapbox.settle = function () { return new Promise(function (res) { mbMap.once("idle", res); }); };
+
+    // maplibre
+    mlMap = new maplibregl.Map({ container: "m-maplibre", style: EMPTY, center: [DS.view.longitude, DS.view.latitude], zoom: DS.view.zoom, interactive: false, attributionControl: false });
+    mlMap.on("load", function () { gjStyleAdd(mlMap, data, colorProp); panes.maplibre.ready = true; });
+    mlMap.on("render", function () { panes.maplibre.stats.renders = (panes.maplibre.stats.renders || 0) + 1; });
+    panes.maplibre.apply = function (day) { mlMap.setFilter("f", filterFor(day)); mlMap.setFilter("l", filterFor(day)); };
+    panes.maplibre.settle = function () { return new Promise(function (res) { mlMap.once("idle", res); }); };
+
+    // deck
+    deckgl = new deck.DeckGL({ container: "m-deck", map: false, views: new deck.MapView({ repeat: false }), initialViewState: DS.view, controller: false, useDevicePixels: false,
+      layers: [], onAfterRender: function () { panes.deck.stats.renders = (panes.deck.stats.renders || 0) + 1; panes.deck.ready = true; if (panes.deck._res) { panes.deck._res(); panes.deck._res = null; } } });
+    panes.deck.apply = function (day) { deckgl.setProps({ layers: [makeDeckLayer(day)] }); };
+    panes.deck.settle = function () { return new Promise(function (res) { panes.deck._res = res; }); };
+
+    // raster (atlas only) — decodes the REAL platform bake on CPU; the platform itself does this
+    // decode on the GPU (instant). Year-granular here: the month nibbles are ignored.
+    var rc = document.getElementById("m-raster"), na = document.getElementById("raster-na");
+    if (DS.raster) {
+      na.style.display = "none"; rc.style.display = "";
+      // cache-bust like the platform does (ensureTex appends ?v=<bakedAt>) so a re-bake is
+      // picked up immediately instead of waiting out the storage CDN's max-age
+      var loadPixels = function (url) {
+        return new Promise(function (res, rej) {
+          var im2 = new Image();
+          im2.crossOrigin = "anonymous";
+          im2.onload = function () {
+            var cv = document.createElement("canvas"); cv.width = im2.width; cv.height = im2.height;
+            var cx = cv.getContext("2d", { willReadFrequently: true });
+            cx.drawImage(im2, 0, 0);
+            res(cx.getImageData(0, 0, im2.width, im2.height));
+          };
+          im2.onerror = rej;
+          im2.src = url + "?v=" + Date.now();
+        });
+      };
+      Promise.all([loadPixels(DS.raster.url), loadPixels(DS.raster.lut)]).then(function (r) {
+        rasterData = r[0];
+        rc.width = rasterData.width; rc.height = rasterData.height;
+        rasterCtx = rc.getContext("2d");
+        rasterCfg = DS.raster;
+        rasterCtx._pal = DS.raster.palette.map(function (h) { var n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; });
+        // fill image → per-pixel 24-bit id; LUT → raw bytes
+        var d = rasterData.data, ids = new Uint32Array(rasterData.width * rasterData.height), maxId = 0;
+        for (var i = 0, px = 0; i < d.length; i += 4, px++) {
+          var id = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+          ids[px] = id;
+          if (id > maxId) maxId = id;
+        }
+        _ids = ids; rasterCtx._maxId = maxId;
+        _lut = r[1].data; _lutW = r[1].width;
+        panes.raster.ready = true;
+        rasterPaint(+slider.value);
+      }).catch(function () { na.style.display = ""; rc.style.display = "none"; });
+      panes.raster.apply = function (day) { return rasterPaint(day); };
+      panes.raster.settle = function () { return Promise.resolve(); };   // synchronous
+    } else {
+      rc.style.display = "none"; na.style.display = "";
+      panes.raster.apply = function () {}; panes.raster.settle = function () { return Promise.resolve(); };
+      document.getElementById("s-raster").textContent = "";
+    }
+    requestDay(+slider.value);
+  });
+}
+
+/* one rAF loop applies the LATEST value to every pane — input handler stays empty-handed */
+var _pending = null;
+function requestDay(day) { _pending = day; document.getElementById("date").textContent = n2label(day); }
+(function loop() {
+  if (_pending != null) {
+    var day = _pending; _pending = null;
+    Object.keys(panes).forEach(function (k) {
+      var P = panes[k]; if (!P.ready || !P.apply) return;
+      try {   // one pane's bad moment (style mid-load on a dataset switch) must not kill the loop
+        var t0 = performance.now();
+        P.apply(day);
+        P.stats.ticks.push(performance.now() - t0);
+        if (P.stats.ticks.length > 400) P.stats.ticks.shift();
+      } catch (e) {}
+    });
+  }
+  requestAnimationFrame(loop);
+})();
+setInterval(function () { Object.keys(panes).forEach(function (k) { if (panes[k].apply) statLine(k); }); }, 600);
+
+document.getElementById("day").addEventListener("input", function () { requestDay(+this.value); });
+document.getElementById("dataset").addEventListener("change", function () { build(this.value); });
+
+/* animate: sweep the range; the honest smoothness number is the PAGE fps — all four panes share
+   the main thread, so one rAF-per-second count is what the user's hand actually feels */
+var animOn = false;
+document.getElementById("anim").addEventListener("click", function () {
+  animOn = !animOn;
+  this.textContent = animOn ? "⏸ stop" : "▶ animate";
+  if (!animOn) return;
+  var slider = document.getElementById("day"), d = +slider.value, step = Math.max(1, Math.round((MAX - MIN) / 700));
+  var frames = 0, t0 = performance.now();
+  (function tick() {
+    if (!animOn) return;
+    d += step; if (d > MAX) d = MIN;
+    slider.value = d; requestDay(d);
+    frames++;
+    var el = (performance.now() - t0) / 1000;
+    if (el > 1) {
+      var fps = (frames / el).toFixed(1);
+      Object.keys(panes).forEach(function (k) { panes[k].stats.rps = fps; });
+      window.__pageFps = fps;
+    }
+    requestAnimationFrame(tick);
+  })();
+});
+
+/* step test: one date jump per pane, measured to full settle (engine idle) — median of 5 */
+document.getElementById("step").addEventListener("click", async function () {
+  this.disabled = true;
+  var span = MAX - MIN;
+  for (var k of ["mapbox", "maplibre", "deck", "raster"]) {
+    var P = panes[k]; if (!P.ready || !P.settle) continue;
+    var times = [];
+    for (var i = 1; i <= 5; i++) {
+      var day = MIN + Math.round(span * (0.2 + 0.12 * i));
+      await new Promise(function (r) { setTimeout(r, 250); });
+      var t0 = performance.now();
+      P.apply(day);
+      await P.settle();
+      times.push(performance.now() - t0);
+    }
+    P.stats.settle = times.sort(function (a, b) { return a - b; })[2].toFixed(0);
+    statLine(k);
+  }
+  this.disabled = false;
+  window.__stepDone = true;
+});
+
+window.__cmp = { panes: function () { return panes; }, requestDay: requestDay, range: function () { return [MIN, MAX]; } };
+build("atlas");
+</script>
+</body>
+</html>

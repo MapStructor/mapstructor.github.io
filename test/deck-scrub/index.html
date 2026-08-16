@@ -64,17 +64,29 @@ function makeLayer(day) {
   });
 }
 
-function setDay(day) {
-  var t0 = performance.now();
-  deckgl.setProps({ layers: [makeLayer(day)] });
-  var ms = performance.now() - t0;
-  stats.ticks.push(ms);
-  if (stats.ticks.length > 400) stats.ticks.shift();
-  document.getElementById("date").textContent = n2label(day);
-  window.__lab.day = day;
-  window.__lab.lastTickMs = ms;
-  hud();
+/* RESPONSIVENESS (owner 8/16, "the slider does not move with my mouse"): the input handler must
+   do NOTHING synchronous — it only records the target; one rAF loop applies the latest value per
+   frame. The HUD repaints on a timer, never in the hot path. */
+var _pending = null;
+function requestDay(day) {
+  _pending = day;
+  document.getElementById("date").textContent = n2label(day);   // readout tracks the cursor exactly
 }
+(function applyLoop() {
+  if (_pending != null && deckgl) {
+    var day = _pending; _pending = null;
+    var t0 = performance.now();
+    deckgl.setProps({ layers: [makeLayer(day)] });
+    var ms = performance.now() - t0;
+    stats.ticks.push(ms);
+    if (stats.ticks.length > 400) stats.ticks.shift();
+    window.__lab.day = day;
+    window.__lab.lastTickMs = ms;
+  }
+  requestAnimationFrame(applyLoop);
+})();
+function setDay(day) { requestDay(day); }
+setInterval(function () { if (layerData) hud(); }, 500);
 
 function hud() {
   var t = stats.ticks.slice(-120);
@@ -115,6 +127,7 @@ fetch(GEOJSON).then(function (r) { return r.json(); }).then(function (j) {
     views: new deck.MapView({ repeat: false }),
     initialViewState: { longitude: -96.7, latitude: 37.7, zoom: 3.9 },
     controller: true,
+    useDevicePixels: false,   // render at CSS resolution — high-DPI screens quadruple the pixel bill
     layers: [],
     onAfterRender: function () {
       if (!stats.firstFrameMs) { stats.firstFrameMs = performance.now() - tf; window.__lab.ready = true; }
