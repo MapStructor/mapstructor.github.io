@@ -1126,9 +1126,38 @@
       refreshEditedOverlay(node);
     } catch (e) {}
   }
+  // A clicked TILE feature is clipped to its tile, so `clickEvt.features[0].geometry` is one
+  // fragment — highlighting from it lit a state up as a tile-shaped sliver that then "switches to
+  // the whole thing" when the real geometry lands (owner 8/16: "Not ideal"). Every OTHER fragment
+  // of the same feature is already on screen, so gather them all: within the viewport that IS the
+  // whole shape, it costs one query, and the swap to the stored geometry becomes invisible.
+  function renderedGeomFor(node, fid) {
+    var want = String(fid), polys = [], lines = [], pt = null;
+    var pairs = [[beforeMap, '-left'], [(typeof afterMap !== 'undefined' ? afterMap : null), '-right']];
+    for (var mi = 0; mi < pairs.length; mi++) {
+      var m = pairs[mi][0]; if (!m || !m.getLayer) continue;
+      var lid = node.id + pairs[mi][1];
+      if (!m.getLayer(lid)) continue;
+      var fs = [];
+      try { fs = m.queryRenderedFeatures({ layers: [lid] }) || []; } catch (e) { continue; }
+      for (var i = 0; i < fs.length; i++) {
+        var f = fs[i]; if (String(f.id) !== want || !f.geometry) continue;
+        var g = f.geometry;
+        if (g.type === 'Polygon') polys.push(g.coordinates);
+        else if (g.type === 'MultiPolygon') polys = polys.concat(g.coordinates);
+        else if (g.type === 'LineString') lines.push(g.coordinates);
+        else if (g.type === 'MultiLineString') lines = lines.concat(g.coordinates);
+        else if (!pt) pt = g;
+      }
+      if (polys.length || lines.length || pt) break;   // whichever map rendered it is enough
+    }
+    if (polys.length) return { type: 'MultiPolygon', coordinates: polys };
+    if (lines.length) return { type: 'MultiLineString', coordinates: lines };
+    return pt;
+  }
   async function enterEngineEdit(node, fid, clickEvt) {
     // cache the clicked geometry FIRST so the selection highlight the star-add triggers paints instantly
-    try { if (clickEvt && clickEvt.features && clickEvt.features[0] && clickEvt.features[0].geometry) _selGeom[String(fid)] = clickEvt.features[0].geometry; } catch (eG) {}
+    try { var g0 = renderedGeomFor(node, fid) || (clickEvt && clickEvt.features && clickEvt.features[0] && clickEvt.features[0].geometry); if (g0) _selGeom[String(fid)] = g0; } catch (eG) {}
     // …and its days (skinny tiles + live sources both carry them), so the marker can follow the timeline
     try { var cp = clickEvt && clickEvt.features && clickEvt.features[0] && clickEvt.features[0].properties; if (cp && (cp.DayStart != null || cp.DayEnd != null)) _selDays[String(fid)] = [cp.DayStart != null ? +cp.DayStart : 0, cp.DayEnd != null ? +cp.DayEnd : 99999999]; } catch (eD) {}
     attrStarFromMap(node, fid);
