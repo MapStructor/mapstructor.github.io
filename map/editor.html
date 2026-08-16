@@ -112,11 +112,11 @@
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="../platform/auth.js?v=20260728a"></script>
-  <script src="../platform/veil.js?v=20260731a"></script>   <!-- pre-launch veil (item 23) â€” flag lives inside the file -->
+  <script src="../platform/veil.js?v=20260731a"></script>   <!-- pre-launch veil (item 23) Ã¢â‚¬â€ flag lives inside the file -->
     <script src="../platform/guard.js?v=20260731a"></script>   <!-- map-load meter + freeze (service guard) -->
     <script src="../platform/topbar.js?v=20260731a"></script>
-    <script src="../platform/bookmarks.js?v=20260811a"></script>   <!-- Map Portal: â˜… bookmark in the top bar (localStorage for anon, DB for real users) -->
-    <script src="../platform/portalAdd.js?v=20260811b"></script>   <!-- Map Portal: sidebar window â€” add a bookmarked/own map into this one (All/Linked/Instance per layer) -->
+    <script src="../platform/bookmarks.js?v=20260811a"></script>   <!-- Map Portal: Ã¢Ëœâ€¦ bookmark in the top bar (localStorage for anon, DB for real users) -->
+    <script src="../platform/portalAdd.js?v=20260811b"></script>   <!-- Map Portal: sidebar window Ã¢â‚¬â€ add a bookmarked/own map into this one (All/Linked/Instance per layer) -->
     <script src="../platform/overlay.js?v=20260806a"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
@@ -418,7 +418,7 @@
     <script src="../platform/renderRegistry.js?v=20260731a" onerror="void(0)"></script>
     <script src="../platform/projectLoader.js?v=20260807a" onerror="void(0)"></script>
     <script src="../platform/download.js?v=20260809a" onerror="void(0)"></script>   <!-- Download whole project (sidebar button) -->
-    <script src="../platform/rasterScrub.js?v=20260816c" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
+    <script src="../platform/rasterScrub.js?v=20260816d" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
     <script src="../platform/tables.js?v=20260731a" onerror="void(0)"></script>   <!-- Data tables + joins -->
     <script src="../platform/layerJson.js?v=20260813a" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
     <script src="../platform/queryWindow.js?v=20260813b" onerror="void(0)"></script>   <!-- Query & operations (merge lines / SQL / JS) -->
@@ -442,7 +442,7 @@
          already-rendered UI and never alters how the viewer renders.
          ------------------------------------------------------------------- -->
     <!-- cache-bust: editing.js changes often during dev; ?v=now forces a fresh load every reload (no stale code) -->
-    <!-- selection.js = the selection store (single writer of the selected-feature set) Ã¢â‚¬â€ must load BEFORE editing.js -->
+    <!-- selection.js = the selection store (single writer of the selected-feature set) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â must load BEFORE editing.js -->
     <script>document.write('<script src="../platform/selection.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
     <script>document.write('<script src="../platform/editing.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
 

@@ -77,6 +77,11 @@
       // drew for switched-off layers, all in fallback purple. The node itself carries the same
       // rasterYears config (raw_config spreads onto nodes) — match on that instead.
       if (cfg) {
+        // `hit` was UNDECLARED here (8/16, "scrubbing is not working"): the first read threw a
+        // ReferenceError the outer catch swallowed, so this whole fallback silently returned null
+        // for every copied layer — their rasters refused to draw AND their vectors never hid,
+        // leaving the picture frozen at the press-down date until release.
+        var hit = null;
         var want = cfgKey(cfg);
         if (want) (function walk2(a) {
           (a || []).forEach(function (n) {
