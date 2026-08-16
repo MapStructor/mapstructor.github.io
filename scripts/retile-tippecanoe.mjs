@@ -266,14 +266,23 @@ try {
       return row;
     });
     // delta rows (keyset) — only rows MARKED ms_foldsrc merge; anything else is left untouched
+    //
+    // FILTER SERVER-SIDE (8/16). This query used to say "only marked rows merge" in a comment and
+    // then fetch EVERY row of the layer WITH ITS GEOMETRY, doing the ms_foldsrc filtering in JS
+    // afterwards. On AtlasHCB that is ~370 MB of geometry in a single request to fetch two delta
+    // rows — it took the 1 GB instance down (Postgres restarted; runs #64 and #65 died on 520/521)
+    // and I mis-read the wreckage as an unrelated capacity problem. It is the SAME defect fixed in
+    // editing.js restoreFoldDeltas on 8/15 (71.4s → 61ms): ask the database for the rows you want.
+    // Page size drops to 200 as well — a delta row carries full geometry, so rows are the wrong unit.
     let lastD = null; const deltas = [];
     for (;;) {
       const gt = lastD != null ? `&feature_id=gt.${lastD}` : "";
-      const batch = await (await rest(`/rest/v1/features?layer_id=eq.${LAYER_ID}${gt}&select=feature_id,geom,label,description,start_date,end_date,content_id,image_url,custom_fields&order=feature_id&limit=1000`)).json();
+      const batch = await (await rest(`/rest/v1/features?layer_id=eq.${LAYER_ID}${gt}&custom_fields->>ms_foldsrc=not.is.null&select=feature_id,geom,label,description,start_date,end_date,content_id,image_url,custom_fields&order=feature_id&limit=200`)).json();
       if (!batch.length) break;
       deltas.push(...batch); lastD = batch[batch.length - 1].feature_id;
-      if (batch.length < 1000) break;
+      if (batch.length < 200) break;
     }
+    console.log(`merge: ${deltas.length} delta row(s) fetched (server-side ms_foldsrc filter)`);
     let applied = 0, orphans = 0;
     for (const d of deltas) {
       const src = d.custom_fields && d.custom_fields.ms_foldsrc;
