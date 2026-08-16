@@ -37,6 +37,7 @@
 
 import { execFileSync } from "node:child_process";
 import { writeFileSync, readFileSync, statSync } from "node:fs";
+import { bakeScrubRaster } from "./bake-scrub-raster.mjs";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://eqpxlwbjqiwfjlsuapvu.supabase.co";
 const KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -431,6 +432,37 @@ try {
   rc.tilesFeatureCount = rows.length;                                        // dirty-tracking stamps (7/21):
   rc.tilesMaxFid = rows.reduce((m, r) => (Number(r.feature_id) > m ? Number(r.feature_id) : m), 0) || null;   // without these Publish silently re-baked in-browser
   rc.tiler = "tippecanoe";
+
+  /* ── 4b. INSTANT-SCRUB RASTER (8/16) ────────────────────────────────────────
+     Without this the timeline drag falls back to a per-feature opacity expression re-evaluated
+     on every tick — the lag the owner hit on AtlasHCB. The raster is baked by driving the REAL
+     platform/tilegen.js headlessly (scripts/bake-scrub-raster.mjs) so the indexed format keeps
+     ONE definition shared with its only reader, platform/rasterScrub.js.
+     A failure here never fails the bake: no raster means the layer animates as a vector, which
+     is correct — and a WRONG raster is far worse than none (the loader never second-guesses one
+     that exists). SCRUB_RASTER=0 opts out. */
+  if ((process.env.SCRUB_RASTER || "1") !== "0") {
+    try {
+      const baked = await bakeScrubRaster({
+        projectId: PROJECT_ID, layerId: LAYER_ID, geojsonPath: "layer.geojson",
+        geomKind: layerRow.type, tilegenPath: "platform/tilegen.js",
+      });
+      if (baked && baked.pngs.length) {
+        for (const png of baked.pngs) {
+          const key = `tiles/${png.storagePath}`;
+          if (r2ok) r2del(key, false);                                    // delete-first: no stale shadow
+          await supaDual(png.storagePath, readFileSync(png.file), "image/png");
+          if (r2ok) r2put(key, png.file, "image/png", false);
+        }
+        rc.rasterYears = baked.cfg;
+        console.log("instant-scrub raster stamped — " + nfmt(baked.cfg.bytes || 0) + " B across " + baked.pngs.length + " images");
+      } else if (!baked) {
+        delete rc.rasterYears;   // unfit (points, or a span wider than the 255-year window) — clear any stale stamp
+      }
+    } catch (eRas) {
+      console.warn("scrub raster skipped: " + ((eRas && eRas.message) || eRas));
+    }
+  }
   const patch = { source_type: "vector-tiles-url", source_url: `pmt/${PROJECT_ID}/${LAYER_ID}/{z}/{x}/{y}.pbf`, source_layer: LAYER_NAME, source_maxzoom: achievedMaxZoom, raw_config: rc };
   if (FOLD) {
     rc.attrParquet = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${PROJECT_ID}/${LAYER_ID}.attr.parquet`;

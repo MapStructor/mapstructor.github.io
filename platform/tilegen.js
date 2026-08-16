@@ -1047,6 +1047,10 @@
     LIMITS: LIMITS,
     DIET: DIET,   // { dropPx } — live-tweakable (speedlab)
     bakeYearsRaster: bakeYearsRaster,   // exposed for rebake harnesses + the future speedlab tiler playground
+    // exposed 8/16 so the CLOUD tiler asks THIS rule whether a layer may have a raster, instead of
+    // carrying its own copy that would drift (scripts/bake-scrub-raster.mjs drives this file
+    // headlessly — the format has exactly one definition and exactly one reader)
+    rasterUnfitReason: rasterUnfitReason,
     needsTiles: needsTiles,
     buildArchive: buildArchive,
     convertLayer: convertLayer,
