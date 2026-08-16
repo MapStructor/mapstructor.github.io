@@ -37,6 +37,10 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
+/* How long the in-page bake may take before we call it hung. Rasterizing survey-resolution
+   polygons at four pyramid levels x two modes is minutes of honest work, not seconds. */
+const RASTER_TIMEOUT_MS = Number(process.env.RASTER_TIMEOUT_MS || 45 * 60 * 1000);
+
 /* The runner's Chrome. GitHub's ubuntu images ship google-chrome-stable; CHROME_PATH wins so a
    local run can point at its own binary. */
 function chromePath() {
@@ -94,7 +98,7 @@ export async function bakeScrubRaster({ projectId, layerId, geojsonPath, geomKin
   mkdirSync(outDir, { recursive: true });
   const sink = await startSink(geojsonPath, outDir);
   const t0 = Date.now();
-  let browser = null;
+  let browser = null, beat = null;
   try {
     browser = await puppeteer.launch({
       executablePath: chromePath(),
@@ -102,6 +106,12 @@ export async function bakeScrubRaster({ projectId, layerId, geojsonPath, geomKin
       // The FC is held as JS objects to rasterize it; survey-resolution polygons need the room
       // (the same ~96-bytes-per-coordinate arithmetic that drove the streaming importer).
       args: ["--no-sandbox", "--disable-dev-shm-usage", "--use-gl=swiftshader", "--js-flags=--max-old-space-size=8192"],
+      // Puppeteer's DEFAULT protocolTimeout is 180s, and it applies to the whole page.evaluate —
+      // so the first full-scale run (AtlasHCB, 220 features / 9.3M vertices) died at exactly 3
+      // minutes with "Runtime.callFunctionOn timed out" and silently produced no raster (8/16,
+      // bake #60). A generous explicit ceiling instead of 0: a real hang still fails with a clear
+      // message well inside the job's 120-minute cap, rather than burning the whole cap.
+      protocolTimeout: RASTER_TIMEOUT_MS,
     });
     const page = await browser.newPage();
     page.on("console", (m) => { const t = m.text(); if (/tilegen|raster/i.test(t)) log("  [page] " + t.slice(0, 200)); });
@@ -109,6 +119,8 @@ export async function bakeScrubRaster({ projectId, layerId, geojsonPath, geomKin
     await page.goto(`http://127.0.0.1:${sink.port}/blank`, { waitUntil: "domcontentloaded" });
     await page.addScriptTag({ path: tilegenPath });
 
+    // A silent ten-minute step reads like a hang in a CI log — say what is happening while it works.
+    beat = setInterval(() => log(`  … raster bake running ${Math.round((Date.now() - t0) / 1000)}s (${sink.pngs.length} images so far)`), 60000);
     const result = await page.evaluate(async (port, projectId, layerId, geomKind) => {
       if (!window.MSTileGen || !window.MSTileGen.bakeYearsRaster) return { error: "MSTileGen did not load" };
       const fc = await (await fetch("/layer.geojson")).json();
@@ -134,6 +146,7 @@ export async function bakeScrubRaster({ projectId, layerId, geojsonPath, geomKin
         return { error: String((e && e.message) || e) };
       }
     }, sink.port, projectId, layerId, geomKind);
+    clearInterval(beat);
 
     if (result.unfit) { log(`scrub raster skipped — ${result.unfit}`); return null; }
     if (result.error) throw new Error(result.error);
@@ -141,6 +154,7 @@ export async function bakeScrubRaster({ projectId, layerId, geojsonPath, geomKin
     log(`scrub raster baked in ${((Date.now() - t0) / 1000).toFixed(0)}s · ${sink.pngs.length} images · ${(sink.pngs.reduce((s, p) => s + p.bytes, 0) / 1024).toFixed(0)} KB`);
     return { cfg: result.cfg, pngs: sink.pngs };
   } finally {
+    if (beat) clearInterval(beat);
     if (browser) await browser.close().catch(() => {});
     sink.server.close();
   }
