@@ -78,6 +78,15 @@
         (function scanF(arr) {
           (arr || []).forEach(function (n) {
             if (n.fold_state === 'folding' && slugToLayerDbId[n.id]) pollFoldDone(n, slugToLayerDbId[n.id]);
+            // A RE-BAKE never leaves fold_state 'folded', so the line above could not resume its
+            // watch after a reload: the owner refreshed, the notification was gone, and there was
+            // no way to tell a finished bake from a running one (8/16: "I get the 'folded in the
+            // ___' notification. I'm forgetting, what does that mean?… Can you make that clear?").
+            // rebakeStartedAt is stamped at dispatch and cleared when new tiles land, so a reload
+            // can say "still re-baking, started 9:47 PM" and pick the watch back up.
+            if (n.rebakeStartedAt && slugToLayerDbId[n.id] && (!n.tilesGeneratedAt || n.tilesGeneratedAt < n.rebakeStartedAt)) {
+              pollFoldDone(n, slugToLayerDbId[n.id], n.tilesGeneratedAt || null, n.rebakeStartedAt);
+            }
             if (n.fold_state === 'folded' && slugToLayerDbId[n.id]) restoreFoldDeltas(n);
             if (n.children) scanF(n.children);
           });
@@ -2472,7 +2481,7 @@
   // «"US_AtlasHCB_StateTerr" is ready — 220 features» while tippecanoe was still compiling (owner:
   // "Does this mean it's done? I refreshed, and it didn't bake"). Pass the tilesGeneratedAt that was
   // on the row at dispatch time and completion becomes "the stamp CHANGED", which is the real event.
-  async function pollFoldDone(node, layerId, sinceStamp) {
+  async function pollFoldDone(node, layerId, sinceStamp, startedAt) {
     var POLL_MS = 8000, MAX = 90;   // ~12 min ceiling — a cold Action run compiles tippecanoe (~3-4 min)
     var t0 = Date.now();
     for (var i = 0; i < MAX; i++) {
@@ -2484,10 +2493,15 @@
       // "Building tiles…" line every few seconds and buried the actual progress (owner 8/7).
       // Saving is the useful number while it is running; this line takes over once it is done.
       if (!window.__msImportSaving) {
-        var mins = Math.floor((Date.now() - t0) / 60000);
-        importStatus('Building tiles for "' + (node.label || 'layer') + '" in the cloud'
-          + (mins ? ' — ' + mins + ' min so far' : '')
-          + '. The layer is already on the map; this only makes it faster, and it swaps itself in when ready.');
+        // Say STILL RUNNING in words that cannot be mistaken for finished, and say since when —
+        // a reload resumes this watch, so the elapsed clock restarts while the real start time
+        // does not (8/16: the old line read "folded to cloud storage", which sounds like a result).
+        var startTxt = '';
+        try { if (startedAt) startTxt = ', started ' + new Date(startedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (eT) {}
+        var mins = Math.floor(((startedAt ? Date.now() - new Date(startedAt).getTime() : Date.now() - t0)) / 60000);
+        importStatus('⏳ STILL RE-BAKING "' + (node.label || 'layer') + '" in the cloud'
+          + (mins ? ' — ' + mins + ' min so far' : '') + startTxt
+          + '. NOT finished yet. The current map stays live meanwhile, this tab can be closed, and the map updates itself when the new tiles land.');
       }
       await foldSleep(POLL_MS);
       var r = null;
@@ -2503,6 +2517,14 @@
   // through the platform's own in-session tileset path (same recipe as onApplySource).
   async function applyFoldedRow(node, row) {
     try {
+      // the bake is over — clear the in-flight marker so a later reload does not claim it is still running
+      try {
+        var rcC = row.raw_config || {};
+        if (rcC.rebakeStartedAt) {
+          delete rcC.rebakeStartedAt; delete node.rebakeStartedAt;
+          await db.from('layers').update({ raw_config: rcC }).eq('id', row.id);
+        }
+      } catch (eClr) {}
       await ensurePmtSw();   // resume-on-load pages never registered it either (no tiled layer at boot)
       var fresh = (typeof ConfigLoader !== 'undefined' && ConfigLoader.leafFromRow) ? ConfigLoader.leafFromRow(row) : null;
       if (fresh) {
@@ -2525,7 +2547,13 @@
       try { _engineEditWired[node.id] = false; wireEngineEditClicks(); } catch (e) {}
       try { if (typeof refreshLayers === 'function') refreshLayers(); } catch (e) {}
       rerender();
-      importStatus('"' + (node.label || 'layer') + '" is ready — ' + nfmt((row.raw_config || {}).tilesFeatureCount || 0) + ' features, folded to cloud storage.');
+      // "folded to cloud storage" described an internal state, not an outcome, and the owner could
+      // not tell from it whether anything had finished. Say DONE, say what is now true, and say
+      // that nothing further is required of them.
+      var doneAt = '';
+      try { doneAt = new Date((row.raw_config || {}).tilesGeneratedAt || Date.now()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (eD) {}
+      importStatus('✅ DONE — "' + (node.label || 'layer') + '" finished re-baking at ' + doneAt + '. Its new tiles are live ('
+        + nfmt((row.raw_config || {}).tilesFeatureCount || 0) + ' features) and this map is already showing them. Nothing else to do.');
     } catch (e) { console.warn('applyFoldedRow failed', e); importStatus('"' + (node.label || 'layer') + '" folded — reload to see it.'); }
   }
   // Split a FeatureCollection by geometry type (one type per layer) → persist layers + features.
@@ -7769,7 +7797,15 @@
         // reuse the importer's dispatch rather than a second copy of the same POST
         try { sentR = await foldImportDispatch(lid, nodeF || { label: L.name }, { length: (L.raw_config && L.raw_config.tilesFeatureCount) || 0 }, mode); } catch (eD) {}
         if (!sentR) { msProgress('Cloud re-bake could not be started for “' + (L.name || 'layer') + '” — nothing changed, and the current tiles stay live.'); return false; }
-        if (nodeF) { nodeF.fold_state = 'folding'; pollFoldDone(nodeF, lid, (L.raw_config || {}).tilesGeneratedAt || null); }
+        // Persist "a re-bake is in flight" so a RELOAD can still tell the owner it is running.
+        // fold_state cannot carry this: a re-bake starts and ends 'folded'.
+        var startedAt = new Date().toISOString();
+        try {
+          var rcMark = L.raw_config || {}; rcMark.rebakeStartedAt = startedAt;
+          await db.from('layers').update({ raw_config: rcMark }).eq('id', lid);
+          if (nodeF) nodeF.rebakeStartedAt = startedAt;
+        } catch (eMk) { console.warn('could not stamp rebakeStartedAt', eMk); }
+        if (nodeF) pollFoldDone(nodeF, lid, (L.raw_config || {}).tilesGeneratedAt || null, startedAt);
         msProgress('“' + (L.name || 'layer') + '” is re-baking in the cloud — tiles, the colour column and the instant-scrub raster'
           + (nDelta ? ', folding in ' + nDelta + ' edited feature' + (nDelta === 1 ? '' : 's') : '')
           + '. It takes several minutes, and the current tiles stay live until the new ones land — the map swaps itself over when they do, with no reload.');
