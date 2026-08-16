@@ -158,9 +158,18 @@
       try {
         (function walk(a) { (a || []).forEach(function (n) { if (O) return; if (n.outlineOf === fillSlug) O = n; if (n.children) walk(n.children); }); })(typeof layers !== "undefined" ? layers : []);
       } catch (e) {}
-      if (O) { gate = O.toggleElement || O.id; col = hexIn((O.paint || {})["line-color"]) || hexIn(O.iconColor) || hexIn(O.color); }
+      if (O) { gate = O.toggleElement || O.id; col = hexIn((O.paint || {})["line-color"]) || hexIn(O.iconColor) || hexIn(O.color); it.catBorder = Array.isArray((O.paint || {})["line-color"]); }
     }
     if (!col) col = (fillNode && fillNode.paint && hexIn(fillNode.paint["fill-outline-color"])) || "#000000";
+    // CATEGORICAL BORDERS (8/16, "It's still not working for the borders… when I press down, it's
+    // blue. Same issue was there for cshapes"): a match-fill / colour-by outline carries a match
+    // EXPRESSION in line-color — hexIn can't read one, so the border item fell back to a uniform
+    // and mid-drag borders lost their categories while the fills kept theirs. When the owning
+    // line paint is an expression, the border draws through the SAME palette the fills use (the
+    // LUT colour byte is shared — one id space, one palette). Honest limit: the baked indices
+    // encode the FILL's category colours, so an outline given a DIFFERENT mapping than its fill
+    // shows the fill's colours mid-drag; release renders the truth.
+    it.catBorder = !!it.catBorder || Array.isArray(fillNode && fillNode.paint && fillNode.paint["fill-outline-color"]);
     it.slug = gate; it.color = hexToRgb(col);
     return it;
   }
@@ -367,7 +376,7 @@
   // Unused indices repeat the base colour so a stray index can never paint garbage.
   function ensurePalette(view, it) {
     var pal = it.cfg && it.cfg.palette;
-    if (!pal || !pal.length || it.isBorder) return null;
+    if (!pal || !pal.length || (it.isBorder && !it.catBorder)) return null;   // borders join the palette only when their line paint is categorical (see resolveBorder)
     var key = "pal|" + cfgKey(it.cfg);
     if (view.tex[key]) return view.tex[key];
     var gl = view.gl;
@@ -492,7 +501,12 @@
       seen[it.slug] = true;
       [[typeof beforeMap !== "undefined" ? beforeMap : null, "left"], [typeof afterMap !== "undefined" ? afterMap : null, "right"]].forEach(function (pr) {
         var m = pr[0]; if (!m) return;
-        [it.slug + "-" + pr[1], it.slug + "-stroke-" + pr[1], it.slug + "-highlighted-" + pr[1], it.slug + "-label-" + pr[1]].forEach(function (id) {
+        // LABELS STAY UP (8/16, "It would be great to be able to see the labels while animating,
+        // and not have them disappear"): "-label-" is no longer in this hide list — the vector
+        // symbol layers keep rendering over the raster, and labelDate() below re-filters them to
+        // the dragged date every tick, so names appear and vanish WITH their features. Labels are
+        // a few hundred symbols, so the per-tick re-filter is cheap where a fill re-filter is not.
+        [it.slug + "-" + pr[1], it.slug + "-stroke-" + pr[1], it.slug + "-highlighted-" + pr[1]].forEach(function (id) {
           try {
             if (!m.getLayer(id)) return;
             _vis.push([m, id, m.getLayoutProperty(id, "visibility") || "visible"]);
@@ -558,12 +572,36 @@
       if (!S.on || !S.dragging || !ui) return;
       S.lastYear = yearOf(ui.value);
       S.views.forEach(function (v) { drawView(v, S.lastYear); });
+      labelDate(ui.value);
     });
     $s.on("slidestop slidechange", function () {
       restoreVectors();   // vector reappears snapped to the release date (engine applies the real filter)
       if (!S.dragging) return;
       S.dragging = false;
       fadeSoon();
+    });
+  }
+
+  // Re-filter the (still-visible) label layers to the dragged date — same coalesce filter
+  // changeDate applies at release, throttled to ~8/s so a fast drag never floods symbol layout.
+  var _lblLast = 0;
+  function labelDate(unixVal) {
+    var now = Date.now();
+    if (now - _lblLast < 120) return;
+    _lblLast = now;
+    var day;
+    try { day = parseInt(moment.unix(unixVal).format("YYYYMMDD")); } catch (e) { return; }
+    if (!day || isNaN(day)) return;
+    var f = ["all", ["<=", ["coalesce", ["get", "DayStart"], 0], day], [">=", ["coalesce", ["get", "DayEnd"], 99999999], day]];
+    var seen = {};
+    S.items.forEach(function (it) {
+      if (it.isBorder || !it.slug || seen[it.slug]) return;
+      seen[it.slug] = true;
+      [[typeof beforeMap !== "undefined" ? beforeMap : null, "left"], [typeof afterMap !== "undefined" ? afterMap : null, "right"]].forEach(function (pr) {
+        var m = pr[0]; if (!m) return;
+        var id = it.slug + "-label-" + pr[1];
+        try { if (m.getLayer(id)) m.setFilter(id, f); } catch (e) {}
+      });
     });
   }
 

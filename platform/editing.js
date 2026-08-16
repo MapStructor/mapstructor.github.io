@@ -987,7 +987,7 @@
           var dfid = featureToDb[dHit] != null ? String(featureToDb[dHit]) : (String(dHit).indexOf('db-') === 0 ? String(dHit).slice(3) : null);
           var dLyr = featureLayer[dHit], tLyr = _attrSlug ? slugToLayerDbId[_attrSlug] : null;
           if (dfid != null && (!tLyr || dLyr == null || dLyr === tLyr)) {
-            if (!MSSel.has(dfid)) { try { var df0 = draw && draw.get ? draw.get(dHit) : null; if (df0 && df0.geometry) _selGeom[dfid] = df0.geometry; } catch (eG2) {} }
+            if (!MSSel.has(dfid)) { try { var df0 = draw && draw.get ? draw.get(dHit) : null; if (df0 && df0.geometry) { _selGeom[dfid] = df0.geometry; _selGeom[dfid].msWhole = true; } } catch (eG2) {} }
             MSSel.toggle(dfid); setStatus(MSSel.count() + ' selected — ctrl-click to add/remove');
             return;
           }
@@ -997,7 +997,7 @@
       }
       var cfid = String(cf.id);
       // cache the CLICKED geometry → the highlight paints INSTANTLY (no waiting on the row stream/geom fetch)
-      if (cf.geometry) _selGeom[cfid] = cf.geometry;
+      if (cf.geometry) { _selGeom[cfid] = cf.geometry; if (cf.msWholeGeom) _selGeom[cfid].msWhole = true; }
       MSSel.toggle(cfid); setStatus(MSSel.count() + ' selected — ctrl-click to add/remove');
       return;
     }
@@ -1373,8 +1373,10 @@
     var gt = function (kinds) { return ['match', ['geometry-type'], kinds, true, false]; };
     var HL = [
       ['editor-attr-hl-fill', ['all', gt(['Polygon', 'MultiPolygon']), dOk]],
-      ['editor-attr-hl-line-casing', dOk],
-      ['editor-attr-hl-line', dOk],
+      // tile-fragment geometries (msFrag=1) never reach the LINE layers — their rings include tile
+      // seams and stroke a grid through the shape; the fill alone reads as one whole feature (8/16)
+      ['editor-attr-hl-line-casing', ['all', ['!=', 'msFrag', 1], dOk]],
+      ['editor-attr-hl-line', ['all', ['!=', 'msFrag', 1], dOk]],
       ['editor-attr-hl-pt', ['all', gt(['Point', 'MultiPoint']), dOk]]
     ];
     [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (m) {
@@ -9656,8 +9658,8 @@
         // selection lines: dark casing + bright yellow core — must be unmistakable over ANY layer color
         // (the old single orange 3px line was INVISIBLE on orange layers — the rail-lines "selection
         // doesn't stick" bug 7/28: the set was right, the paint was camouflaged; hover stays cyan)
-        m.addLayer({ id: 'editor-attr-hl-line-casing', type: 'line', source: 'editor-attr-hl-src', paint: { 'line-color': '#1f1f1f', 'line-width': 9, 'line-opacity': 0.85 } });
-        m.addLayer({ id: 'editor-attr-hl-line', type: 'line', source: 'editor-attr-hl-src', paint: { 'line-color': '#ffd400', 'line-width': 4 } });
+        m.addLayer({ id: 'editor-attr-hl-line-casing', type: 'line', source: 'editor-attr-hl-src', filter: ['!=', 'msFrag', 1], paint: { 'line-color': '#1f1f1f', 'line-width': 9, 'line-opacity': 0.85 } });
+        m.addLayer({ id: 'editor-attr-hl-line', type: 'line', source: 'editor-attr-hl-src', filter: ['!=', 'msFrag', 1], paint: { 'line-color': '#ffd400', 'line-width': 4 } });
         // selected points: yellow with a DARK ring (same language as the line casing) — the old orange
         // ring was identical to the single-feature ARMED ring, so selection and arming were indistinguishable
         m.addLayer({ id: 'editor-attr-hl-pt', type: 'circle', source: 'editor-attr-hl-src', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 10, 'circle-color': '#ffd400', 'circle-stroke-color': '#1f1f1f', 'circle-stroke-width': 3 } });
@@ -9684,7 +9686,14 @@
       if (r && (r.start_date || r.end_date)) { ds = ymdN(r.start_date, 0); de = ymdN(r.end_date, 99999999); }
       else if (_selDays[String(fid)]) { ds = _selDays[String(fid)][0]; de = _selDays[String(fid)][1]; }
       else { var m2 = featureMeta['db-' + fid]; if (m2 && (m2.start || m2.end)) { ds = ymdN(m2.start, 0); de = ymdN(m2.end, 99999999); } }
-      return { type: 'Feature', geometry: g, properties: { DayStart: ds, DayEnd: de } };
+      // TILE FRAGMENTS GET NO OUTLINE (8/16, "it has lines… chopped up"): geometry gathered from
+      // rendered tiles is the feature CLIPPED at every tile boundary — fills butt-join invisibly,
+      // but a line layer strokes each fragment's ring and draws a grid through the middle of the
+      // shape. So a fragment-sourced highlight paints FILL ONLY, and the outline appears when the
+      // stored geometry replaces it (r.geom present → msFrag 0). Whole-shape immediately, edges
+      // only where real edges are.
+      var frag = !(r && r.geom) && !!_selGeom[String(fid)] && !(_selGeom[String(fid)].msWhole);
+      return { type: 'Feature', geometry: g, properties: { DayStart: ds, DayEnd: de, msFrag: frag ? 1 : 0 } };
     }).filter(Boolean);
     attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {} });
     try { if (typeof editorCurrentDate === 'function') applyEditedOverlayDayFilter(editorCurrentDate()); } catch (e) {}
