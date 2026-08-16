@@ -262,6 +262,17 @@
     if (reg[wkey]) return; reg[wkey] = true;
     // scrub hook: rasterScrub drives every wired anchor set with the dragged date (labelDate)
     (window._msLabelRecomputes = window._msLabelRecomputes || []).push({ map: map, fn: function (day) { recompute(day); } });
+    // drag snapshot (8/16): mid-scrub the fills are visibility:none and querySourceFeatures
+    // answers ONLY for sources a visible layer uses — it returned 0 and the labels vanished.
+    // rasterScrub calls prep BEFORE hiding (features still readable) and end on release.
+    var dragCache = null;
+    (window._msLabelDragPrep = window._msLabelDragPrep || []).push(function () {
+      try {
+        var lp = map.getLayer(layer.id + '-' + side);
+        dragCache = lp ? (map.querySourceFeatures(lp.source, { sourceLayer: lp.sourceLayer || undefined }) || []) : null;
+      } catch (e) { dragCache = null; }
+    });
+    (window._msLabelDragEnd = window._msLabelDragEnd || []).push(function () { dragCache = null; });
     // 7/21: ungrouped layers anchor by their LABEL field — same machinery, group-of-1 per name
     var lineId = layer.id + '-' + side, key = layer.groupBy || (layer.labels && layer.labels.field) || 'label', lastSig = null, t = null;
     function lineLen(c) {
@@ -298,7 +309,15 @@
         // With a day given, read SOURCE features instead — they exist regardless of visibility —
         // date-filtered right in the query, so the family/centroid logic stays the only copy.
         var fs;
-        if (day != null) {
+        if (day != null && dragCache) {
+          // mid-drag: the fills are hidden, so filter the press-down snapshot in JS instead —
+          // missing/non-numeric Day props never match, same as the legacy filter's semantics
+          fs = [];
+          for (var iC = 0; iC < dragCache.length; iC++) {
+            var pC = dragCache[iC].properties || {};
+            if (+pC.DayStart <= day && +pC.DayEnd >= day) fs.push(dragCache[iC]);
+          }
+        } else if (day != null) {
           var ly0 = map.getLayer(lineId) || {};
           try { fs = map.querySourceFeatures(ly0.source, { sourceLayer: ly0.sourceLayer || undefined, filter: ['all', ['<=', 'DayStart', day], ['>=', 'DayEnd', day]] }) || []; } catch (eQ) { fs = []; }
         } else {

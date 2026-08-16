@@ -493,6 +493,11 @@
   var _vis = null, _paint = null;
   function hideVectors() {
     if (_vis) return;   // already hidden — a second pass would record "none" as the prior state
+    // LABEL SNAPSHOT FIRST (8/16, "as I drag the labels are not there"): querySourceFeatures only
+    // answers from a source some VISIBLE layer uses — once the fills flip to none below, the anchor
+    // recompute reads 0 features and empties the labels. Each wired anchor set caches its source
+    // features NOW, while the fills still render; recompute(day) filters the cache mid-drag.
+    try { (window._msLabelDragPrep || []).forEach(function (f) { f(); }); } catch (e) {}
     _vis = [];
     var seen = {};   // fill + border items share a slug when the outline isn't split — a second
     // pass would record "none" as the prior state and restore would leave the vector hidden
@@ -537,6 +542,7 @@
     (_vis || []).forEach(function (t) { try { t[0].setLayoutProperty(t[1], "visibility", t[2]); } catch (e) {} });
     _vis = null;
     if (_paint) { window.paintDate = _paint; _paint = null; }
+    try { (window._msLabelDragEnd || []).forEach(function (f) { f(); }); } catch (e) {}   // drop the label snapshot
   }
 
   function fadeSoon() {
