@@ -603,6 +603,9 @@
         try { if (m.getLayer(id)) m.setFilter(id, f); } catch (e) {}
       });
     });
+    // group-anchor labels (fills/tileset lines) carry no Day props of their own — the filter above
+    // can't touch them. Their anchors recompute from SOURCE features at the dragged date instead.
+    try { (window._msLabelRecomputes || []).forEach(function (rr) { rr.fn(day); }); } catch (e) {}
   }
 
   function chip() {

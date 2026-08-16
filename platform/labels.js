@@ -260,6 +260,8 @@
     var reg = map._msGAnchors || (map._msGAnchors = {});
     var wkey = layer.id + '|' + side;
     if (reg[wkey]) return; reg[wkey] = true;
+    // scrub hook: rasterScrub drives every wired anchor set with the dragged date (labelDate)
+    (window._msLabelRecomputes = window._msLabelRecomputes || []).push({ map: map, fn: function (day) { recompute(day); } });
     // 7/21: ungrouped layers anchor by their LABEL field — same machinery, group-of-1 per name
     var lineId = layer.id + '-' + side, key = layer.groupBy || (layer.labels && layer.labels.field) || 'label', lastSig = null, t = null;
     function lineLen(c) {
@@ -287,10 +289,21 @@
       if (!A) return c[0];
       return [cx / (3 * A), cy / (3 * A)];
     }
-    function recompute() {
+    function recompute(day) {
       try {
         if (!map.getLayer(lineId) || !map.getSource(gsrcId)) return;
-        var fs = map.queryRenderedFeatures({ layers: [lineId] }) || [];
+        // SCRUB OVERRIDE (8/16, "labels are there, but are not changing with the timeline scrub"):
+        // mid-scrub the fill layer is visibility:none, so queryRenderedFeatures sees nothing and
+        // anchors freeze at the pre-drag date ("Colorado Territory" floating over 1924 Colorado).
+        // With a day given, read SOURCE features instead — they exist regardless of visibility —
+        // date-filtered right in the query, so the family/centroid logic stays the only copy.
+        var fs;
+        if (day != null) {
+          var ly0 = map.getLayer(lineId) || {};
+          try { fs = map.querySourceFeatures(ly0.source, { sourceLayer: ly0.sourceLayer || undefined, filter: ['all', ['<=', 'DayStart', day], ['>=', 'DayEnd', day]] }) || []; } catch (eQ) { fs = []; }
+        } else {
+          fs = map.queryRenderedFeatures({ layers: [lineId] }) || [];
+        }
         var best = {};   // normalized family → its longest visible piece (+ the raw name to display)
         for (var i = 0; i < fs.length; i++) {
           var p = fs[i].properties || {};
