@@ -71,13 +71,24 @@ const nfmt = (n) => Number(n).toLocaleString("en-US");
 async function rest(path, opts = {}) {
   // retry 5xx/timeouts: a concurrent heavy statement (quota recompute, bulk cleanup) can starve
   // service-role reads into 57014 for a few seconds — one such blip killed a whole merge run (7/30)
-  for (let a = 1; ; a++) {
-    const r = await fetch(SUPABASE_URL + path, { ...opts, headers: { ...H, ...(opts.headers || {}) } });
-    if (r.ok) return r;
-    const body = (await r.text()).slice(0, 300);
-    if (a >= 4 || r.status < 500) throw new Error(path.split("?")[0] + " -> " + r.status + " " + body);
-    console.warn("rest " + r.status + " (try " + a + "): " + body.slice(0, 100));
-    await new Promise((rs) => setTimeout(rs, 8000));
+  //
+  // 8/16: four tries at a flat 8s = a 24-second budget, and that is far too short for what actually
+  // happens. Cloudflare 520-527 mean the ORIGIN is down or unreachable, not busy, and tonight that
+  // state lasted MINUTES — run #64 burned all four tries against a 521 and failed a bake that was
+  // otherwise fine. A network blip should never cost a ten-minute bake, so back off exponentially
+  // to roughly five minutes. Fetch itself can also reject (socket reset mid-outage); that is the
+  // same event and gets the same treatment rather than an unhandled throw.
+  const WAITS = [5000, 10000, 20000, 40000, 60000, 60000, 60000, 60000];
+  for (let a = 0; ; a++) {
+    let r = null, netErr = null;
+    try { r = await fetch(SUPABASE_URL + path, { ...opts, headers: { ...H, ...(opts.headers || {}) } }); }
+    catch (e) { netErr = e; }
+    if (r && r.ok) return r;
+    const body = r ? (await r.text()).slice(0, 300) : String((netErr && netErr.message) || netErr);
+    const retryable = !r || r.status >= 500;
+    if (!retryable || a >= WAITS.length) throw new Error(path.split("?")[0] + " -> " + (r ? r.status : "network") + " " + body);
+    console.warn(`rest ${r ? r.status : "network"} (try ${a + 1}/${WAITS.length}, waiting ${WAITS[a] / 1000}s): ${body.slice(0, 100)}`);
+    await new Promise((rs) => setTimeout(rs, WAITS[a]));
   }
 }
 function day(d, fallback) { return d ? +String(d).slice(0, 10).replace(/-/g, "") || fallback : fallback; }
