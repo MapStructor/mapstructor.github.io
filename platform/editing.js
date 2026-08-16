@@ -2548,6 +2548,10 @@
       try { renderTilesetOnMap(node); } catch (eAdd) { console.warn('fold live-add failed — the layer appears on next load', eAdd); }
       try { _engineEditWired[node.id] = false; wireEngineEditClicks(); } catch (e) {}
       try { if (typeof refreshLayers === 'function') refreshLayers(); } catch (e) {}
+      // the scrub raster too — the browser bake calls this from tilegen when a bake lands, but the
+      // CLOUD bake landed here without it, so the session scrubbed stale (or missing) rasters
+      // until a page reload ("baked rasters are not appearing", 8/16)
+      try { if (window.MSRasterScrub && window.MSRasterScrub.reload) window.MSRasterScrub.reload(); } catch (eRS) {}
       rerender();
       // "folded to cloud storage" described an internal state, not an outcome, and the owner could
       // not tell from it whether anything had finished. Say DONE, say what is now true, and say
