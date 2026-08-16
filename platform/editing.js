@@ -7747,16 +7747,27 @@
             return null;
           })(typeof layers !== 'undefined' ? layers : []);
         } catch (eN) {}
-        // Pulled-in edit copies must MERGE onto their sources, not bake beside them.
+        // WHICH MODE — and this is a SCALING decision, not a correctness one (owner 8/16: "There
+        // would be way more people than myself doing this, so I'd think this just won't work").
+        //   fold-rows  re-reads EVERY row with its geometry out of Postgres — ~370MB for AtlasHCB.
+        //              That is the single most expensive thing this platform can ask of the
+        //              database, and N users doing it at once is the real multi-user failure mode.
+        //   fold-merge takes the bulk from the R2 artifact and asks Postgres only for delta rows
+        //              (92 bytes here). Same output, near-zero database cost.
+        // A folded layer ALWAYS has an artifact, so merge is the right path whether or not any
+        // edits are pending — with no deltas it simply re-bakes the artifact. fold-rows stays for
+        // the first fold, where no artifact exists yet.
         var nDelta = 0;
         try {
           var dq = await db.from('features').select('feature_id', { count: 'exact', head: true })
             .eq('layer_id', lid).not('custom_fields->>ms_foldsrc', 'is', null);
           nDelta = (dq && dq.count) || 0;
         } catch (eDq) {}
+        var hasArtifact = !!(L.parquet_key || (L.raw_config && L.raw_config.pmtiles));
+        var mode = hasArtifact ? 'fold-merge' : 'fold-rows';
         var sentR = false;
         // reuse the importer's dispatch rather than a second copy of the same POST
-        try { sentR = await foldImportDispatch(lid, nodeF || { label: L.name }, { length: (L.raw_config && L.raw_config.tilesFeatureCount) || 0 }, nDelta ? 'fold-merge' : 'fold-rows'); } catch (eD) {}
+        try { sentR = await foldImportDispatch(lid, nodeF || { label: L.name }, { length: (L.raw_config && L.raw_config.tilesFeatureCount) || 0 }, mode); } catch (eD) {}
         if (!sentR) { msProgress('Cloud re-bake could not be started for “' + (L.name || 'layer') + '” — nothing changed, and the current tiles stay live.'); return false; }
         if (nodeF) { nodeF.fold_state = 'folding'; pollFoldDone(nodeF, lid, (L.raw_config || {}).tilesGeneratedAt || null); }
         msProgress('“' + (L.name || 'layer') + '” is re-baking in the cloud — tiles, the colour column and the instant-scrub raster'
