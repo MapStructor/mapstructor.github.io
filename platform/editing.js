@@ -2462,7 +2462,12 @@
     }
   }
   // watch the layer row until the Action stamps it (or leaves raw_config.foldError)
-  async function pollFoldDone(node, layerId) {
+  // sinceStamp (8/16): for a RE-bake the layer is ALREADY fold_state 'folded' and stays that way,
+  // so "folded" cannot mean "finished" — the first poll declared victory 8 seconds in and printed
+  // «"US_AtlasHCB_StateTerr" is ready — 220 features» while tippecanoe was still compiling (owner:
+  // "Does this mean it's done? I refreshed, and it didn't bake"). Pass the tilesGeneratedAt that was
+  // on the row at dispatch time and completion becomes "the stamp CHANGED", which is the real event.
+  async function pollFoldDone(node, layerId, sinceStamp) {
     var POLL_MS = 8000, MAX = 90;   // ~12 min ceiling — a cold Action run compiles tippecanoe (~3-4 min)
     var t0 = Date.now();
     for (var i = 0; i < MAX; i++) {
@@ -2485,7 +2490,7 @@
       if (!r || r.error || !r.data) continue;
       var rc = r.data.raw_config || {};
       if (rc.foldError) { importStatus('Cloud fold failed for "' + (node.label || 'layer') + '": ' + rc.foldError + ' — delete the layer row or re-import.'); return; }
-      if (r.data.fold_state === 'folded') { applyFoldedRow(node, r.data); return; }
+      if (r.data.fold_state === 'folded' && (!sinceStamp || (rc.tilesGeneratedAt && rc.tilesGeneratedAt !== sinceStamp))) { applyFoldedRow(node, r.data); return; }
     }
     importStatus('Cloud fold is taking unusually long for "' + (node.label || 'layer') + '" — it finishes in the background; reload later to see it.');
   }
@@ -7688,7 +7693,7 @@
         var sentFold = false;
         try { sentFold = await foldImportDispatch(lid, node, { length: upserts.length }); } catch (eFd) { console.warn('cloud re-bake dispatch failed', eFd); }
         if (sentFold) {
-          node.fold_state = 'folding'; pollFoldDone(node, lid);
+          node.fold_state = 'folding'; pollFoldDone(node, lid, node.fold_state === 'folded' ? (node.tilesGeneratedAt || null) : null);
           msProgress('Dates saved. This layer renders from tiles baked BEFORE them, so its tiles and table are rebuilding in the cloud — they update automatically when it finishes (usually a few minutes).');
           setStatus('Dates saved — tiles rebuilding');
         } else {
@@ -7741,7 +7746,7 @@
         // reuse the importer's dispatch rather than a second copy of the same POST
         try { sentR = await foldImportDispatch(lid, nodeF || { label: L.name }, { length: (L.raw_config && L.raw_config.tilesFeatureCount) || 0 }); } catch (eD) {}
         if (!sentR) { msProgress('Cloud re-bake could not be started for “' + (L.name || 'layer') + '” — nothing changed, and the current tiles stay live.'); return false; }
-        if (nodeF) { nodeF.fold_state = 'folding'; pollFoldDone(nodeF, lid); }
+        if (nodeF) { nodeF.fold_state = 'folding'; pollFoldDone(nodeF, lid, (L.raw_config || {}).tilesGeneratedAt || null); }
         msProgress('“' + (L.name || 'layer') + '” is re-baking in the cloud — tiles, the colour column and the instant-scrub raster. It takes several minutes, and the current tiles stay live until the new ones land.');
         return 'cloud';
       }
