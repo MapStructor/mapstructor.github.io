@@ -2442,12 +2442,17 @@
   // own. Two independent id spaces for the same data would strand every later edit (the C4
   // delta restore matches rows to tile features by id). fold-rows bakes from the rows we just
   // wrote, so the ids match by construction — and it needs no upload at all.
-  async function foldImportDispatch(layerId, node, feats) {
+  // mode (8/16): defaults to fold-rows for an IMPORT, but a re-bake of a layer that already has
+  // pulled-in edit copies must pass 'fold-merge' — fold-rows bakes every row, so a delta row and
+  // the feature it was copied from BOTH land in the tiles as separate features (that is the whole
+  // of 220 → 222 after two clicks). fold-merge applies each delta ONTO its source id and deletes
+  // the delta afterwards, which is the behaviour a re-bake wants.
+  async function foldImportDispatch(layerId, node, feats, mode) {
     try {
       var tok = (await db.auth.getSession()).data.session.access_token;
       var dR = await fetch(FOLD_WORKER_BASE + '/fold', {
         method: 'POST', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: projectId, layerId: layerId, mode: 'fold-rows' })
+        body: JSON.stringify({ projectId: projectId, layerId: layerId, mode: mode || 'fold-rows' })
       });
       if (!dR.ok) throw new Error('fold dispatch HTTP ' + dR.status);
       ensurePmtSw();   // fire-and-forget — the worker is claimed long before the tiles are needed
@@ -7742,12 +7747,21 @@
             return null;
           })(typeof layers !== 'undefined' ? layers : []);
         } catch (eN) {}
+        // Pulled-in edit copies must MERGE onto their sources, not bake beside them.
+        var nDelta = 0;
+        try {
+          var dq = await db.from('features').select('feature_id', { count: 'exact', head: true })
+            .eq('layer_id', lid).not('custom_fields->>ms_foldsrc', 'is', null);
+          nDelta = (dq && dq.count) || 0;
+        } catch (eDq) {}
         var sentR = false;
         // reuse the importer's dispatch rather than a second copy of the same POST
-        try { sentR = await foldImportDispatch(lid, nodeF || { label: L.name }, { length: (L.raw_config && L.raw_config.tilesFeatureCount) || 0 }); } catch (eD) {}
+        try { sentR = await foldImportDispatch(lid, nodeF || { label: L.name }, { length: (L.raw_config && L.raw_config.tilesFeatureCount) || 0 }, nDelta ? 'fold-merge' : 'fold-rows'); } catch (eD) {}
         if (!sentR) { msProgress('Cloud re-bake could not be started for “' + (L.name || 'layer') + '” — nothing changed, and the current tiles stay live.'); return false; }
         if (nodeF) { nodeF.fold_state = 'folding'; pollFoldDone(nodeF, lid, (L.raw_config || {}).tilesGeneratedAt || null); }
-        msProgress('“' + (L.name || 'layer') + '” is re-baking in the cloud — tiles, the colour column and the instant-scrub raster. It takes several minutes, and the current tiles stay live until the new ones land.');
+        msProgress('“' + (L.name || 'layer') + '” is re-baking in the cloud — tiles, the colour column and the instant-scrub raster'
+          + (nDelta ? ', folding in ' + nDelta + ' edited feature' + (nDelta === 1 ? '' : 's') : '')
+          + '. It takes several minutes, and the current tiles stay live until the new ones land — the map swaps itself over when they do, with no reload.');
         return 'cloud';
       }
     }
