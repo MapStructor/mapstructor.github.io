@@ -268,8 +268,18 @@ function _dpDropFilter(m, id) {
 var _DP_KEYS = { fill: ["fill-opacity"], line: ["line-opacity"], circle: ["circle-opacity", "circle-stroke-opacity"] };
 function _dpTargets() {
   var t = [];
+  // 8/17 SWAP: a faster renderer (deck.gl, or the baked raster) may be drawing the drag for some
+  // layers — it hides their vector and lists them in __msScrubOwned. Touching their paint here
+  // would re-process tiles for something nobody can see, which is exactly the cost the swap
+  // removes. Layers it does NOT cover (geojson, mapbox-hosted tilesets) still scrub through this
+  // paint path, unchanged. Empty/absent set = this function behaves as it always did.
+  var owned = window.__msScrubOwned || null;
   flatLayers(layers).forEach(function (layer) {
     if (layer.timelineIgnore) return;   // 7/21: always-show layers never dim during a scrub either
+    if (owned && owned[layer.id]) return;
+    // a layer switched OFF in the sidebar is visibility:none — wrapping its paint per tick is pure
+    // waste (measured 8/17: 740 setPaintProperty calls per drag on invisible layers alone)
+    try { var cb0 = document.getElementById(layer.toggleElement || layer.id); if (cb0 && cb0.type === "checkbox" && !cb0.checked) return; } catch (e0) {}
     var kind = _DP_KEYS[layer.type] ? layer.type : null;
     if (kind) {
       t.push([beforeMap, layer.id + "-left", kind], [afterMap, layer.id + "-right", kind]);

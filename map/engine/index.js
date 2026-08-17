@@ -20,6 +20,11 @@ var ruler_step = (sliderEnd - sliderStart) / 10,
 // mousemove; only the LATEST value is applied per frame. While DRAGGING the update is
 // paintDate() (opacity case-expression — no tile re-layout, stays fluid on 30MB tilesets);
 // the real setFilter runs once on release via the slider's `change` handler (see below).
+// 8/17 — this is now the LEGACY timeline: it still runs every drag, but only for the layers the
+// fast renderer isn't drawing (deck.gl / the baked raster hide theirs and list them in
+// window.__msScrubOwned, which _dpTargets skips). To hand EVERY layer back to this path, set
+// DEFAULT_MODE = "mapbox" at the top of platform/deckScrub.js, or uncheck the editor's ⚡ chip —
+// no code here has to change, which is the point of keeping it whole.
 var _sliderRAF = null, _sliderPendingVal = null;
 function scheduleChangeDate(v) {
   _sliderPendingVal = v;

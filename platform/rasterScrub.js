@@ -6,21 +6,40 @@
    reappears snapped to the exact release date and the raster fades. (v3's both-at-once variant
    was rejected: the opaque raster hides forward changes and exposes vector lag backward.)
 
+   8/17 — THIS FILE IS NOW THE SEAM, NOT THE ONLY RENDERER. It picks who draws the drag:
+   deck.gl (platform/deckScrub.js, the default — reads the layer's own tiles, needs no bake) →
+   the baked raster below (this file, the fallback for weak GPUs / unfetchable tiles) → the
+   engine's own paint scrub (nobody intercepts). The one-word swap back to the pure mapbox-gl
+   timeline lives at the top of deckScrub.js.
    ON/OFF: the "⚡ Instant scrub" chip near the timeline — EDITOR ONLY (persisted: localStorage
-   ms-raster-scrub). VIEW mode is always on with no chip (user 7/21: the public should never miss
-   the speed; may become configurable later).
+   ms-timeline = deck|raster|mapbox). VIEW mode always takes the best available path with no chip
+   (user 7/21: the public should never miss the speed; may become configurable later).
    REMOVE ENTIRELY: delete this file, its <script> include in map/index.html + map/editor.html,
    and the bakeYearsRaster block in platform/tilegen.js. Nothing else references it. */
 (function () {
   "use strict";
   if (window.MSRasterScrub) return;
-  var LS = "ms-raster-scrub";
-  // the chip (and its localStorage opt-out) is an editor testing tool; viewers always scrub fast
+  var LS = "ms-timeline";   // "deck" | "raster" | "mapbox" — replaces ms-raster-scrub + ms-deck-scrub
+  // the chip (and its localStorage override) is an editor testing tool; viewers always get the
+  // best renderer this machine can run, with no opt-out
   var IS_EDITOR = /editor\.html/i.test((location && location.pathname) || "");
+  function codeDefault() { return (window.MSDeckScrub && MSDeckScrub.mode) || "raster"; }
+  function readMode() {
+    if (!IS_EDITOR) return codeDefault();
+    var v = null; try { v = localStorage.getItem(LS); } catch (e) {}
+    if (v === "deck" || v === "raster" || v === "mapbox") return v;
+    try {   // migrate the two old chip keys (7/16 ms-raster-scrub, 8/16 ms-deck-scrub)
+      if (localStorage.getItem("ms-raster-scrub") === "off") return "mapbox";
+      if (localStorage.getItem("ms-deck-scrub") === "off") return "raster";
+    } catch (e2) {}
+    return codeDefault();
+  }
   // beyond maxZoom the raster steps aside entirely (user 7/16): up close N-in-view is small, so
   // the engine's own paint-scrub animates the vector cheaply AND crisply — the raster's job is
-  // the wide views where N explodes and its resolution limit doesn't show.
-  var S = { on: IS_EDITOR ? localStorage.getItem(LS) !== "off" : true, maxZoom: 8.5, items: [], views: [], dragging: false, hideT: null, lastYear: 1900 };
+  // the wide views where N explodes and its resolution limit doesn't show. (deck has no such
+  // limit — it scrubs the real geometry at every zoom.)
+  var S = { mode: readMode(), maxZoom: 8.5, items: [], views: [], dragging: false, hideT: null, lastYear: 1900 };
+  S.on = S.mode !== "mapbox";   // "is a fast renderer intercepting the drag at all"
   window.MSRasterScrub = S;
 
   function yearOf(unix) { var d = new Date(unix * 1000); return d.getUTCFullYear() + d.getUTCMonth() / 12; }
@@ -495,8 +514,8 @@
   // previous state saved/restored exactly) and paintDate freezes (no point repainting an
   // invisible layer). On release the engine snaps the vector to the release date, it reappears,
   // and the raster fades.
-  var _vis = null, _paint = null;
-  function hideVectors() {
+  var _vis = null;
+  function hideVectors(slugs) {
     if (_vis) return;   // already hidden — a second pass would record "none" as the prior state
     // LABEL SNAPSHOT FIRST (8/16, "as I drag the labels are not there"): querySourceFeatures only
     // answers from a source some VISIBLE layer uses — once the fills flip to none below, the anchor
@@ -506,9 +525,10 @@
     _vis = [];
     var seen = {};   // fill + border items share a slug when the outline isn't split — a second
     // pass would record "none" as the prior state and restore would leave the vector hidden
-    S.items.forEach(function (it) {
-      if (!it.slug || seen[it.slug]) return;
-      seen[it.slug] = true;
+    (slugs || []).forEach(function (slug) {
+      if (!slug || seen[slug]) return;
+      seen[slug] = true;
+      var it = { slug: slug };
       [[typeof beforeMap !== "undefined" ? beforeMap : null, "left"], [typeof afterMap !== "undefined" ? afterMap : null, "right"]].forEach(function (pr) {
         var m = pr[0]; if (!m) return;
         // LABELS STAY UP (8/16, "It would be great to be able to see the labels while animating,
@@ -541,12 +561,16 @@
         } catch (e) {}
       });
     });
-    if (typeof window.paintDate === "function" && !_paint) { _paint = window.paintDate; window.paintDate = function () {}; }
+    // OWNERSHIP HANDOFF (8/17) — replaces the old blanket `window.paintDate = noop`. The engine's
+    // paint scrub now skips exactly the layers we just hid (see _dpTargets in map/engine/mapinit.js),
+    // so nothing repaints what deck/the raster is drawing, AND the layers we don't cover (geojson,
+    // mapbox-hosted tilesets) keep animating through the engine instead of freezing until release.
+    window.__msScrubOwned = seen;
   }
   function restoreVectors() {
     (_vis || []).forEach(function (t) { try { t[0].setLayoutProperty(t[1], "visibility", t[2]); } catch (e) {} });
     _vis = null;
-    if (_paint) { window.paintDate = _paint; _paint = null; }
+    window.__msScrubOwned = null;
     try { (window._msLabelDragEnd || []).forEach(function (f) { f(); }); } catch (e) {}   // drop the label snapshot
   }
 
@@ -560,37 +584,53 @@
     }, 120);
   }
 
-  // DECK MODE (8/16): when deckScrub is present, capable (real GPU) and enabled, IT draws the
-  // drag — day-exact, styling-true, no bake needed — and the raster stays the automatic fallback.
-  function deckMode() { return !!(window.MSDeckScrub && MSDeckScrub.available() && MSDeckScrub.enabled); }
+  // THE RENDERER CHAIN (8/17 swap — owner: "just completely swap it out"): deck → baked raster →
+  // the engine's own paint scrub. Each step stands aside on its own terms: deck when it can't run
+  // on this machine or no layer resolves to fetchable tiles, the raster when there's no bake or the
+  // zoom is past its resolution limit. The one-word swap back to the pure mapbox-gl timeline lives
+  // in the switch block at the top of deckScrub.js (DEFAULT_MODE = "mapbox").
+  function deckMode() { return S.mode === "deck" && !!(window.MSDeckScrub && MSDeckScrub.available()); }
   function ymdOf(unix) { try { return parseInt(moment.unix(unix).format("YYYYMMDD")); } catch (e) { return null; } }
 
+  var _hooked = false;
   function hook() {
+    if (_hooked) return;   // reload() can reach here after load() already wired the slider — a second
+    _hooked = true;        // set of handlers would run every drag twice (the duplicate-listener trap)
     var $s = $("#slider");
+    // Hovering the timeline PREPARES deck: it fetches and parses its tiles during the walk from
+    // "cursor arrives" to "button goes down", so the first drag of a session starts glued instead
+    // of paying ~0.4s at press-down. Draws nothing, costs nothing until the cursor comes over.
+    try { $("div.timeline").add($s).on("mouseenter", function () { if (deckMode()) try { MSDeckScrub.prepare(); } catch (e2) {} }); } catch (e0) {}
     $s.on("slidestart", function (e, ui) {
       mergeNodeItems();   // published/copied maps: the DB rows may not match the rendered nodes — adopt node-carried bakes (8/13)
-      if (!S.on || !S.items.length || !S.views.length) return;
-      var useDeck = deckMode();
-      if (!useDeck && S.views[0].m.getZoom() > S.maxZoom) return;   // deep zoom: raster's resolution limit — deck has none
+      if (S.mode === "mapbox") return;   // legacy renderer: the engine's paint scrub owns everything
+      var v0 = (ui && ui.value != null) ? ui.value : (function () { try { return $s.slider("value"); } catch (e2) { return null; } })();
+      // ── deck first. It needs no bake and has no zoom limit, so it covers maps (and zooms) the
+      // raster never could; it hides the vectors of exactly the layers it draws.
+      if (deckMode()) {
+        S.usingDeck = MSDeckScrub.begin(v0 != null ? ymdOf(v0) : null);
+        if (S.usingDeck) {
+          S.dragging = true; clearTimeout(S.hideT);
+          hideVectors(MSDeckScrub.owned());
+          return;
+        }
+      }
+      S.usingDeck = false;
+      // ── baked raster fallback
+      if (!S.items.length || !S.views.length) return;
+      if (S.views[0].m.getZoom() > S.maxZoom) return;   // deep zoom: the raster's resolution limit
       // EVERY item re-resolves EVERY drag (8/13): colours change live in a session (colour-by,
       // engine edits) — a colour cached once at load can go stale, and a stale black stuck until
       // reload. resolveBorder already did this for borders; fills now match.
       S.items.forEach(function (it) { if (it.isBorder) resolveBorder(it); else { if (!it.slug) it.slug = slugOf(it.lid, it.cfg); it.color = colorOf(it.lid, it.cfg); it.alpha = alphaOf(it.lid, it.cfg); } });
       S.dragging = true; clearTimeout(S.hideT);
-      var v0 = (ui && ui.value != null) ? ui.value : (function () { try { return $s.slider("value"); } catch (e2) { return null; } })();
-      if (useDeck) {
-        S.usingDeck = MSDeckScrub.begin(S.items, v0 != null ? ymdOf(v0) : null);
-        if (S.usingDeck) { hideVectors(); return; }
-        // begin() refused (no usable tiles) — fall through to the raster path
-        if (S.views[0].m.getZoom() > S.maxZoom) { S.dragging = false; return; }
-      }
-      S.usingDeck = false;
       // draw the CURRENT year BEFORE revealing the canvas — it otherwise flashed its stale
       // last-drag frame (looked like "all the data") for the whole click-hold until the first
       // slide event landed, then snapped (user 7/22)
       if (v0 != null) S.lastYear = yearOf(v0);
       S.views.forEach(function (v) { drawView(v, S.lastYear); });
-      showAll(); hideVectors();
+      showAll();
+      hideVectors(S.items.map(function (it) { return it.slug; }));
     });
     $s.on("slide", function (e, ui) {
       if (!S.on || !S.dragging || !ui) return;
@@ -634,35 +674,44 @@
     try { (window._msLabelRecomputes || []).forEach(function (rr) { rr.fn(day); }); } catch (e) {}
   }
 
+  // ONE writer for the renderer choice — whatever was mid-drag stops cleanly (nothing left hidden,
+  // nothing left frozen, no stale raster canvas on screen) before the next drag picks the new path.
+  function setMode(m) {
+    S.mode = m;
+    S.on = m !== "mapbox";
+    if (window.MSDeckScrub) MSDeckScrub.mode = m;   // deck's idle prewarm reads the same field
+    try { localStorage.setItem(LS, m); } catch (e) {}
+    try { if (window.MSDeckScrub) MSDeckScrub.end(); } catch (e2) {}
+    S.usingDeck = false;
+    S.views.forEach(function (v) { v.cv.style.display = "none"; });
+    restoreVectors();
+    S.dragging = false;
+  }
   function chip() {
     if (document.getElementById("ms-raster-chip")) return;
     var d = document.createElement("label");
     d.id = "ms-raster-chip";
     d.style.cssText = "position:fixed;right:14px;bottom:64px;z-index:4000;background:rgba(30,27,43,.92);color:#e8e5f2;font:12.5px/1 'Segoe UI',sans-serif;padding:7px 11px;border-radius:99px;border:1px solid #4a4368;cursor:pointer;user-select:none;display:flex;gap:6px;align-items:center";
+    d.title = "deck = deck.gl draws the drag from the layer's own tiles · unchecked = the baked raster · ⚡ off = the engine's mapbox-gl paint scrub";
     d.innerHTML = '<input type="checkbox" style="accent-color:#8f7ae0;margin:0"' + (S.on ? " checked" : "") + '>⚡ Instant scrub';
     document.body.appendChild(d);
-    d.querySelector("input").addEventListener("change", function () {
-      S.on = this.checked;
-      localStorage.setItem(LS, S.on ? "on" : "off");
-      if (!S.on) {   // turning off mid-drag must leave nothing hidden or frozen
-        S.views.forEach(function (v) { v.cv.style.display = "none"; });
-        try { if (window.MSDeckScrub) MSDeckScrub.end(); } catch (e2) {}
-        restoreVectors();
-        S.dragging = false;
-      }
+    var master = d.querySelector("input"), dkIn = null;
+    master.addEventListener("change", function () {
+      setMode(this.checked ? (dkIn && dkIn.checked ? "deck" : "raster") : "mapbox");
     });
-    // "deck" sub-toggle (8/16): checked = deck.gl draws the drag (day-exact, no bake needed);
+    // "deck" sub-toggle: checked = deck.gl draws the drag (day-exact, no bake needed, every zoom);
     // unchecked = the baked raster draws it, as before — flip live to compare the two paths.
     // Only shown when deck is actually usable on this machine (real GPU + library loaded).
     if (window.MSDeckScrub && MSDeckScrub.available()) {
       var dk = document.createElement("span");
       dk.style.cssText = "display:flex;gap:5px;align-items:center;border-left:1px solid #4a4368;padding-left:8px;margin-left:2px";
-      dk.innerHTML = '<input type="checkbox" style="accent-color:#8f7ae0;margin:0"' + (MSDeckScrub.enabled ? " checked" : "") + '>deck';
+      dk.innerHTML = '<input type="checkbox" style="accent-color:#8f7ae0;margin:0"' + (S.mode === "deck" ? " checked" : "") + '>deck';
       d.appendChild(dk);
-      dk.querySelector("input").addEventListener("change", function (ev) {
+      dkIn = dk.querySelector("input");
+      dkIn.addEventListener("change", function (ev) {
         ev.stopPropagation();
-        MSDeckScrub.setEnabled(this.checked);
-        if (!this.checked) { try { MSDeckScrub.end(); } catch (e2) {} }
+        if (this.checked) master.checked = true;   // deck on implies the fast path is on
+        setMode(this.checked ? "deck" : (master.checked ? "raster" : "mapbox"));
       });
     }
   }
@@ -761,11 +810,15 @@
     _pid = pid;
     S.items = await buildItems(pid);
     mergeNodeItems();
-    if (!S.items.length) return;   // nothing baked yet — the next convert/Publish bakes one per tiled layer
-    [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null].forEach(function (m) {
-      if (m && m.getContainer) { var v = makeView(m); if (v) S.views.push(v); }
-    });
-    if (!S.views.length) return;
+    // 8/17: a map with NO bakes used to stop right here, which is why deck never got a chance on
+    // one — it reads the layer's own tiles and needs no bake at all. Hook whenever EITHER renderer
+    // could draw; the raster's canvases are only built when there is something baked to draw.
+    if (S.items.length) {
+      [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null].forEach(function (m) {
+        if (m && m.getContainer) { var v = makeView(m); if (v) S.views.push(v); }
+      });
+    }
+    if (!S.views.length && !(window.MSDeckScrub && MSDeckScrub.available())) return;
     if (IS_EDITOR) chip();
     hook();
   }

@@ -1,17 +1,28 @@
-/* deckScrub.js — instant timeline scrub rendered by deck.gl (8/16, the "win-win" track).
-   While the slider is DRAGGED, the baked layers render as deck.gl MVT layers reading the SAME
-   pmtiles the engine already serves (via the pmt service worker); date-visibility is a GPU
-   DataFilterExtension uniform — instant at any data size, DAY-exact, styling-true (colours read
-   live from the engine's paint), with NO bake artifacts. rasterScrub owns the seam and calls
-   this when available; the baked raster stays as the automatic fallback for software-rendered /
-   weak GPUs (D.available() false) or when the "deck" chip is unchecked.
+/* deckScrub.js — THE TIMELINE RENDERER for dragged tiled layers (8/16 built, 8/17 promoted).
+   While the slider is DRAGGED, every tiled layer renders as a deck.gl MVT layer reading the SAME
+   tiles the engine already serves; date-visibility is a GPU DataFilterExtension uniform — instant
+   at any data size, DAY-exact, styling-true (colours/opacities read live from the engine's paint),
+   with no bake and no per-feature work per tick.
+
+   ── THE SWITCH (owner 8/17: "just completely swap it out … keep code that lets you swap back") ──
+   "deck"   deck.gl draws the drag for every layer whose tiles are fetchable. Bakes optional.
+   "raster" the baked year-raster draws it (the 7/16–8/16 path) — also the AUTOMATIC fallback when
+            deck can't run here (software GPU, unfetchable/mapbox-hosted tiles).
+   "mapbox" nobody intercepts: the engine's own paint scrub animates the drag, exactly as before
+            8/16. THIS IS THE SWAP-BACK — change the one word in DEFAULT_MODE below and the
+            legacy timeline owns every layer again. Nothing else has to move: the engine code was
+            never deleted, it just stops being told to stand aside (see __msScrubOwned in
+            rasterScrub.hideVectors + _dpTargets in map/engine/mapinit.js).
+   The editor's ⚡ chip flips the same three states live (localStorage ms-timeline).
+
    REMOVE ENTIRELY: delete this file, its <script> include in map/index.html + map/editor.html,
    and the MSDeckScrub references in rasterScrub.js. Nothing else references it. */
 (function () {
   "use strict";
   if (window.MSDeckScrub) return;
-  var LS = "ms-deck-scrub";
-  var D = { enabled: localStorage.getItem(LS) !== "off", active: false, items: null };
+  var DEFAULT_MODE = "deck";
+
+  var D = { mode: DEFAULT_MODE, active: false };
   window.MSDeckScrub = D;
 
   var _avail = null;
@@ -30,7 +41,6 @@
     } catch (e) { _avail = false; }
     return _avail;
   };
-  D.setEnabled = function (on) { D.enabled = !!on; localStorage.setItem(LS, on ? "on" : "off"); };
 
   // fp32-exact month-granular number — raw YYYYMMDD ints (20,260,816) exceed fp32's 2^24 integer
   // ceiling and would round by ±2 days inside the GPU filter
@@ -44,16 +54,44 @@
     return y * 372 + (m - 1) * 31 + (d - 1);
   }
 
-  function nodeById(id) {
-    var hit = null;
-    (function walk(a) { (a || []).forEach(function (n) { if (hit) return; if (n.id === id) hit = n; else if (n.children) walk(n.children); }); })(typeof layers !== "undefined" ? layers : []);
-    return hit;
-  }
+  // ANY CSS colour, not just #rrggbb (8/17): a 78k-feature rail layer scrubbed in fallback PURPLE
+  // because its live line-color reads "rgb(165,83,183)" — the styling system hands back rgb()
+  // strings as readily as hex, and a hex-only parser silently loses the layer's identity mid-drag
+  // (the same shape as the 7/20 raster purple bug). Hex and rgb() are parsed directly; anything
+  // else CSS knows (hsl, 3-digit hex, named colours) goes through a 1×1 canvas once and is cached.
+  var _cx = null, _ccache = {};
   function rgbOf(c, fb) {
-    var m = /^#?([0-9a-f]{6})/i.exec(String(c || "").replace(/^#/, "").length >= 6 ? String(c || "").trim() : "");
-    if (!m) return fb;
-    var n = parseInt(m[1], 16);
-    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    var s = String(c == null ? "" : c).trim();
+    if (!s) return fb;
+    if (_ccache[s]) return _ccache[s];
+    var m = /^#([0-9a-f]{6})$/i.exec(s);
+    if (m) { var n = parseInt(m[1], 16); return (_ccache[s] = [(n >> 16) & 255, (n >> 8) & 255, n & 255]); }
+    var r = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(s);
+    if (r) return (_ccache[s] = [Math.round(+r[1]), Math.round(+r[2]), Math.round(+r[3])]);
+    try {
+      if (!_cx) { var cv = document.createElement("canvas"); cv.width = cv.height = 1; _cx = cv.getContext("2d"); }
+      _cx.fillStyle = "#000000";
+      _cx.fillStyle = s;                       // an invalid value leaves fillStyle untouched…
+      var norm = String(_cx.fillStyle);
+      if (norm !== "#000000" || /^(black|#000|#000000|rgba?\(0[\s,]+0[\s,]+0)/i.test(s)) {   // …so only trust black when black was asked for
+        var m2 = /^#([0-9a-f]{6})$/i.exec(norm);
+        if (m2) { var n2 = parseInt(m2[1], 16); return (_ccache[s] = [(n2 >> 16) & 255, (n2 >> 8) & 255, n2 & 255]); }
+        var r2 = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(norm);
+        if (r2) return (_ccache[s] = [Math.round(+r2[1]), Math.round(+r2[2]), Math.round(+r2[3])]);
+      }
+    } catch (e) {}
+    return fb;
+  }
+  // deepest colour inside any paint value — the last resort for an expression shape this file
+  // doesn't model (e.g. ["case", …, "#5286b7", "#a553b7"], ["to-color", ["get","ms_color"], …]).
+  // Purple-by-default was the 7/20 raster bug; don't repeat it where the colour is right there.
+  function colorIn(x, fb) {
+    var hit = null;
+    (function walk(v) {
+      if (typeof v === "string") { var c = rgbOf(v, null); if (c) hit = c; }
+      else if (Array.isArray(v)) v.forEach(walk);
+    })(x);
+    return hit || fb;
   }
   // colour accessor from the LIVE engine paint — a flat colour string, or a categorical
   // ["match", ["get",prop] | ["id"], v,c,…,fallback] lookup, so colour-by and per-feature
@@ -73,73 +111,73 @@
         };
       }
     }
-    var flat = rgbOf(v, fallback);
+    var flat = Array.isArray(v) ? colorIn(v, fallback) : rgbOf(v, fallback);
     return function () { return flat; };
+  }
+  // widths/radii: a plain number, else a zoom interpolation evaluated at the CURRENT zoom (the
+  // engine's stored widths are usually ["interpolate",["linear"],["zoom"],…] — taking a hardcoded
+  // default instead drew mid-drag lines visibly bolder than the layer's own), else any number the
+  // expression carries. One value for the whole drag: zoom doesn't change while the slider does.
+  function numIn(x) {
+    if (typeof x === "number" && isFinite(x)) return x;
+    var hit = null;
+    if (Array.isArray(x)) x.forEach(function (v) { if (hit == null) hit = numIn(v); });
+    return hit;
+  }
+  function numOf(m, layerId, prop, fb) {
+    var v = null;
+    try { v = m.getPaintProperty(layerId, prop); } catch (e) {}
+    if (typeof v === "number" && isFinite(v)) return v;
+    if (Array.isArray(v) && v[0] === "interpolate" && Array.isArray(v[2]) && v[2][0] === "zoom") {
+      var z = 0; try { z = m.getZoom(); } catch (e2) {}
+      var stops = v.slice(3), pick = null, pickZ = -1e9, first = null;
+      for (var i = 0; i + 1 < stops.length; i += 2) {
+        var sz = +stops[i], sv = numIn(stops[i + 1]);
+        if (sv == null) continue;
+        if (first == null) first = sv;
+        if (sz <= z && sz > pickZ) { pickZ = sz; pick = sv; }
+      }
+      if (pick != null) return pick;
+      if (first != null) return first;   // viewport is below the first stop
+    }
+    var n = numIn(v);
+    return n == null ? fb : n;
   }
   function tilesOf(node) {
     var s = node && node.source;
     if (!s) return null;
     var t = (s.tiles && s.tiles[0]) || s.url || null;
     if (!t || /^mapbox:/.test(String(t))) return null;   // mapbox-hosted tilesets have no raw tile URL
+    if (!/\{z\}/i.test(String(t))) return null;          // a TileJSON endpoint, not a tile template
     // new URL() percent-encodes the {z}/{x}/{y} braces, which makes MVTLayer read the template
     // as a TileJSON endpoint — decode them back after resolving
     try { return { url: new URL(String(t), location.href).href.replace(/%7B/gi, "{").replace(/%7D/gi, "}"), minZoom: s.minzoom || 0, maxZoom: s.maxzoom != null ? +s.maxzoom : 15 }; } catch (e) { return null; }
   }
 
-  // PER-TICK CHEAPNESS (owner 8/16, "deck checked is as slow as with both unchecked"): deck
-  // decides how much to redo by PROP IDENTITY. Rebuilding accessors/extensions per tick made it
-  // re-process attributes every slider move — the exact per-feature cost this path exists to
-  // avoid. So: everything is built ONCE per drag (begin) and frozen; setDate recreates the layer
-  // shells with the SAME function/extension objects and only a new filterRange — a pure uniform.
-  var _ext = null, _built = null;
-  function getFilterValue(f) {
-    var p = f.properties || {};
-    var s0 = ymd2n(p.DayStart), e0 = ymd2n(p.DayEnd);
-    return [s0 == null ? -1 : s0, e0 == null ? 1e7 : e0];   // undated = visible always, like the engine's coalesce filter
-  }
-  function buildOnce() {
-    _built = { left: [], right: [] };
-    var seen = {};
-    (D.items || []).forEach(function (it) {
-      if (it.isBorder || !it.slug || seen[it.slug]) return;
-      seen[it.slug] = true;
-      var cb = document.getElementById(it.slug);   // sidebar checkbox gates the layer, same rule as the raster
-      if (cb && "checked" in cb && !cb.checked) return;
-      var node = nodeById(it.slug);
-      var t = tilesOf(node);
-      if (!t) return;
-      var isLine = !!(node && node.type === "line");
-      eachMap(function (m, side) {
-        var engineId = it.slug + "-" + side;
-        var fill = accessorFor(m, engineId, isLine ? "line-color" : "fill-color", [143, 122, 224]);
-        var line = isLine ? fill : accessorFor(m, engineId, "fill-outline-color", [40, 40, 40]);
-        _built[side].push({
-          id: "ms-deck-" + it.slug,
-          data: t.url,
-          minZoom: t.minZoom, maxZoom: t.maxZoom,
-          binary: false,   // full GeoJSON features so accessors see feature.id (the engine's per-feature colour key)
-          filled: !isLine, stroked: true,
-          getFillColor: (function (fl) { return function (f) { return fl(f).concat(150); }; })(fill),
-          getLineColor: (function (ln, il) { return function (f) { return ln(f).concat(il ? 235 : 200); }; })(line, isLine),
-          getLineWidth: isLine ? 1.6 : 1, lineWidthUnits: "pixels",
-          getPointRadius: 4, pointRadiusUnits: "pixels",
-          getFilterValue: getFilterValue,
-          extensions: _ext || (_ext = [new deck.DataFilterExtension({ filterSize: 2 })]),
-          pickable: false
-        });
+  // EVERY dated tiled layer the sidebar is showing — bake or no bake (8/17). Before this, deck
+  // only covered layers that happened to carry a rasterYears bake, so a tiled layer without one
+  // still scrubbed through mapbox-gl paint. timelineIgnore layers are deliberately absent: they
+  // show everything at every date, so their vector simply stays up and nothing re-filters it.
+  function collect() {
+    var out = [], seen = {};
+    (function walk(a) {
+      (a || []).forEach(function (n) {
+        if (!n) return;
+        if (n.children) return walk(n.children);
+        if (!n.id || seen[n.id] || n.timelineIgnore) return;
+        var t = tilesOf(n);
+        if (!t) return;   // geojson / mapbox-hosted / TileJSON: the legacy paint scrub keeps these
+        var cb = document.getElementById(n.toggleElement || n.id);
+        if (cb && "checked" in cb && !cb.checked) return;   // switched off in the sidebar
+        seen[n.id] = true;
+        out.push({ slug: n.id, tiles: t, type: n.type || "fill", sourceLayer: n["source-layer"] || null });
       });
-    });
+    })(typeof layers !== "undefined" ? layers : []);
+    return out;
   }
-  function buildLayers(side, day) {
-    var n = ymd2n(day);
-    if (n == null || !_built) return [];
-    var range = [[-1, n], [n, 1e7]];
-    return _built[side].map(function (props) {
-      var p = Object.assign({}, props);   // same object identities everywhere except the range
-      p.filterRange = range;
-      return new deck.MVTLayer(p);
-    });
-  }
+  D.canDraw = function () { try { return D.available() && collect().length > 0; } catch (e) { return false; } };
+  var _owned = [];
+  D.owned = function () { return _owned.slice(); };
 
   function eachMap(fn) {
     [[typeof beforeMap !== "undefined" ? beforeMap : null, "left"], [typeof afterMap !== "undefined" ? afterMap : null, "right"]].forEach(function (pr) {
@@ -154,14 +192,123 @@
     return o;
   }
 
-  D.begin = function (items, ymd) {
-    if (!D.available()) return false;
-    // refuse when no item resolves to fetchable tiles — the caller falls back to the raster
-    // rather than hiding the vectors behind an empty overlay
-    var usable = (items || []).some(function (it) { return !it.isBorder && it.slug && tilesOf(nodeById(it.slug)); });
-    if (!usable) return false;
-    D.items = items;
+  // PER-TICK CHEAPNESS (owner 8/16, "deck checked is as slow as with both unchecked"): deck
+  // decides how much to redo by PROP IDENTITY. Rebuilding accessors/extensions per tick made it
+  // re-process attributes every slider move — the exact per-feature cost this path exists to
+  // avoid. So: everything is built ONCE per drag (begin) and frozen; setDate recreates the layer
+  // shells with the SAME function/extension objects and only a new filterRange — a pure uniform.
+  var _ext = null, _built = null, _sig = null;
+  function getFilterValue(f) {
+    var p = f.properties || {};
+    var s0 = ymd2n(p.DayStart), e0 = ymd2n(p.DayEnd);
+    return [s0 == null ? -1 : s0, e0 == null ? 1e7 : e0];   // undated = visible always, like the engine's coalesce filter
+  }
+  function buildOnce() {
+    _built = { left: [], right: [] };
+    _owned = [];
+    collect().forEach(function (it) {
+      _owned.push(it.slug);
+      var isLine = it.type === "line", isPoint = it.type === "circle";
+      eachMap(function (m, side) {
+        var id = it.slug + "-" + side, strokeId = it.slug + "-stroke-" + side;
+        var hasStroke = false; try { hasStroke = !!m.getLayer(strokeId); } catch (e) {}
+        var mainKey = isLine ? "line-color" : isPoint ? "circle-color" : "fill-color";
+        var fill = accessorFor(m, id, mainKey, [143, 122, 224]);
+        // the outline follows whatever the engine actually draws: the stroke companion layer when
+        // there is one (it can exceed 1px), else the fill's own fill-outline-color
+        var line = isLine ? fill
+          : hasStroke ? accessorFor(m, strokeId, "line-color", [40, 40, 40])
+          : accessorFor(m, id, "fill-outline-color", [40, 40, 40]);
+        // MATCH THE LAYER'S OWN TRANSLUCENCY (the 8/14 raster lesson): a hardcoded alpha made
+        // release pop brighter→dimmer. Data-driven opacity can't be one value, so those keep the default.
+        var op = numOf(m, id, isLine ? "line-opacity" : isPoint ? "circle-opacity" : "fill-opacity", isLine ? 1 : 0.6);
+        var a = Math.max(20, Math.min(255, Math.round(op * 255)));
+        var lw = isLine ? numOf(m, id, "line-width", 1.6) : hasStroke ? numOf(m, strokeId, "line-width", 1) : 1;
+        var props = {
+          id: "ms-deck-" + it.slug,
+          data: it.tiles.url,
+          minZoom: it.tiles.minZoom, maxZoom: it.tiles.maxZoom,
+          binary: false,   // full GeoJSON features so accessors see feature.id (the engine's per-feature colour key)
+          filled: !isLine, stroked: true,
+          getFillColor: (function (fl, aa) { return function (f) { return fl(f).concat(aa); }; })(fill, a),
+          getLineColor: (function (ln, aa) { return function (f) { return ln(f).concat(aa); }; })(line, isLine ? a : Math.min(255, a + 60)),
+          getLineWidth: lw, lineWidthUnits: "pixels", lineWidthMinPixels: isLine ? 1 : 0.5,
+          getPointRadius: isPoint ? numOf(m, id, "circle-radius", 4) : 4, pointRadiusUnits: "pixels",
+          getFilterValue: getFilterValue,
+          extensions: _ext || (_ext = [new deck.DataFilterExtension({ filterSize: 2 })]),
+          pickable: false
+        };
+        // one archive can hold several source layers; render only the one this node points at
+        if (it.sourceLayer) props.loadOptions = { mvt: { layers: [it.sourceLayer] } };
+        _built[side].push(props);
+      });
+    });
+  }
+  function buildLayers(side, day) {
+    var n = ymd2n(day);
+    if (n == null || !_built) return [];
+    var range = [[-1, n], [n, 1e7]];
+    return _built[side].map(function (props) {
+      var p = Object.assign({}, props);   // same object identities everywhere except the range
+      p.filterRange = range;
+      return new deck.MVTLayer(p);
+    });
+  }
+
+  // Which layers, styled how — everything buildOnce() reads. Same signature means the props (and
+  // so the attributes deck already built and the tiles it already parsed) are still valid, which is
+  // what lets a hover PREPARE the drag. Colours/opacity change live in a session (colour-by, engine
+  // edits), and reusing a stale accessor is the 8/13 "stale black stuck until reload" bug — so the
+  // whole paint value goes in, unabridged.
+  function signature() {
+    var out = [];
+    collect().forEach(function (it) {
+      out.push(it.slug + "/" + it.type + "/" + it.tiles.url);
+      eachMap(function (m, side) {
+        ["fill-color", "line-color", "circle-color", "fill-outline-color", "fill-opacity", "line-opacity", "circle-opacity", "line-width", "circle-radius"].forEach(function (k) {
+          var v = null;
+          try { v = m.getPaintProperty(it.slug + "-" + side, k); } catch (e) {}
+          if (v == null) return;
+          out.push(k + "=" + (typeof v === "object" ? JSON.stringify(v) : String(v)));
+        });
+      });
+    });
+    return out.join(";");
+  }
+  function ensureBuilt() {
+    var sg = signature();
+    if (_built && _sig === sg) return;   // unchanged — keep the warmed props (and deck's parsed tiles)
+    _sig = sg;
     buildOnce();
+  }
+
+  // PREPARE ON HOVER (8/17): the first drag on a map paid ~0.4s while deck fetched and parsed tiles
+  // mapbox-gl had already cached where deck can't read it. Mounting the layers with a filter range
+  // NOTHING can satisfy loads and builds everything while drawing zero pixels — so the walk from
+  // "cursor arrives at the timeline" to "button goes down" absorbs the cost. Nothing is mounted
+  // while the map just sits there, so panning and zooming stay exactly as they were.
+  var WARM_RANGE = [[0, 0], [0, 0]];   // every real DayStart is ≥372 or -1; nothing passes this
+  D.prepare = function () {
+    if (D.active || D.mode !== "deck" || !D.available()) return;
+    try {
+      ensureBuilt();
+      if (!_owned.length) return;
+      eachMap(function (m, side) {
+        overlayFor(m).setProps({ layers: _built[side].map(function (props) {
+          var p = Object.assign({}, props);
+          p.filterRange = WARM_RANGE;
+          return new deck.MVTLayer(p);
+        }) });
+      });
+    } catch (e) {}
+  };
+
+  D.begin = function (ymd) {
+    if (!D.available()) return false;
+    ensureBuilt();
+    // refuse when nothing resolved — the caller falls back to the raster rather than hiding the
+    // vectors behind an empty overlay
+    if (!_owned.length) return false;
     D.active = true;
     D.setDate(ymd);
     return true;
@@ -189,4 +336,44 @@
       try { if (m.__msDeckOverlay) m.__msDeckOverlay.setProps({ layers: [] }); } catch (e) {}
     });
   };
+
+  // PREWARM (8/17): the FIRST drag of a session paid a ~0.5s hitch fetching + parsing tiles deck
+  // had never asked for. The engine's own tiles come from the same URLs, but through mapbox-gl's
+  // internal cache, which deck cannot read — so warm the HTTP/service-worker cache at idle and
+  // the first drag starts from a warm cache like every later one. Bounded and idempotent.
+  var _warmed = {}, _warmN = 0;
+  function x2(lon, z) { return Math.floor(((lon + 180) / 360) * Math.pow(2, z)); }
+  function y2(lat, z) {
+    var l = Math.max(-85.05, Math.min(85.05, lat)) * Math.PI / 180;
+    return Math.floor(((1 - Math.log(Math.tan(l) + 1 / Math.cos(l)) / Math.PI) / 2) * Math.pow(2, z));
+  }
+  D.warm = function () {
+    if (D.active || D.mode !== "deck" || !D.available() || _warmN > 400) return;
+    var m = typeof beforeMap !== "undefined" ? beforeMap : null;
+    if (!m || !m.getBounds) return;
+    var b; try { b = m.getBounds(); } catch (e) { return; }
+    var z0 = Math.floor(m.getZoom()), budget = 12;
+    collect().forEach(function (it) {
+      var z = Math.max(it.tiles.minZoom, Math.min(it.tiles.maxZoom, z0)), N = Math.pow(2, z) - 1;
+      var xa = Math.max(0, x2(b.getWest(), z)), xb = Math.min(N, x2(b.getEast(), z));
+      var ya = Math.max(0, y2(b.getNorth(), z)), yb = Math.min(N, y2(b.getSouth(), z));
+      for (var x = xa; x <= xb && budget > 0; x++) {
+        for (var y = ya; y <= yb && budget > 0; y++) {
+          var u = it.tiles.url.replace(/\{z\}/gi, z).replace(/\{x\}/gi, x).replace(/\{y\}/gi, y);
+          if (_warmed[u]) continue;
+          _warmed[u] = 1; _warmN++; budget--;
+          try { fetch(u, { credentials: "omit" }).then(function (r) { return r.arrayBuffer(); }).catch(function () {}); } catch (e) {}
+        }
+      }
+    });
+  };
+  // self-contained boot: rasterScrub only exists on maps that have bakes, and deck now serves
+  // maps that have none
+  var t = 0;
+  (function hook() {
+    if (++t > 40) return;
+    var m = typeof beforeMap !== "undefined" ? beforeMap : null;
+    if (!m || !m.on) return void setTimeout(hook, 500);
+    m.on("idle", function () { try { D.warm(); } catch (e) {} });
+  })();
 })();
