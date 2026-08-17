@@ -86,11 +86,20 @@
     try { return { url: new URL(String(t), location.href).href.replace(/%7B/gi, "{").replace(/%7D/gi, "}"), minZoom: s.minzoom || 0, maxZoom: s.maxzoom != null ? +s.maxzoom : 15 }; } catch (e) { return null; }
   }
 
-  // one deck layer list per MAP (deck layer instances cannot be shared between two Deck contexts)
-  function buildLayers(m, side, day) {
-    var n = ymd2n(day);
-    if (n == null) return [];
-    var out = [], seen = {};
+  // PER-TICK CHEAPNESS (owner 8/16, "deck checked is as slow as with both unchecked"): deck
+  // decides how much to redo by PROP IDENTITY. Rebuilding accessors/extensions per tick made it
+  // re-process attributes every slider move — the exact per-feature cost this path exists to
+  // avoid. So: everything is built ONCE per drag (begin) and frozen; setDate recreates the layer
+  // shells with the SAME function/extension objects and only a new filterRange — a pure uniform.
+  var _ext = null, _built = null;
+  function getFilterValue(f) {
+    var p = f.properties || {};
+    var s0 = ymd2n(p.DayStart), e0 = ymd2n(p.DayEnd);
+    return [s0 == null ? -1 : s0, e0 == null ? 1e7 : e0];   // undated = visible always, like the engine's coalesce filter
+  }
+  function buildOnce() {
+    _built = { left: [], right: [] };
+    var seen = {};
     (D.items || []).forEach(function (it) {
       if (it.isBorder || !it.slug || seen[it.slug]) return;
       seen[it.slug] = true;
@@ -99,31 +108,37 @@
       var node = nodeById(it.slug);
       var t = tilesOf(node);
       if (!t) return;
-      var engineId = it.slug + "-" + side;
       var isLine = !!(node && node.type === "line");
-      var fill = accessorFor(m, engineId, isLine ? "line-color" : "fill-color", [143, 122, 224]);
-      var line = isLine ? fill : accessorFor(m, engineId, "fill-outline-color", [40, 40, 40]);
-      out.push(new deck.MVTLayer({
-        id: "ms-deck-" + it.slug,
-        data: t.url,
-        minZoom: t.minZoom, maxZoom: t.maxZoom,
-        binary: false,   // full GeoJSON features so accessors see feature.id (the engine's per-feature colour key)
-        filled: !isLine, stroked: true,
-        getFillColor: function (f) { return fill(f).concat(150); },
-        getLineColor: function (f) { return line(f).concat(isLine ? 235 : 200); },
-        getLineWidth: isLine ? 1.6 : 1, lineWidthUnits: "pixels",
-        getPointRadius: 4, pointRadiusUnits: "pixels",
-        getFilterValue: function (f) {
-          var p = f.properties || {};
-          var s0 = ymd2n(p.DayStart), e0 = ymd2n(p.DayEnd);
-          return [s0 == null ? -1 : s0, e0 == null ? 1e7 : e0];   // undated = visible always, like the engine's coalesce filter
-        },
-        filterRange: [[-1, n], [n, 1e7]],
-        extensions: [new deck.DataFilterExtension({ filterSize: 2 })],
-        pickable: false
-      }));
+      eachMap(function (m, side) {
+        var engineId = it.slug + "-" + side;
+        var fill = accessorFor(m, engineId, isLine ? "line-color" : "fill-color", [143, 122, 224]);
+        var line = isLine ? fill : accessorFor(m, engineId, "fill-outline-color", [40, 40, 40]);
+        _built[side].push({
+          id: "ms-deck-" + it.slug,
+          data: t.url,
+          minZoom: t.minZoom, maxZoom: t.maxZoom,
+          binary: false,   // full GeoJSON features so accessors see feature.id (the engine's per-feature colour key)
+          filled: !isLine, stroked: true,
+          getFillColor: (function (fl) { return function (f) { return fl(f).concat(150); }; })(fill),
+          getLineColor: (function (ln, il) { return function (f) { return ln(f).concat(il ? 235 : 200); }; })(line, isLine),
+          getLineWidth: isLine ? 1.6 : 1, lineWidthUnits: "pixels",
+          getPointRadius: 4, pointRadiusUnits: "pixels",
+          getFilterValue: getFilterValue,
+          extensions: _ext || (_ext = [new deck.DataFilterExtension({ filterSize: 2 })]),
+          pickable: false
+        });
+      });
     });
-    return out;
+  }
+  function buildLayers(side, day) {
+    var n = ymd2n(day);
+    if (n == null || !_built) return [];
+    var range = [[-1, n], [n, 1e7]];
+    return _built[side].map(function (props) {
+      var p = Object.assign({}, props);   // same object identities everywhere except the range
+      p.filterRange = range;
+      return new deck.MVTLayer(p);
+    });
   }
 
   function eachMap(fn) {
@@ -146,15 +161,27 @@
     var usable = (items || []).some(function (it) { return !it.isBorder && it.slug && tilesOf(nodeById(it.slug)); });
     if (!usable) return false;
     D.items = items;
+    buildOnce();
     D.active = true;
     D.setDate(ymd);
     return true;
   };
+  // one uniform move per rAF, never more — pointer events can outrun frames
+  var _pendDay = null, _rafOn = false;
+  function pump() {
+    if (!D.active) { _rafOn = false; return; }
+    if (_pendDay != null) {
+      var day = _pendDay; _pendDay = null;
+      eachMap(function (m, side) {
+        try { overlayFor(m).setProps({ layers: buildLayers(side, day) }); } catch (e) {}
+      });
+    }
+    requestAnimationFrame(pump);
+  }
   D.setDate = function (ymd) {
-    if (!D.active) return;
-    eachMap(function (m, side) {
-      try { overlayFor(m).setProps({ layers: buildLayers(m, side, ymd) }); } catch (e) {}
-    });
+    if (!D.active || ymd == null) return;
+    _pendDay = ymd;
+    if (!_rafOn) { _rafOn = true; pump(); }
   };
   D.end = function () {
     D.active = false;
