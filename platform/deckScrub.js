@@ -15,12 +15,21 @@
             rasterScrub.hideVectors + _dpTargets in map/engine/mapinit.js).
    The editor's ⚡ chip flips the same three states live (localStorage ms-timeline).
 
+   "layer"  THE DEFAULT since 8/17, and the answer to the 8/16 promotion: each layer decides, from
+            the "Make Faster" section of its own panel (raw_config.fast → node.fast). A layer with
+            nothing ticked scrubs through the engine, i.e. "mapbox" — so the shipped behaviour of a
+            fresh layer is exactly the pre-8/16 timeline, and deck only ever draws layers somebody
+            asked it to. Owner: "the reason why we've been doing all this has just been for speed …
+            there are things it can't render that mapbox can", so correctness is the default and
+            speed is a disclosed choice. The five named modes above remain as a GLOBAL override for
+            comparison runs; they force every layer onto one renderer and ignore node.fast.
+
    REMOVE ENTIRELY: delete this file, its <script> include in map/index.html + map/editor.html,
    and the MSDeckScrub references in rasterScrub.js. Nothing else references it. */
 (function () {
   "use strict";
   if (window.MSDeckScrub) return;
-  var DEFAULT_MODE = "deck";
+  var DEFAULT_MODE = "layer";   // ← the one word. "mapbox" = nobody intercepts, ever; "deck" = the 8/16 promotion
 
   var D = { mode: DEFAULT_MODE, active: false };
   window.MSDeckScrub = D;
@@ -93,26 +102,60 @@
     })(x);
     return hit || fb;
   }
-  // colour accessor from the LIVE engine paint — a flat colour string, or a categorical
-  // ["match", ["get",prop] | ["id"], v,c,…,fallback] lookup, so colour-by and per-feature
-  // styling survive (the engine paints per-feature via ["match",["id"],msid,colour,…])
+  // What a match/case keys off: ["id"], ["get",prop], and the to-string/to-number wrappers the
+  // styling system emits (["to-string",["get","cntry_name"]] — unwrapping only ["get"] meant a
+  // colour-by went unrecognised and drew as ONE colour, owner 8/17 "the coloring is uniform").
+  function keyOf(inp, f) {
+    if (!Array.isArray(inp)) return undefined;
+    var op = inp[0];
+    if (op === "id") return f.id != null ? f.id : (f.properties || {}).msid;
+    if (op === "get") return (f.properties || {})[inp[1]];
+    if (op === "to-string") { var s = keyOf(inp[1], f); return s == null ? "" : String(s); }
+    if (op === "to-number") { var n = +keyOf(inp[1], f); return isNaN(n) ? 0 : n; }
+    return undefined;
+  }
+  // COMPILE the live paint into a per-feature accessor. Paint values NEST: the engine writes
+  // per-feature overrides as ["match",["id"],id,colour,…,<fallback>] and that fallback is itself
+  // the colour-by ["match",["to-string",["get",prop]],…]. Reading only the outer level painted
+  // 1,361 of 1,369 features fallback purple on Global Borders (8/17). Compiled ONCE per drag into
+  // hash lookups, so per-feature cost stays O(depth) rather than a walk of a 6KB expression.
+  function compile(expr, fb) {
+    if (expr == null) return function () { return fb; };
+    if (typeof expr === "string") { var flat = rgbOf(expr, fb); return function () { return flat; }; }
+    if (!Array.isArray(expr)) return function () { return fb; };
+    var op = expr[0];
+    if (op === "match" && Array.isArray(expr[1])) {
+      var inp = expr[1], map = Object.create(null);
+      for (var i = 2; i + 1 < expr.length; i += 2) {
+        var labels = Array.isArray(expr[i]) ? expr[i] : [expr[i]];
+        var child = compile(expr[i + 1], fb);
+        for (var L = 0; L < labels.length; L++) map[String(labels[L])] = child;
+      }
+      var dflt = compile(expr[expr.length - 1], fb);
+      return function (f) {
+        var k = keyOf(inp, f);
+        var hit = k == null ? null : map[String(k)];
+        return (hit || dflt)(f);
+      };
+    }
+    // ["case", cond, a, …, fallback]: every condition the engine writes here is hover/selected
+    // feature-state, which is false for every feature during a drag — so the fallback IS the answer
+    if (op === "case") return compile(expr[expr.length - 1], fb);
+    if (op === "coalesce" || op === "to-color") {
+      var kids = [];
+      for (var j = 1; j < expr.length; j++) kids.push(compile(expr[j], null));
+      return function (f) {
+        for (var n = 0; n < kids.length; n++) { var c = kids[n](f); if (c) return c; }
+        return fb;
+      };
+    }
+    var one = colorIn(expr, fb);   // zoom/value ramps and anything unmodelled: one representative colour
+    return function () { return one; };
+  }
   function accessorFor(m, layerId, prop, fallback) {
     var v = null;
     try { v = m.getPaintProperty(layerId, prop); } catch (e) {}
-    if (Array.isArray(v) && v[0] === "match" && Array.isArray(v[1])) {
-      var byId = v[1][0] === "id";
-      var key = byId ? null : (v[1][0] === "get" ? v[1][1] : null);
-      if (byId || key) {
-        var map = {}, dflt = rgbOf(v[v.length - 1], fallback);
-        for (var i = 2; i + 1 < v.length; i += 2) map[v[i]] = rgbOf(v[i + 1], dflt);
-        return function (f) {
-          var k = byId ? (f.id != null ? f.id : (f.properties || {}).msid) : (f.properties || {})[key];
-          return map[k] || dflt;
-        };
-      }
-    }
-    var flat = Array.isArray(v) ? colorIn(v, fallback) : rgbOf(v, fallback);
-    return function () { return flat; };
+    return compile(v, fallback);
   }
   // widths/radii: a plain number, else a zoom interpolation evaluated at the CURRENT zoom (the
   // engine's stored widths are usually ["interpolate",["linear"],["zoom"],…] — taking a hardcoded
@@ -128,6 +171,10 @@
     var v = null;
     try { v = m.getPaintProperty(layerId, prop); } catch (e) {}
     if (typeof v === "number" && isFinite(v)) return v;
+    // ["case", <hover/selected cond>, 0.5, 0.4]: the FALLBACK is the at-rest value. numIn below
+    // would grab 0.5 — the hover value — and draw every feature as if the cursor were on it,
+    // which is part of why the drag read "slightly off the baked version" (8/17).
+    if (Array.isArray(v) && v[0] === "case") v = v[v.length - 1];
     if (Array.isArray(v) && v[0] === "interpolate" && Array.isArray(v[2]) && v[2][0] === "zoom") {
       var z = 0; try { z = m.getZoom(); } catch (e2) {}
       var stops = v.slice(3), pick = null, pickZ = -1e9, first = null;
@@ -158,6 +205,12 @@
   // only covered layers that happened to carry a rasterYears bake, so a tiled layer without one
   // still scrubbed through mapbox-gl paint. timelineIgnore layers are deliberately absent: they
   // show everything at every date, so their vector simply stays up and nothing re-filters it.
+  // PER-LAYER OPT-IN (8/17). The panel's "Make Faster" section writes raw_config.fast = {raster,deck},
+  // which spreads onto the rendered node. Absent = never chosen = deck off (deck is new, so there is
+  // nothing to inherit — unlike the raster, where an existing bake counts as consent; see
+  // fastOf() in editing.js and the same rule in rasterScrub.js). Under a forced chip mode this
+  // returns true for everything, which is the point of a comparison run.
+  function deckOptedIn(n) { return D.mode === "layer" ? !!(n && n.fast && n.fast.deck) : true; }
   function collect() {
     var out = [], seen = {};
     (function walk(a) {
@@ -169,6 +222,7 @@
         if (!t) return;   // geojson / mapbox-hosted / TileJSON: the legacy paint scrub keeps these
         var cb = document.getElementById(n.toggleElement || n.id);
         if (cb && "checked" in cb && !cb.checked) return;   // switched off in the sidebar
+        if (!deckOptedIn(n)) return;                        // not asked for under "Make Faster"
         seen[n.id] = true;
         out.push({ slug: n.id, tiles: t, type: n.type || "fill", sourceLayer: n["source-layer"] || null });
       });
@@ -176,6 +230,29 @@
     return out;
   }
   D.canDraw = function () { try { return D.available() && collect().length > 0; } catch (e) { return false; } };
+  // WHY DID / DIDN'T DECK DRAW — one call that names the reason per layer. Added 8/17 because
+  // "canDraw() is false" is unfalsifiable on its own: five different conditions produce it, and the
+  // stale-toggle bug earlier the same day was exactly a silent one. Gates and the console read this.
+  D.why = function () {
+    var rows = [];
+    (function walk(a) {
+      (a || []).forEach(function (n) {
+        if (!n) return;
+        if (n.children) return walk(n.children);
+        if (!n.id) return;
+        var cb = document.getElementById(n.toggleElement || n.id);
+        rows.push({
+          slug: n.id, label: n.label,
+          off: !!(cb && "checked" in cb && !cb.checked),
+          tlIgnore: !!n.timelineIgnore,
+          noTiles: !tilesOf(n),
+          notOptedIn: !deckOptedIn(n),
+          fast: n.fast || null
+        });
+      });
+    })(typeof layers !== "undefined" ? layers : []);
+    return { mode: D.mode, available: D.available(), owned: _owned.slice(), collected: collect().length, layers: rows };
+  };
   var _owned = [];
   D.owned = function () { return _owned.slice(); };
 
@@ -292,8 +369,13 @@
   // "cursor arrives at the timeline" to "button goes down" absorbs the cost. Nothing is mounted
   // while the map just sits there, so panning and zooming stay exactly as they were.
   var WARM_RANGE = [[0, 0], [0, 0]];   // every real DayStart is ≥372 or -1; nothing passes this
+  // "deck" and "deck+raster" both mean deck draws (the 5-option chip) — an exact === "deck" test
+  // silently skipped the combo, which is how deck+raster came out raster-only (8/17 gate)
+  // "layer" counts as wanted: whether deck actually draws is then decided per layer by collect(),
+  // which returns [] when nobody opted in — and every entry point already treats empty as "stand aside".
+  function deckWanted() { return D.mode === "layer" || String(D.mode || "").indexOf("deck") !== -1; }
   D.prepare = function () {
-    if (D.active || D.mode !== "deck" || !D.available()) return;
+    if (D.active || !deckWanted() || !D.available()) return;
     try {
       ensureBuilt();
       if (!_owned.length) return;
@@ -359,7 +441,7 @@
     return Math.floor(((1 - Math.log(Math.tan(l) + 1 / Math.cos(l)) / Math.PI) / 2) * Math.pow(2, z));
   }
   D.warm = function () {
-    if (D.active || D.mode !== "deck" || !D.available() || _warmN > 400) return;
+    if (D.active || !deckWanted() || !D.available() || _warmN > 400) return;
     var m = typeof beforeMap !== "undefined" ? beforeMap : null;
     if (!m || !m.getBounds) return;
     var b; try { b = m.getBounds(); } catch (e) { return; }

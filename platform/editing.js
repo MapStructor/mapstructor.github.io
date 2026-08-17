@@ -7326,6 +7326,185 @@
     }
     ov.style.display = 'block';
   }
+  // ══ MAKE FASTER (8/17) ═══════════════════════════════════════════════════════════════════════
+  // Speed became opt-in, per layer. The record is raw_config.fast = { raster, deck }, which spreads
+  // onto the rendered node as node.fast and is read by rasterScrub.js + deckScrub.js.
+  // ABSENT means "never chosen", and for a layer that already carries a rasterYears bake that reads
+  // as raster ON — so every map baked before today keeps its instant scrub with no migration, while
+  // nothing new bakes by itself. Both renderers apply this same rule; it is stated once, here.
+  function fastOf(node) {
+    var f = (node && node.fast) || null;
+    return { raster: f ? !!f.raster : !!(node && node.rasterYears), deck: f ? !!f.deck : false };
+  }
+  // The whole disclosure, in one place. This is the popup the owner asked for: "a button that says
+  // 'Explain' that gives a popup, with details about options, with baking vs deck, and their
+  // drawbacks and limitations." Written for someone deciding, not for someone debugging.
+  function openFastHelp() {
+    var ov = document.getElementById('elp-fasthelp-overlay');
+    if (!ov) {
+      var css = document.createElement('style');
+      css.textContent =
+        '#elp-fasthelp-overlay{position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:4000;display:none;}' +
+        '#elp-fasthelp-panel{position:absolute;top:7vh;left:50%;transform:translateX(-50%);width:560px;max-width:93vw;max-height:82vh;display:flex;flex-direction:column;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;color:#2a2a33;overflow:hidden;}' +
+        '#elp-fasthelp-head{display:flex;justify-content:space-between;align-items:center;padding:14px 22px 11px;border-bottom:1px solid #ece9f4;background:linear-gradient(180deg,#faf9fd,#fff);}' +
+        '#elp-fasthelp-head b{font-size:16px;color:#1e1b2e;}' +
+        '#elp-fasthelp-head small{display:block;font-weight:400;font-size:12px;color:#8a86a0;margin-top:1px;}' +
+        '#elp-fasthelp-close{cursor:pointer;color:#a09cb5;font-size:22px;line-height:1;padding:2px 6px;border-radius:6px;}' +
+        '#elp-fasthelp-close:hover{background:#f1eef9;color:#544f6e;}' +
+        '#elp-fasthelp-body{overflow-y:auto;padding:4px 22px 22px;font-size:13px;line-height:1.55;}' +
+        '#elp-fasthelp-body h4{margin:17px 0 3px;font-size:13.5px;color:#1e1b2e;}' +
+        '#elp-fasthelp-body p{margin:5px 0;}' +
+        '#elp-fasthelp-body b{color:#1e1b2e;}' +
+        '#elp-fasthelp-body ul{margin:5px 0 5px 2px;padding-left:17px;}' +
+        '#elp-fasthelp-body li{margin:3px 0;}' +
+        '#elp-fasthelp-body .fh-kick{display:inline-block;min-width:74px;font-weight:700;color:#5b4b9a;}' +
+        '#elp-fasthelp-body .fh-card{margin:7px 0 0;padding:9px 12px;border:1px solid #ece9f4;border-radius:8px;background:#fbfaff;}';
+      document.head.appendChild(css);
+      ov = document.createElement('div');
+      ov.id = 'elp-fasthelp-overlay';
+      ov.innerHTML =
+        '<div id="elp-fasthelp-panel">' +
+          '<div id="elp-fasthelp-head"><div><b>⚡ Make Faster</b><small>Two ways to speed up the time slider — and what each one costs</small></div><span id="elp-fasthelp-close">&times;</span></div>' +
+          '<div id="elp-fasthelp-body">' +
+            '<p>These settings change <b>one thing only</b>: how this layer draws <i>during</i> the drag, while your finger is down. The instant you let go, the map always redraws itself exactly right. So nothing here can affect your finished map, a screenshot, or what a visitor sees when they stop dragging.</p>' +
+            '<p>They exist because the normal way of drawing has to re-decide every feature on every frame. With a few thousand features that is invisible. With a hundred thousand it is a lag you can feel.</p>' +
+
+            '<h4>Leaving both off (the default)</h4>' +
+            '<p>The map draws normally. <b>Everything is exact</b> — every colour, dash, outline, hover and label, at every zoom. Nothing to bake, nothing to keep up to date, nothing to go stale.</p>' +
+            '<p>The only cost is speed on big layers. If dragging feels smooth, you are done — you do not need anything on this panel.</p>' +
+
+            '<h4>Baked snapshot</h4>' +
+            '<p>MapStructor pre-renders a picture of this layer at every year and stores it. Dragging then flips through pictures, which is the <b>fastest option there is</b> and costs the same on a ten-year-old laptop as on a new one.</p>' +
+            '<div class="fh-card">' +
+              '<div><span class="fh-kick">Best for</span> huge layers you drag often, and audiences on weak or unpredictable machines.</div>' +
+              '<div style="margin-top:4px;"><span class="fh-kick">Costs you</span> <b>time, more than once.</b> Baking a large layer can take minutes, and <b>it has to be redone</b> whenever you change the data or restyle the layer — otherwise the drag shows the old picture.</div>' +
+            '</div>' +
+            '<p style="margin-top:8px;">Its limits while dragging:</p>' +
+            '<ul>' +
+              '<li>It is a picture, so it is <b>slightly soft</b> when you are zoomed in close. Past a certain zoom it steps aside on its own and normal drawing takes over.</li>' +
+              '<li><b>Hover highlighting doesn\'t work</b> on a picture — but you are dragging the slider, not pointing at features.</li>' +
+              '<li>Only works where a snapshot can be honest: <b>not point layers</b>, and not layers whose start dates span more than 255 years.</li>' +
+            '</ul>' +
+
+            '<h4>Graphics-card preview</h4>' +
+            '<p>Draws this layer\'s <b>real shapes</b> on your graphics card during the drag, filtering by date in hardware. <b>Nothing to bake and nothing to keep fresh</b> — it always reads your current data, so it can never go stale.</p>' +
+            '<div class="fh-card">' +
+              '<div><span class="fh-kick">Best for</span> layers you are actively editing, and anything you would rather not wait on.</div>' +
+              '<div style="margin-top:4px;"><span class="fh-kick">Costs you</span> <b>exactness, not time.</b> It re-draws your styling rather than sharing it, so some of it is approximated while you drag.</div>' +
+            '</div>' +
+            '<p style="margin-top:8px;">What it approximates while dragging:</p>' +
+            '<ul>' +
+              '<li><b>Dash patterns</b> draw solid, and <b>line offsets</b> sit on the shared edge.</li>' +
+              '<li><b>Labels and icons</b> aren\'t drawn by it — the map\'s own labels keep working alongside.</li>' +
+              '<li>Colour, outline, width, opacity and colour-by-column <b>are</b> carried over.</li>' +
+              '<li>It needs a working graphics card. On a machine without one the option is switched off, and that layer simply drags normally.</li>' +
+            '</ul>' +
+            '<p style="margin-top:9px;">Turning one on does not commit you to anything — untick it and the next drag goes straight back to normal drawing. A snapshot you already baked is <b>kept, not deleted</b>, so you can switch it back on later without waiting again.</p>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(ov);
+      ov.querySelector('#elp-fasthelp-close').addEventListener('click', function () { ov.style.display = 'none'; });
+      ov.addEventListener('click', function (e) { if (e.target === ov) ov.style.display = 'none'; });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') ov.style.display = 'none'; });
+    }
+    ov.style.display = 'block';
+  }
+  // Reveal + fill the section for the active layer. Freshness comes from stamps the bake writes
+  // (rasterYears.at / .fc) compared with the tile bake's own stamp — no extra query, and it answers
+  // the question optional baking creates: "is what I baked still what my data says?"
+  function fillFastSection(node) {
+    var sec = document.getElementById('elp-fast-sec'); if (!sec) return;
+    sec.style.display = 'none';
+    if (!node || node.type === 'section' || node.type === 'group' || node.type === 'divider') return;
+    if (node.timelineIgnore) return;   // this layer never listens to the slider — nothing to speed up
+    sec.style.display = 'block';
+    var f = fastOf(node), ry = node.rasterYears || null;
+    var cbR = document.getElementById('elp-fast-raster'), cbD = document.getElementById('elp-fast-deck');
+    cbR.checked = f.raster; cbD.checked = f.deck;
+    var rn = document.getElementById('elp-fast-raster-note'), btn = document.getElementById('elp-fast-bake');
+    if (!ry) {
+      rn.innerHTML = 'Nothing baked yet — click <b>Bake snapshot</b> below.';
+      btn.innerHTML = '🔥 Bake snapshot';
+      cbR.disabled = true;             // ticking a snapshot that doesn't exist would be a lie
+    } else {
+      cbR.disabled = false;
+      var kb = Math.round((ry.bytes || 0) / 1024);
+      var when = null; try { when = ry.at ? new Date(ry.at).toLocaleDateString() : null; } catch (eD) {}
+      var stale = false;
+      try { stale = !!(ry.at && node.tilesGeneratedAt && new Date(node.tilesGeneratedAt) > new Date(ry.at)); } catch (eS) {}
+      rn.innerHTML = 'Baked' + (when ? ' ' + when : '') + (kb ? ' · ' + kb + ' KB' : '') + (ry.fc ? ' · ' + Number(ry.fc).toLocaleString() + ' features' : '') +
+        (stale ? '<br><b style="color:#b4453a;">The data changed since — re-bake.</b>' : '');
+      btn.innerHTML = '🔥 Re-bake snapshot';
+    }
+    var dn = document.getElementById('elp-fast-deck-note');
+    var deckOk = false; try { deckOk = !!(window.MSDeckScrub && MSDeckScrub.available()); } catch (eK) {}
+    cbD.disabled = !deckOk;
+    dn.innerHTML = deckOk
+      ? 'Instant, nothing to bake. Some styling is approximated mid-drag.'
+      : 'Not available — no usable graphics card on this device.';
+  }
+  async function onFastToggle(kind, on) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) { setStatus('That layer has no database id'); return; }
+    var f = fastOf(node);   // resolve the IMPLICIT state first — writing {deck:true} alone would
+    f[kind] = !!on;         // otherwise clear a pre-8/17 layer's inherited "raster on"
+    node.fast = { raster: f.raster, deck: f.deck };
+    var st = document.getElementById('elp-fast-status');
+    if (st) {
+      st.style.display = 'block';
+      st.textContent = (f.raster || f.deck)
+        ? 'Dragging this layer now uses: ' + [f.raster ? 'baked snapshot' : null, f.deck ? 'graphics-card preview' : null].filter(Boolean).join(' + ') + '.'
+        : 'Dragging this layer now draws normally — exact, nothing baked.';
+    }
+    setStatus('Saving…');
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      rc.fast = { raster: f.raster, deck: f.deck };
+      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      if (r.error) throw new Error(r.error.message);
+      setStatus('Saved');
+    } catch (e) { console.warn('Make Faster save failed', e); setStatus('Save failed'); }
+    // the running scrub rebuilds its item list from the nodes, so the very next drag obeys this
+    try { if (window.MSRasterScrub && MSRasterScrub.reload) MSRasterScrub.reload(); } catch (e2) {}
+  }
+  async function onBakeSnapshot() {
+    // EVERY exit path has to speak IN THE PANEL. The first version returned silently when the layer
+    // had no db id, so pressing Bake looked like a dead button — nothing moved, nothing said why
+    // (8/17 gate: status stayed empty for six seconds and the run read as "the bake did nothing").
+    var st = document.getElementById('elp-fast-status');
+    var say = function (t) { if (st) { st.style.display = 'block'; st.textContent = t; } };
+    if (!activeLayerId) { say('Select a layer first.'); return; }
+    var node = findNodeById(layers, activeLayerId); if (!node) { say('That layer is no longer on the map.'); return; }
+    var lid = slugToLayerDbId[activeLayerId];
+    if (!lid) { say('This layer has no database id yet — save the map, then try again.'); setStatus('That layer has no database id'); return; }
+    var keepDeck = fastOf(node).deck;
+    var btn = document.getElementById('elp-fast-bake'), lbl = btn ? btn.innerHTML : '';
+    say('Reading this layer’s features…');
+    if (btn) { btn.disabled = true; btn.textContent = '🔥 Baking…'; }
+    try {
+      await loadScript('../platform/tilegen.js?v=' + Date.now());   // MSTileGen isn't on the page until loaded
+      if (!(window.MSTileGen && MSTileGen.bakeScrubRaster)) throw new Error('tiler unavailable');
+      var out = await MSTileGen.bakeScrubRaster(db, projectId, { id: lid, name: node.label, type: node.type },
+        function (m) { say(m); msProgress(m); });
+      if (out === -1) setStatus('This layer can’t take a snapshot');
+      else if (!out) { say('Nothing to bake — this layer has no features of its own.'); setStatus('Nothing to bake'); }
+      else {
+        node.rasterYears = out;
+        node.fast = { raster: true, deck: keepDeck };
+        setStatus('Snapshot baked');
+        msProgress('Snapshot baked — “' + (node.label || 'layer') + '” now scrubs instantly.');
+      }
+    } catch (e) {
+      console.warn('snapshot bake failed', e);
+      say('Bake failed: ' + ((e && e.message) || e));
+      setStatus('Bake failed');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = lbl || '🔥 Bake snapshot'; }
+      fillFastSection(node);
+    }
+  }
   async function onMapLabelsChange() {
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
@@ -8353,6 +8532,26 @@
         SEC('Layer info') +
         '<button id="elp-info" class="ms-btn" style="padding:7px;font-weight:600;">&#9432; Edit&hellip; <span style="font-weight:400;color:#888;">(adds the &#9432; button when filled)</span></button>' +
       '</div>' +
+      // ── MAKE FASTER (8/17) — speed is OPT-IN now. Owner: "let's make baking optional, not
+      //    automatic … baking takes a lot of time often, and it has to be redone." So the default is
+      //    the engine's own scrub: always exact, always animated, no waiting. These two are
+      //    accelerators the owner switches on per LAYER once they decide the trade is worth it —
+      //    per layer, not per map, so one huge layer can't drag the small ones into deck's limits.
+      //    Deliberately NOT gated on capability: the owner ruled that partial rendering is their
+      //    call ("It's okay if it only partially renders … speed sometimes matters more than not
+      //    seeing some things right while doing the slider"), so the Explain popup discloses and
+      //    the checkbox still offers.
+      '<div id="elp-fast-sec" class="' + SECTOP + '" style="display:none;">' +
+      SEC('Make Faster') +
+      '<div class="ms-note" style="margin:0 0 7px;">Only affects how this layer draws <b>while you drag the time slider</b>. Both off = normal drawing, always exact.</div>' +
+      '<button id="elp-fast-explain" class="ms-btn" style="margin-bottom:9px;">💡 Explain&hellip; <span style="font-weight:400;color:#888;">(options &amp; limits)</span></button>' +
+      '<label class="ms-check" style="margin-bottom:1px;" title="Scrub a pre-rendered picture of every year — the fastest option, and it costs the same on every device"><input id="elp-fast-raster" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Baked snapshot</label>' +
+      '<div id="elp-fast-raster-note" class="ms-note" style="margin:0 0 7px;"></div>' +
+      '<button id="elp-fast-bake" class="ms-btn" style="margin-bottom:9px;">🔥 Bake snapshot</button>' +
+      '<label class="ms-check" style="margin-bottom:1px;" title="Draw this layer\'s real shapes on the graphics card while dragging — nothing to bake, but some styling is approximated"><input id="elp-fast-deck" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Graphics-card preview</label>' +
+      '<div id="elp-fast-deck-note" class="ms-note" style="margin:0 0 4px;"></div>' +
+      '<div id="elp-fast-status" class="ms-note-accent" style="display:none;margin-top:6px;"></div>' +
+      '</div>' +
       // ── TIMELINE DATES — moved to the BOTTOM of the panel (user 7/20). Maps a data column (or one
       //    fixed date) into every feature's Start/End (what the timeline slider filters on); shown by
       //    fillDateSection for any layer with DB rows. Applying auto-rebakes tiled layers.
@@ -8408,6 +8607,10 @@
     ['elp-lbl-color', 'elp-lbl-halo', 'elp-lbl-bold', 'elp-lbl-density'].forEach(function (id2) { document.getElementById(id2).addEventListener('change', onMapLabelsChange); });
     document.getElementById('elp-lbl-zoomsizes').addEventListener('change', onMapLabelsChange);   // delegated: stop rows are dynamic (renderLblStops)
     document.getElementById('elp-lbl-help').addEventListener('click', function (e) { e.preventDefault(); openLabelsHelp(); });
+    document.getElementById('elp-fast-explain').addEventListener('click', function (e) { e.preventDefault(); openFastHelp(); });
+    document.getElementById('elp-fast-raster').addEventListener('change', function () { onFastToggle('raster', this.checked); });
+    document.getElementById('elp-fast-deck').addEventListener('change', function () { onFastToggle('deck', this.checked); });
+    document.getElementById('elp-fast-bake').addEventListener('click', onBakeSnapshot);
     // timeline dates: "Fixed date…" picks reveal their date input; Apply runs the bulk mapping
     [['elp-date-start-col', 'elp-date-start-fixed'], ['elp-date-end-col', 'elp-date-end-fixed']].forEach(function (pr9) {
       document.getElementById(pr9[0]).addEventListener('change', function () { var f9 = document.getElementById(pr9[1]); if (f9) f9.style.display = this.value === '__fixed' ? '' : 'none'; });
@@ -8622,7 +8825,7 @@
     //    so the section/group/divider early-returns left whatever the last layer showed:
     //    kind note, re-bake, dataset chip, instance button/notes, dates section, size picker.
     if (node.type === 'section' || node.type === 'group') {
-      ['elp-kind', 'elp-rebake', 'elp-rebake-note', 'elp-instance', 'elp-instance-note', 'elp-dataset', 'elp-dataset-fork', 'elp-dates-sec', 'elp-divsize']
+      ['elp-kind', 'elp-rebake', 'elp-rebake-note', 'elp-instance', 'elp-instance-note', 'elp-dataset', 'elp-dataset-fork', 'elp-dates-sec', 'elp-fast-sec', 'elp-divsize']
         .forEach(function (eid) { var el = document.getElementById(eid); if (el) el.style.display = 'none'; });
     }
     if (node.type === 'section') {   // #4: sections get a minimal panel — title + defaults + Delete (no style/zoom)
@@ -8722,6 +8925,7 @@
     ovSec.style.display = isLinkedMirror ? 'block' : 'none';
     document.getElementById('elp-ov-table').style.display = 'none';
     if (isLinkedMirror) ovRenderChips(node);
+    fillFastSection(node);   // Make Faster: the two per-layer scrub accelerators + their freshness
     fillDateSection(node);   // Timeline dates: async sample reveals the section for any layer with DB rows (incl. converted tilesets)
     document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';

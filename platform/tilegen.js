@@ -879,16 +879,33 @@
     // a raster that exists (8/7 rule), so existence is the whole contract, and a re-bake through
     // this code is what clears a stamp that should never have been made. No raster simply means
     // the vector animates itself, which is correct — a wrong raster is far worse than none.
+    // OPT-IN SINCE 8/17 (owner: "let's make baking optional, not automatic … the thing is, baking
+    // takes a lot of time often, and it has to be redone"). The scrub raster is no longer a side
+    // effect of tiling. Two ways in, and nothing else bakes one:
+    //   o.bakeRaster        → an explicit request (the panel's Make Faster → Bake snapshot).
+    //   an existing bake    → REFRESH it. A layer already carrying rasterYears was baked under the
+    //                         old automatic regime or by hand, so a re-bake must keep it current
+    //                         rather than silently throw away a bake someone waited minutes for.
+    // Neither → no raster, which is correct: the layer scrubs as a vector, exactly like every
+    // untouched layer, and the owner can turn it on in the panel when they decide it's worth it.
+    var wantRaster = !!o.bakeRaster || !!rc.rasterYears;
     try {
-      var ryNew = null, ryWhy = rasterUnfitReason(geomKind, fc);
-      if (!ryWhy) {
-        status("Baking instant-scrub raster…");
-        ryNew = await bakeYearsRaster(db, projectId, layerDbId, fc);
+      if (!wantRaster) {
+        status("No instant-scrub snapshot (optional — turn it on under “Make Faster”).");
       } else {
-        status("Instant-scrub raster skipped — " + ryWhy + ".");
+        var ryNew = null, ryWhy = rasterUnfitReason(geomKind, fc);
+        if (!ryWhy) {
+          status("Baking instant-scrub raster…");
+          ryNew = await bakeYearsRaster(db, projectId, layerDbId, fc);
+        } else {
+          status("Instant-scrub raster skipped — " + ryWhy + ".");
+        }
+        // FRESHNESS STAMPS (8/17): optional baking with no staleness signal drifts worse than the
+        // automatic bake did, so the panel needs to be able to say "baked <when>, <n> features".
+        if (ryNew) { ryNew.at = new Date().toISOString(); ryNew.fc = (features && features.length) || 0; }
+        if (ryNew) { rc.rasterYears = ryNew; status("Instant-scrub raster ready (" + Math.round(ryNew.bytes / 1024) + " KB)."); }
+        else delete rc.rasterYears;   // clear any stale/unfit bake — this layer scrubs as a vector
       }
-      if (ryNew) { rc.rasterYears = ryNew; status("Instant-scrub raster ready (" + Math.round(ryNew.bytes / 1024) + " KB)."); }
-      else delete rc.rasterYears;   // clear any stale/unfit bake — this layer scrubs as a vector
     } catch (eR) { console.warn("raster bake skipped:", eR && eR.message); }
     var upd = await db.from("layers").update({
       source_type: "vector-tiles-url",
@@ -976,6 +993,79 @@
     await convertLayer(db, projectId, L.id, feats, { name: L.name, geomKind: L.type, status: status, labelField: lblField });
     return 1;
   }
+
+  // BAKE JUST THE SCRUB SNAPSHOT — no re-tiling (8/17, the panel's "Make Faster" → Bake snapshot).
+  // The tiles are the expensive artifact and they are already correct; only the year-raster is
+  // missing, so this reads the two things a raster actually needs (geometry + the day numbers) and
+  // writes raw_config.rasterYears alone. That is the whole reason it exists: routing this through
+  // sewUpLayer would re-tile a layer whose tiles are fine, which is minutes of work for nothing.
+  //   L: { id, name, type } — type is the GEOMETRY kind ('fill' / 'line' / 'circle'), which decides
+  //   fitness. Returns the rasterYears config on success, 0 if the layer owns no rows, -1 if this
+  //   layer can never have an honest raster (the caller shows `why` — a point layer, or starts that
+  //   span more than the codec's 255-year window).
+  // Same keyset pagination and adaptive page size as sewUpLayer, for the same two reasons: OFFSET
+  // paging silently truncated big layers, and heavy geometry blows the statement timeout at 1000.
+  async function bakeScrubRaster(db, projectId, L, statusFn) {
+    var status = statusFn || function () {};
+    if (!L || !L.id) return 0;
+    // POINTER COPIES own no rows — bake from the data root, same resolver sewUpLayer uses
+    var dataLid = L.id;
+    try {
+      var probe = await db.from("features").select("feature_id").eq("layer_id", L.id).limit(1);
+      if (!probe.error && (!probe.data || !probe.data.length)) {
+        var rt = await db.rpc("ms_layer_data_root", { p_layer: L.id });
+        if (!rt.error && rt.data && rt.data !== L.id) { dataLid = rt.data; status("This layer is a copy — baking from its source's rows…"); }
+      }
+    } catch (eRoot) {}
+    var feats = [], lastFid = null, pageSz = 1000, retried = false;
+    for (;;) {
+      var q = db.from("features").select("feature_id, geom, start_date, end_date").eq("layer_id", dataLid).order("feature_id").limit(pageSz);
+      if (lastFid != null) q = q.gt("feature_id", lastFid);
+      var r = await q;
+      if (r.error) {
+        if (pageSz > 25) { pageSz = Math.max(25, Math.floor(pageSz / 4)); status("Heavy rows — retrying in pages of " + pageSz + "…"); continue; }
+        if (!retried) { retried = true; status("Row fetch hiccup — retrying…"); await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }
+        // ABORT LOUDLY: a raster baked from a truncated read would hide real features mid-drag,
+        // and the loader never second-guesses a raster that exists (the 8/7 rule)
+        throw new Error("snapshot aborted: feature fetch failed at " + feats.length + " (" + r.error.message + ")");
+      }
+      retried = false;
+      if (!r.data || !r.data.length) break;
+      lastFid = r.data[r.data.length - 1].feature_id;
+      r.data.forEach(function (f) {
+        feats.push({
+          type: "Feature", id: f.feature_id, geometry: f.geom,
+          properties: {
+            DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, "") || 0 : 0,
+            DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, "") || 99999999 : 99999999
+          }
+        });
+      });
+      if (feats.length % 25000 < 1000) status("Reading rows… " + feats.length.toLocaleString());
+      if (r.data.length < pageSz) break;
+    }
+    if (!feats.length) return 0;
+    var fc = { type: "FeatureCollection", features: feats };
+    var why = rasterUnfitReason(L.type || "fill", fc);
+    if (why) { status("A snapshot can't be honest for this layer — " + why + "."); return -1; }
+    status("Baking the snapshot from " + feats.length.toLocaleString() + " features…");
+    var ry = await bakeYearsRaster(db, projectId, L.id, fc);
+    if (!ry) return 0;
+    ry.at = new Date().toISOString();
+    ry.fc = feats.length;
+    var cur = await db.from("layers").select("raw_config").eq("id", L.id).single();
+    if (cur.error) throw new Error(cur.error.message);
+    var rc = (cur.data && cur.data.raw_config) || {};
+    rc.rasterYears = ry;
+    rc.fast = rc.fast || {};
+    rc.fast.raster = true;      // asking for the bake IS the opt-in — nobody waits for one and then has to tick a box
+    var upd = await db.from("layers").update({ raw_config: rc }).eq("id", L.id);
+    if (upd.error) throw new Error(upd.error.message);
+    status("Snapshot ready — " + Math.round(ry.bytes / 1024) + " KB.");
+    // tell the RUNNING scrub, or the session keeps scrubbing from state that predates this bake
+    try { if (window.MSRasterScrub && window.MSRasterScrub.reload) window.MSRasterScrub.reload(); } catch (eRS) {}
+    return ry;
+  }
   // 7/21 dirty check: is this layer's data UNCHANGED since its last bake? Any doubt → false (re-bake;
   // correctness over speed). Uses the stamps convertLayer records: count (adds/deletes), max feature id
   // (add+delete pairs), and features.updated_at — trigger-set on UPDATE (verified 7/21) — for edits.
@@ -1051,6 +1141,7 @@
     // carrying its own copy that would drift (scripts/bake-scrub-raster.mjs drives this file
     // headlessly — the format has exactly one definition and exactly one reader)
     rasterUnfitReason: rasterUnfitReason,
+    bakeScrubRaster: bakeScrubRaster,   // 8/17: bake ONLY the snapshot, no re-tiling — the panel's Make Faster button
     needsTiles: needsTiles,
     buildArchive: buildArchive,
     convertLayer: convertLayer,

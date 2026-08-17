@@ -7,33 +7,72 @@
    was rejected: the opaque raster hides forward changes and exposes vector lag backward.)
 
    8/17 — THIS FILE IS NOW THE SEAM, NOT THE ONLY RENDERER. It picks who draws the drag:
-   deck.gl (platform/deckScrub.js, the default — reads the layer's own tiles, needs no bake) →
-   the baked raster below (this file, the fallback for weak GPUs / unfetchable tiles) → the
-   engine's own paint scrub (nobody intercepts). The one-word swap back to the pure mapbox-gl
-   timeline lives at the top of deckScrub.js.
-   ON/OFF: the "⚡ Instant scrub" chip near the timeline — EDITOR ONLY (persisted: localStorage
-   ms-timeline = deck|raster|mapbox). VIEW mode always takes the best available path with no chip
-   (user 7/21: the public should never miss the speed; may become configurable later).
+   deck.gl (platform/deckScrub.js) → the baked raster below (this file) → the engine's own paint
+   scrub (nobody intercepts). The one-word swap back to the pure mapbox-gl timeline lives at the top
+   of deckScrub.js.
+   WHO CHOOSES (8/17): each LAYER does, in the "Make Faster" section of its panel — raw_config.fast
+   = { raster, deck }, written by editing.js and read here (rasterOptedIn) and in deckScrub
+   (deckOptedIn). Neither ticked = the engine draws the drag, exact and animated. Nothing bakes by
+   itself any more: the owner asks for a snapshot with the panel's Bake button, because "baking takes
+   a lot of time often, and it has to be redone". Absent `fast` on a layer that already HAS a bake
+   counts as raster ON, so no pre-8/17 map needed migrating.
+   The "⚡ Scrub" chip near the timeline is an EDITOR-ONLY comparison override that forces the whole
+   map onto one renderer. It does NOT persist — every reload returns to "Per layer (panel)".
+   VIEW mode has no chip and simply honours each layer's choice.
    REMOVE ENTIRELY: delete this file, its <script> include in map/index.html + map/editor.html,
    and the bakeYearsRaster block in platform/tilegen.js. Nothing else references it. */
 (function () {
   "use strict";
   if (window.MSRasterScrub) return;
-  var LS = "ms-timeline";   // "deck" | "raster" | "mapbox" — replaces ms-raster-scrub + ms-deck-scrub
-  // the chip (and its localStorage override) is an editor testing tool; viewers always get the
-  // best renderer this machine can run, with no opt-out
+  var LS = "ms-timeline";   // legacy key — cleared on every load, never read again (see readMode)
+  // The chip is an EDITOR-ONLY comparison tool. Viewers never see it; every page reads each layer's
+  // own "Make Faster" choice.
   var IS_EDITOR = /editor\.html/i.test((location && location.pathname) || "");
-  function codeDefault() { return (window.MSDeckScrub && MSDeckScrub.mode) || "raster"; }
+  function codeDefault() { return (window.MSDeckScrub && MSDeckScrub.mode) || "layer"; }
   // The two OLD chip keys are deliberately NOT migrated (8/17): they were comparison toggles, and
   // the owner had left both "off" from an A/B the night before. Reading them as a preference put
   // them on the legacy mapbox path on the very load that was supposed to swap it out — "it's slower
   // than ever", correctly, because it WAS the old scrub. A stale experiment must never outvote the
   // shipped default; the keys are cleared so nothing can read them again.
+  // FIVE explicit modes (owner 8/17: "the checkboxes are confusing — we need to actually have 5").
+  // Each names exactly who draws the drag; the combos exist to compare two renderers on the same
+  // gesture. "mapbox+raster" is the pre-deck v3 arrangement: raster over vectors that keep animating.
+  // 8/17 · "layer" IS THE DEFAULT and the only one a normal user meets: each layer decides for
+  // itself in its panel's "Make Faster" section. The five forced modes below it stay as a GLOBAL
+  // override for comparison runs — they ignore every per-layer toggle and put the whole map on one
+  // renderer, which is the only way to A/B the same gesture.
+  var MODES = [
+    { id: "layer", label: "Per layer (panel)" },
+    { id: "deck", label: "Deck only" },
+    { id: "raster", label: "Raster only" },
+    { id: "mapbox", label: "Mapbox only" },
+    { id: "deck+raster", label: "Deck + Raster" },
+    { id: "mapbox+raster", label: "Mapbox + Raster" }
+  ];
+  function isMode(v) { return MODES.some(function (m) { return m.id === v; }); }
+  function wantsDeck(m) { return m === "layer" || m === "deck" || m === "deck+raster"; }
+  function wantsRaster(m) { return m === "layer" || m === "raster" || m === "deck+raster" || m === "mapbox+raster"; }
+  // "layer" is absent here on purpose: hiding is already scoped to the slugs a fast renderer
+  // actually claimed (hideVectors(slugs) → __msScrubOwned), so every layer that opted out keeps
+  // animating through the engine while the ones that opted in hand over. That per-slug handoff is
+  // what makes a mixed map work at all.
+  function keepsVectors(m) { return m === "mapbox" || m === "mapbox+raster"; }   // mapbox paints them live
+  // The raster half of the same opt-in rule deckScrub.js applies to deck. Absent fast = never
+  // chosen, and for a layer that ALREADY carries a bake that reads as ON — the 8/7 rule ("if a bake
+  // exists, the person who made it wanted it") survives intact, so no pre-8/17 map needs migrating.
+  // An explicit untick is still obeyed: the bake is kept on disk, just not used.
+  function rasterOptedIn(rc) {
+    if (!rc) return false;
+    return rc.fast ? !!rc.fast.raster : !!rc.rasterYears;
+  }
+  // A FORCED MODE NEVER SURVIVES A RELOAD (8/17). This used to persist, and that is precisely how
+  // this morning went wrong: a comparison toggle left over from the night before silently decided
+  // which renderer ran, on the very load that was meant to prove a change. Owner then asked for the
+  // chip to retire once the panel existed — the panel IS the setting now, so the chip keeps its A/B
+  // power for the length of one session and every fresh load starts from what the layers say.
+  // The old keys are removed, not read, for the same reason.
   function readMode() {
-    try { localStorage.removeItem("ms-raster-scrub"); localStorage.removeItem("ms-deck-scrub"); } catch (e0) {}
-    if (!IS_EDITOR) return codeDefault();
-    var v = null; try { v = localStorage.getItem(LS); } catch (e) {}
-    if (v === "deck" || v === "raster" || v === "mapbox") return v;
+    try { localStorage.removeItem("ms-raster-scrub"); localStorage.removeItem("ms-deck-scrub"); localStorage.removeItem(LS); } catch (e0) {}
     return codeDefault();
   }
   // beyond maxZoom the raster steps aside entirely (user 7/16): up close N-in-view is small, so
@@ -319,11 +358,11 @@
     gl.clearColor(0, 0, 0, 0);
     var view = { m: m, el: el, cv: cv, gl: gl, P1: P1, P2: P2, U: P1.U, tex: {}, loading: {} };
     S.items.forEach(function (it) { ensureTex(view, it, 0, 0); if (it.cfg && it.cfg.indexed) ensureLut(view, it); });   // smallest level up-front; finer ones load on demand
-    m.on("render", function () { if (S.dragging && S.on) drawView(view, S.lastYear); });   // stay glued through pans mid-drag
+    m.on("render", function () { if (S.dragging && S.usingRaster) drawView(view, S.lastYear); });   // stay glued through pans mid-drag
     // PREFETCH the level this view will actually want whenever the map comes to rest — without
     // this, the first click on the slider draws the fat coarse level until finer textures land
     // (the "thickness explodes, then reduces" report, 7/16)
-    m.on("idle", function () { if (S.on) prefetchWanted(view); });
+    m.on("idle", function () { if (wantsRaster(S.mode)) prefetchWanted(view); });
     return view;
   }
   function prefetchWanted(view) {
@@ -361,7 +400,7 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       view.tex[key] = tx;
       delete view.loading[key];
-      if (S.dragging && S.on) drawView(view, S.lastYear);   // sharpen mid-drag as soon as it lands
+      if (S.dragging && S.usingRaster) drawView(view, S.lastYear);   // sharpen mid-drag as soon as it lands
     };
     img.onerror = function () { delete view.loading[key]; };
     img.src = tile.url + "?v=" + encodeURIComponent(it.cfg.bakedAt || "1");   // fresh after every re-bake
@@ -391,7 +430,7 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       view.tex[key] = tx;
       delete view.loading[key];
-      if (S.dragging && S.on) drawView(view, S.lastYear);
+      if (S.dragging && S.usingRaster) drawView(view, S.lastYear);
     };
     img.onerror = function () { delete view.loading[key]; };
     img.src = lu.url + "?v=" + encodeURIComponent(it.cfg.bakedAt || "1");
@@ -591,7 +630,7 @@
   // on this machine or no layer resolves to fetchable tiles, the raster when there's no bake or the
   // zoom is past its resolution limit. The one-word swap back to the pure mapbox-gl timeline lives
   // in the switch block at the top of deckScrub.js (DEFAULT_MODE = "mapbox").
-  function deckMode() { return S.mode === "deck" && !!(window.MSDeckScrub && MSDeckScrub.available()); }
+  function deckMode() { return wantsDeck(S.mode) && !!(window.MSDeckScrub && MSDeckScrub.available()); }
   function ymdOf(unix) { try { return parseInt(moment.unix(unix).format("YYYYMMDD")); } catch (e) { return null; } }
 
   var _hooked = false;
@@ -609,50 +648,57 @@
     } catch (e0) {}
     $s.on("slidestart", function (e, ui) {
       mergeNodeItems();   // published/copied maps: the DB rows may not match the rendered nodes — adopt node-carried bakes (8/13)
-      if (S.mode === "mapbox") return;   // legacy renderer: the engine's paint scrub owns everything
+      var M = S.mode;
+      S.usingDeck = S.usingRaster = false;
+      if (M === "mapbox") return;   // the engine's paint scrub owns every layer, nothing to set up
       var v0 = (ui && ui.value != null) ? ui.value : (function () { try { return $s.slider("value"); } catch (e2) { return null; } })();
-      // ── deck first. It needs no bake and has no zoom limit, so it covers maps (and zooms) the
-      // raster never could; it hides the vectors of exactly the layers it draws.
-      if (deckMode()) {
+      var slugs = [], live = [];
+      // ── deck: needs no bake and has no zoom limit, so it covers maps (and zooms) the raster can't
+      if (wantsDeck(M) && deckMode()) {
         S.usingDeck = MSDeckScrub.begin(v0 != null ? ymdOf(v0) : null);
-        if (S.usingDeck) {
-          S.dragging = true; clearTimeout(S.hideT);
-          hideVectors(MSDeckScrub.owned());
-          setLive("deck · " + MSDeckScrub.owned().length + " layers");
-          return;
-        }
+        if (S.usingDeck) { slugs = slugs.concat(MSDeckScrub.owned()); live.push("deck·" + MSDeckScrub.owned().length); }
       }
-      S.usingDeck = false;
-      // ── baked raster fallback
-      if (!S.items.length || !S.views.length) return void setLive("mapbox (old)", true);
-      if (S.views[0].m.getZoom() > S.maxZoom) return void setLive("mapbox (old)", true);   // deep zoom: the raster's resolution limit
-      // EVERY item re-resolves EVERY drag (8/13): colours change live in a session (colour-by,
-      // engine edits) — a colour cached once at load can go stale, and a stale black stuck until
-      // reload. resolveBorder already did this for borders; fills now match.
-      S.items.forEach(function (it) { if (it.isBorder) resolveBorder(it); else { if (!it.slug) it.slug = slugOf(it.lid, it.cfg); it.color = colorOf(it.lid, it.cfg); it.alpha = alphaOf(it.lid, it.cfg); } });
+      // ── baked raster
+      if (wantsRaster(M) && S.items.length && S.views.length && S.views[0].m.getZoom() <= S.maxZoom) {
+        // EVERY item re-resolves EVERY drag (8/13): colours change live in a session (colour-by,
+        // engine edits) — a colour cached once at load can go stale, and a stale black stuck until
+        // reload. resolveBorder already did this for borders; fills now match.
+        S.items.forEach(function (it) { if (it.isBorder) resolveBorder(it); else { if (!it.slug) it.slug = slugOf(it.lid, it.cfg); it.color = colorOf(it.lid, it.cfg); it.alpha = alphaOf(it.lid, it.cfg); } });
+        // draw the CURRENT year BEFORE revealing the canvas — it otherwise flashed its stale
+        // last-drag frame (looked like "all the data") for the whole click-hold until the first
+        // slide event landed, then snapped (user 7/22)
+        if (v0 != null) S.lastYear = yearOf(v0);
+        S.dragging = true;   // drawView's own guard reads this
+        S.views.forEach(function (v) { drawView(v, S.lastYear); });
+        showAll();
+        S.usingRaster = true;
+        slugs = slugs.concat(S.items.map(function (it) { return it.slug; }));
+        live.push("raster");
+      }
+      if (!live.length) {   // asked for a fast renderer, none could draw here — say which way it fell
+        S.dragging = false;
+        return void setLive("mapbox (fallback)", true);
+      }
       S.dragging = true; clearTimeout(S.hideT);
-      // draw the CURRENT year BEFORE revealing the canvas — it otherwise flashed its stale
-      // last-drag frame (looked like "all the data") for the whole click-hold until the first
-      // slide event landed, then snapped (user 7/22)
-      if (v0 != null) S.lastYear = yearOf(v0);
-      S.views.forEach(function (v) { drawView(v, S.lastYear); });
-      showAll();
-      hideVectors(S.items.map(function (it) { return it.slug; }));
-      setLive("raster");
+      // the mapbox combos deliberately leave the vectors up and animating underneath
+      if (!keepsVectors(M)) hideVectors(slugs);
+      setLive(live.join(" + "));
     });
     $s.on("slide", function (e, ui) {
-      if (!S.on || !S.dragging || !ui) return;
-      if (S.usingDeck) { MSDeckScrub.setDate(ymdOf(ui.value)); labelDate(ui.value); return; }
-      S.lastYear = yearOf(ui.value);
-      S.views.forEach(function (v) { drawView(v, S.lastYear); });
+      if (!S.dragging || !ui) return;
+      if (S.usingDeck) MSDeckScrub.setDate(ymdOf(ui.value));
+      if (S.usingRaster) {
+        S.lastYear = yearOf(ui.value);
+        S.views.forEach(function (v) { drawView(v, S.lastYear); });
+      }
       labelDate(ui.value);
     });
     $s.on("slidestop slidechange", function () {
       restoreVectors();   // vector reappears snapped to the release date (engine applies the real filter)
       if (!S.dragging) return;
       S.dragging = false;
-      if (S.usingDeck) { MSDeckScrub.end(); S.usingDeck = false; return; }
-      fadeSoon();
+      if (S.usingDeck) { MSDeckScrub.end(); S.usingDeck = false; }
+      if (S.usingRaster) { fadeSoon(); S.usingRaster = false; }
     });
   }
 
@@ -696,44 +742,51 @@
   function setMode(m) {
     S.mode = m;
     S.on = m !== "mapbox";
-    if (window.MSDeckScrub) MSDeckScrub.mode = m;   // deck's idle prewarm reads the same field
-    try { localStorage.setItem(LS, m); } catch (e) {}
-    setLive(m === "mapbox" ? "mapbox (old)" : m, m === "mapbox");
+    if (window.MSDeckScrub) MSDeckScrub.mode = m;   // deck's hover prewarm reads the same field
+    // deliberately NOT persisted — see readMode. This session only.
+    var lab = (MODES.filter(function (x) { return x.id === m; })[0] || {}).label || m;
+    setLive(lab, m === "mapbox" || m === "mapbox+raster");
     try { if (window.MSDeckScrub) MSDeckScrub.end(); } catch (e2) {}
-    S.usingDeck = false;
+    S.usingDeck = S.usingRaster = false;
     S.views.forEach(function (v) { v.cv.style.display = "none"; });
     restoreVectors();
     S.dragging = false;
+    var box = document.getElementById("ms-raster-chip");
+    if (box) [].forEach.call(box.querySelectorAll("input"), function (i) { i.checked = i.value === m; });
+    // Switching in or out of "layer" changes WHICH bakes are eligible, and the DB pass built the
+    // item list once at load — without this, items gated out under "layer" never come back when a
+    // forced mode is picked (and vice versa), so the chip would appear to do nothing.
+    try { if (S.reload) S.reload(); } catch (e3) {}
   }
+  // FIVE named options, exactly one active (owner 8/17: "the checkboxes are confusing — we need to
+  // actually have 5"). Two checkboxes could express the same states but never SAID which one you
+  // were in, and an unchecked pair silently meant the legacy renderer. Deck options are hidden when
+  // deck can't run on this machine, so the list never offers something that would quietly fall back.
   function chip() {
     if (document.getElementById("ms-raster-chip")) return;
-    var d = document.createElement("label");
+    var deckable = !!(window.MSDeckScrub && MSDeckScrub.available());
+    var d = document.createElement("div");
     d.id = "ms-raster-chip";
-    d.style.cssText = "position:fixed;right:14px;bottom:64px;z-index:4000;background:rgba(30,27,43,.92);color:#e8e5f2;font:12.5px/1 'Segoe UI',sans-serif;padding:7px 11px;border-radius:99px;border:1px solid #4a4368;cursor:pointer;user-select:none;display:flex;gap:6px;align-items:center";
-    d.title = "deck = deck.gl draws the drag from the layer's own tiles · unchecked = the baked raster · ⚡ off = the engine's mapbox-gl paint scrub";
-    d.innerHTML = '<input type="checkbox" style="accent-color:#8f7ae0;margin:0"' + (S.on ? " checked" : "") + '>⚡ Instant scrub'
-      + '<span id="ms-scrub-live" style="font-size:11.5px;opacity:.95;border-left:1px solid #4a4368;padding-left:8px;margin-left:2px"></span>';
+    d.style.cssText = "position:fixed;right:14px;bottom:64px;z-index:4000;background:rgba(30,27,43,.94);color:#e8e5f2;font:12.5px/1.35 'Segoe UI',sans-serif;padding:9px 12px 10px;border-radius:12px;border:1px solid #4a4368;user-select:none;min-width:148px";
+    d.title = "Who draws the timeline while you drag. Deck reads the layer's own tiles; Raster reads the baked year-PNG; Mapbox is the engine's paint scrub. The combos draw both at once for comparison.";
+    // "layer" always shows — wantsDeck() is true for it, but it isn't a deck mode, it's "ask each
+    // layer", and on a machine without deck the layers that asked for deck just drag normally.
+    var rows = MODES.filter(function (m) { return m.id === "layer" || deckable || !wantsDeck(m.id); }).map(function (m) {
+      return '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;padding:1.5px 0">'
+        + '<input type="checkbox" value="' + m.id + '" style="accent-color:#8f7ae0;margin:0"' + (S.mode === m.id ? " checked" : "") + '>'
+        + m.label + '</label>';
+    }).join("");
+    d.innerHTML = '<div style="display:flex;gap:7px;align-items:baseline;margin-bottom:5px">'
+      + '<span style="font-weight:600">⚡ Scrub</span>'
+      + '<span id="ms-scrub-live" style="font-size:11px;opacity:.95"></span></div>' + rows;
     document.body.appendChild(d);
-    setLive(S.mode === "mapbox" ? "mapbox (old)" : S.mode, S.mode === "mapbox");
-    var master = d.querySelector("input"), dkIn = null;
-    master.addEventListener("change", function () {
-      setMode(this.checked ? (dkIn && dkIn.checked ? "deck" : "raster") : "mapbox");
+    var lab0 = (MODES.filter(function (x) { return x.id === S.mode; })[0] || {}).label || S.mode;
+    setLive(lab0, S.mode === "mapbox" || S.mode === "mapbox+raster");
+    [].forEach.call(d.querySelectorAll("input"), function (inp) {
+      inp.addEventListener("change", function () {
+        setMode(this.value);   // exclusive: setMode re-checks exactly the chosen row, so a click
+      });                      // can never leave zero selected (which is what used to mean "legacy")
     });
-    // "deck" sub-toggle: checked = deck.gl draws the drag (day-exact, no bake needed, every zoom);
-    // unchecked = the baked raster draws it, as before — flip live to compare the two paths.
-    // Only shown when deck is actually usable on this machine (real GPU + library loaded).
-    if (window.MSDeckScrub && MSDeckScrub.available()) {
-      var dk = document.createElement("span");
-      dk.style.cssText = "display:flex;gap:5px;align-items:center;border-left:1px solid #4a4368;padding-left:8px;margin-left:2px";
-      dk.innerHTML = '<input type="checkbox" style="accent-color:#8f7ae0;margin:0"' + (S.mode === "deck" ? " checked" : "") + '>deck';
-      d.appendChild(dk);
-      dkIn = dk.querySelector("input");
-      dkIn.addEventListener("change", function (ev) {
-        ev.stopPropagation();
-        if (this.checked) master.checked = true;   // deck on implies the fast path is on
-        setMode(this.checked ? "deck" : (master.checked ? "raster" : "mapbox"));
-      });
-    }
   }
 
   // PUBLISHED / COPIED maps (8/13): the DB's live project_layers rows can name DIFFERENT layer
@@ -751,6 +804,7 @@
       (function walk(a) {
         (a || []).forEach(function (n) {
           var ry = n.rasterYears;
+          if (S.mode === "layer" && !rasterOptedIn(n)) ry = null;   // baked, but switched off in its panel
           if (ry && (ry.url || ry.levels) && ry.bounds) {
             var k = cfgKey(ry);
             if (k && !have[k]) {
@@ -792,6 +846,9 @@
     var borderItems = [];   // appended AFTER every fill item — array order is draw order, borders sit on top
     rows.forEach(function (row) {
       var L = row.layers, ry = L && L.raw_config && L.raw_config.rasterYears;
+      // 8/17: the layer's own "Make Faster" toggle gates its bake. Border items are exempt — they
+      // are the companion half of a fill whose own row was already gated one line above.
+      if (ry && !ry.isBorder && S.mode === "layer" && !rasterOptedIn(L.raw_config)) return;
       if (ry && ry.isBorder && ry.levels && ry.bounds) {   // standalone copies ship border items FLAT (download.js marker)
         borderItems.push({
           lid: L.id, fillLid: ry.fillLid, isBorder: true, cfg: ry, slug: null, color: [0, 0, 0],
