@@ -560,27 +560,41 @@
     }, 120);
   }
 
+  // DECK MODE (8/16): when deckScrub is present, capable (real GPU) and enabled, IT draws the
+  // drag — day-exact, styling-true, no bake needed — and the raster stays the automatic fallback.
+  function deckMode() { return !!(window.MSDeckScrub && MSDeckScrub.available() && MSDeckScrub.enabled); }
+  function ymdOf(unix) { try { return parseInt(moment.unix(unix).format("YYYYMMDD")); } catch (e) { return null; } }
+
   function hook() {
     var $s = $("#slider");
     $s.on("slidestart", function (e, ui) {
       mergeNodeItems();   // published/copied maps: the DB rows may not match the rendered nodes — adopt node-carried bakes (8/13)
       if (!S.on || !S.items.length || !S.views.length) return;
-      if (S.views[0].m.getZoom() > S.maxZoom) return;   // deep zoom: vector animates natively — raster stays out entirely
+      var useDeck = deckMode();
+      if (!useDeck && S.views[0].m.getZoom() > S.maxZoom) return;   // deep zoom: raster's resolution limit — deck has none
       // EVERY item re-resolves EVERY drag (8/13): colours change live in a session (colour-by,
       // engine edits) — a colour cached once at load can go stale, and a stale black stuck until
       // reload. resolveBorder already did this for borders; fills now match.
       S.items.forEach(function (it) { if (it.isBorder) resolveBorder(it); else { if (!it.slug) it.slug = slugOf(it.lid, it.cfg); it.color = colorOf(it.lid, it.cfg); it.alpha = alphaOf(it.lid, it.cfg); } });
       S.dragging = true; clearTimeout(S.hideT);
+      var v0 = (ui && ui.value != null) ? ui.value : (function () { try { return $s.slider("value"); } catch (e2) { return null; } })();
+      if (useDeck) {
+        S.usingDeck = MSDeckScrub.begin(S.items, v0 != null ? ymdOf(v0) : null);
+        if (S.usingDeck) { hideVectors(); return; }
+        // begin() refused (no usable tiles) — fall through to the raster path
+        if (S.views[0].m.getZoom() > S.maxZoom) { S.dragging = false; return; }
+      }
+      S.usingDeck = false;
       // draw the CURRENT year BEFORE revealing the canvas — it otherwise flashed its stale
       // last-drag frame (looked like "all the data") for the whole click-hold until the first
       // slide event landed, then snapped (user 7/22)
-      var v0 = (ui && ui.value != null) ? ui.value : (function () { try { return $s.slider("value"); } catch (e2) { return null; } })();
       if (v0 != null) S.lastYear = yearOf(v0);
       S.views.forEach(function (v) { drawView(v, S.lastYear); });
       showAll(); hideVectors();
     });
     $s.on("slide", function (e, ui) {
       if (!S.on || !S.dragging || !ui) return;
+      if (S.usingDeck) { MSDeckScrub.setDate(ymdOf(ui.value)); labelDate(ui.value); return; }
       S.lastYear = yearOf(ui.value);
       S.views.forEach(function (v) { drawView(v, S.lastYear); });
       labelDate(ui.value);
@@ -589,6 +603,7 @@
       restoreVectors();   // vector reappears snapped to the release date (engine applies the real filter)
       if (!S.dragging) return;
       S.dragging = false;
+      if (S.usingDeck) { MSDeckScrub.end(); S.usingDeck = false; return; }
       fadeSoon();
     });
   }
@@ -631,10 +646,25 @@
       localStorage.setItem(LS, S.on ? "on" : "off");
       if (!S.on) {   // turning off mid-drag must leave nothing hidden or frozen
         S.views.forEach(function (v) { v.cv.style.display = "none"; });
+        try { if (window.MSDeckScrub) MSDeckScrub.end(); } catch (e2) {}
         restoreVectors();
         S.dragging = false;
       }
     });
+    // "deck" sub-toggle (8/16): checked = deck.gl draws the drag (day-exact, no bake needed);
+    // unchecked = the baked raster draws it, as before — flip live to compare the two paths.
+    // Only shown when deck is actually usable on this machine (real GPU + library loaded).
+    if (window.MSDeckScrub && MSDeckScrub.available()) {
+      var dk = document.createElement("span");
+      dk.style.cssText = "display:flex;gap:5px;align-items:center;border-left:1px solid #4a4368;padding-left:8px;margin-left:2px";
+      dk.innerHTML = '<input type="checkbox" style="accent-color:#8f7ae0;margin:0"' + (MSDeckScrub.enabled ? " checked" : "") + '>deck';
+      d.appendChild(dk);
+      dk.querySelector("input").addEventListener("change", function (ev) {
+        ev.stopPropagation();
+        MSDeckScrub.setEnabled(this.checked);
+        if (!this.checked) { try { MSDeckScrub.end(); } catch (e2) {} }
+      });
+    }
   }
 
   // PUBLISHED / COPIED maps (8/13): the DB's live project_layers rows can name DIFFERENT layer
