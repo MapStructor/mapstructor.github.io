@@ -11,7 +11,14 @@
   #hud b { color: #7fd4ff; }
   #bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 9; background: rgba(0,0,0,.8);
          padding: 12px 18px; display: flex; gap: 14px; align-items: center; }
-  #day { flex: 1; }
+  /* custom timeline — thumb driven straight from pointer events as a composited transform,
+     so it tracks the cursor even when render frames run long */
+  #day { flex: 1; position: relative; height: 34px; cursor: pointer; touch-action: none; }
+  #day .tr { position: absolute; left: 0; right: 0; top: 14px; height: 6px; border-radius: 3px; background: #333; }
+  #day .fl { position: absolute; left: 0; top: 14px; height: 6px; border-radius: 3px; background: #2a6df4; width: 0; }
+  #day .th { position: absolute; left: -11px; top: 5px; width: 22px; height: 24px; border-radius: 6px;
+             background: #e8892a; border: 2px solid #fff; box-sizing: border-box; will-change: transform;
+             box-shadow: 0 1px 4px rgba(0,0,0,.6); }
   #date { color: #fff; font-size: 22px; min-width: 130px; text-align: right; font-variant-numeric: tabular-nums; }
   button { background: #2a6df4; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
 </style>
@@ -22,7 +29,7 @@
 <div id="hud">loading…</div>
 <div id="bar">
   <button id="anim">▶ animate</button>
-  <input id="day" type="range">
+  <div id="day"><div class="tr"></div><div class="fl"></div><div class="th"></div></div>
   <div id="date"></div>
 </div>
 <script>
@@ -72,6 +79,37 @@ function requestDay(day) {
   _pending = day;
   document.getElementById("date").textContent = n2label(day);   // readout tracks the cursor exactly
 }
+/* custom timeline (owner 8/16): thumb transform set synchronously per pointer event — a native
+   range thumb waits on event delivery, which queues behind long render frames and trails the hand */
+var Slider = (function () {
+  var el = document.getElementById("day"), th = el.querySelector(".th"), fl = el.querySelector(".fl");
+  var min = 0, max = 100, val = 0, onInput = null;
+  function paint() {
+    var w = el.clientWidth || 1, f = (val - min) / ((max - min) || 1);
+    th.style.transform = "translateX(" + (f * w) + "px)";
+    fl.style.width = (f * 100) + "%";
+  }
+  function fromX(cx) {
+    var r = el.getBoundingClientRect();
+    var f = Math.min(1, Math.max(0, (cx - r.left) / (r.width || 1)));
+    val = Math.round(min + f * (max - min));
+    paint();
+    if (onInput) onInput(val);
+  }
+  el.addEventListener("pointerdown", function (e) { el.setPointerCapture(e.pointerId); fromX(e.clientX); e.preventDefault(); });
+  el.addEventListener("pointermove", function (e) { if (e.buttons) fromX(e.clientX); });
+  // pointerrawupdate is NOT aligned to render frames — on a page whose frames run long it still
+  // delivers between frames, so the thumb moves with the hand even while the panes are busy
+  if (window.onpointerrawupdate !== undefined) el.addEventListener("pointerrawupdate", function (e) { if (e.buttons) fromX(e.clientX); });
+  window.addEventListener("resize", paint);
+  return {
+    setRange: function (a, b) { min = a; max = b; paint(); },
+    set: function (v) { val = v; paint(); },
+    get: function () { return val; },
+    input: function (fn) { onInput = fn; }
+  };
+})();
+Slider.input(requestDay);
 (function applyLoop() {
   if (_pending != null && deckgl) {
     var day = _pending; _pending = null;
@@ -119,8 +157,9 @@ fetch(GEOJSON).then(function (r) { return r.json(); }).then(function (j) {
   stats.loadMs = performance.now() - t0;
   MIN = Math.min.apply(null, j.features.map(function (f) { return f.properties.__s; }));
   MAX = Math.max.apply(null, j.features.map(function (f) { return f.properties.__e; }));
-  var slider = document.getElementById("day");
-  slider.min = MIN; slider.max = MAX; slider.value = MIN + Math.round((MAX - MIN) * 0.4);
+  Slider.setRange(MIN, MAX);
+  Slider.set(MIN + Math.round((MAX - MIN) * 0.4));
+  var slider = { get value() { return Slider.get(); }, set value(v) { Slider.set(v); } };
   var tf = performance.now();
   deckgl = new deck.DeckGL({
     container: "wrap",
@@ -136,7 +175,6 @@ fetch(GEOJSON).then(function (r) { return r.json(); }).then(function (j) {
   });
   window.__lab.deck = deckgl;
   setDay(+slider.value);
-  slider.addEventListener("input", function () { setDay(+slider.value); });
 
   // animate: sweep the whole range and report real fps (frames actually rendered / wall time)
   var animOn = false, animReq = 0;
