@@ -186,7 +186,11 @@
   }
   function overlayFor(m) {
     if (m.__msDeckOverlay) return m.__msDeckOverlay;
-    var o = new deck.MapboxOverlay({ layers: [] });
+    // useDevicePixels 1 = CSS-pixel resolution, i.e. native on a 1× display and HALF on a retina /
+    // scaled one. On a 2560-wide editor with two swipe maps, full device resolution means two extra
+    // ~3200px canvases to fill every frame — invisible sharpness for a drag preview, real fill cost
+    // (the lab learned the same trick 8/16). Release hands the picture back to the crisp vectors.
+    var o = new deck.MapboxOverlay({ layers: [], useDevicePixels: 1 });
     m.addControl(o);
     m.__msDeckOverlay = o;
     return o;
@@ -301,6 +305,13 @@
         }) });
       });
     } catch (e) {}
+  };
+
+  // cursor left the timeline without pressing: drop the warm mount so a hover can never leave a
+  // second tile pipeline running (and re-fetching on every pan) for the rest of the session
+  D.unprepare = function () {
+    if (D.active) return;
+    eachMap(function (m) { try { if (m.__msDeckOverlay) m.__msDeckOverlay.setProps({ layers: [] }); } catch (e) {} });
   };
 
   D.begin = function (ymd) {

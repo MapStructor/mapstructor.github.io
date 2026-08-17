@@ -24,14 +24,16 @@
   // best renderer this machine can run, with no opt-out
   var IS_EDITOR = /editor\.html/i.test((location && location.pathname) || "");
   function codeDefault() { return (window.MSDeckScrub && MSDeckScrub.mode) || "raster"; }
+  // The two OLD chip keys are deliberately NOT migrated (8/17): they were comparison toggles, and
+  // the owner had left both "off" from an A/B the night before. Reading them as a preference put
+  // them on the legacy mapbox path on the very load that was supposed to swap it out — "it's slower
+  // than ever", correctly, because it WAS the old scrub. A stale experiment must never outvote the
+  // shipped default; the keys are cleared so nothing can read them again.
   function readMode() {
+    try { localStorage.removeItem("ms-raster-scrub"); localStorage.removeItem("ms-deck-scrub"); } catch (e0) {}
     if (!IS_EDITOR) return codeDefault();
     var v = null; try { v = localStorage.getItem(LS); } catch (e) {}
     if (v === "deck" || v === "raster" || v === "mapbox") return v;
-    try {   // migrate the two old chip keys (7/16 ms-raster-scrub, 8/16 ms-deck-scrub)
-      if (localStorage.getItem("ms-raster-scrub") === "off") return "mapbox";
-      if (localStorage.getItem("ms-deck-scrub") === "off") return "raster";
-    } catch (e2) {}
     return codeDefault();
   }
   // beyond maxZoom the raster steps aside entirely (user 7/16): up close N-in-view is small, so
@@ -600,7 +602,11 @@
     // Hovering the timeline PREPARES deck: it fetches and parses its tiles during the walk from
     // "cursor arrives" to "button goes down", so the first drag of a session starts glued instead
     // of paying ~0.4s at press-down. Draws nothing, costs nothing until the cursor comes over.
-    try { $("div.timeline").add($s).on("mouseenter", function () { if (deckMode()) try { MSDeckScrub.prepare(); } catch (e2) {} }); } catch (e0) {}
+    try {
+      $("div.timeline").add($s)
+        .on("mouseenter", function () { if (deckMode()) try { MSDeckScrub.prepare(); } catch (e2) {} })
+        .on("mouseleave", function () { if (!S.dragging && window.MSDeckScrub) try { MSDeckScrub.unprepare(); } catch (e3) {} });
+    } catch (e0) {}
     $s.on("slidestart", function (e, ui) {
       mergeNodeItems();   // published/copied maps: the DB rows may not match the rendered nodes — adopt node-carried bakes (8/13)
       if (S.mode === "mapbox") return;   // legacy renderer: the engine's paint scrub owns everything
@@ -612,13 +618,14 @@
         if (S.usingDeck) {
           S.dragging = true; clearTimeout(S.hideT);
           hideVectors(MSDeckScrub.owned());
+          setLive("deck · " + MSDeckScrub.owned().length + " layers");
           return;
         }
       }
       S.usingDeck = false;
       // ── baked raster fallback
-      if (!S.items.length || !S.views.length) return;
-      if (S.views[0].m.getZoom() > S.maxZoom) return;   // deep zoom: the raster's resolution limit
+      if (!S.items.length || !S.views.length) return void setLive("mapbox (old)", true);
+      if (S.views[0].m.getZoom() > S.maxZoom) return void setLive("mapbox (old)", true);   // deep zoom: the raster's resolution limit
       // EVERY item re-resolves EVERY drag (8/13): colours change live in a session (colour-by,
       // engine edits) — a colour cached once at load can go stale, and a stale black stuck until
       // reload. resolveBorder already did this for borders; fills now match.
@@ -631,6 +638,7 @@
       S.views.forEach(function (v) { drawView(v, S.lastYear); });
       showAll();
       hideVectors(S.items.map(function (it) { return it.slug; }));
+      setLive("raster");
     });
     $s.on("slide", function (e, ui) {
       if (!S.on || !S.dragging || !ui) return;
@@ -676,11 +684,21 @@
 
   // ONE writer for the renderer choice — whatever was mid-drag stops cleanly (nothing left hidden,
   // nothing left frozen, no stale raster canvas on screen) before the next drag picks the new path.
+  // WHAT IS ACTUALLY DRAWING (8/17): the two checkboxes could not answer "did the swap happen?" —
+  // they look identical whichever renderer is live, and an unchecked pair silently meant the legacy
+  // path. The chip now names the renderer, and after each drag it names what really drew.
+  function setLive(txt, warn) {
+    var el = document.getElementById("ms-scrub-live");
+    if (!el) return;
+    el.textContent = txt;
+    el.style.color = warn ? "#f0a86a" : "#9ce6b4";
+  }
   function setMode(m) {
     S.mode = m;
     S.on = m !== "mapbox";
     if (window.MSDeckScrub) MSDeckScrub.mode = m;   // deck's idle prewarm reads the same field
     try { localStorage.setItem(LS, m); } catch (e) {}
+    setLive(m === "mapbox" ? "mapbox (old)" : m, m === "mapbox");
     try { if (window.MSDeckScrub) MSDeckScrub.end(); } catch (e2) {}
     S.usingDeck = false;
     S.views.forEach(function (v) { v.cv.style.display = "none"; });
@@ -693,8 +711,10 @@
     d.id = "ms-raster-chip";
     d.style.cssText = "position:fixed;right:14px;bottom:64px;z-index:4000;background:rgba(30,27,43,.92);color:#e8e5f2;font:12.5px/1 'Segoe UI',sans-serif;padding:7px 11px;border-radius:99px;border:1px solid #4a4368;cursor:pointer;user-select:none;display:flex;gap:6px;align-items:center";
     d.title = "deck = deck.gl draws the drag from the layer's own tiles · unchecked = the baked raster · ⚡ off = the engine's mapbox-gl paint scrub";
-    d.innerHTML = '<input type="checkbox" style="accent-color:#8f7ae0;margin:0"' + (S.on ? " checked" : "") + '>⚡ Instant scrub';
+    d.innerHTML = '<input type="checkbox" style="accent-color:#8f7ae0;margin:0"' + (S.on ? " checked" : "") + '>⚡ Instant scrub'
+      + '<span id="ms-scrub-live" style="font-size:11.5px;opacity:.95;border-left:1px solid #4a4368;padding-left:8px;margin-left:2px"></span>';
     document.body.appendChild(d);
+    setLive(S.mode === "mapbox" ? "mapbox (old)" : S.mode, S.mode === "mapbox");
     var master = d.querySelector("input"), dkIn = null;
     master.addEventListener("change", function () {
       setMode(this.checked ? (dkIn && dkIn.checked ? "deck" : "raster") : "mapbox");
