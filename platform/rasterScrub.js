@@ -311,14 +311,21 @@
     "float aa=uCov>0.5?1.0:uAlpha;gl_FragColor=vec4(cc*aa,aa);return;}}" +
     "discard;}";
 
-  function makeView(m) {
-    var el = m.getContainer(), cv = document.createElement("canvas");
-    cv.className = "ms-raster-scrub";
-    // explicit 100% size is LOAD-BEARING: without it the canvas displays at buffer size × dpr (the 7/16 offset bug)
-    cv.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;display:none;opacity:1;transition:opacity .35s";
-    el.appendChild(cv);
-    var gl = cv.getContext("webgl", { alpha: true, preserveDrawingBuffer: true });
-    if (!gl) return null;
+  /* ── WHERE THE BAKE LIVES IN THE STACK (8/18) ───────────────────────────────────────────────
+     This used to render into its OWN canvas, appended over the map container at z-index 2. A
+     sibling canvas is above the ENTIRE map canvas by construction, so the bake covered the
+     labels — including its own layer's labels — and no DOM ordering could fix it, because labels
+     are drawn inside the map's single canvas ("the bake should be at the same level in the stack
+     as its original layer. When I scrub, the bake layer appears above the labels").
+     So the renderer now lives in the MAP's GL context as a custom layer, inserted directly above
+     the topmost vector layer it owns. Everything above that — other layers, every label layer —
+     draws over it, exactly as it does over the vectors the bake stands in for.
+     The shaders did not have to change: geometry was always normalized SCREEN space (m.project()
+     → p0/p1 in 0..1), never a projection matrix, so the same quad works in any viewport. What
+     goes away is the canvas, its resize dance, gl.clear(), and the CSS opacity fade — a custom
+     layer cannot fade with CSS, and it does not need to: the vectors are restored in the same
+     frame the bake stops drawing. */
+  function buildGL(view, gl) {
     function sh(ty, src) { var s = gl.createShader(ty); gl.shaderSource(s, src); gl.compileShader(s); return s; }
     // TWO programs, one buffer: the legacy date-range shader (untouched — old bakes keep rendering
     // exactly as before) and the indexed one. Attribute "q" is bound to slot 0 in BOTH before
@@ -347,11 +354,61 @@
       gl.uniform1i(gl.getUniformLocation(P2.pr, "tl"), 1);
       gl.uniform1i(gl.getUniformLocation(P2.pr, "tp"), 2);
     }
-    gl.useProgram(P1.pr);
-    gl.clearColor(0, 0, 0, 0);
-    var view = { m: m, el: el, cv: cv, gl: gl, P1: P1, P2: P2, U: P1.U, tex: {}, loading: {} };
-    S.items.forEach(function (it) { ensureTex(view, it, 0, 0); if (it.cfg && it.cfg.indexed) ensureLut(view, it); });   // smallest level up-front; finer ones load on demand
-    m.on("render", function () { if (S.dragging && S.usingRaster) drawView(view, S.lastYear); });   // stay glued through pans mid-drag
+    view.gl = gl; view.P1 = P1; view.P2 = P2; view.U = P1.U; view.buf = buf;
+    return true;
+  }
+
+  // The layer id immediately ABOVE the topmost vector layer this bake stands in for. Companions
+  // (-stroke-, -label-) of an owned layer sit above its base layer, so this lands the bake under
+  // its own labels, which is the whole point.
+  function ownedBeforeId(view) {
+    try {
+      var layers = view.m.getStyle().layers, sfx = "-" + view.side, owned = {}, top = -1;
+      S.items.forEach(function (it) { if (it.slug) owned[it.slug + sfx] = 1; });
+      for (var i = 0; i < layers.length; i++) if (owned[layers[i].id]) top = i;
+      if (top < 0) return null;
+      for (var j = top + 1; j < layers.length; j++) if (layers[j].id !== view.layer.id) return layers[j].id;
+      return null;   // the layers it owns are already the topmost — nothing to sit under
+    } catch (e) { return null; }
+  }
+  // Present, and in the right place. Re-checked at every slidestart because a basemap switch drops
+  // custom layers and because the owned set can change between drags.
+  function ensureLayer(view) {
+    var m = view.m, id = view.layer.id, want = ownedBeforeId(view);
+    try {
+      if (m.getLayer(id)) {
+        if (view.beforeId === want) return;
+        m.removeLayer(id);   // GL resources belong to the CONTEXT, not the layer — textures survive
+      }
+      m.addLayer(view.layer, want || undefined);
+      view.beforeId = want;
+      S.lastLayerError = null;
+    } catch (e) {
+      // A swallowed failure here is invisible AND destructive: the vectors are hidden for the drag
+      // while nothing draws in their place, so the layers simply vanish. Record it and say so once.
+      S.lastLayerError = String(e && e.message || e);
+      if (!S._warnedLayer) { S._warnedLayer = 1; console.warn("rasterScrub: could not place the scrub layer — " + S.lastLayerError); }
+    }
+  }
+
+  function makeView(m, side) {
+    var view = { m: m, el: m.getContainer(), side: side, gl: null, P1: null, P2: null,
+                 tex: {}, loading: {}, on: false, beforeId: null, builtFor: null };
+    view.layer = {
+      id: "ms-scrub-" + side, type: "custom", renderingMode: "2d",
+      onAdd: function (map, gl) {
+        // rebuild only if the CONTEXT itself changed (a style reload re-adds the layer but keeps
+        // the context, so textures must NOT be thrown away on every basemap switch)
+        if (view.builtFor !== gl) {
+          view.tex = {}; view.loading = {};
+          if (!buildGL(view, gl)) return;
+          view.builtFor = gl;
+          S.items.forEach(function (it) { ensureTex(view, it, 0, 0); if (it.cfg && it.cfg.indexed) ensureLut(view, it); });
+        }
+        view.gl = gl;
+      },
+      render: function () { if (view.on && S.dragging && S.usingRaster) drawItems(view, S.lastYear); }
+    };
     // PREFETCH the level this view will actually want whenever the map comes to rest — without
     // this, the first click on the slider draws the fat coarse level until finer textures land
     // (the "thickness explodes, then reduces" report, 7/16)
@@ -361,7 +418,12 @@
   function prefetchWanted(view) {
     var el = view.el, w = el.clientWidth, h = el.clientHeight;
     if (!w || !h || view.m.getZoom() > S.maxZoom) return;   // deep zoom never draws the raster — don't load for it
+    // Idle is also where the layer self-heals: a basemap switch drops every custom layer, and
+    // textures live in the context we only get through onAdd, so re-add before touching view.gl.
+    ensureLayer(view);
+    if (!view.gl) return;
     S.items.forEach(function (it) {
+      if (!itemServes(it, view.m)) return;   // past its own crossover — nothing to prefetch for it
       var want = Math.min(pickLevel(view.m, it), it.levels.length - 1);
       var tiles = it.levels[want].tiles;
       for (var ti = 0; ti < tiles.length; ti++) {
@@ -375,6 +437,7 @@
   // PYRAMID (7/16): textures load lazily per (item, level, tile) — zooming in pulls the finer
   // bake the first time it's needed; until it arrives coarser levels keep drawing underneath.
   function ensureTex(view, it, li, ti) {
+    if (!view.gl) return;   // no map context yet — the custom layer has not been added
     var key = it.lid + "|" + li + "|" + ti;
     var lv = it.levels[li], tile = lv && lv.tiles[ti];
     if (!tile || view.tex[key] || view.loading[key]) return;
@@ -393,7 +456,7 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       view.tex[key] = tx;
       delete view.loading[key];
-      if (S.dragging && S.usingRaster) drawView(view, S.lastYear);   // sharpen mid-drag as soon as it lands
+      if (S.dragging && S.usingRaster) repaint(view);   // sharpen mid-drag as soon as it lands
     };
     img.onerror = function () { delete view.loading[key]; };
     img.src = tile.url + "?v=" + encodeURIComponent(it.cfg.bakedAt || "1");   // fresh after every re-bake
@@ -403,6 +466,7 @@
   // as the level textures; NEAREST because a blended texel would be a blend of two unrelated
   // timelines. Returns null while it is still in flight — the item simply doesn't draw that frame.
   function ensureLut(view, it) {
+    if (!view.gl) return null;
     var lu = it.cfg && it.cfg.lut;
     if (!lu || !lu.url) return null;
     var key = "lut|" + lu.url;
@@ -423,7 +487,7 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       view.tex[key] = tx;
       delete view.loading[key];
-      if (S.dragging && S.usingRaster) drawView(view, S.lastYear);
+      if (S.dragging && S.usingRaster) repaint(view);
     };
     img.onerror = function () { delete view.loading[key]; };
     img.src = lu.url + "?v=" + encodeURIComponent(it.cfg.bakedAt || "1");
@@ -437,6 +501,7 @@
     if (!pal || !pal.length || (it.isBorder && !it.catBorder)) return null;   // borders join the palette only when their line paint is categorical (see resolveBorder)
     var key = "pal|" + cfgKey(it.cfg);
     if (view.tex[key]) return view.tex[key];
+    if (!view.gl) return null;
     var gl = view.gl;
     function rgb(h) { var n = parseInt(String(h).replace("#", ""), 16); return isNaN(n) ? [86, 74, 154] : [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
     var data = new Uint8Array(256 * 4), base = rgb(pal[0]);
@@ -457,13 +522,43 @@
     view.tex[key] = tx;
     return tx;
   }
+  // THE CROSSOVER ZOOM — past this, this item's finest level would have to be STRETCHED, and a
+  // stretched stroke is a fat blocky stroke. The flat 8.5 below is a whole-renderer limit; it says
+  // nothing about whether a particular bake still has pixels to spend. Measured on the railways
+  // layer (span 57.3°, finest 16384, dpr 1.5): upscale is 0.81 at z6 but 2.28 at z7.5 and 4.26 at
+  // z8.4 — a 1.8-texel stroke landing 4–7 screen px wide against a line-width of 1.5. The pyramid
+  // simply runs out at ~z7.1, and no level-picking fix can invent resolution.
+  //   need(z) = 512·2^z·span/360 device px  ⇒  serve while need·dpr ≤ finestWidth
+  // Only THIN geometry is held to it: a solid fill upscales invisibly (it is area, not edge), which
+  // is why it keeps the lenient global limit. Beyond the crossover the layer keeps its vectors and
+  // the engine's paint-scrub animates them — crisp, correctly sized, and cheap up close where few
+  // features are in view, which was always the stated division of labour.
+  function itemMaxZoom(it) {
+    if (!(it.thin || it.isBorder)) return S.maxZoom;
+    var span = it.cfg && it.cfg.bounds ? (it.cfg.bounds[2] - it.cfg.bounds[0]) : 0;
+    var finest = 0;
+    for (var i = 0; i < it.levels.length; i++) if (it.levels[i].width > finest) finest = it.levels[i].width;
+    if (!span || !finest) return S.maxZoom;
+    var dpr = window.devicePixelRatio || 1;
+    var z = Math.log(finest * 360 / (512 * span * dpr)) / Math.LN2;
+    return Math.min(S.maxZoom, z);
+  }
+  function itemServes(it, m) { try { return m.getZoom() <= itemMaxZoom(it); } catch (e) { return true; } }
+  S.crossover = itemMaxZoom;   // console seam: MSRasterScrub.crossover(MSRasterScrub.items[0])
+
   function pickLevel(m, it) {   // the level whose pixels ≈ the screen's pixels for this span
     var span = it.cfg.bounds[2] - it.cfg.bounds[0];
     var need = 512 * Math.pow(2, m.getZoom()) * span / 360;
-    // BORDERS pick device-exact (8/8): thin lines can't afford the 0.8 fudge or a missing dpr —
-    // upscaled border texels read fat and blocky at world zooms ("z2.4 and below it gets bad");
-    // fills are solid area so the coarser pick never shows.
-    if (it.isBorder) {
+    // THIN GEOMETRY picks device-exact: it cannot afford the 0.8 fudge or a missing dpr — upscaled
+    // texels read fat and blocky ("z2.4 and below it gets bad", 8/8). Solid fills are area, so a
+    // coarser pick never shows on them.
+    // 8/18: this was scoped to isBorder, which meant polygon RINGS got the exact pick but a LINE
+    // LAYER did not — plain LineStrings bake into the fill pyramid by design (they ARE the layer),
+    // so `it.isBorder` is false for them and they fell through to the fudged branch. Combined with
+    // dpr the chosen level ran up to ~1.9× too coarse, and the baked stroke upscaled to several
+    // screen pixels against a line-width of 1.5 ("the bake is not accounting for line thickness
+    // again — it's extremely thick"). Thin is thin, whichever pyramid it lives in.
+    if (it.isBorder || it.thin) {
       need *= (window.devicePixelRatio || 1);
       for (var j = 0; j < it.levels.length; j++) if (it.levels[j].width >= need) return j;
       return it.levels.length - 1;
@@ -472,16 +567,21 @@
     return it.levels.length - 1;
   }
 
-  function drawView(view, year) {
-    var cv = view.cv, el = view.el, dpr = window.devicePixelRatio || 1;
+  function drawItems(view, year) {
+    var el = view.el, gl = view.gl;
     var w = el.clientWidth, h = el.clientHeight;
-    if (!w || !h) return;
-    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
-    var gl = view.gl;
-    gl.viewport(0, 0, cv.width, cv.height);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    if (!w || !h || !gl || !view.P1) return;
+    // We are a guest in the map's context: no clear, no viewport change, and every bit of state we
+    // rely on gets set here because the layers drawn before us set their own.
+    gl.bindBuffer(gl.ARRAY_BUFFER, view.buf);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // shader emits premultiplied alpha, as before
     S.items.forEach(function (it) {
       if (!itemActive(it)) return;   // layer unchecked in the sidebar → its raster stays dark too
+      if (!itemServes(it, view.m)) return;   // past its crossover: its vectors are still up, drawing would double-ink it
       var want = pickLevel(view.m, it);
       // indexed bakes decode through the LUT program; everything else through the original one
       var idx = !!(it.cfg && it.cfg.indexed);
@@ -531,15 +631,16 @@
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       });
     });
+    gl.activeTexture(gl.TEXTURE0);   // leave the unit the map expects
   }
+  function repaint(view) { try { view.m.triggerRepaint(); } catch (e) {} }
 
-  function showAll() { S.views.forEach(function (v) { v.cv.style.display = "block"; v.cv.style.opacity = "1"; }); }
+  function showAll() { S.views.forEach(function (v) { ensureLayer(v); v.on = true; repaint(v); }); }
   function hideAllSoon() {
     clearTimeout(S.hideT);
     S.hideT = setTimeout(function () {
       S.views.forEach(function (v) {
-        v.cv.style.opacity = "0";
-        setTimeout(function () { if (!S.dragging) v.cv.style.display = "none"; }, 380);
+        v.on = false; repaint(v);
       });
     }, 350);   // give the real filter a beat to land, then fade — the hand-off illusion
   }
@@ -612,8 +713,7 @@
     clearTimeout(S.hideT);
     S.hideT = setTimeout(function () {
       S.views.forEach(function (v) {
-        v.cv.style.opacity = "0";
-        setTimeout(function () { if (!S.dragging) v.cv.style.display = "none"; }, 380);
+        v.on = false; repaint(v);
       });
     }, 120);
   }
@@ -652,21 +752,25 @@
         if (S.usingDeck) { slugs = slugs.concat(MSDeckScrub.owned()); live.push("deck·" + MSDeckScrub.owned().length); }
       }
       // ── baked raster
-      if (wantsRaster(M) && S.items.length && S.views.length && S.views[0].m.getZoom() <= S.maxZoom) {
+      // per-item crossover (8/18): the raster serves only the layers whose bake still has the
+      // resolution for this zoom. Any layer past its crossover is left OUT of `slugs`, so its
+      // vectors are never hidden and the engine's paint-scrub animates them at the right width.
+      var served = (wantsRaster(M) && S.views.length)
+        ? S.items.filter(function (it) { return itemServes(it, S.views[0].m); }) : [];
+      if (served.length) {
         // EVERY item re-resolves EVERY drag (8/13): colours change live in a session (colour-by,
         // engine edits) — a colour cached once at load can go stale, and a stale black stuck until
         // reload. resolveBorder already did this for borders; fills now match.
-        S.items.forEach(function (it) { if (it.isBorder) resolveBorder(it); else { if (!it.slug) it.slug = slugOf(it.lid, it.cfg); it.color = colorOf(it.lid, it.cfg); it.alpha = alphaOf(it.lid, it.cfg); } });
+        served.forEach(function (it) { if (it.isBorder) resolveBorder(it); else { if (!it.slug) it.slug = slugOf(it.lid, it.cfg); it.color = colorOf(it.lid, it.cfg); it.alpha = alphaOf(it.lid, it.cfg); } });
         // draw the CURRENT year BEFORE revealing the canvas — it otherwise flashed its stale
         // last-drag frame (looked like "all the data") for the whole click-hold until the first
         // slide event landed, then snapped (user 7/22)
         if (v0 != null) S.lastYear = yearOf(v0);
-        S.dragging = true;   // drawView's own guard reads this
-        S.views.forEach(function (v) { drawView(v, S.lastYear); });
+        S.dragging = true;   // the custom layer's render guard reads this
         showAll();
         S.usingRaster = true;
-        slugs = slugs.concat(S.items.map(function (it) { return it.slug; }));
-        live.push("raster");
+        slugs = slugs.concat(served.map(function (it) { return it.slug; }));
+        live.push(served.length === S.items.length ? "raster" : "raster·" + served.length + "/" + S.items.length);
       }
       if (!live.length) {   // asked for a fast renderer, none could draw here — say which way it fell
         S.dragging = false;
@@ -682,7 +786,7 @@
       if (S.usingDeck) MSDeckScrub.setDate(ymdOf(ui.value));
       if (S.usingRaster) {
         S.lastYear = yearOf(ui.value);
-        S.views.forEach(function (v) { drawView(v, S.lastYear); });
+        S.views.forEach(function (v) { repaint(v); });
       }
       labelDate(ui.value);
     });
@@ -741,7 +845,7 @@
     setLive(lab, m === "mapbox" || m === "mapbox+raster");
     try { if (window.MSDeckScrub) MSDeckScrub.end(); } catch (e2) {}
     S.usingDeck = S.usingRaster = false;
-    S.views.forEach(function (v) { v.cv.style.display = "none"; });
+    S.views.forEach(function (v) { v.on = false; repaint(v); });
     restoreVectors();
     S.dragging = false;
     var box = document.getElementById("ms-raster-chip");
@@ -781,6 +885,7 @@
               have[k] = 1;
               var lid = n._layerDbId || n._dataLayerId || n.id;
               add.push({ lid: lid, cfg: ry, color: colorOf(lid, ry), alpha: alphaOf(lid, ry), slug: n.id,
+                thin: n.type === "line",   // a line layer needs the exact level pick (see pickLevel)
                 levels: (ry.levels || [{ url: ry.url, width: ry.width, height: ry.height }]).map(function (lv) {
                   return { width: lv.width, height: lv.height, tiles: lv.tiles || [{ url: lv.url, bounds: ry.bounds }] };
                 }) });
@@ -809,7 +914,9 @@
     if (Array.isArray(window.rasterScrubData)) {
       rows = window.rasterScrubData.map(function (d) { return { layers: { id: d.lid, raw_config: { rasterYears: d.cfg } } }; });
     } else {
-      var r = await MapAuth.db.from("project_layers").select("layers(id, raw_config)").eq("project_id", pid);
+      // `type` rides along so pickLevel can tell THIN geometry (a line layer) from solid fills —
+      // without it every line layer took the coarse fudged level and baked strokes read fat (8/18)
+      var r = await MapAuth.db.from("project_layers").select("layers(id, type, raw_config)").eq("project_id", pid);
       rows = (r && r.data) || [];
     }
     var items = [];
@@ -836,6 +943,8 @@
       // a bake exists, the person who made it wanted it.
       if (ry && (ry.url || ry.levels) && ry.bounds) items.push({
         lid: L.id, cfg: ry, color: colorOf(L.id, ry), alpha: alphaOf(L.id, ry), slug: slugOf(L.id, ry),
+        thin: L.type === "line" || ry.thin === true,   // ry.thin: standalone copies carry it in the frozen config
+
         // every level normalizes to a TILE LIST: whole-image levels = one tile with the full
         // bounds; the finest level ships real quadrant tiles (pre-pyramid bakes still work)
         levels: (ry.levels || [{ url: ry.url, width: ry.width, height: ry.height }]).map(function (lv) {
@@ -862,7 +971,7 @@
     // could draw; the raster's canvases are only built when there is something baked to draw.
     if (S.items.length) {
       [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null].forEach(function (m) {
-        if (m && m.getContainer) { var v = makeView(m); if (v) S.views.push(v); }
+        if (m && m.getContainer) { var v = makeView(m, S.views.length ? "right" : "left"); if (v) { S.views.push(v); ensureLayer(v); } }
       });
     }
     if (!S.views.length && !(window.MSDeckScrub && MSDeckScrub.available())) return;
@@ -883,7 +992,7 @@
       mergeNodeItems();
       if (S.items.length && !S.views.length) {   // first-ever bake this session: views/hook don't exist yet
         [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null].forEach(function (m) {
-          if (m && m.getContainer) { var v = makeView(m); if (v) S.views.push(v); }
+          if (m && m.getContainer) { var v = makeView(m, S.views.length ? "right" : "left"); if (v) { S.views.push(v); ensureLayer(v); } }
         });
         if (S.views.length) { hook(); }
         return;
