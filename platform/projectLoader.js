@@ -248,6 +248,10 @@ window.msApplyHeaderFeature = function (visible, projectName) {
       return b;
     }));
     if (raw.mapboxUsername) siteConfig.mapboxUsername = raw.mapboxUsername;
+    // Explicit stacking order (8/18). Read BEFORE the maps build so the first paint is already
+    // right; MSLayerOrder re-applies on every style.load from mapinit's readdSide.
+    if (Array.isArray(raw.layerOrder)) window.__msLayerOrder = raw.layerOrder.slice();
+    if (typeof raw.labelsOnTop === 'boolean') window.__msLabelsOnTop = raw.labelsOnTop;
     // Timeline range (raw_config.timeline {start, end|"today"}): the EDITOR applies it via editing.js
     // (applyTimelineRange), but the VIEWER never did — every published map showed the engine's default
     // years. Same math as the editor, retried until the engine's slider exists.

@@ -8459,6 +8459,7 @@
       '<div id="elp-instance-note" class="ms-note-accent" style="display:none;margin:0 0 8px;">⧉ Linked instance — shares another layer&rsquo;s data. Style it independently here; edit features and dates on the original layer.</div>' +
       '<button id="elp-instance" style="display:none;width:100%;box-sizing:border-box;margin:0 0 8px;padding:6px 10px;border:1px solid #bfd8f0;border-radius:6px;background:#ecf4ff;color:#2b5b8a;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;" title="Create a linked copy of this layer that shares its data (no duplication) but can be styled independently — e.g. an always-on \'all data\' view next to the timeline-filtered one">⧉ Create linked instance</button>' +
       // ── on-by-default + delete live AT THE TOP (below the title), no section heading — 7/8 layout pass ──
+      '<button id="elp-order" style="width:100%;box-sizing:border-box;margin:0 0 8px;padding:6px 10px;border:1px solid #d7d3e4;border-radius:6px;background:#f4f2fa;color:#544f6e;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;" title="Change which layers draw on top of which — a flat list of every layer, independent of the sections and groups in the sidebar">☰ Layer order…</button>' +
       '<div id="elp-defaults-row">' +
         '<label id="elp-default-vis-label" class="ms-check" style="margin-bottom:3px;"><input id="elp-default-vis" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />On by default</label>' +
         '<label id="elp-default-exp-label" class="ms-check" style="display:none;"><input id="elp-default-exp" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Expanded by default</label>' +
@@ -8664,6 +8665,20 @@
       '</div>';   // close #elp-body (the scrolling region under the sticky header)
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
+    if (window.MSLayerOrder) MSLayerOrder.onSave = async function (ids, opts) {
+      try {
+        var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
+        var rc = (cur.data && cur.data.raw_config) || {};
+        rc.layerOrder = ids;
+        if (opts && typeof opts.labelsOnTop === 'boolean') rc.labelsOnTop = opts.labelsOnTop;
+        var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
+        setStatus(r.error ? 'Layer order save failed' : 'Layer order saved');
+      } catch (e) { setStatus('Layer order save failed'); }
+    };
+    document.getElementById('elp-order').addEventListener('click', function () {
+      // highlighted so you can see where the layer you were editing currently sits (owner 8/18)
+      if (window.MSLayerOrder) MSLayerOrder.open(activeLayerId || activeGroupId || null);
+    });
     document.getElementById('elp-rebake').addEventListener('click', onRebakeLayer);
     document.getElementById('elp-instance').addEventListener('click', onCreateInstance);
     document.getElementById('elp-name').addEventListener('change', function () { if (activeLayerId) commitRename(activeLayerId, this.value); });

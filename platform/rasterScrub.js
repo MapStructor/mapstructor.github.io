@@ -371,10 +371,20 @@
       return null;   // the layers it owns are already the topmost — nothing to sit under
     } catch (e) { return null; }
   }
+  // If no owned layer id matched (a published copy whose slugs differ, a layer not yet added), the
+  // old code returned null and the bake was added ON TOP OF EVERYTHING — the exact symptom the
+  // owner reported. Falling back to the first label layer keeps labels readable no matter what.
+  function firstLabelId(view) {
+    try {
+      var layers = view.m.getStyle().layers, sfx = "-label-" + view.side;
+      for (var i = 0; i < layers.length; i++) if (layers[i].id.indexOf(sfx) > -1) return layers[i].id;
+      return null;
+    } catch (e) { return null; }
+  }
   // Present, and in the right place. Re-checked at every slidestart because a basemap switch drops
   // custom layers and because the owned set can change between drags.
   function ensureLayer(view) {
-    var m = view.m, id = view.layer.id, want = ownedBeforeId(view);
+    var m = view.m, id = view.layer.id, want = ownedBeforeId(view) || firstLabelId(view);
     try {
       if (m.getLayer(id)) {
         if (view.beforeId === want) return;
@@ -545,6 +555,7 @@
   }
   function itemServes(it, m) { try { return m.getZoom() <= itemMaxZoom(it); } catch (e) { return true; } }
   S.crossover = itemMaxZoom;   // console seam: MSRasterScrub.crossover(MSRasterScrub.items[0])
+  S.place = function () { S.views.forEach(function (v) { ensureLayer(v); }); };   // MSLayerOrder calls this after a reorder
 
   function pickLevel(m, it) {   // the level whose pixels ≈ the screen's pixels for this span
     var span = it.cfg.bounds[2] - it.cfg.bounds[0];

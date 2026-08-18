@@ -91,6 +91,9 @@ function initMaps() {
 			// the idle self-heal below re-adds once the winning style settles
 			try {
 				addLayersToMap(map, side, getDate());
+				// the saved stacking order is re-applied here because THIS is the path a reload and a
+				// basemap switch both take — without it the stack silently reverts to tree order (8/18)
+				try { if (window.MSLayerOrder) MSLayerOrder.apply(map, side); } catch (eLO) {}
 				if (typeof msRaiseLabelLayers === "function") msRaiseLabelLayers(map, layers);
 				refreshLayers();
 			} catch (e) {}
