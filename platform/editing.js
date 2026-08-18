@@ -3531,6 +3531,58 @@
       if (btn) { btn.disabled = false; btn.textContent = '⧉ Copy'; }
     }
   }
+  // Which layers have a snapshot that no longer matches their data? Same test the layer panel's
+  // freshness line uses (rasterYears.at vs tilesGeneratedAt) — one rule, two places to see it.
+  function staleSnapshotLayers() {
+    var out = [];
+    (function walk(a) {
+      (a || []).forEach(function (n) {
+        if (!n) return;
+        if (n.children) return walk(n.children);
+        var ry = n.rasterYears;
+        if (!ry || !ry.at || !n.tilesGeneratedAt) return;
+        try { if (new Date(n.tilesGeneratedAt) > new Date(ry.at)) out.push(n); } catch (e) {}
+      });
+    })(typeof layers !== 'undefined' ? layers : []);
+    return out;
+  }
+  // The ask. Three answers, and the DEFAULT is to publish without baking — the whole reason Publish
+  // stopped baking is that it cost minutes nobody asked for. Returns 'skip' | 'bake' | 'cancel'.
+  function askAboutStaleSnapshots(list) {
+    return new Promise(function (resolve) {
+      var ov = document.createElement('div');
+      ov.id = 'ms-stale-overlay';
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:100002;display:flex;align-items:center;justify-content:center;font-family:Source Sans Pro,Arial,sans-serif;';
+      ov.innerHTML =
+        '<div style="background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.4);width:520px;max-width:93vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;">' +
+          '<div style="padding:15px 22px 12px;border-bottom:1px solid #ece9f4;background:linear-gradient(180deg,#faf9fd,#fff);">' +
+            '<b style="font-size:16px;color:#1e1b2e;">Some snapshots are out of date</b>' +
+            '<div style="font-size:12px;color:#8a86a0;margin-top:2px;">Baking is manual now — nothing happens unless you ask</div>' +
+          '</div>' +
+          '<div style="overflow-y:auto;padding:14px 22px;font-size:13px;line-height:1.55;color:#2a2a33;">' +
+            '<p style="margin:0 0 8px;">These layers changed since their <b>baked snapshot</b> was made. The map itself publishes correctly either way — only the picture shown <i>while the time slider is dragged</i> would be out of date:</p>' +
+            '<ul style="margin:6px 0 10px;padding-left:18px;">' +
+              list.map(function (n) { return '<li style="margin:2px 0;"><b>' + (n.label || n.id) + '</b></li>'; }).join('') +
+            '</ul>' +
+            '<p style="margin:8px 0 0;color:#6b6680;font-size:12.5px;"><b>Okay</b> publishes now and leaves the snapshots as they are. <b>Bake All</b> refreshes them first — several minutes per layer. You can also do it later from a layer&rsquo;s <b>Make Faster</b> section.</p>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 22px 16px;border-top:1px solid #f0ecf8;">' +
+            // Owner's three (8/17): Okay · Cancel · Bake All. Cancel sits between the two ACTIONS
+            // rather than beside the primary, so a misclick on the way to "Okay" cannot bake.
+            '<button id="ms-stale-cancel" style="padding:7px 13px;border:1px solid #d7d3e4;border-radius:7px;background:#fff;color:#544f6e;font-weight:600;font-size:13px;cursor:pointer;">Cancel</button>' +
+            '<button id="ms-stale-bake" style="padding:7px 13px;border:1px solid #cdbff0;border-radius:7px;background:#f2ecff;color:#5b4b9a;font-weight:700;font-size:13px;cursor:pointer;">Bake All</button>' +
+            '<button id="ms-stale-skip" style="padding:7px 20px;border:none;border-radius:7px;background:#2d7a2d;color:#fff;font-weight:700;font-size:13px;cursor:pointer;">Okay</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(ov);
+      var prevLock = window.__msModalLock;
+      window.__msModalLock = true;   // the engine's backdrop-click must not close this one
+      function done(v) { window.__msModalLock = prevLock || false; ov.remove(); resolve(v); }
+      ov.querySelector('#ms-stale-skip').addEventListener('click', function () { done('skip'); });
+      ov.querySelector('#ms-stale-bake').addEventListener('click', function () { done('bake'); });
+      ov.querySelector('#ms-stale-cancel').addEventListener('click', function () { done('cancel'); });
+    });
+  }
   async function onPublish() {
     var hb = document.getElementById('editor-publish-btn');
     if (hb) { hb.disabled = true; hb.textContent = 'Publishing…'; }
@@ -3540,6 +3592,28 @@
       while (window.__msImportSaving > 0) {
         setStatus('Waiting for the import to finish saving before publishing…');
         await new Promise(function (rs) { setTimeout(rs, 1500); });
+      }
+      // STALE SNAPSHOTS — ASK, DON'T DECIDE (owner 8/17: "let's make it so there's a popup that
+      // says that layers haven't been rebaked, and gives them the option to bake or not"). Publish
+      // no longer re-bakes snapshots on its own, so a layer whose data moved since its snapshot was
+      // made would silently ship a stale drag. Naming them here, before anything is written, is the
+      // whole point: the cost is minutes and it is the owner's to spend.
+      var stale = staleSnapshotLayers();
+      if (stale.length) {
+        var choice = await askAboutStaleSnapshots(stale);
+        if (choice === 'cancel') { setStatus('Publish cancelled'); if (hb) { hb.disabled = false; hb.textContent = 'Publish'; } return; }
+        if (choice === 'bake') {
+          await loadScript('../platform/tilegen.js?v=' + Date.now());
+          for (var sI = 0; sI < stale.length; sI++) {
+            var sN = stale[sI], sLid = slugToLayerDbId[sN.id];
+            if (!sLid) continue;
+            setStatus('Baking snapshot ' + (sI + 1) + ' of ' + stale.length + ' — ' + (sN.label || 'layer') + '…');
+            try {
+              await MSTileGen.bakeScrubRaster(db, projectId, { id: sLid, name: sN.label, type: sN.type },
+                function (m) { setStatus(m); msProgress(m); });
+            } catch (eB) { msProgress('Snapshot failed for “' + (sN.label || 'layer') + '” — ' + ((eB && eB.message) || eB) + '. Publishing anyway.'); }
+          }
+        }
       }
       // "sew up" tiles first: converted layers regenerate from their CURRENT features, so the
       // published snapshot always ships fresh tiles (edits since the last generate are folded in)
@@ -8204,6 +8278,23 @@
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
     node.collapsed = !expanded;
+    // APPLY IT NOW, not on the next load (8/17). The setting was saving correctly all along — the
+    // section renderer ignored it — so the box moved and the panel didn't, which reads as "it's not
+    // letting me". Mirrors what the caret's own click does, so the class and the visibility stay in
+    // step with sectionCompressExpand / itemsCompressExpand (both branch on the CLASS).
+    try {
+      var caret = node.caretId ? document.getElementById(node.caretId) : null;
+      if (caret) {
+        caret.classList.remove(expanded ? 'fa-plus-square' : 'fa-minus-square');
+        caret.classList.add(expanded ? 'fa-minus-square' : 'fa-plus-square');
+      }
+      if (node.type === 'section' && node.containerId) {
+        var box = document.getElementById(node.containerId);
+        if (box) box.style.display = expanded ? '' : 'none';
+      } else if (node.type === 'group' && node.itemSelector) {
+        jQuery(node.itemSelector)[expanded ? 'show' : 'hide']();
+      }
+    } catch (eLive) { console.warn('expand toggle preview failed', eLive); }
     setStatus('Saving…');
     try {
       if (node.type === 'group' && node._dbId) { var r = await db.from('layer_groups').update({ collapsed: !expanded }).eq('id', node._dbId); if (r.error) throw new Error(r.error.message); }

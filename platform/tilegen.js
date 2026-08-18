@@ -879,16 +879,16 @@
     // a raster that exists (8/7 rule), so existence is the whole contract, and a re-bake through
     // this code is what clears a stamp that should never have been made. No raster simply means
     // the vector animates itself, which is correct — a wrong raster is far worse than none.
-    // OPT-IN SINCE 8/17 (owner: "let's make baking optional, not automatic … the thing is, baking
-    // takes a lot of time often, and it has to be redone"). The scrub raster is no longer a side
-    // effect of tiling. Two ways in, and nothing else bakes one:
-    //   o.bakeRaster        → an explicit request (the panel's Make Faster → Bake snapshot).
-    //   an existing bake    → REFRESH it. A layer already carrying rasterYears was baked under the
-    //                         old automatic regime or by hand, so a re-bake must keep it current
-    //                         rather than silently throw away a bake someone waited minutes for.
-    // Neither → no raster, which is correct: the layer scrubs as a vector, exactly like every
-    // untouched layer, and the owner can turn it on in the panel when they decide it's worth it.
-    var wantRaster = !!o.bakeRaster || !!rc.rasterYears;
+    // MANUAL ONLY (owner 8/17: "a bake should only be done manually, and publish should not do it
+    // automatically at all"). `o.bakeRaster` is the ONE way a snapshot gets baked, and only the
+    // panel's "Bake snapshot" button passes it. Publish, re-tile and import all arrive here without
+    // it and leave the snapshot alone.
+    //   Earlier today this also refreshed an EXISTING raster on any re-bake. That was the wrong
+    //   trade: it put a multi-minute canvas bake back inside Publish for exactly the layers most
+    //   likely to be re-tiled. An existing snapshot is now KEPT AS IS — the panel already says
+    //   "The data changed since — re-bake." when the tiles are newer, so the staleness is visible
+    //   and the decision to pay for it stays the owner's.
+    var wantRaster = !!o.bakeRaster;
     try {
       if (!wantRaster) {
         status("No instant-scrub snapshot (optional — turn it on under “Make Faster”).");

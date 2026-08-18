@@ -468,8 +468,12 @@ try {
      ONE definition shared with its only reader, platform/rasterScrub.js.
      A failure here never fails the bake: no raster means the layer animates as a vector, which
      is correct — and a WRONG raster is far worse than none (the loader never second-guesses one
-     that exists). SCRUB_RASTER=0 opts out. */
-  if ((process.env.SCRUB_RASTER || "1") !== "0") {
+     that exists).
+     OFF BY DEFAULT SINCE 8/17 (owner: "a bake should only be done manually, and publish should not
+     do it automatically at all … we may switch back to it, but for now I'd like to disable that").
+     Set SCRUB_RASTER=1 to bake one here; the editor's "Make Faster → Bake snapshot" button is the
+     supported way in. Flipping this default back is the one-line switch if that decision changes. */
+  if (process.env.SCRUB_RASTER === "1") {
     try {
       const baked = await bakeScrubRaster({
         projectId: PROJECT_ID, layerId: LAYER_ID, geojsonPath: "layer.geojson",

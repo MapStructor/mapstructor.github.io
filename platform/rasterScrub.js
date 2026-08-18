@@ -16,31 +16,25 @@
    itself any more: the owner asks for a snapshot with the panel's Bake button, because "baking takes
    a lot of time often, and it has to be redone". Absent `fast` on a layer that already HAS a bake
    counts as raster ON, so no pre-8/17 map needed migrating.
-   The "⚡ Scrub" chip near the timeline is an EDITOR-ONLY comparison override that forces the whole
-   map onto one renderer. It does NOT persist — every reload returns to "Per layer (panel)".
-   VIEW mode has no chip and simply honours each layer's choice.
+   NO UI OF ITS OWN (owner 8/17: "Get rid of this"). The ⚡ chip is deleted — the layer panel is the
+   one place a renderer is chosen. Every page, editor and viewer alike, runs mode "layer": with no
+   `fast` key a baked layer scrubs from its raster and everything else animates through the engine,
+   which is exactly the arrangement that shipped before any of the deck work.
    REMOVE ENTIRELY: delete this file, its <script> include in map/index.html + map/editor.html,
    and the bakeYearsRaster block in platform/tilegen.js. Nothing else references it. */
 (function () {
   "use strict";
   if (window.MSRasterScrub) return;
   var LS = "ms-timeline";   // legacy key — cleared on every load, never read again (see readMode)
-  // The chip is an EDITOR-ONLY comparison tool. Viewers never see it; every page reads each layer's
-  // own "Make Faster" choice.
-  var IS_EDITOR = /editor\.html/i.test((location && location.pathname) || "");
   function codeDefault() { return (window.MSDeckScrub && MSDeckScrub.mode) || "layer"; }
   // The two OLD chip keys are deliberately NOT migrated (8/17): they were comparison toggles, and
   // the owner had left both "off" from an A/B the night before. Reading them as a preference put
   // them on the legacy mapbox path on the very load that was supposed to swap it out — "it's slower
   // than ever", correctly, because it WAS the old scrub. A stale experiment must never outvote the
   // shipped default; the keys are cleared so nothing can read them again.
-  // FIVE explicit modes (owner 8/17: "the checkboxes are confusing — we need to actually have 5").
-  // Each names exactly who draws the drag; the combos exist to compare two renderers on the same
-  // gesture. "mapbox+raster" is the pre-deck v3 arrangement: raster over vectors that keep animating.
-  // 8/17 · "layer" IS THE DEFAULT and the only one a normal user meets: each layer decides for
-  // itself in its panel's "Make Faster" section. The five forced modes below it stay as a GLOBAL
-  // override for comparison runs — they ignore every per-layer toggle and put the whole map on one
-  // renderer, which is the only way to A/B the same gesture.
+  // "layer" is THE mode — each layer decides in its panel's "Make Faster" section. The five forced
+  // ids below it no longer appear anywhere in the UI; they survive as a console A/B seam
+  // (MSRasterScrub.setMode("deck")) because the renderers still branch on them.
   var MODES = [
     { id: "layer", label: "Per layer (panel)" },
     { id: "deck", label: "Deck only" },
@@ -65,12 +59,9 @@
     if (!rc) return false;
     return rc.fast ? !!rc.fast.raster : !!rc.rasterYears;
   }
-  // A FORCED MODE NEVER SURVIVES A RELOAD (8/17). This used to persist, and that is precisely how
-  // this morning went wrong: a comparison toggle left over from the night before silently decided
-  // which renderer ran, on the very load that was meant to prove a change. Owner then asked for the
-  // chip to retire once the panel existed — the panel IS the setting now, so the chip keeps its A/B
-  // power for the length of one session and every fresh load starts from what the layers say.
-  // The old keys are removed, not read, for the same reason.
+  // NOTHING PERSISTS A MODE (8/17). The old keys made a leftover comparison toggle silently decide
+  // which renderer ran — on the very load that was meant to prove a change ("slower than ever").
+  // They are removed, not read, and every load starts from what the layers themselves say.
   function readMode() {
     try { localStorage.removeItem("ms-raster-scrub"); localStorage.removeItem("ms-deck-scrub"); localStorage.removeItem(LS); } catch (e0) {}
     return codeDefault();
@@ -82,6 +73,8 @@
   var S = { mode: readMode(), maxZoom: 8.5, items: [], views: [], dragging: false, hideT: null, lastYear: 1900 };
   S.on = S.mode !== "mapbox";   // "is a fast renderer intercepting the drag at all"
   window.MSRasterScrub = S;
+  // console seam for renderer A/B now that the chip is gone (see the note above chip's old home)
+  setTimeout(function () { try { S.setMode = setMode; } catch (e) {} }, 0);
 
   function yearOf(unix) { var d = new Date(unix * 1000); return d.getUTCFullYear() + d.getUTCMonth() / 12; }
   function hexToRgb(h) {
@@ -758,37 +751,14 @@
     // forced mode is picked (and vice versa), so the chip would appear to do nothing.
     try { if (S.reload) S.reload(); } catch (e3) {}
   }
-  // FIVE named options, exactly one active (owner 8/17: "the checkboxes are confusing — we need to
-  // actually have 5"). Two checkboxes could express the same states but never SAID which one you
-  // were in, and an unchecked pair silently meant the legacy renderer. Deck options are hidden when
-  // deck can't run on this machine, so the list never offers something that would quietly fall back.
-  function chip() {
-    if (document.getElementById("ms-raster-chip")) return;
-    var deckable = !!(window.MSDeckScrub && MSDeckScrub.available());
-    var d = document.createElement("div");
-    d.id = "ms-raster-chip";
-    d.style.cssText = "position:fixed;right:14px;bottom:64px;z-index:4000;background:rgba(30,27,43,.94);color:#e8e5f2;font:12.5px/1.35 'Segoe UI',sans-serif;padding:9px 12px 10px;border-radius:12px;border:1px solid #4a4368;user-select:none;min-width:148px";
-    d.title = "Who draws the timeline while you drag. Deck reads the layer's own tiles; Raster reads the baked year-PNG; Mapbox is the engine's paint scrub. The combos draw both at once for comparison.";
-    // "layer" always shows — wantsDeck() is true for it, but it isn't a deck mode, it's "ask each
-    // layer", and on a machine without deck the layers that asked for deck just drag normally.
-    var rows = MODES.filter(function (m) { return m.id === "layer" || deckable || !wantsDeck(m.id); }).map(function (m) {
-      return '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;padding:1.5px 0">'
-        + '<input type="checkbox" value="' + m.id + '" style="accent-color:#8f7ae0;margin:0"' + (S.mode === m.id ? " checked" : "") + '>'
-        + m.label + '</label>';
-    }).join("");
-    d.innerHTML = '<div style="display:flex;gap:7px;align-items:baseline;margin-bottom:5px">'
-      + '<span style="font-weight:600">⚡ Scrub</span>'
-      + '<span id="ms-scrub-live" style="font-size:11px;opacity:.95"></span></div>' + rows;
-    document.body.appendChild(d);
-    var lab0 = (MODES.filter(function (x) { return x.id === S.mode; })[0] || {}).label || S.mode;
-    setLive(lab0, S.mode === "mapbox" || S.mode === "mapbox+raster");
-    [].forEach.call(d.querySelectorAll("input"), function (inp) {
-      inp.addEventListener("change", function () {
-        setMode(this.value);   // exclusive: setMode re-checks exactly the chosen row, so a click
-      });                      // can never leave zero selected (which is what used to mean "legacy")
-    });
-  }
-
+  // THE ⚡ CHIP IS GONE (owner 8/17: "Get rid of this"). It was a comparison instrument from the
+  // deck experiment, and once the layer panel's "Make Faster" section existed it was a SECOND place
+  // to set one thing — exactly the shape of the stale-toggle bug that made a whole morning read as
+  // "slower than ever". The mode machinery below stays because the renderers still branch on it,
+  // but nothing in the UI writes it any more: every page runs "layer", i.e. each layer's own
+  // choice. With no `fast` key that means baked layers scrub from their raster and everything else
+  // animates through the engine — the arrangement that was the default before any of the deck work.
+  // To A/B renderers again, set MSRasterScrub mode from the console: MSRasterScrub.setMode("deck").
   // PUBLISHED / COPIED maps (8/13): the DB's live project_layers rows can name DIFFERENT layer
   // ids than the nodes this page actually renders (a published viewer renders the snapshot's
   // layers) — every slug lookup missed and the scrub was a silent NO-OP for the public. The
@@ -896,7 +866,6 @@
       });
     }
     if (!S.views.length && !(window.MSDeckScrub && MSDeckScrub.available())) return;
-    if (IS_EDITOR) chip();
     hook();
   }
 
@@ -916,7 +885,7 @@
         [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null].forEach(function (m) {
           if (m && m.getContainer) { var v = makeView(m); if (v) S.views.push(v); }
         });
-        if (S.views.length) { if (IS_EDITOR) chip(); hook(); }
+        if (S.views.length) { hook(); }
         return;
       }
       S.views.forEach(function (v) {

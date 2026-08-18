@@ -59,9 +59,19 @@ function initMaps() {
 	setupInfoPanels();
 	
 
+	// The boot date, and it must not depend on a race. Layers take their date filter at ADD time
+	// (addLayersToMap(map, side, getDate())), and this used to read the TEXT of #date — which
+	// $(document).ready writes. In a STANDALONE export every script and the basemap style are
+	// local, so style.load beats document.ready: #date was still "", moment("") is invalid, and
+	// every layer was added with date = NaN. addMapLayer treats a falsy date as "no filter", so
+	// the map opened showing ALL data while the slider read 1872, and nothing ever re-applied
+	// (8/17 — shipped in the railways showcase). Ask the SLIDER first, fall back to the text, and
+	// last to sliderMiddle, which exists from script-eval time and needs no DOM at all.
 	function getDate() {
-		var sliderVal = moment($("#date").text()).unix();
-		return parseInt(moment.unix(sliderVal).format("YYYYMMDD"));
+		var t = $("#date").text(), v = t ? moment(t).unix() : null;   // #date tracks every drag — still the truth
+		if ((v == null || isNaN(v)) && typeof sliderMiddle === "number") v = Math.round(sliderMiddle);
+		if (v == null || isNaN(v)) return null;   // null, never NaN — callers test truthiness
+		return parseInt(moment.unix(v).format("YYYYMMDD"));
 	}
 
 	var initialLoadDone = false;

@@ -137,14 +137,21 @@ function buildContainerHTML(node) {
   }
   if (node.type === "section") {
     var childHTML = node.children.map(buildContainerHTML).join('');
+    // "Expanded by default" (8/17): a section's caret was HARD-CODED to fa-minus-square and its
+    // container always rendered open, so node.collapsed was saved, loaded, and then ignored —
+    // unticking the box in the panel changed the database and nothing else ("I'm trying to turn off
+    // expanded by default for sections, and it's not letting me"). Groups honoured it all along
+    // (renderLayerRow picks the icon off layerData.collapsed); sections never did. The two states
+    // must stay in step with sectionCompressExpand, which reads the CLASS to decide direction.
+    var secOpen = !node.collapsed;
     return (
       '<div class="ms-section-block" id="' + node.id + '">' +
         '<div class="layer-list-row" style="display:flex;justify-content:center;align-items:center">' +
-          '<i class="fas fa-minus-square compress-expand-icon" id="' + node.caretId + '" style="margin-right:5px"' +
+          '<i class="fas ' + (secOpen ? 'fa-minus-square' : 'fa-plus-square') + ' compress-expand-icon" id="' + node.caretId + '" style="margin-right:5px"' +
             ' onclick="sectionCompressExpand(\'#' + node.containerId + '\',\'#' + node.caretId + '\')"></i>' +
           '<label style="font-weight:bold;margin-bottom:0">' + node.label + '</label>' +
         '</div>' +
-        '<div id="' + node.containerId + '">' + childHTML + '</div>' +
+        '<div id="' + node.containerId + '"' + (secOpen ? '' : ' style="display:none"') + '>' + childHTML + '</div>' +
       '</div>'
     );
   } else if (node.containerId) {

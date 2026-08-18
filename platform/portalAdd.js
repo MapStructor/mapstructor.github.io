@@ -329,19 +329,55 @@
       }).map(function (x) { return x.layers.id; });
       var P = window.MapStructorPricing || window.MSPricing;   // pricing.js exports MapStructorPricing
       if (copyingIds.length && P) {
-        note('Checking storage room…');
+        // ── THE TWO-MINUTE STALL (owner 8/17: "it said Checking Storage Room too long. Seemed
+        //    stuck") — measured, and it was worse than slow. `mapstructor_user_storage` ran for
+        //    **120 seconds and then died with a statement timeout (57014)**, and the catch below
+        //    swallowed it into `used = 0`. So the dialog froze for two minutes on one message and
+        //    then did the quota check against a number it knew was wrong.
+        //    `ms_my_plan` already returns storage_used_bytes — the SAME figure — in 110ms, and it
+        //    was being called one line earlier for the tier. Use it. The slow RPC is now a fallback
+        //    only, and it races a timeout so it can never hang the dialog again.
+        //    The per-layer exact counts were the other half: a count over `features` under RLS,
+        //    once per layer, in series. Every tiled layer already records tilesFeatureCount at bake
+        //    time, so ask the row first and only count what has no answer.
+        //    And every step now SAYS what it is doing — one frozen message for a hundred seconds is
+        //    indistinguishable from a crash. ──
         var est = 0;
         for (var q = 0; q < copyingIds.length; q++) {
+          var srcL = (pls.filter(function (x) { return x.layers.id === copyingIds[q]; })[0] || {}).layers || {};
+          var known = srcL.raw_config && srcL.raw_config.tilesFeatureCount;
+          if (typeof known === 'number' && known >= 0) { est += known * 600; continue; }
+          note('Checking storage room — measuring “' + (srcL.name || 'layer') + '” (' + (q + 1) + ' of ' + copyingIds.length + ')…');
           var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', copyingIds[q]);
           est += (cq.count || 0) * 600;   // rough bytes/row — a pre-check, not an invoice
         }
         if (est > 0) {
-          var tier = 'free';
-          try { var mp = await db.rpc('ms_my_plan'); var mp0 = mp && mp.data && (mp.data[0] || mp.data); if (!mp.error && mp0 && mp0.subscription_tier) tier = mp0.subscription_tier; } catch (e0) {}
-          var used = 0;
-          try { var ur = await db.rpc('mapstructor_user_storage'); if (!ur.error && typeof ur.data === 'number') used = ur.data; } catch (e1) {}
+          note('Checking storage room — reading your plan…');
+          var tier = 'free', used = 0, usedKnown = false;
+          try {
+            var mp = await db.rpc('ms_my_plan');
+            var mp0 = mp && mp.data && (mp.data[0] || mp.data);
+            if (!mp.error && mp0) {
+              if (mp0.subscription_tier) tier = mp0.subscription_tier;
+              if (typeof mp0.storage_used_bytes === 'number') { used = mp0.storage_used_bytes; usedKnown = true; }
+            }
+          } catch (e0) {}
+          if (!usedKnown) {
+            note('Checking storage room — adding up what you have stored…');
+            try {
+              // 8 seconds, then move on. The full sum has timed out at 120s on this account; a
+              // pre-check is not worth making someone watch that, and refusing the add because a
+              // slow query didn't finish would be worse than letting the write path enforce it.
+              var ur = await Promise.race([
+                db.rpc('mapstructor_user_storage'),
+                new Promise(function (rs) { setTimeout(function () { rs({ error: { message: 'timed out' } }); }, 8000); })
+              ]);
+              if (ur && !ur.error && typeof ur.data === 'number') { used = ur.data; usedKnown = true; }
+            } catch (e1) {}
+            if (!usedKnown) note('Checking storage room — couldn’t total your usage in time; adding anyway.');
+          }
           var quota = P.stepFor(tier).quotaBytes;
-          if (quota && used + est > quota) {
+          if (usedKnown && quota && used + est > quota) {
             note('Not enough storage: the "All" choices copy ~' + Math.max(1, Math.round(est / 1048576)) + ' MB now, but only ' + Math.max(0, Math.round((quota - used) / 1048576)) + ' MB is free on your plan. Switch heavy layers to Linked (0 bytes) or upgrade.');
             goBtn.disabled = false; goBtn.textContent = 'Add to this map';
             return;

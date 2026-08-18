@@ -161,9 +161,23 @@ if (jQuery.browser.msie)
       if (ui && ui.value != null && typeof changeDate === "function") changeDate(ui.value);
     },
   });
-  $("#date").text(
-    moment.unix($("#slider").slider("values", 0)).format("DD MMM YYYY")
-  );
+  // Math.round(sliderMiddle), NOT $("#slider").slider("value") — jQuery UI trims the value to a
+  // whole `step` (one day) off `min`, and the midpoint of an 85-year range lands mid-day, so the
+  // trimmed value can be a calendar day later. The platform (projectLoader.applyTL) uses the
+  // untrimmed Math.round((start+end)/2); a standalone export of the same map must show the same
+  // date, and "02 Jul 1872" next to the original's "01 Jul 1872" is exactly the kind of drift a
+  // parity check is for.
+  var _bootDate = Math.round(sliderMiddle);
+  $("#date").text(moment.unix(_bootDate).format("DD MMM YYYY"));
+  // …and if the layers were already added (a local/standalone build loads its style before ready,
+  // so they were — see getDate() in mapinit.js), apply that date NOW. Belt-and-braces for the same
+  // race: whichever of style.load / document.ready comes second is the one that filters.
+  try {
+    if (typeof changeDate === "function" && typeof beforeMap !== "undefined" && beforeMap &&
+        typeof flatLayers === "function" && typeof layers !== "undefined" && flatLayers(layers).length) {
+      changeDate(_bootDate);
+    }
+  } catch (e) {}
 
   $(".footnote").click(function () {
     $("#footnotediv").toggle("slide");

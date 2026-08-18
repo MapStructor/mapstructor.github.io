@@ -39,8 +39,24 @@ jobs:
               FAILS="$FAILS- **$1** — $2 (expected \`$3\`)\n"
             fi
           }
+          # RANGE-READ probe (8/17). A showcase's page shell renders whether or not its data exists,
+          # so "the html came back" is not evidence the map works — the same blindness that let a
+          # deleted map probe green on 8/15. .pmtiles are read by byte range, so a 206 with real
+          # bytes is the smallest thing that actually proves the data is being served.
+          rangecheck () {  # rangecheck <name> <url>
+            CODE=$(curl -sL -m 25 --retry 2 --retry-delay 5 -o /dev/null -w '%{http_code}:%{size_download}' -r 0-1023 "$2" || echo "000:0")
+            if [ "$CODE" = "206:1024" ]; then
+              echo "OK   $1"
+            else
+              echo "FAIL $1  ($2)"
+              FAILS="$FAILS- **$1** — $2 (expected \`206 with 1024 bytes\`, got \`$CODE\`)\n"
+            fi
+          }
           check "site (apex)"           "https://mapstructor.com/"                                                            "MapStructor"
           check "railways showcase"     "https://mapstructor.com/maps/railways/"                                              "<html"
+          # …and its DATA, which the page shell above cannot vouch for
+          rangecheck "railways tiles"   "https://mapstructor.com/maps/railways/data/new-mrmz0sr7v1a-cso4ud-cjgmj7.pmtiles"
+          check "railways config"       "https://mapstructor.com/maps/railways/project/lists/layersList.js"                   "pmtiles://data/"
           check "tiles custom domain"   "https://tiles.mapstructor.com/snapshots/86d3286c-e075-4bcd-9085-25336450e36b.json"   "layers"
           check "worker health"         "https://mapstructor-worker.mapstructor.workers.dev/health"                           '"ok":true'
           check "AHM encyclopedia"      "https://mapstructor.com/ames/encyclopedia/rendered-export-single?nid=45894"          "rendered_entity"

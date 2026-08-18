@@ -26,7 +26,14 @@
                 handler (satellite → Esri World Imagery, everything else → OpenFreeMap liberty).
                 Proven in test/maplibre-download-spike (engine.css alias block, Noto fonts, ranges).
    Both variants ship serve-map.py (python's stock http.server ignores Range headers, which .pmtiles
-   reads require). Remaining CDN libraries stay CDN until C3 vendors them. */
+   reads require).
+   C3 DONE 8/17 — the copy now owns every byte it runs. jQuery, moment, turf, Font Awesome (webfonts
+   included) and Google Fonts are pulled into map/vendor/ at build time and the html is rewritten to
+   point at them, so the folder works on a network that blocks CDNs and keeps working when a CDN
+   drops a version this engine still asks for (jQuery 1.7.1 is from 2012). Matching is by HOST, not
+   by library, so a new <script> in index.html rides along without anyone updating a list here.
+   Owner: "when someone clicks download whole project, they can get the whole thing, put it on their
+   own website, and use it." */
 
 (function () {
   "use strict";
@@ -61,10 +68,19 @@
     "engine/mapinit.js", "engine/refreshLayers.js", "engine/sliderpopups.js", "engine/utils.js",
     "engine/vendor/jquery.ui.touch-punch.min.js",
     "engine/vendor/jquery-ui-1.10.3.custom/js/jquery-ui-1.10.3.custom.min.js",
-    "engine/vendor/jquery-ui-1.10.3.custom/css/ui-darkness/jquery-ui-1.10.3.custom.css",
-    "engine/vendor/jquery-ui-1.10.3.custom/css/ui-darkness/images/ui-bg_glass_20_555555_1x400.png",
-    "engine/vendor/jquery-ui-1.10.3.custom/css/ui-darkness/images/ui-bg_inset-soft_25_000000_1x100.png"
-  ];
+    "engine/vendor/jquery-ui-1.10.3.custom/css/ui-darkness/jquery-ui-1.10.3.custom.css"
+  ].concat(
+    // ALL FOURTEEN ui-darkness theme images (8/17). Only two were ever committed, so the other
+    // twelve 404'd on the live site AND in every download — the slider drew without its gradients
+    // and jQuery-UI's icon sprites were simply absent. Fetched from code.jquery.com and committed;
+    // this list is now the complete set the theme's CSS asks for, so nothing 404s anywhere.
+    ["ui-bg_flat_30_cccccc_40x100", "ui-bg_flat_50_5c5c5c_40x100", "ui-bg_glass_20_555555_1x400",
+     "ui-bg_glass_40_0078a3_1x400", "ui-bg_glass_40_ffc73d_1x400", "ui-bg_gloss-wave_25_333333_500x100",
+     "ui-bg_highlight-soft_80_eeeeee_1x100", "ui-bg_inset-soft_25_000000_1x100", "ui-bg_inset-soft_30_f58400_1x100",
+     "ui-icons_222222_256x240", "ui-icons_4b8e0b_256x240", "ui-icons_a83300_256x240",
+     "ui-icons_cccccc_256x240", "ui-icons_ffffff_256x240"]
+      .map(function (f) { return "engine/vendor/jquery-ui-1.10.3.custom/css/ui-darkness/images/" + f + ".png"; })
+  );
 
   var DEFAULT_LOGO = "../images/logo-transparent.png";
 
@@ -201,21 +217,69 @@
     return mapbox ? "mapbox" : "maplibre";
   }
 
+  // WHERE A LAYER'S ARCHIVE ACTUALLY LIVES (rewritten 8/17). This used to trust `n.pmtiles`
+  // outright — a single URL, no fallback — and that field records wherever the archive was written
+  // when the layer was baked. After the R2 flip those recorded Supabase URLs stopped resolving, so
+  // "Download whole project" on the Global Railways Map died on its FIRST embed with a bare
+  // "fetch … → 400" and produced no zip at all. One stale field, whole feature dead.
+  // The map itself never had this problem: pmt-sw.js tries R2 first and falls back to Supabase.
+  // So ask the same question the same way — a candidate LIST, in the same order, first one that
+  // answers wins. A layer whose tiles the page is successfully drawing can now always be embedded.
+  var R2_TILE_BASE = "https://tiles.mapstructor.com/tiles";
+  var SB_TILE_BASE = "https://eqpxlwbjqiwfjlsuapvu.supabase.co/storage/v1/object/public/tiles";
   function archiveFor(n) {
-    if (n.pmtiles) return { name: (n.id || "data"), url: n.pmtiles };
-    var u = (n.source && n.source.tiles && n.source.tiles[0]) || "";
-    for (var i = 0; i < WORKER_ARCHIVES.length; i++) {
-      var m = String(u).match(WORKER_ARCHIVES[i].match);
-      if (m) return { name: m[1], url: WORKER_ARCHIVES[i].archive(m) };
+    var urls = [], name = null;
+    var u = String((n.source && ((n.source.tiles && n.source.tiles[0]) || n.source.url)) || "");
+    // "pmt/<projectId>/<layerId>/{z}/{x}/{y}.pbf" — site-relative or absolute (tilegen.js writes it)
+    var pm = u.match(/pmt\/([0-9a-f-]{36})\/([0-9a-f-]{36})\//i);
+    if (pm) {
+      name = n.id || pm[2];
+      urls.push(R2_TILE_BASE + "/" + pm[1] + "/" + pm[2] + ".pmtiles");
+      urls.push(SB_TILE_BASE + "/" + pm[1] + "/" + pm[2] + ".pmtiles");
     }
-    return null;
+    if (n.pmtiles) { name = name || (n.id || "data"); urls.push(String(n.pmtiles)); }
+    for (var i = 0; i < WORKER_ARCHIVES.length; i++) {
+      var m = u.match(WORKER_ARCHIVES[i].match);
+      if (m) { name = name || m[1]; urls.push(WORKER_ARCHIVES[i].archive(m)); }
+    }
+    if (!urls.length) return null;
+    // dedup, keep order
+    var seen = {}, out = [];
+    urls.forEach(function (x) { if (x && !seen[x]) { seen[x] = 1; out.push(x); } });
+    return { name: name || (n.id || "data"), urls: out, label: n.label || n.id };
   }
 
-  // node.id → {name,url} for every layer whose archive we can fetch (names dedup to one file each)
+  // node.id → {name,urls,label} for every layer whose archive we can fetch (names dedup to one file each)
   function collectArchives() {
     var by = {};
     walkLeaves(function (n) { var a = archiveFor(n); if (a) by[n.id] = a; });
     return by;
+  }
+  // The scrub rasters' PNGs sit under the SAME key layout as the archives, so they need the same
+  // two-source treatment: a bake written before the R2 flip records a Supabase URL, one written
+  // after records R2, and either can be the dead one on any given map.
+  function assetTwins(u) {
+    var s = String(u), out = [s], m;
+    if ((m = s.match(/\/storage\/v1\/object\/public\/tiles\/(.+)$/))) out.push(R2_TILE_BASE + "/" + m[1]);
+    if ((m = s.match(/^https:\/\/tiles\.mapstructor\.com\/tiles\/(.+)$/))) out.push(SB_TILE_BASE + "/" + m[1]);
+    return out;
+  }
+  async function fetchAsset(u, what) {
+    var cands = assetTwins(u), tried = [];
+    for (var i = 0; i < cands.length; i++) {
+      try { return await fetchBin(cands[i]); }
+      catch (e) { tried.push(String(e.message || e).replace(/^fetch /, "")); }
+    }
+    throw new Error("Could not fetch " + (what || "an asset") + ". Tried: " + tried.join("; "));
+  }
+  // try each candidate; return the bytes of the first that answers, or throw naming the LAYER
+  async function fetchArchive(a) {
+    var tried = [];
+    for (var i = 0; i < a.urls.length; i++) {
+      try { return await fetchBin(a.urls[i]); }
+      catch (e) { tried.push(a.urls[i].replace(/^https:\/\/([^\/]+).*$/, "$1") + " → " + String(e.message || e).replace(/^fetch .*→ /, "")); }
+    }
+    throw new Error("Could not fetch the map data for “" + (a.label || a.name) + "”. Tried: " + tried.join("; "));
   }
 
   function projectName() {
@@ -244,15 +308,30 @@
       "const headerButtons = " + js(grab(function () { return headerButtons; }, [])) + ";\n";
   }
 
-  function genLayersList(embedById) {
+  function genLayersList(embedById, hasRasters) {
     var data = cleanValue(grab(function () { return layers; }, []), new WeakSet()) || [];
     // embedded layers: the zip carries the archive itself — point the source at the local file
     // (relative pmtiles:// URL, resolved against map/index.html by the injected protocol handler)
+    //
+    // AND STRIP THE REMOTE ADDRESSES (8/17). Rewriting `source` was not enough: the frozen node
+    // still carried `pmtiles`, `attrParquet` and a full `rasterYears` block full of absolute
+    // Supabase URLs, and rasterScrub's mergeNodeItems reads `n.rasterYears` — so a copy running on
+    // someone else's website loaded the six LOCAL snapshots and then went and fetched six REMOTE
+    // ones too (the offline gate caught it: twelve live items where six were embedded, and two
+    // blocked requests to supabase.co, one of them for a project that no longer exists). A
+    // standalone copy must not know MapStructor's address at all.
     if (embedById) (function w(a) {
       (a || []).forEach(function (n) {
         if (n.children) { w(n.children); return; }
         var em = embedById[n.id];
-        if (em) n.source = { type: "vector", url: "pmtiles://data/" + em.name + ".pmtiles" };
+        if (em) {
+          n.source = { type: "vector", url: "pmtiles://data/" + em.name + ".pmtiles" };
+          delete n.pmtiles;        // the archive is in map/data/ now
+          delete n.attrParquet;    // the sidecar is not embedded — a dead remote read either way
+        }
+        // the embedded snapshots are served from window.rasterScrubData (local raster/*.png);
+        // leaving the node copy would make the same layer load twice, once over the network
+        if (hasRasters) delete n.rasterYears;
       });
     })(data);
     return "/* generated by MapStructor — the map's live config, frozen. panel.render functions are\n" +
@@ -344,6 +423,72 @@
       "        });\n" +
       "      })();\n" +
       "    </script>";
+  }
+
+  /* ── C3 · VENDOR THE REMAINING CDN LIBRARIES (8/17) ────────────────────────────────────────
+     Owner: "make it so that when someone clicks download whole project, they can get the whole
+     thing, put it on their own website, and use it." A copy that still pulls jQuery, moment, turf,
+     Font Awesome and Google Fonts off five CDNs is not that. It breaks on any network that blocks
+     them — museum, university and government wifi routinely do — and it breaks the day a CDN drops
+     an old version (this engine asks for jQuery 1.7.1, from 2012). MapLibre, pmtiles and compare
+     were already vendored; these are the rest, so the folder finally owns every byte it runs.
+     Generic on purpose: match by HOST, not by library, so a new <script> in index.html is carried
+     without anyone remembering to add it here. Stylesheets get their url(...) assets pulled too —
+     vendoring Font Awesome's CSS without its webfonts would swap real icons for empty boxes. */
+  var VENDOR_HOSTS = /^https:\/\/(ajax\.googleapis\.com|cdnjs\.cloudflare\.com|unpkg\.com|fonts\.googleapis\.com)\//i;
+  function shortHash(s) { var h = 5381; for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return h.toString(36); }
+  function vendorName(u) {
+    var base = String(u).split("?")[0].split("#")[0].split("/").filter(Boolean).pop() || "asset";
+    base = base.replace(/[^A-Za-z0-9._-]/g, "_");
+    if (!/\.[A-Za-z0-9]{2,5}$/.test(base)) base += ".css";     // fonts.googleapis.com/css?family=…
+    return shortHash(String(u)) + "-" + base;
+  }
+  // pull every url(...) a stylesheet points at into the same folder, so relative names still resolve
+  async function vendorCssAssets(zip, cssText, cssUrl) {
+    var re = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g, m, want = [];
+    while ((m = re.exec(cssText))) want.push(m[2]);
+    var local = {};
+    for (var i = 0; i < want.length; i++) {
+      var raw = want[i];
+      if (!raw || /^data:/i.test(raw) || local[raw]) continue;
+      var abs; try { abs = new URL(raw, cssUrl).href; } catch (e) { continue; }
+      var fn = vendorName(abs);
+      try { zip.file("map/vendor/" + fn, await fetchBin(abs)); local[raw] = fn; }
+      catch (e) { console.warn("download: could not vendor " + abs + " — leaving the CDN url", e && e.message); }
+    }
+    return cssText.replace(re, function (whole, q, u) { return local[u] ? 'url("' + local[u] + '")' : whole; });
+  }
+  // rewrite every whitelisted-host src=/href= in the html to a local vendor/ copy
+  async function vendorCdnAssets(zip, html, status) {
+    var urls = [], seen = {}, re = /(?:src|href)=["']([^"']+)["']/g, m;
+    while ((m = re.exec(html))) { var u = m[1]; if (VENDOR_HOSTS.test(u) && !seen[u]) { seen[u] = 1; urls.push(u); } }
+    for (var i = 0; i < urls.length; i++) {
+      var u2 = urls[i], fn = vendorName(u2);
+      if (status) status("Vendoring libraries " + (i + 1) + "/" + urls.length + "…");
+      try {
+        if (/\.css(\?|$)/i.test(u2) || /fonts\.googleapis\.com/i.test(u2)) {
+          zip.file("map/vendor/" + fn, await vendorCssAssets(zip, await fetchText(u2), u2));
+        } else {
+          zip.file("map/vendor/" + fn, await fetchBin(u2));
+        }
+        html = html.split(u2).join("vendor/" + fn);
+        // STRIP SUBRESOURCE INTEGRITY (8/17 — this shipped broken and had to be reverted).
+        // The CDN tags carry integrity="sha512-…" + crossorigin, hashes of the CDN's exact bytes.
+        // Pointing the href at a local copy while leaving the hash means the browser silently
+        // REFUSES the file: no 404, no console error, no entry in document.styleSheets — Font
+        // Awesome simply vanished, every caret rendered as a zero-width blank, and the collapsed
+        // sections looked empty and unopenable. And our copies differ by construction: the CSS is
+        // rewritten to point at local webfonts. Both attributes are meaningless for a same-origin
+        // file, so drop them from the tag we just rewrote.
+        html = html.replace(new RegExp('(<(?:link|script)\\b[^>]*vendor/' + fn.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '[^>]*>)', "g"),
+          function (tag) { return tag.replace(/\s+integrity=(["'])[^"']*\1/g, "").replace(/\s+crossorigin=(["'])[^"']*\1/g, "").replace(/\s+referrerpolicy=(["'])[^"']*\1/g, ""); });
+      } catch (e) {
+        // a CDN that won't answer is not worth failing the whole download over — the copy keeps the
+        // remote url for that one file and still works anywhere the CDN is reachable
+        console.warn("download: could not vendor " + u2 + " — leaving it on the CDN", e && e.message);
+      }
+    }
+    return html;
   }
 
   function transformIndexHtml(src, variant, hasRasters) {
@@ -609,10 +754,12 @@
     // 1c. embedded data — the .pmtiles archives themselves (dedup: many layers, one archive)
     if (embedById) {
       var archives = {};
-      Object.keys(embedById).forEach(function (id) { archives[embedById[id].name] = embedById[id].url; });
-      for (var an in archives) {
-        setStatus("Embedding map data (" + an + ".pmtiles)…");
-        zip.file("map/data/" + an + ".pmtiles", await fetchBin(archives[an]));
+      Object.keys(embedById).forEach(function (id) { archives[embedById[id].name] = embedById[id]; });
+      var anKeys = Object.keys(archives), anDone = 0;
+      for (var ai = 0; ai < anKeys.length; ai++) {
+        var aRec = archives[anKeys[ai]];
+        setStatus("Embedding map data " + (++anDone) + "/" + anKeys.length + " — " + (aRec.label || anKeys[ai]) + "…");
+        zip.file("map/data/" + anKeys[ai] + ".pmtiles", await fetchArchive(aRec));
       }
     }
 
@@ -646,11 +793,15 @@
 
     // 2b. baked instant-scrub rasters — the live page already loaded the configs (MSRasterScrub);
     // embed every level's PNGs and ship a project copy of rasterScrub.js that reads them locally
-    // (window.rasterScrubData seam — same rows the platform reads from Supabase)
+    // (window.rasterScrubData seam — same rows the platform reads from Supabase).
+    // SINCE 8/17 this list is the OPTED-IN set: a layer whose "Make Faster → Baked snapshot" box is
+    // unticked isn't in MSRasterScrub.items, so its snapshot doesn't ride along. That is deliberate —
+    // the copy should scrub the way the map scrubs — and it reverses cleanly: tick the box, download
+    // again. A bake is never deleted by unticking, so nothing is lost either way.
     var rasterItems = (window.MSRasterScrub && window.MSRasterScrub.items) || [];
     var hasRasters = rasterItems.length > 0;
     if (hasRasters) {
-      setStatus("Embedding timeline rasters…");
+      setStatus("Embedding timeline snapshots (" + rasterItems.length + ")…");
       var rasterData = [], lutLocal = {};
       for (var ri = 0; ri < rasterItems.length; ri++) {
         var it = rasterItems[ri], levels = [];
@@ -658,8 +809,8 @@
           var lv = it.levels[li], tiles = [];
           for (var ti = 0; ti < lv.tiles.length; ti++) {
             var local = "raster/" + ri + "-" + li + "-" + ti + ".png";
-            var remote = lv.tiles[ti].url + "?v=" + encodeURIComponent(it.cfg.bakedAt || "1");
-            zip.file("map/" + local, await fetchBin(remote));
+            var remote = lv.tiles[ti].url + "?v=" + encodeURIComponent(it.cfg.bakedAt || it.cfg.at || "1");
+            zip.file("map/" + local, await fetchAsset(remote, "the timeline snapshot for “" + (it.slug || it.lid) + "”"));
             tiles.push({ url: local, bounds: lv.tiles[ti].bounds });
           }
           levels.push({ width: lv.width, height: lv.height, tiles: tiles });
@@ -671,7 +822,7 @@
           var lu = it.cfg.lut, key = lu.url;
           if (!lutLocal[key]) {
             var lp = "raster/lut-" + Object.keys(lutLocal).length + ".png";
-            zip.file("map/" + lp, await fetchBin(lu.url + "?v=" + encodeURIComponent(it.cfg.bakedAt || "1")));
+            zip.file("map/" + lp, await fetchAsset(lu.url + "?v=" + encodeURIComponent(it.cfg.bakedAt || it.cfg.at || "1"), "a snapshot lookup table"));
             lutLocal[key] = lp;
           }
           lut = { url: lutLocal[key], width: lu.width, height: lu.height };
@@ -693,7 +844,7 @@
     zip.file("map/project/lists/disclaimer.js", genDisclaimer());
     zip.file("map/project/lists/features.js", genFeatures());
     zip.file("map/project/lists/sliderDates.js", genSliderDates());
-    zip.file("map/project/lists/layersList.js", genLayersList(embedById));
+    zip.file("map/project/lists/layersList.js", genLayersList(embedById, hasRasters));
     zip.file("map/project/lists/modalinfo.js", genModalInfo());
     zip.file("map/project/lists/bounds.js", genBounds());
     zip.file("map/project/lists/mapData.js", genMapData());
@@ -735,6 +886,8 @@
     var html = transformIndexHtml(await fetchText("index.html"), variant, hasRasters);
     html = html.replace(/href="\.\.\/images\/logo-transparent\.png"/, "href=\"" + faviconHref + "\"");
     html = html.replace(/src="\.\.\/images\/logo-transparent\.png"/, "src=\"" + logoImgSrc + "\"");
+    // last, so it also catches anything the transform above introduced
+    html = await vendorCdnAssets(zip, html, setStatus);
     zip.file("map/index.html", html);
 
     // 6. raw data exports
