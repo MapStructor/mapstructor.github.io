@@ -54,9 +54,19 @@ jobs:
           }
           check "site (apex)"           "https://mapstructor.com/"                                                            "MapStructor"
           check "railways showcase"     "https://mapstructor.com/maps/railways/"                                              "<html"
-          # …and its DATA, which the page shell above cannot vouch for
-          rangecheck "railways tiles"   "https://mapstructor.com/maps/railways/data/new-mrmz0sr7v1a-cso4ud-cjgmj7.pmtiles"
           check "railways config"       "https://mapstructor.com/maps/railways/project/lists/layersList.js"                   "pmtiles://data/"
+          # …and its DATA, which the page shell above cannot vouch for. The filename is DERIVED from
+          # the config rather than pinned: every redeploy of the showcase renames the tile archives,
+          # so a hardcoded name turns into a false 🔴 the moment the map is rebuilt or reverted
+          # (which is exactly what happened on 8/18). Ask the config what it is asking for.
+          TILE=$(curl -sL -m 25 "https://mapstructor.com/maps/railways/project/lists/layersList.js" \
+                 | grep -o 'pmtiles://data/[A-Za-z0-9_.-]*\.pmtiles' | head -1 | sed 's|pmtiles://data/||')
+          if [ -z "$TILE" ]; then
+            echo "FAIL railways tiles  (no pmtiles reference in the config to probe)"
+            FAILS="$FAILS- **railways tiles** — could not find any \`pmtiles://data/\` reference in layersList.js\n"
+          else
+            rangecheck "railways tiles ($TILE)" "https://mapstructor.com/maps/railways/data/$TILE"
+          fi
           check "tiles custom domain"   "https://tiles.mapstructor.com/snapshots/86d3286c-e075-4bcd-9085-25336450e36b.json"   "layers"
           check "worker health"         "https://mapstructor-worker.mapstructor.workers.dev/health"                           '"ok":true'
           check "AHM encyclopedia"      "https://mapstructor.com/ames/encyclopedia/rendered-export-single?nid=45894"          "rendered_entity"
