@@ -149,7 +149,12 @@ function buildContainerHTML(node) {
         '<div class="layer-list-row" style="display:flex;justify-content:center;align-items:center">' +
           '<i class="fas ' + (secOpen ? 'fa-minus-square' : 'fa-plus-square') + ' compress-expand-icon" id="' + node.caretId + '" style="margin-right:5px"' +
             ' onclick="sectionCompressExpand(\'#' + node.containerId + '\',\'#' + node.caretId + '\')"></i>' +
-          '<label style="font-weight:bold;margin-bottom:0">' + node.label + '</label>' +
+          // text-align is LOAD-BEARING for long titles (8/18). justify-content:center centres the
+          // flex ITEMS, which does nothing once the label is wide enough to fill the row — it then
+          // wraps and its lines fall back to left-aligned, so "Railroads and the Making of Modern
+          // America" read as ragged-left while every short title looked centred. min-width:0 lets
+          // it shrink inside the flex row instead of forcing the caret out of position.
+          '<label style="font-weight:bold;margin-bottom:0;text-align:center;min-width:0">' + node.label + '</label>' +
         '</div>' +
         '<div id="' + node.containerId + '"' + (secOpen ? '' : ' style="display:none"') + '>' + childHTML + '</div>' +
       '</div>'

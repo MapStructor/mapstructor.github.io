@@ -695,6 +695,95 @@
   }
 
   // ── add (insert-on-add) ─────────────────────────────────────────────────────
+  /* MERGE (8/18) — the write half of platform/merge.js. It lives in this file because the merge
+     needs addItem(), insertOne(), the db handle and projectId, all of which are private here.
+
+     What it does, and deliberately does NOT do:
+       • creates ONE new layer via the ordinary add path, so the merged layer is a normal layer in
+         every downstream sense (tiles, sidecar, attribute table, styling)
+       • copies each source row's geom and custom_fields VERBATIM — msid included, never rewritten
+       • writes `source` into custom_fields so identity is (source, msid) and un-merging is a filter
+       • never touches the parents
+     feature_id is a fresh primary key per row; that is the table's key, not the user's id, and is
+     not the thing the owner means by "msids never change". */
+  async function runMerge(spec, onStatus, onDone) {
+    var say = function (m) { try { onStatus(m); } catch (e) {} };
+    try {
+      say('Creating the merged layer…');
+      var node = await addItem('layer', spec.name || 'Merged layer', null);
+      if (!node) throw new Error('could not create the layer');
+      var destLid = slugToLayerDbId[node.id];
+      if (!destLid) throw new Error('the new layer has no database id');
+
+      var totalIn = spec.descs.reduce(function (t, d) { return t + d.count; }, 0), done = 0, wrote = 0;
+      for (var si = 0; si < spec.descs.length; si++) {
+        var d = spec.descs[si], core = spec.plan.core[d.id];
+        var lastFid = null, pageSz = 500;
+        for (;;) {
+          var q = db.from('features').select('feature_id, geom, label, start_date, end_date, custom_fields')
+                    .eq('layer_id', d.dataLid).order('feature_id').limit(pageSz);
+          if (lastFid != null) q = q.gt('feature_id', lastFid);
+          var r = await q;
+          if (r.error) {
+            if (pageSz > 25) { pageSz = Math.max(25, Math.floor(pageSz / 4)); say('Heavy rows — retrying in pages of ' + pageSz + '…'); continue; }
+            throw new Error('read failed on "' + d.label + '" after ' + wrote + ' rows: ' + r.error.message);
+          }
+          if (!r.data || !r.data.length) break;
+          lastFid = r.data[r.data.length - 1].feature_id;
+          var rows = r.data.map(function (f) {
+            var cf = f.custom_fields || {};
+            function pick(sel) {
+              if (!sel) return null;
+              if (sel === 'label') return f.label;
+              if (sel === 'start_date') return f.start_date;
+              if (sel === 'end_date') return f.end_date;
+              return sel.indexOf('cf:') === 0 ? cf[sel.slice(3)] : null;
+            }
+            var out = { msid: cf.msid, source: d.label };   // msid VERBATIM; source is the disambiguator
+            spec.plan.cols.forEach(function (c) {
+              var from = c.from[d.id];
+              if (from != null && from !== '') out[c.out] = cf[from];
+            });
+            var sd = pick(core.__start), ed = pick(core.__end);
+            return {
+              layer_id: destLid, geom: f.geom,
+              label: pick(core.__label) == null ? null : String(pick(core.__label)),
+              start_date: normDate(sd), end_date: normDate(ed),
+              custom_fields: out
+            };
+          });
+          for (var i = 0; i < rows.length; i += 250) {
+            var ins = await db.from('features').insert(rows.slice(i, i + 250));
+            if (ins.error) throw new Error('write failed after ' + wrote + ' rows: ' + ins.error.message);
+            wrote += Math.min(250, rows.length - i);
+          }
+          done += r.data.length;
+          say('Merging… ' + wrote.toLocaleString() + ' of ' + totalIn.toLocaleString() + ' rows');
+          if (r.data.length < pageSz) break;
+        }
+      }
+      say('Merged ' + wrote.toLocaleString() + ' rows. Loading…');
+      try { await loadFeatures(); } catch (eLF) {}
+      rerender();
+      try { if (window.MSLayerOrder) MSLayerOrder.putOnTop(node.id); } catch (eLO) {}
+      setStatus('Merged ' + wrote.toLocaleString() + ' rows into "' + (spec.name || 'Merged layer') + '"');
+      onDone(null);
+    } catch (e) {
+      console.warn('merge failed', e);
+      onDone(String(e && e.message || e));
+    }
+  }
+  // a date column can arrive as 1815, "1815", "1815-06-09" or junk — anything unreadable becomes
+  // null rather than a wrong date, and shows up in the preview's "no dates mapped" warning
+  function normDate(v) {
+    if (v == null || v === '') return null;
+    var s = String(v).trim();
+    if (/^-?\d{1,4}$/.test(s)) { var y = parseInt(s, 10); return (y < 0 ? '-' : '') + String(Math.abs(y)).padStart(4, '0') + '-01-01'; }
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    var d = new Date(s);
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  }
+
   async function addItem(type, name, parent) {
     if (typeof layers === 'undefined') return;
     if (idsReady) { try { await idsReady; } catch (e) {} }
@@ -724,6 +813,9 @@
       if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; if (parent.type === 'group') node.topLayerClass = parent.id; }   // group children need the group's _item class for the ± caret
       else layers.push(node);
       rerender();
+      // a new layer belongs on TOP, and written down rather than inferred, so it survives a
+      // reload without anyone opening the order panel first (8/18)
+      if (type === 'layer' && window.MSLayerOrder) MSLayerOrder.putOnTop(node.id);
       if (type === 'layer') setActiveLayer(node.id, { noPanel: true });  // draw into the layer you just made — creating a layer (+Layer or draw auto-create) never pops the style panel; only CLICKING a layer opens it
       setStatus('Saved');
       return node;
@@ -754,6 +846,7 @@
       if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; }
       else layers.push(node);
       rerender();
+      if (window.MSLayerOrder) MSLayerOrder.putOnTop(node.id);
       renderTilesetOnMap(node);
       wireEngineEditClicks();
       _wireNew();
@@ -1421,7 +1514,22 @@
   }
   // #2: the add buttons NEVER disappear — the bar is split into a persistent button area + a form area
   // below it. Clicking a button fills the form area; clicking another button switches the form mid-action.
+  async function saveLayerOrder(ids, opts) {
+    try {
+      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      rc.layerOrder = ids;
+      if (opts && typeof opts.labelsOnTop === 'boolean') rc.labelsOnTop = opts.labelsOnTop;
+      var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
+      setStatus(r.error ? 'Layer order save failed' : 'Layer order saved');
+    } catch (e) { setStatus('Layer order save failed'); }
+  }
+
   function showButtons() {
+    // Wire the modules that hang off this file's private scope. Done HERE, not in the layer
+    // panel: the panel is built lazily on first layer click, but the toolbar exists from boot.
+    if (window.MSMerge) MSMerge.host = { db: db, projectId: projectId, slugToLayerDbId: slugToLayerDbId, runMerge: runMerge };
+    if (window.MSLayerOrder && !MSLayerOrder.onSave) MSLayerOrder.onSave = saveLayerOrder;
     var bar = document.getElementById('editor-add-bar');
     bar.innerHTML = '<div id="editor-add-buttons"><div class="erow" style="margin-bottom:6px;">' +
       '<button data-type="layer">Layer</button>' +
@@ -1433,7 +1541,8 @@
       '<button data-type="section">+ Section</button>' +
       '<button data-type="divider" title="A plain text line you can drag between items (e.g. to delineate Raw Layers)">+ Divider</button></div>' +
       // the Portal lives with the other add-things buttons (user 8/5) — it ADDS a whole map
-      '<div class="erow" style="margin-top:6px;"><button data-type="portal" title="Add a bookmarked map into this one (All / Linked / Instance per layer)">⊞ Portal</button></div>' +
+      '<div class="erow" style="margin-top:6px;"><button data-type="portal" title="Add a bookmarked map into this one (All / Linked / Instance per layer)">⊞ Portal</button>' +
+      '<button data-type="merge" title="Combine two or more layers into one dataset. Nothing is overwritten — the originals stay as they are">⛙ Merge</button></div>' +
       // admin-only: Mapbox needs a token, so it's gated to the owner on the hosted site (the multi-library
       // / no-charge principle). Regular users only get the tokenless + Tileset above.
       (_isAdmin ? '<div class="erow" id="editor-admin-add" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">' +
@@ -1443,7 +1552,8 @@
       '<div id="editor-add-form"></div>' +
       // map data footprint — exact stored bytes, filled in the background after boot (user 7/23)
       '<div id="ms-map-size" title="Exact stored size of this map’s data — click to refresh" style="margin-top:6px;padding-top:5px;border-top:1px dashed #ddd;font-size:11px;color:#6b6580;cursor:pointer;">' + (_mapSizeText || 'Map data: measuring…') + '</div>';
-    bar.querySelectorAll('#editor-add-buttons button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'portal') { if (window.MSPortalAdd) MSPortalAdd.open(); return; } markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
+    bar.querySelectorAll('#editor-add-buttons button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'portal') { if (window.MSPortalAdd) MSPortalAdd.open(); return; }
+      if (t === 'merge') { if (window.MSMerge) MSMerge.open(); return; } markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
     var msEl = document.getElementById('ms-map-size');
     if (msEl) msEl.addEventListener('click', function () { refreshMapSize(true); });
     if (!_mapSizeRun) refreshMapSize(false);
@@ -2794,6 +2904,7 @@
         made.push(node);
       }
       rerender();
+      if (window.MSLayerOrder) made.forEach(function (mn) { MSLayerOrder.putOnTop(mn.id); });
       await loadFeatures();   // pull the imported features into MapboxDraw so they render + are editable
       var b = computeImportBounds(fc); if (b && typeof beforeMap !== 'undefined' && beforeMap) { try { beforeMap.fitBounds(b, { padding: 60, maxZoom: 16 }); } catch (e) {} }
       if (made.length) setActiveLayer(made[0].id);
@@ -8665,16 +8776,6 @@
       '</div>';   // close #elp-body (the scrolling region under the sticky header)
     document.body.appendChild(p);
     document.getElementById('elp-close').addEventListener('click', hideLayerPanel);
-    if (window.MSLayerOrder) MSLayerOrder.onSave = async function (ids, opts) {
-      try {
-        var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
-        var rc = (cur.data && cur.data.raw_config) || {};
-        rc.layerOrder = ids;
-        if (opts && typeof opts.labelsOnTop === 'boolean') rc.labelsOnTop = opts.labelsOnTop;
-        var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
-        setStatus(r.error ? 'Layer order save failed' : 'Layer order saved');
-      } catch (e) { setStatus('Layer order save failed'); }
-    };
     document.getElementById('elp-order').addEventListener('click', function () {
       // highlighted so you can see where the layer you were editing currently sits (owner 8/18)
       if (window.MSLayerOrder) MSLayerOrder.open(activeLayerId || activeGroupId || null);

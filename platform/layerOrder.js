@@ -168,16 +168,25 @@
       if (LO.onSave) { try { LO.onSave(LO.order().slice(), { labelsOnTop: !!this.checked }); } catch (e) {} }
     };
 
-    // hand-rolled drag: the row follows the pointer and the list re-flows as it passes each midpoint
+    /* hand-rolled drag: the row follows the pointer and the list re-flows as it passes each
+       midpoint. POINTER events, not mouse — jquery.ui.touch-punch is in the build but it only
+       patches jQuery UI widgets, and this list is not one, so a mouse-only drag left the panel
+       readable but unusable on a tablet. Pointer events cover mouse, touch and pen in one path. */
     var dragging = null;
-    list.addEventListener("mousedown", function (e) {
+    var DOWN = window.PointerEvent ? "pointerdown" : "mousedown";
+    var MOVE = window.PointerEvent ? "pointermove" : "mousemove";
+    var UP = window.PointerEvent ? "pointerup" : "mouseup";
+    list.addEventListener(DOWN, function (e) {
       var li = e.target.closest && e.target.closest(".mslo-row");
       if (!li) return;
-      e.preventDefault();
+      e.preventDefault();   // also stops touch scrolling from stealing the gesture
       dragging = li; li.classList.add("mslo-drag");
+      try { if (e.pointerId != null && li.setPointerCapture) li.setPointerCapture(e.pointerId); } catch (e2) {}
     });
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    document.addEventListener(MOVE, onMove);
+    document.addEventListener(UP, onUp);
+    if (window.PointerEvent) document.addEventListener("pointercancel", onUp);
+    list.style.touchAction = "none";   // the list scrolls with the panel, not under a drag
     function onMove(e) {
       if (!dragging) return;
       var sibs = [].slice.call(list.querySelectorAll(".mslo-row"));
@@ -194,6 +203,9 @@
       dragging = null;
       commit();   // apply and save on release, so the map follows the list immediately
     }
-    cleanup = function () { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+    cleanup = function () {
+      document.removeEventListener(MOVE, onMove); document.removeEventListener(UP, onUp);
+      if (window.PointerEvent) document.removeEventListener("pointercancel", onUp);
+    };
   };
 })();
