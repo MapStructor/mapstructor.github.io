@@ -1010,3 +1010,8 @@ div[class*="field field--name-field-old-title field--type-string field--label-ab
     margin-top: 5px;
   }
 }
+
+/* Linked / Instance badges in the layer list (8/18). Muted on purpose: this is provenance, not
+   emphasis - an "All" layer is your own copy and gets no badge at all. */
+.ms-mode-badge { margin-left: 5px; font-size: 10px; opacity: .62; cursor: help; vertical-align: baseline; }
+.ms-mode-badge:hover { opacity: 1; }

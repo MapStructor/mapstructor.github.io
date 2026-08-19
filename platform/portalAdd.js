@@ -377,7 +377,17 @@
             if (!usedKnown) note('Checking storage room — couldn’t total your usage in time; adding anyway.');
           }
           var quota = P.stepFor(tier).quotaBytes;
-          if (usedKnown && quota && used + est > quota) {
+          // ADMIN IS EXEMPT — the documented rule everywhere else (auth.js, datasets.js,
+          // editing.js all carry the same allowlist), but this check never got it, so the owner's
+          // own account refused every "All" add: free tier is 1 GB and the account holds ~2.8 GB,
+          // so quota - used is negative and reads as "0 MB free" (8/18).
+          var amAdmin = false;
+          try {
+            var au = await db.auth.getUser();
+            var ae = au && au.data && au.data.user && au.data.user.email;
+            amAdmin = !!ae && ['nittyjee@gmail.com'].indexOf(String(ae).toLowerCase()) > -1;
+          } catch (eAdm) {}
+          if (usedKnown && quota && used + est > quota && !amAdmin) {
             note('Not enough storage: the "All" choices copy ~' + Math.max(1, Math.round(est / 1048576)) + ' MB now, but only ' + Math.max(0, Math.round((quota - used) / 1048576)) + ' MB is free on your plan. Switch heavy layers to Linked (0 bytes) or upgrade.');
             goBtn.disabled = false; goBtn.textContent = 'Add to this map';
             return;

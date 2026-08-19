@@ -34,6 +34,23 @@ function layerRowButtons(layerData, zoomName, isLeaf) {
   return `<div class="layer-buttons-block"><div class="layer-buttons-list">${tableBtn}${infoBtn}${zoomBtn}</div></div>`;
 }
 
+/* WHICH KIND OF LAYER IS THIS? (owner 8/18: "how can I tell if something is All/Linked/Instance?")
+   The portal writes three shapes and nothing on screen told them apart:
+     All      - a real copy. Own rows, own everything, editable. NO badge; it is simply your layer.
+     Linked   - a mirror: `editable:false` plus a source reference. Their data live and read-only,
+                your styling and your own columns, 0 bytes.
+     Instance - the same mirror plus `styleLocked:true`: their data AND their styling, locked.
+   `_msFromLayer` alone can NOT be the test - All-mode copies carry it too, as provenance. The
+   mirror marker is `editable === false`; `styleLocked` separates Instance from Linked. */
+function msModeBadge(d) {
+  if (!d) return "";
+  var mirror = d.editable === false && (d._msFromLayer || d.instanceOf);
+  if (!mirror) return "";
+  return d.styleLocked
+    ? '<span class="ms-mode-badge" title="Instance &mdash; a locked mirror of another map&rsquo;s layer. Its data AND its styling come from the source, and it adds 0 bytes of its own.">&#128274;</span>'
+    : '<span class="ms-mode-badge" title="Linked &mdash; reads another map&rsquo;s data live, read-only. Style it however you like and add your own columns; it adds 0 bytes of its own.">&#10697;</span>';
+}
+
 function renderLayerRow(layerData, groupName) {
   const iconClass = layerData.collapsed ? "fa-plus-square" : "fa-minus-square";
   const html = `
@@ -74,7 +91,7 @@ function renderGroupLayerItem(layerData, groupName, isGroupCollapsed) {
         />
         <label for="${layerData.id}">
           <i class="${layerData.isSolid ? "fas" : "far"} fa-${layerData.iconType || "slash"} ${["square", "circle", "comment-dots"].includes(layerData.iconType) ? "" : "slash-icon"}${layerData.colorBy ? " multicolor-icon" : ""}" style="color: ${layerData.iconColor || "#ff0000"}"></i>
-          ${layerData.label || ""}
+          ${layerData.label || ""}${msModeBadge(layerData)}
         </label>
         ${layerRowButtons(layerData, layerData.label, true)}
       </div>
@@ -94,7 +111,7 @@ function renderSingleLayer(layerData) {
         />
         <label for="${layerData.id}">
           <i class="${layerData.isSolid ? "fas" : "far"} fa-${layerData.iconType || "slash"} ${["square", "circle", "comment-dots"].includes(layerData.iconType) ? "" : "slash-icon"}${layerData.colorBy ? " multicolor-icon" : ""}" style="color: ${layerData.iconColor || "#ff0000"}"></i>
-          ${layerData.label}
+          ${layerData.label}${msModeBadge(layerData)}
         </label>
         ${layerRowButtons(layerData, layerData.label, true)}
       </div>

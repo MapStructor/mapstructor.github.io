@@ -591,6 +591,7 @@
         ? (W >= 16384 ? 1.5 : W >= 8192 ? 1.6 : W >= 4096 ? 1.8 : 2.0)
         : (W >= 16384 ? 1.8 : W >= 8192 ? 2.0 : W >= 4096 ? 2.5 : 3.0);
       sctx.lineCap = "round"; sctx.lineJoin = "round";
+      bakeIndexCanvas.lastLineWidth = sctx.lineWidth;   // recorded into the config as `lw` (rasterScrub reads it)
       sctx.strokeStyle = sctx.fillStyle = "#ffffff";
       var pad = Math.ceil(sctx.lineWidth) + 3;
       // FILLS keep the hard 140 cut — their interiors are fully opaque, so 140 only trims the

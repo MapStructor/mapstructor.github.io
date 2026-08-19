@@ -557,6 +557,70 @@
   S.crossover = itemMaxZoom;   // console seam: MSRasterScrub.crossover(MSRasterScrub.items[0])
   S.place = function () { S.views.forEach(function (v) { ensureLayer(v); }); };   // MSLayerOrder calls this after a reorder
 
+  /* ── MATCHING THE VECTOR'S THICKNESS (owner 8/18: "needs to be slightly thicker; it should
+     match the vector") ────────────────────────────────────────────────────────────────────────
+     pickLevel deliberately takes the first level at or FINER than the device (thin geometry cannot
+     afford an upscaled, blocky texel), so the bake is always OVERsampled: the scale factor runs
+     between 0.5 and 1.0 through each level band. A stroke baked at a fixed 1.8 texels therefore
+     lands between 0.6 and 1.2 CSS px against a 1.5 px vector — thinner everywhere, and thinnest
+     right after a level boundary. Measured on Railroads: 1.27x at z4, 0.85x at z6, 0.54x at z6.5.
+     No single baked width fixes it, because the requirement varies 2x inside every band.
+     So the reader compensates: work out how wide the stroke is ACTUALLY landing, compare it to the
+     vector's own line-width, and dilate by the shortfall — drawing the same quad a few times at
+     sub-pixel offsets, which unions into a wider line without touching the shader or the bake. */
+  function bakeTexels(levelW, isBorder) {
+    // MUST STAY IN STEP with tilegen.js bakeIndexCanvas (sctx.lineWidth). Bakes made from 8/18 on
+    // record it in the config as `lw`; this table is the fallback for everything baked before that.
+    return isBorder ? (levelW >= 16384 ? 1.5 : levelW >= 8192 ? 1.6 : levelW >= 4096 ? 1.8 : 2.0)
+                    : (levelW >= 16384 ? 1.8 : levelW >= 8192 ? 2.0 : levelW >= 4096 ? 2.5 : 3.0);
+  }
+  // the vector width this bake stands in for: a plain number, or a zoom interpolate resolved later
+  function vecWidth(node, ry) {
+    if (ry && typeof ry.lw === "number") return ry.lw;          // frozen into standalone copies
+    try {
+      var p = node && node.paint && node.paint["line-width"];
+      if (typeof p === "number") return p;
+      if (Array.isArray(p)) return p;                            // resolved per-zoom in targetWidth()
+    } catch (e) {}
+    return null;
+  }
+  function targetWidth(it, m) {
+    var p = it.lw;
+    if (typeof p === "number") return p;
+    if (Array.isArray(p) && p[0] === "interpolate") {            // linear zoom stops, the shape the editor writes
+      try {
+        var z = m.getZoom(), st = [];
+        for (var i = 3; i < p.length; i += 2) if (typeof p[i] === "number" && typeof p[i + 1] === "number") st.push([p[i], p[i + 1]]);
+        if (!st.length) return 1.5;
+        if (z <= st[0][0]) return st[0][1];
+        if (z >= st[st.length - 1][0]) return st[st.length - 1][1];
+        for (var j = 1; j < st.length; j++) if (z <= st[j][0])
+          return st[j - 1][1] + (st[j][1] - st[j - 1][1]) * (z - st[j - 1][0]) / (st[j][0] - st[j - 1][0]);
+      } catch (e) {}
+    }
+    return 1.5;   // the engine's own default line width
+  }
+  // how far to spread the quad, in CSS px, so the drawn stroke reaches the vector's width
+  function dilationCss(it, m, levelW) {
+    if (!(it.thin || it.isBorder)) return 0;                     // fills are area, not edge
+    try {
+      var span = it.cfg.bounds[2] - it.cfg.bounds[0];
+      var needCss = 512 * Math.pow(2, m.getZoom()) * span / 360;
+      var texels = (it.cfg && typeof it.cfg.lw === "number") ? it.cfg.lw : bakeTexels(levelW, it.isBorder);
+      var apparent = texels * needCss / levelW;
+      var want = targetWidth(it, m);
+      if (!(want > 0) || !(apparent > 0)) return 0;
+      var r = Math.max(0, Math.min(1.25, (want - apparent) / 2));   // half the shortfall on each side
+      // An offset below half a DEVICE pixel cannot change coverage — it rounds to the same texel and
+      // the extra passes draw exactly on top of themselves. Measured at z6 the shortfall works out
+      // to r = 0.115 css, which did nothing at all and left the line a pixel thin. Round any real
+      // shortfall up to the smallest offset that actually moves a pixel.
+      var dpr = window.devicePixelRatio || 1;
+      if (r > 0.03 && r * dpr < 0.3) r = 0.3 / dpr;
+      return r;
+    } catch (e) { return 0; }
+  }
+
   function pickLevel(m, it) {   // the level whose pixels ≈ the screen's pixels for this span
     var span = it.cfg.bounds[2] - it.cfg.bounds[0];
     var need = 512 * Math.pow(2, m.getZoom()) * span / 360;
@@ -635,11 +699,24 @@
       }
       if (use === -1) return;
       S._lastLevel = it.levels[use].width;   // debug/verification seam
+      // DILATION (8/18): the quad is drawn once at its true position, then again at ring offsets,
+      // so the union reads as a stroke `2*r` CSS px wider — the amount pickLevel's oversampling
+      // costs us against the vector. Cheap: it is the SAME fragments and the same texture, N times,
+      // with no extra per-fragment sampling and no shader change. r == 0 → exactly one pass, so a
+      // bake that already matches (or any fill) pays nothing.
+      var r = dilationCss(it, view.m, it.levels[use].width);
+      var ring = [[0, 0]];
+      if (r > 0.03) {
+        var d = r * 0.7071;
+        ring = [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r], [d, d], [d, -d], [-d, d], [-d, -d]];
+      }
       geom.forEach(function (g) {
         gl.bindTexture(gl.TEXTURE_2D, view.tex[it.lid + "|" + use + "|" + g[0]]);
-        gl.uniform2f(P.U.p0, g[1].x / w, g[1].y / h);
-        gl.uniform2f(P.U.p1, g[2].x / w, g[2].y / h);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        for (var oi = 0; oi < ring.length; oi++) {
+          gl.uniform2f(P.U.p0, (g[1].x + ring[oi][0]) / w, (g[1].y + ring[oi][1]) / h);
+          gl.uniform2f(P.U.p1, (g[2].x + ring[oi][0]) / w, (g[2].y + ring[oi][1]) / h);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
       });
     });
     gl.activeTexture(gl.TEXTURE0);   // leave the unit the map expects
@@ -897,6 +974,7 @@
               var lid = n._layerDbId || n._dataLayerId || n.id;
               add.push({ lid: lid, cfg: ry, color: colorOf(lid, ry), alpha: alphaOf(lid, ry), slug: n.id,
                 thin: n.type === "line",   // a line layer needs the exact level pick (see pickLevel)
+                lw: vecWidth(n, ry),        // the vector width the bake has to MATCH (see dilation in drawItems)
                 levels: (ry.levels || [{ url: ry.url, width: ry.width, height: ry.height }]).map(function (lv) {
                   return { width: lv.width, height: lv.height, tiles: lv.tiles || [{ url: lv.url, bounds: ry.bounds }] };
                 }) });
@@ -955,6 +1033,7 @@
       if (ry && (ry.url || ry.levels) && ry.bounds) items.push({
         lid: L.id, cfg: ry, color: colorOf(L.id, ry), alpha: alphaOf(L.id, ry), slug: slugOf(L.id, ry),
         thin: L.type === "line" || ry.thin === true,   // ry.thin: standalone copies carry it in the frozen config
+        lw: vecWidth(L, ry),
 
         // every level normalizes to a TILE LIST: whole-image levels = one tile with the full
         // bounds; the finest level ships real quadrant tiles (pre-pyramid bakes still work)

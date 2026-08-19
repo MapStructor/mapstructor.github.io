@@ -1600,7 +1600,15 @@
     var elS = document.getElementById('elp-size'); if (!elS) return;
     elS.style.display = 'none';
     var gen = ++_elpSizeGen;
-    if (node && node.instanceOf) { elS.style.display = ''; elS.textContent = 'Instance — shares its source layer’s data (adds 0 B of its own)'; return; }
+    // Linked AND Instance both carry instanceOf; only Instance is styleLocked. Calling every
+    // mirror an "Instance" was simply wrong, and it was the only place to look (owner 8/18).
+    if (node && (node.instanceOf || (node.editable === false && node._msFromLayer))) {
+      elS.style.display = '';
+      elS.textContent = node.styleLocked
+        ? 'Instance — its data AND its styling come from the source layer (adds 0 B of its own)'
+        : 'Linked — reads the source layer’s data live; style it freely (adds 0 B of its own)';
+      return;
+    }
     var lid = node && slugToLayerDbId[node.id];
     if (!lid && idsReady) { try { await idsReady; } catch (e0) {} lid = node && slugToLayerDbId[node.id]; }
     if (!lid || gen !== _elpSizeGen) return;
