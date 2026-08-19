@@ -73,7 +73,7 @@
         Object.keys(r.custom_fields || {}).forEach(function (k) { if (k !== "msid") keys[k] = (keys[k] || 0) + 1; });
       });
       out.fields = Object.keys(keys).sort();
-      out.sample = (samp.data || []).slice(0, 3);
+      out.sample = (samp.data || []).slice(0, 25);   // the ▦ table view reads these — no second fetch
     } catch (e) { out.error = String(e && e.message || e); }
     return out;
   };
@@ -122,6 +122,32 @@
 
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
 
+  /* One source's real rows, as a table. Every column the source actually has — its own label /
+     start_date / end_date plus every custom field — against the first rows, so a column name you
+     do not recognise can be judged by what is IN it. Opens INSIDE the merge overlay and closes back
+     to the mapping screen; it never dismisses the merge itself. */
+  function showTable(ui, d) {
+    var cols = ["label", "start_date", "end_date"].concat(d.fields);
+    var rows = d.sample || [];
+    var val = function (r, c) {
+      var v = (c === "label" || c === "start_date" || c === "end_date") ? r[c] : (r.custom_fields || {})[c];
+      if (v == null || v === "") return "<span style='color:#b9b3cd'>—</span>";
+      return esc(String(v)).slice(0, 60);
+    };
+    var pane = document.createElement("div"); pane.className = "msmg-tblpane";
+    pane.innerHTML =
+      '<div class="msmg-tblhead"><div><b>' + esc(d.label) + "</b> &nbsp;<span style='color:#6b6580;font-weight:400'>" +
+        d.count.toLocaleString() + " rows &middot; " + cols.length + " columns &middot; showing the first " + rows.length + "</span></div>" +
+        '<button class="msmg-btn" id="msmg-tblback">Back to mapping</button></div>' +
+      '<div class="msmg-tblwrap"><table class="msmg-tbltable"><tr>' +
+        cols.map(function (c) { return "<th>" + esc(c) + "</th>"; }).join("") + "</tr>" +
+        rows.map(function (r) { return "<tr>" + cols.map(function (c) { return "<td>" + val(r, c) + "</td>"; }).join("") + "</tr>"; }).join("") +
+      "</table></div>" +
+      (rows.length ? "" : "<div class='msmg-warn'>No rows came back for this source.</div>");
+    ui.ov.querySelector("#msmg").appendChild(pane);
+    pane.querySelector("#msmg-tblback").onclick = function () { pane.parentNode.removeChild(pane); };
+  }
+
   function css() {
     if (document.getElementById("msmg-css")) return;
     var s = document.createElement("style"); s.id = "msmg-css";
@@ -134,6 +160,15 @@
       "#msmg-body{overflow:auto;padding:12px 14px;flex:1}" +
       "#msmg-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid #e6e3ef}" +
       ".msmg-btn{padding:6px 14px;border:1px solid #cdbff0;border-radius:6px;background:#f2ecff;color:#5b4b9a;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer}" +
+      ".msmg-tbl{margin-left:5px;padding:0 5px;border:1px solid #d7d3e4;border-radius:4px;background:#f4f2fa;color:#5b4b9a;font-size:12px;line-height:17px;cursor:pointer}" +
+      ".msmg-tbl:hover{background:#ece6fb;border-color:#cdbff0}" +
+      ".msmg-tblpane{position:absolute;inset:0;background:#fff;border-radius:10px;display:flex;flex-direction:column;z-index:3}" +
+      ".msmg-tblhead{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid #e6e3ef}" +
+      ".msmg-tblwrap{overflow:auto;flex:1;padding:0 4px 4px}" +
+      ".msmg-tbltable{border-collapse:collapse;font-size:12px;white-space:nowrap}" +
+      ".msmg-tbltable th{position:sticky;top:0;background:#f7f5fd;border:1px solid #e6e3ef;padding:5px 8px;text-align:left;font-weight:600}" +
+      ".msmg-tbltable td{border:1px solid #eeecf5;padding:4px 8px}" +
+      "#msmg{position:relative}" +
       ".msmg-btn[disabled]{opacity:.45;cursor:not-allowed}" +
       ".msmg-ghost{border-color:#d7d3e4;background:#f4f2fa;color:#544f6e}" +
       "#msmg table{border-collapse:collapse;width:100%}" +
@@ -165,7 +200,17 @@
     try { window.__msModalLock = true; } catch (e) {}
     function close() { try { window.__msModalLock = false; } catch (e) {} if (ov.parentNode) ov.parentNode.removeChild(ov); }
     ov.querySelector("#msmg-x").onclick = close;
-    ov.addEventListener("mousedown", function (e) { if (e.target === ov) close(); });
+    // THE × IS THE ONLY WAY OUT (owner 8/18: "it's too easy to close and have to start over").
+    // A backdrop click used to dismiss the whole thing, and a column mapping is real work — losing
+    // it to a stray click beside the panel is not a fair trade for the convenience of click-away.
+    ov.addEventListener("mousedown", function (e) {
+      if (e.target !== ov) return;
+      e.preventDefault();
+      var x = ov.querySelector("#msmg-x");
+      if (!x) return;
+      x.style.transition = "none"; x.style.transform = "scale(1.6)"; x.style.color = "#c0392b";
+      setTimeout(function () { x.style.transition = "transform .25s, color .25s"; x.style.transform = ""; x.style.color = ""; }, 180);
+    });
     return { ov: ov, body: ov.querySelector("#msmg-body"), foot: ov.querySelector("#msmg-actions"), status: ov.querySelector("#msmg-status"), close: close };
   }
 
@@ -211,7 +256,9 @@
 
     function render() {
       var head = "<tr><th style='width:190px'>Merged column</th>" + descs.map(function (d) {
-        return "<th>" + esc(d.label) + "<div style='font-weight:400;color:#6b6580;font-size:11px'>" + d.count.toLocaleString() + " rows</div></th>";
+        return "<th>" + esc(d.label) +
+          " <button class='msmg-tbl' data-src='" + esc(d.id) + "' title='See this source&rsquo;s columns and its first rows'>&#9638;</button>" +
+          "<div style='font-weight:400;color:#6b6580;font-size:11px'>" + d.count.toLocaleString() + " rows</div></th>";
       }).join("") + "<th style='width:34px'></th></tr>";
 
       var coreRows = CORE.map(function (c) {
@@ -249,7 +296,7 @@
         "<div style='margin-top:8px'><button class='msmg-btn msmg-ghost' id='msmg-add'>+ Add a column</button></div>" +
         "<div class='msmg-tray'><b>Not included (" + unmapped.length + ")</b>" +
           (unmapped.length
-            ? "<div style='margin-top:4px'>" + unmapped.map(function (u) { return "<span style='display:inline-block;margin:2px 6px 2px 0'><code>" + esc(u.f) + "</code> <span style='color:#8a8398'>from " + esc(u.src) + "</span> <a href='#' data-add-src='" + esc(u.id) + "' data-add-f='" + esc(u.f) + "'>add</a></span>"; }).join("") + "</div>"
+            ? "<div style='margin-top:4px'>" + unmapped.map(function (u) { return "<div style='padding:1px 0'><code>" + esc(u.f) + "</code> <span style='color:#8a8398'>from " + esc(u.src) + "</span> <a href='#' data-add-src='" + esc(u.id) + "' data-add-f='" + esc(u.f) + "'>add</a></div>"; }).join("") + "</div>"
             : "<div style='margin-top:4px'>Everything is mapped.</div>") +
         "</div>";
 
@@ -268,6 +315,17 @@
       });
       ui.body.querySelectorAll("[data-del]").forEach(function (x) {
         x.onclick = function () { plan.cols.splice(+this.getAttribute("data-del"), 1); render(); };
+      });
+      // ▦ SEE THE ACTUAL TABLE (owner 8/18: "so we can actually see the columns"). Mapping column
+      // names blind is guesswork — `Status`, `From`, `Holder` mean nothing until you look at what
+      // is in them. Reads the sample describe() already pulled, so opening this costs no query.
+      ui.body.querySelectorAll(".msmg-tbl").forEach(function (b2) {
+        b2.onclick = function (e) {
+          e.preventDefault();
+          var sid = this.getAttribute("data-src"), d = null;
+          for (var i = 0; i < descs.length; i++) if (descs[i].id === sid) d = descs[i];
+          if (d) showTable(ui, d);
+        };
       });
       ui.body.querySelectorAll("[data-add-f]").forEach(function (a) {
         a.onclick = function (e) {

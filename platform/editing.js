@@ -716,6 +716,7 @@
       if (!destLid) throw new Error('the new layer has no database id');
 
       var totalIn = spec.descs.reduce(function (t, d) { return t + d.count; }, 0), done = 0, wrote = 0;
+      var geomKind = null;   // 'fill' | 'line' | 'circle', from the first geometry copied
       for (var si = 0; si < spec.descs.length; si++) {
         var d = spec.descs[si], core = spec.plan.core[d.id];
         var lastFid = null, pageSz = 500;
@@ -731,6 +732,7 @@
           if (!r.data || !r.data.length) break;
           lastFid = r.data[r.data.length - 1].feature_id;
           var rows = r.data.map(function (f) {
+            if (!geomKind && f.geom && f.geom.type) geomKind = GEOM_TO_TYPE[String(f.geom.type).replace(/^Multi/, '')] || null;
             var cf = f.custom_fields || {};
             function pick(sel) {
               if (!sel) return null;
@@ -761,6 +763,15 @@
           say('Merging… ' + wrote.toLocaleString() + ' of ' + totalIn.toLocaleString() + ' rows');
           if (r.data.length < pageSz) break;
         }
+      }
+      // THE MERGED LAYER MUST KNOW ITS SHAPE (owner 8/19: "No shapes or lines, just vertices").
+      // Every other write path stamps `type` from the geometry (draw, paste, import) — merge did
+      // not, so the layer saved type NULL and configLoader's blank-layer default ('circle')
+      // rendered 1,033 merged polygons as a dot at every vertex on the next load.
+      if (geomKind && !node.type) {
+        node.type = geomKind;
+        node.iconType = TILESET_ICON[geomKind] || 'square';
+        try { await db.from('layers').update({ type: geomKind }).eq('id', destLid); } catch (eT) {}
       }
       say('Merged ' + wrote.toLocaleString() + ' rows. Loading…');
       try { await loadFeatures(); } catch (eLF) {}

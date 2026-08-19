@@ -173,6 +173,14 @@ var ConfigLoader = (function () {
     // (which is the slug). Tileset configs carry it; synthesized layers need it too,
     // or the layer never becomes visible.
     if (leaf.toggleElement == null) leaf.toggleElement = row.slug;
+    // …and HEAL a stale one. Copying a layer mints a new slug, but an outline layer's raw_config
+    // kept the pre-copy id in toggleElement — a strict prefix of the real slug. The checkbox is
+    // rendered from the slug, so the lookup found nothing and the layer could not be turned off
+    // (8/18). Only the truncation signature is corrected; any other deliberate value is left alone.
+    else if (leaf.toggleElement !== row.slug && typeof row.slug === "string" &&
+             row.slug.indexOf(leaf.toggleElement + "-") === 0) {
+      leaf.toggleElement = row.slug;
+    }
     if (row.name != null) leaf.label = row.name;
     if (row.color != null) leaf.iconColor = row.color;
     if (row.enabled_by_default != null) leaf.checked = row.enabled_by_default;
