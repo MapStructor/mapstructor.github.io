@@ -366,14 +366,23 @@ var MSAudit = (function () {
     //     two layers fight over one container/class.
     safely(out, skip, "identity-collision", function () {
       var seen = {};
+      // A shared className/topLayerClass is NOT automatically wrong: the AHM-era layers share
+      // values like 'roads_layer' BY DESIGN (that is how their grouping works). What is always
+      // wrong is a share whose value is another layer's minted identity — a slug-shaped string —
+      // because that only happens when a copy kept its source's identity (the drift family).
+      // containerId is the exception: it becomes a DOM id, and duplicate DOM ids mean one
+      // sidebar row silently clobbers the other, so a containerId share is always reportable.
+      function slugShaped(v) { return /^new-[a-z0-9]/.test(v) || /-[a-z0-9]{6}$/.test(v); }
       rows.forEach(function (r) {
         ["containerId", "className", "topLayerClass"].forEach(function (k) {
           var v = rcOf(r)[k];
           if (!v) return;
+          if (k !== "containerId" && !slugShaped(v)) return;   // deliberate legacy grouping — not a finding
           var key = k + "|" + v;
           if (seen[key] && seen[key] !== r.slug) {
             out.push(finding("identity-collision", "warn", r.slug || r.id,
-              "raw_config." + k + "='" + v + "' is also used by '" + seen[key] + "' — two layers share one DOM identity",
+              "raw_config." + k + "='" + v + "' is also used by '" + seen[key] + "' — two layers share one identity" +
+              (k === "containerId" ? " (duplicate DOM id: one sidebar row silently clobbers the other)" : ""),
               "re-derive " + k + " from this layer's own slug"));
           } else seen[key] = r.slug;
         });

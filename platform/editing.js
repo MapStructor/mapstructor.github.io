@@ -151,8 +151,22 @@
   var PANEL_CONSUMED = ["encyclopediaBase","nidProp","color","render"];
   function rawFrom(node, consumed) { var raw = {}; Object.keys(node).forEach(function (k) { if (consumed.indexOf(k) === -1) raw[k] = node[k]; }); return raw; }
 
+  // DERIVED IDENTITY IS NOT PERSISTED (8/20, bug-book fix #4). containerId and toggleElement that
+  // equal their derivation ('cont-' + slug / the slug) say nothing the slug doesn't — configLoader
+  // re-derives both at load — and the STORED copy is the one that drifted on every copy (the
+  // June→August untick arc: missing in June, stored as the fix, drifted by August). One helper,
+  // called at every place a layer's raw_config is written, so a fifth write path added later
+  // inherits the rule by calling the same function all its siblings do. A value that DIFFERS from
+  // the derivation is deliberate and still persists — this strips redundancy, never intent.
+  function stripDerivedIdentity(raw, slug) {
+    if (!raw) return raw;
+    if (raw.containerId === 'cont-' + slug) delete raw.containerId;
+    if (raw.toggleElement === slug) delete raw.toggleElement;
+    return raw;
+  }
+
   function leafRow(node) {
-    var raw = rawFrom(node, LEAF_CONSUMED);
+    var raw = stripDerivedIdentity(rawFrom(node, LEAF_CONSUMED), node.id);
     var panel = node.panel || null;
     if (panel) { var extras = {}; Object.keys(panel).forEach(function (k) { if (PANEL_CONSUMED.indexOf(k) === -1) extras[k] = panel[k]; }); if (Object.keys(extras).length) raw.panel = extras; }
     var src = node.source || {}; var isTilesUrl = !!src.tiles;
@@ -3547,6 +3561,12 @@
     // dataset. Row-copying layers carry dataset_id on the rows too; this covers the rest.
     nl.raw_config = nl.raw_config || {};
     nl.raw_config._msCopyOf = L.id;
+    // THE DRIFT FACTORY, CLOSED (8/20): this clone used to carry the SOURCE's containerId and
+    // toggleElement under the copy's new slug — the exact mechanism of the 8/18 untick bug (a
+    // checkbox lookup aimed at a slug this project doesn't render). Whatever they said, they said
+    // it about the source's identity, so on a copy they are never right: delete both and let the
+    // loader derive them from the copy's own slug.
+    delete nl.raw_config.containerId; delete nl.raw_config.toggleElement;
     if (L.fold_state === 'folded') {
       // C7 pointer copy: stamps stay (they carry the source-keyed artifact URLs the copy
       // renders from) and the copy bills nothing until it materializes at first fold-merge.
@@ -8335,7 +8355,10 @@
       var rc = JSON.parse(JSON.stringify(src.raw_config || {}));
       rc.instanceOf = srcLid;
       rc.editable = false;                        // display-only — the original owns feature editing
-      rc.containerId = 'cont-' + slug; rc.className = slug; rc.topLayerClass = slug; rc.toggleElement = slug;
+      // containerId/toggleElement are DERIVED from the slug at load now — deleting beats
+      // re-stamping, because a stored copy is the thing that drifts on the NEXT copy
+      delete rc.containerId; delete rc.toggleElement;
+      rc.className = slug; rc.topLayerClass = slug;
       delete rc.rasterYears;                      // the source already draws the scrub raster — don't double it
       delete rc.labels;                           // labels can be turned on for the instance explicitly
       delete rc.editorOnly;                       // fresh instance starts fully visible

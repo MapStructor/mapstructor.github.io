@@ -173,6 +173,14 @@ var ConfigLoader = (function () {
     // (which is the slug). Tileset configs carry it; synthesized layers need it too,
     // or the layer never becomes visible.
     if (leaf.toggleElement == null) leaf.toggleElement = row.slug;
+    // containerId is DERIVED too (8/20, the derive-don't-store migration, step one). Every write
+    // path stored exactly 'cont-' + slug — measured 92 of 92 across all owner layers — so the
+    // stored copy said nothing the slug doesn't, and the rows no longer carry it. Deriving it also
+    // HEALS a real absence: a top-level leaf with no containerId renders NO sidebar row at all
+    // (generateLayers buildContainerHTML returns '' for it), which is how two merged layers were
+    // painting on the map with no checkbox anywhere to turn them off. Group children never consult
+    // it (renderGroupNode renders them inline), so deriving is inert for them.
+    if (leaf.containerId == null) leaf.containerId = "cont-" + row.slug;
     // …and HEAL a stale one. Copying a layer mints a new slug, but an outline layer's raw_config
     // kept the pre-copy id in toggleElement — a strict prefix of the real slug. The checkbox is
     // rendered from the slug, so the lookup found nothing and the layer could not be turned off
