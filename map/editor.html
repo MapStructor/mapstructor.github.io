@@ -422,7 +422,7 @@
     <script src="../platform/deckScrub.js?v=20260817e" onerror="void(0)"></script>
     <script src="../platform/merge.js?v=20260819a" onerror="void(0)"></script>   <!-- merge two or more layers into one dataset -->
     <script src="../platform/layerOrder.js?v=20260818b" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
-    <script src="../platform/rasterScrub.js?v=20260818f" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
+    <script src="../platform/rasterScrub.js?v=20260819b" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
     <script src="../platform/tables.js?v=20260731a" onerror="void(0)"></script>   <!-- Data tables + joins -->
     <script src="../platform/layerJson.js?v=20260813a" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
     <script src="../platform/queryWindow.js?v=20260813b" onerror="void(0)"></script>   <!-- Query & operations (merge lines / SQL / JS) -->
@@ -448,6 +448,10 @@
     <!-- cache-bust: editing.js changes often during dev; ?v=now forces a fresh load every reload (no stale code) -->
     <!-- selection.js = the selection store (single writer of the selected-feature set) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â must load BEFORE editing.js -->
     <script>document.write('<script src="../platform/selection.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
+    <!-- audit.js = the invariant self-audit (read-only detector; editing.js calls it after every
+         structural change). Must load BEFORE editing.js. Removing this line disables it cleanly:
+         editing.js checks `typeof MSAudit` and stays silent when it isn't there. -->
+    <script>document.write('<script src="../platform/audit.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
     <script>document.write('<script src="../platform/editing.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
 
     <!-- Save-to-account: anonymous maps live only at their URL; claim them via the shared MapAuth modal (dev plan Step 6 funnel).

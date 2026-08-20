@@ -217,7 +217,70 @@
     var root2 = document.getElementById('layers-panel-content');
     if (root2) root2.querySelectorAll('input[type=checkbox][id]').forEach(function (cb) { if (cb.id in live) cb.checked = live[cb.id]; });
     if (typeof window.__msRenderLegend === 'function') window.__msRenderLegend();   // keep the legend in sync with the layer tree
+    scheduleAudit('after a structural change');
   }
+
+  /* ── THE INVARIANT SELF-AUDIT (bug book fix #1, 8/19) ────────────────────────────────
+     Every structural operation in this file — addItem, import, merge, copy, delete, outline
+     split/unsplit, re-parent, paste — ends by calling rerender(). That makes rerender the ONE
+     seam where "a structural change just finished" is true, so the audit hooks there instead of
+     at fifteen separate call sites that would drift apart the moment a sixteenth is added
+     (hooking each site individually is the same duplicate-owner mistake the audit exists to find).
+
+     Debounced, because rerender also fires for ordinary panel refreshes; deduped, because the
+     same latent finding would otherwise print on every render. Nothing here can throw into the
+     caller and nothing here writes: it reads the tree, reports, and returns. */
+  var _auditT = null, _auditSeen = {};
+  function scheduleAudit(why) {
+    if (typeof MSAudit === 'undefined') return;          // audit.js not on this page — silently inert
+    clearTimeout(_auditT);
+    _auditT = setTimeout(function () { runAudit(why); }, 900);
+  }
+  // The tree carries every raw_config key spread onto each node (configLoader.leafFromRow), so a
+  // node can stand in for its row for the rules that read raw_config. The rules that need real
+  // COLUMNS the tree never carries (user_id, the project_layers links) are skipped explicitly —
+  // the offline census over the database is where those are judged.
+  function nodesAsRows() {
+    var rows = [];
+    (function walk(a) {
+      (a || []).forEach(function (n) {
+        if (!n) return;
+        if (n.children) { walk(n.children); return; }
+        var st = null;
+        if (n.source && n.source.type === 'geojson') st = 'geojson-supabase';
+        else if (n.source && n.source.type === 'vector') st = 'vector-tiles-url';
+        rows.push({
+          id: slugToLayerDbId[n.id] || n.id, slug: n.id, type: n.type, source_type: st,
+          source_url: (n.source && ((n.source.tiles && n.source.tiles[0]) || n.source.url)) || null,
+          paint: n.paint, user_id: '(not in tree)', raw_config: n
+        });
+      });
+    })(typeof layers !== 'undefined' ? layers : []);
+    return rows;
+  }
+  function runAudit(why, opts) {
+    if (typeof MSAudit === 'undefined') return null;
+    var o = opts || {};
+    try {
+      var tree = (typeof layers !== 'undefined') ? layers : [];
+      var findings = []
+        .concat(MSAudit.checkRows({ layers: nodesAsRows(), skip: ['layer-ownerless', 'link-parent-missing'] }))
+        .concat(MSAudit.checkTree(tree, {}))
+        .concat(MSAudit.checkLive({ layers: tree, map: (typeof beforeMap !== 'undefined') ? beforeMap : null }));
+      if (!o.full) {
+        findings = findings.filter(function (f) {
+          var k = f.rule + '|' + f.subject;
+          if (_auditSeen[k]) return false;
+          _auditSeen[k] = 1;
+          return true;
+        });
+      }
+      return MSAudit.report(findings, why);
+    } catch (e) { console.warn('audit run failed', e); return null; }
+  }
+  // console seam: MSAuditRun() re-reports EVERYTHING (not just what's new since the last render)
+  try { window.MSAuditRun = function (opts) { return runAudit('manual', Object.assign({ full: true }, opts || {})); }; } catch (e) {}
+
   function uid() { return 'new-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
   var LAYER_COLORS = ['#4a9eff', '#e8553e', '#3bb273', '#b56cd6', '#e8a33e', '#3ec0d0', '#d64576'];
   function nextColor() {
@@ -779,6 +842,21 @@
       try { if (window.MSLayerOrder) MSLayerOrder.putOnTop(node.id); } catch (eLO) {}
       setStatus('Merged ' + wrote.toLocaleString() + ' rows into "' + (spec.name || 'Merged layer') + '"');
       onDone(null);
+      // AUTO-TILE BIG MERGES (8/19). Merge is a write path like import and inherits its size rule
+      // (#5 in the bug book): past the tile thresholds a merged layer boots as raw geojson — the
+      // merged Borders layer was 47.9MB and cost a 45s editor boot. Same thresholds as import's
+      // auto-convert; runs AFTER onDone so the user sees the merged layer immediately (seen first,
+      // tiled second), and in its own try so a tiling failure can never re-signal the merge.
+      if (wrote > (geomKind === 'circle' ? 2000 : 500)) {
+        try {
+          msProgress('"' + (spec.name || 'Merged layer') + '" is large — baking it to tiles for fast loading…');
+          var didT = await rebakeLayerTiles(destLid, 'Auto-converting', true);
+          if (didT) msProgress('"' + (spec.name || 'Merged layer') + '" baked to tiles — it loads instantly from the next reload.');
+        } catch (eT2) {
+          console.warn('merge auto-tile skipped', eT2);
+          msProgress('Merged — tile conversion skipped (' + ((eT2 && eT2.message) || eT2) + '). Use the layer panel’s Re-bake button.');
+        }
+      }
     } catch (e) {
       console.warn('merge failed', e);
       onDone(String(e && e.message || e));
@@ -3670,8 +3748,12 @@
         if (!n) return;
         if (n.children) return walk(n.children);
         var ry = n.rasterYears;
-        if (!ry || !ry.at || !n.tilesGeneratedAt) return;
-        try { if (new Date(n.tilesGeneratedAt) > new Date(ry.at)) out.push(n); } catch (e) {}
+        if (!ry || !ry.at) return;
+        // stale on newer DATA (tiles re-baked) or newer STYLING (colours/width are frozen in the raster — 8/19)
+        try {
+          if ((n.tilesGeneratedAt && new Date(n.tilesGeneratedAt) > new Date(ry.at)) ||
+              (n.styleChangedAt && new Date(n.styleChangedAt) > new Date(ry.at))) out.push(n);
+        } catch (e) {}
       });
     })(typeof layers !== 'undefined' ? layers : []);
     return out;
@@ -6946,6 +7028,7 @@
       var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
       var rc = (cur.data && cur.data.raw_config) || {};
       rc.colorBy = node.colorBy;
+      rc.styleChangedAt = new Date().toISOString(); node.styleChangedAt = rc.styleChangedAt;   // snapshot freshness includes style (8/19)
       var r = await db.from('layers').update({ paint: b.paint, raw_config: rc }).eq('id', lid);
       if (r.error) throw new Error(r.error.message);
       livePresenceColors();
@@ -7214,6 +7297,11 @@
       var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
       var rc = (cur.data && cur.data.raw_config) || {};
       if (node.colorBy) rc.colorBy = node.colorBy; else delete rc.colorBy;
+      // SNAPSHOT FRESHNESS INCLUDES STYLE (8/19, "the bake didn't do colors again"): the raster
+      // freezes colours at bake time, so a restyle must move a stamp the panel can compare with
+      // rasterYears.at — otherwise the stale-raster warning only fires on DATA changes and a
+      // recolored layer scrubs in its old colours with no hint why.
+      rc.styleChangedAt = new Date().toISOString(); node.styleChangedAt = rc.styleChangedAt;
       var r2 = await db.from('layers').update({ paint: paint, raw_config: rc }).eq('id', lid);
       if (r2.error) throw new Error(r2.error.message);
       // live: engine copies on both swipe sides + the MapboxDraw copies (loadFeatures re-colors per feature)
@@ -7634,10 +7722,13 @@
       cbR.disabled = false;
       var kb = Math.round((ry.bytes || 0) / 1024);
       var when = null; try { when = ry.at ? new Date(ry.at).toLocaleDateString() : null; } catch (eD) {}
-      var stale = false;
+      var stale = false, staleWhy = 'data';
       try { stale = !!(ry.at && node.tilesGeneratedAt && new Date(node.tilesGeneratedAt) > new Date(ry.at)); } catch (eS) {}
+      // styling is baked into the raster too (colours, stroke width) — a restyle stales it the
+      // same as a data edit (8/19, "the bake didn't do colors again")
+      try { if (!stale && ry.at && node.styleChangedAt && new Date(node.styleChangedAt) > new Date(ry.at)) { stale = true; staleWhy = 'styling'; } } catch (eS2) {}
       rn.innerHTML = 'Baked' + (when ? ' ' + when : '') + (kb ? ' · ' + kb + ' KB' : '') + (ry.fc ? ' · ' + Number(ry.fc).toLocaleString() + ' features' : '') +
-        (stale ? '<br><b style="color:#b4453a;">The data changed since — re-bake.</b>' : '');
+        (stale ? '<br><b style="color:#b4453a;">The ' + staleWhy + ' changed since — re-bake.</b>' : '');
       btn.innerHTML = '🔥 Re-bake snapshot';
     }
     var dn = document.getElementById('elp-fast-deck-note');
@@ -10827,7 +10918,12 @@
     var node = findNodeById(layers, slug); if (!node) return;
     var lid = slugToLayerDbId[slug]; if (!lid) return;
     setStatus('Saving…');
-    try { var r = await db.from('layers').update({ color: node.iconColor || '#3bb2d0', paint: node.paint }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
+    try {
+      var r = await db.from('layers').update({ color: node.iconColor || '#3bb2d0', paint: node.paint }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved');
+      // snapshot freshness includes style (8/19): the raster froze these colours/widths at bake
+      // time — move the stamp so the panel's stale warning fires on restyles, not just data edits
+      node.styleChangedAt = new Date().toISOString(); setStyleMetaRC(lid, 'styleChangedAt', node.styleChangedAt);
+    }
     catch (e) { console.warn('editing: layer style save failed', e); setStatus('Save failed'); }
     if (_styleSession === slug && _styleBefore) {   // one undo entry per debounced edit session
       var before = _styleBefore, after = { color: node.iconColor, paint: node.paint ? JSON.parse(JSON.stringify(node.paint)) : null };
