@@ -94,7 +94,11 @@ jobs:
           rclone version | head -1
           rclone copyto "db-$STAMP.dump" "r2:mapstructor-db-backups/db/db-$STAMP.dump"
           [ -f "auth-users-$STAMP.csv" ] && rclone copyto "auth-users-$STAMP.csv" "r2:mapstructor-db-backups/db/auth-users-$STAMP.csv"
-          rclone delete --min-age 14d "r2:mapstructor-db-backups/db/"
+          # 8 days, not 14 (8/20): the database grew to ~1.6 GB and each dump to ~500 MB, so 14
+          # dailies quietly walked the B2 mirror to 75% of its free 10 GB — the Backblaze cap email,
+          # a textbook cliff: nothing changed in the code, the data grew past an invisible line.
+          # 8 dailies ≈ 4 GB ≈ 40%, with headroom that scales until the DB roughly doubles again.
+          rclone delete --min-age 8d "r2:mapstructor-db-backups/db/"
           rclone ls "r2:mapstructor-db-backups/db/"
 
       - name: Mirror R2 backups to Backblaze B2
@@ -110,7 +114,14 @@ jobs:
           RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_KEY_ID }}
           RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APP_KEY }}
         run: |
-          rclone sync "r2:mapstructor-db-backups/" "b2:mapstructor-backups/backups/"
+          # --b2-hard-delete (8/20): without it, B2 answers every delete by HIDING the file as an
+          # old version that still counts against the storage cap — so each night's prune removed
+          # nothing, and every dump ever synced was still stacked behind the current ones. That is
+          # what actually filled the free tier (the 75% cap email), on top of dumps growing with
+          # the DB. `cleanup` then purges the hidden versions already accumulated — the first run
+          # reclaims weeks of them; after that it is a cheap no-op each night.
+          rclone sync --b2-hard-delete "r2:mapstructor-db-backups/" "b2:mapstructor-backups/backups/"
+          rclone cleanup "b2:mapstructor-backups/" || echo "::warning::b2 cleanup failed (non-fatal — versions purge next run)"
           rclone ls "b2:mapstructor-backups/backups/" | head -20
 
       - name: Watch the free-tier ceilings (B2 + R2 backups)

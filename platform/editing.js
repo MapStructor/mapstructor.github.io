@@ -9476,8 +9476,36 @@
         '<div id="editor-attr-head"><span class="attr-head-l"><b id="editor-attr-title">Attributes</b>' +
           '<button id="editor-attr-zoom" title="Zoom the map to the selected feature(s)" disabled>&#9673; Zoom to selected</button>' +
           '<button id="editor-attr-del" title="Delete the selected feature(s)" disabled>&#128465; Delete selected</button>' +
-          '<button id="editor-attr-transfer" title="Copy one column\'s values into another">&#8646; Transfer column</button></span>' +
+          '<button id="editor-attr-transfer" title="Copy one column\'s values into another">&#8646; Transfer column</button>' +
+          '<button id="editor-attr-addcol" title="Add a new (empty) column to this layer">+ Column</button>' +
+          '<button id="editor-attr-delcol" title="Delete a column from every feature of this layer">&#8722; Column</button>' +
+          '<button id="editor-attr-dups" title="Find identical or overlapping features — mark them in a column, or delete the extras">&#10697; Duplicates</button></span>' +
           '<span id="editor-attr-close" title="Close">&times;</span></div>' +
+        '<div id="editor-attr-addcol-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#faf9fd;font-size:12.5px;">' +
+          'New column <input id="attr-ac-name" placeholder="column name" style="font-size:12px;width:160px;">' +
+          ' <button id="attr-ac-go" style="font-size:12px;padding:2px 10px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;cursor:pointer;">Add</button>' +
+          ' <span id="attr-ac-status" style="color:#8a86a0;"></span>' +
+          '<div style="color:#8a86a0;margin-top:2px;">Adding a column is free — it appears here and in the feature panel, empty until you fill it. Nothing is written to your features.</div>' +
+        '</div>' +
+        '<div id="editor-attr-delcol-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#fdf9f9;font-size:12.5px;">' +
+          'Delete column <select id="attr-dc-sel" style="font-size:12px;max-width:220px;"></select>' +
+          ' <button id="attr-dc-go" style="font-size:12px;padding:2px 10px;border:1px solid #d0a0a0;border-radius:4px;background:#fdeeee;color:#a33;cursor:pointer;">Delete&hellip;</button>' +
+          ' <span id="attr-dc-status" style="color:#8a86a0;"></span>' +
+          '<div style="color:#8a86a0;margin-top:2px;">Custom columns are removed from every feature; built-ins (Label, Notes, dates) are cleared to empty. Asks before doing anything. Cannot be undone.</div>' +
+        '</div>' +
+        '<div id="editor-attr-dups-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#f9fbfd;font-size:12.5px;">' +
+          '<label style="margin-right:10px;"><input type="radio" name="attr-dup-mode" value="identical" checked style="vertical-align:middle;"> Identical</label>' +
+          '<label><input type="radio" name="attr-dup-mode" value="overlap" style="vertical-align:middle;"> Overlapping</label>' +
+          '<span id="attr-dup-idbox" style="margin-left:14px;">count as identical: <span id="attr-dup-cols"></span></span>' +
+          ' <button id="attr-dup-preview" style="font-size:12px;padding:2px 10px;border:1px solid #93a8c2;border-radius:4px;background:#eaf1fa;color:#2d5a7a;cursor:pointer;">Preview</button>' +
+          ' <span id="attr-dup-status" style="color:#8a86a0;"></span>' +
+          '<div id="attr-dup-actions" style="margin-top:4px;display:none;">' +
+            'Mark in column <input id="attr-dup-col" value="dup_group" style="font-size:12px;width:110px;">' +
+            ' <button id="attr-dup-mark" style="font-size:12px;padding:2px 10px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;cursor:pointer;">Mark</button>' +
+            ' <button id="attr-dup-delete" style="font-size:12px;padding:2px 10px;border:1px solid #d0a0a0;border-radius:4px;background:#fdeeee;color:#a33;cursor:pointer;">Delete duplicates&hellip;</button>' +
+            ' <span id="attr-dup-note" style="color:#8a86a0;"></span>' +
+          '</div>' +
+        '</div>' +
         '<div id="editor-attr-transfer-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#faf9fd;font-size:12.5px;">' +
           'Copy <select id="attr-tr-from" style="font-size:12px;max-width:170px;"></select>' +
           ' into <select id="attr-tr-to" style="font-size:12px;max-width:170px;"></select>' +
@@ -9496,6 +9524,17 @@
     document.getElementById('editor-attr-del').addEventListener('click', deleteAttrSelected);
     document.getElementById('editor-attr-transfer').addEventListener('click', toggleTransferPanel);
     document.getElementById('attr-tr-go').addEventListener('click', runColumnTransfer);
+    document.getElementById('editor-attr-addcol').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-addcol-panel'); });
+    document.getElementById('editor-attr-delcol').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-delcol-panel', fillDelColSelect); });
+    document.getElementById('editor-attr-dups').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-dups-panel', fillDupIdentity); });
+    document.getElementById('attr-ac-go').addEventListener('click', runAddColumn);
+    document.getElementById('attr-dc-go').addEventListener('click', runDeleteColumn);
+    document.getElementById('attr-dup-preview').addEventListener('click', runDupPreview);
+    document.getElementById('attr-dup-mark').addEventListener('click', runDupMark);
+    document.getElementById('attr-dup-delete').addEventListener('click', runDupDelete);
+    Array.prototype.forEach.call(document.querySelectorAll('input[name=attr-dup-mode]'), function (r) {
+      r.addEventListener('change', function () { fillDupIdentity(); document.getElementById('attr-dup-actions').style.display = 'none'; document.getElementById('attr-dup-status').textContent = ''; });
+    });
     document.getElementById('editor-attr-head').addEventListener('mousedown', startAttrPanelDrag);
     // custom resize (right edge / bottom edge / corner) — native resize:both only gave the corner
     [['attr-rz-r', true, false], ['attr-rz-b', false, true], ['attr-rz-c', true, true]].forEach(function (spec) {
@@ -9718,6 +9757,7 @@
     if (gen !== _attrLoadGen) return;
     var N = rc.attrParquetRows;
     var keysS = orderAttrKeys(prov.customKeys.slice(), 30);
+    (function () { var xn = nodeByLayerDbId(lid) || findNodeById(layers, slug); (((xn || {}).extraColumns) || []).forEach(function (k) { if (keysS.indexOf(k) < 0) keysS.push(k); }); })();   // registered empty columns render too (+ Column tool)
     _attrRows = new Array(N);
     _attrSlug = slug; _attrById = {}; ensureAttrMapHover();
     _attrVirtual = { prov: prov, order: null, pending: {}, N: N, gen: gen, lid: lid };
@@ -9843,6 +9883,10 @@
       var keysS = [];
       rows.forEach(function (r) { var cf = r.custom_fields; if (cf && typeof cf === 'object') { _attrCustom[r.feature_id] = cf; Object.keys(cf).forEach(function (k) { if (keysS.indexOf(k) < 0) keysS.push(k); }); } });
       keysS = orderAttrKeys(keysS, 30);
+      // registered-but-still-empty columns (the + Column tool): the layer says they exist, so
+      // they render even though no row carries a value yet — otherwise an empty column would
+      // vanish on every reload and "add column" would look broken until the first cell was filled
+      (function () { var xn = nodeByLayerDbId(lid) || findNodeById(layers, slug); (((xn || {}).extraColumns) || []).forEach(function (k) { if (keysS.indexOf(k) < 0) keysS.push(k); }); })();
       _attrRows = rows;
       _attrSlug = slug; _attrById = {}; rows.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
       _attrCols = [
@@ -10476,6 +10520,176 @@
     } catch (e9) { st9.textContent = 'Failed: ' + e9.message; }
   }
   function hideAttrModal() { _attrLoadGen++; var m = document.getElementById('editor-attr-modal'); if (m) m.style.display = 'none'; _attrSlug = null; setAttrHover(null, false); }   // gen bump ABORTS an in-flight load — Close always works, even mid-load of a huge layer. Selection persists (close hides the VIEW, not the working set — empty-ground click clears)
+
+  /* ── COLUMN TOOLS + DUPLICATES (8/20, owner: "I need to reduce the global borders map") ────
+     Three inline panels in the attribute table, one visible at a time. All heavy work happens
+     SERVER-SIDE in the ms_dup_* / ms_intersect_* / ms_drop_column RPCs (SECURITY INVOKER — RLS
+     is the authority, these buttons add none), so the browser never downloads geometry to
+     compare it. The table stays open and usable throughout — that was the ask. */
+  var ATTR_BUILTIN_COLS = [['label', 'Label'], ['description', 'Notes'], ['start_date', 'Start'], ['end_date', 'End'], ['image_url', 'Image URL']];
+  function toggleAttrToolPanel(id, fillFn) {
+    if (_attrReadonly || !_attrSlug || !slugToLayerDbId[_attrSlug]) { setStatus('This tool works on database-backed layers you can edit'); return; }
+    ['editor-attr-transfer-panel', 'editor-attr-addcol-panel', 'editor-attr-delcol-panel', 'editor-attr-dups-panel'].forEach(function (p) {
+      var el = document.getElementById(p); if (!el) return;
+      el.style.display = (p === id && el.style.display === 'none') ? 'block' : 'none';
+    });
+    if (fillFn && document.getElementById(id).style.display === 'block') fillFn();
+  }
+  function attrCustomColKeys() {
+    var ks = [];
+    _attrCols.forEach(function (c) { if (c.kind === 'custom' && c.key && c.key !== 'msid' && c.key !== 'ms_dataset') ks.push(c.key); });
+    return ks;
+  }
+  // + Column: a REGISTRY entry (raw_config.extraColumns), zero feature writes. The column exists
+  // because the layer says so, not because some row happens to carry a value — otherwise an
+  // empty column would vanish on every reload (absence read as a benign default, family B).
+  async function runAddColumn() {
+    var st = document.getElementById('attr-ac-status');
+    var name = (document.getElementById('attr-ac-name').value || '').trim();
+    var lid = _attrSlug && slugToLayerDbId[_attrSlug]; if (!lid) return;
+    if (!name) { st.textContent = 'Name the column first.'; return; }
+    if (/^(feature_id|msid|label|description|start_date|end_date|image_url|content_id|ms_dataset)$/i.test(name)) { st.textContent = '“' + name + '” is a built-in name — pick another.'; return; }
+    var have = attrCustomColKeys();
+    if (have.indexOf(name) > -1) { st.textContent = 'That column already exists.'; return; }
+    var node = findNodeById(layers, _attrSlug);
+    node.extraColumns = (node.extraColumns || []).concat([name]);
+    setStyleMetaRC(lid, 'extraColumns', node.extraColumns);
+    _attrCols.push({ title: name, kind: 'custom', key: name, type: 'text', w: 130 });
+    buildAttrHead(); renderAttrBody(true);
+    st.textContent = 'Added — fill cells here, or use it as a Mark target.';
+    document.getElementById('attr-ac-name').value = '';
+  }
+  function fillDelColSelect() {
+    var s = document.getElementById('attr-dc-sel');
+    var opts = attrCustomColKeys().map(function (k) { return '<option value="c:' + attrEsc(k) + '">' + attrEsc(k) + '</option>'; });
+    ATTR_BUILTIN_COLS.forEach(function (b) { opts.push('<option value="b:' + b[0] + '">' + b[1] + ' (clear values)</option>'); });
+    s.innerHTML = opts.join('');
+    document.getElementById('attr-dc-status').textContent = '';
+  }
+  async function runDeleteColumn() {
+    var st = document.getElementById('attr-dc-status');
+    var sel = document.getElementById('attr-dc-sel').value || '';
+    var isCustom = sel.slice(0, 2) === 'c:', col = sel.slice(2);
+    var lid = _attrSlug && slugToLayerDbId[_attrSlug]; if (!lid || !col) return;
+    var node = findNodeById(layers, _attrSlug);
+    // a column that drives the layer's colours is not just data — deleting it beheads the styling
+    var drives = node && node.colorBy && node.colorBy.prop === col;
+    var msg = isCustom
+      ? 'Delete the column “' + col + '” from every feature of “' + (node && node.label || 'this layer') + '”?'
+      : 'Clear every “' + col + '” value on “' + (node && node.label || 'this layer') + '”?';
+    if (drives) msg += '\n\n⚠ This column drives the layer’s colour-by styling — the colours will stop working.';
+    msg += '\n\nThis cannot be undone.';
+    if (!confirm(msg)) return;
+    st.textContent = 'Deleting…';
+    try {
+      var r = await db.rpc('ms_drop_column', { p_layer: lid, p_col: col });
+      if (r.error) throw new Error(r.error.message);
+      // local mirrors follow the database: rows, the per-feature cache, the column model, the registry
+      if (isCustom) {
+        _attrRows.forEach(function (row) { if (row && row.custom_fields) delete row.custom_fields[col]; });
+        Object.keys(_attrCustom).forEach(function (fid) { if (_attrCustom[fid]) delete _attrCustom[fid][col]; });
+        _attrCols = _attrCols.filter(function (c) { return !(c.kind === 'custom' && c.key === col); });
+        if (node && node.extraColumns) { node.extraColumns = node.extraColumns.filter(function (k) { return k !== col; }); setStyleMetaRC(lid, 'extraColumns', node.extraColumns.length ? node.extraColumns : null); }
+      } else {
+        _attrRows.forEach(function (row) { if (row) row[col] = null; });
+      }
+      buildAttrHead(); renderAttrBody(true); fillDelColSelect();
+      st.textContent = 'Removed from ' + nfmt(r.data || 0) + ' feature' + ((r.data || 0) === 1 ? '' : 's') + '.' + (isTilesetNode(node) ? ' Tiles show it after a Re-bake.' : '');
+      if (!isTilesetNode(node)) await loadFeatures();
+    } catch (e) { st.textContent = 'Failed: ' + e.message; }
+  }
+  // ── Duplicates ──────────────────────────────────────────────────────────────────────────
+  function dupMode() { var r = document.querySelector('input[name=attr-dup-mode]:checked'); return r ? r.value : 'identical'; }
+  function fillDupIdentity() {
+    var box = document.getElementById('attr-dup-cols');
+    var idbox = document.getElementById('attr-dup-idbox');
+    if (dupMode() === 'overlap') { idbox.style.display = 'none'; return; }
+    idbox.style.display = '';
+    var parts = ['<label style="margin-right:8px;"><input type="checkbox" id="attr-dup-geom" checked style="vertical-align:middle;"> Geometry</label>'];
+    ATTR_BUILTIN_COLS.forEach(function (b) {
+      parts.push('<label style="margin-right:8px;"><input type="checkbox" class="attr-dup-c" data-col="' + b[0] + '" style="vertical-align:middle;"> ' + b[1] + '</label>');
+    });
+    attrCustomColKeys().forEach(function (k) {
+      parts.push('<label style="margin-right:8px;"><input type="checkbox" class="attr-dup-c" data-col="' + attrEsc(k) + '" style="vertical-align:middle;"> ' + attrEsc(k) + '</label>');
+    });
+    box.innerHTML = parts.join('');
+  }
+  function dupIdentity() {
+    var cols = [];
+    Array.prototype.forEach.call(document.querySelectorAll('.attr-dup-c:checked'), function (c) { cols.push(c.getAttribute('data-col')); });
+    return { useGeom: !!(document.getElementById('attr-dup-geom') || {}).checked, cols: cols };
+  }
+  async function runDupPreview() {
+    var st = document.getElementById('attr-dup-status');
+    var lid = _attrSlug && slugToLayerDbId[_attrSlug]; if (!lid) return;
+    var acts = document.getElementById('attr-dup-actions');
+    acts.style.display = 'none';
+    try {
+      if (dupMode() === 'identical') {
+        var idn = dupIdentity();
+        if (!idn.useGeom && !idn.cols.length) { st.textContent = 'Pick geometry or at least one column.'; return; }
+        st.textContent = 'Scanning…';
+        var r = await db.rpc('ms_dup_preview', { p_layer: lid, p_use_geom: idn.useGeom, p_cols: idn.cols });
+        if (r.error) throw new Error(r.error.message);
+        var d = (r.data && r.data[0]) || {};
+        st.textContent = nfmt(d.grp_count) + ' duplicate group' + (d.grp_count === 1 ? '' : 's') + ' · ' + nfmt(d.removable) + ' removable of ' + nfmt(d.total) + ' features.';
+        acts.style.display = +d.grp_count ? 'block' : 'none';
+        document.getElementById('attr-dup-delete').style.display = '';
+        document.getElementById('attr-dup-note').textContent = 'Mark writes the group number on every member; Delete keeps one per group.';
+      } else {
+        st.textContent = 'Scanning overlaps (can take ~15s on a heavy layer)…';
+        var r2 = await db.rpc('ms_intersect_preview', { p_layer: lid });
+        if (r2.error) throw new Error(r2.error.message);
+        var d2 = (r2.data && r2.data[0]) || {};
+        st.textContent = nfmt(d2.feature_count) + ' features overlap another they coexist with in time (' + nfmt(d2.pair_count) + ' pairs).';
+        acts.style.display = +d2.feature_count ? 'block' : 'none';
+        // no delete for overlaps: WHICH of two half-overlapping features to keep is a judgment
+        // call, and a wrong guess silently destroys legitimate geometry — mark, look, decide.
+        document.getElementById('attr-dup-delete').style.display = 'none';
+        document.getElementById('attr-dup-note').textContent = 'Mark writes each feature’s overlap count — sort by it, look, then delete by hand or ask for a rule.';
+      }
+    } catch (e) { st.textContent = e.message; }
+  }
+  async function runDupMark() {
+    var st = document.getElementById('attr-dup-status');
+    var lid = _attrSlug && slugToLayerDbId[_attrSlug]; if (!lid) return;
+    var target = (document.getElementById('attr-dup-col').value || 'dup_group').trim();
+    st.textContent = 'Marking…';
+    try {
+      var r = dupMode() === 'identical'
+        ? await db.rpc('ms_dup_mark', { p_layer: lid, p_use_geom: dupIdentity().useGeom, p_cols: dupIdentity().cols, p_target: target })
+        : await db.rpc('ms_intersect_mark', { p_layer: lid, p_target: target });
+      if (r.error) throw new Error(r.error.message);
+      st.textContent = 'Marked ' + nfmt(r.data || 0) + ' features in “' + target + '” — reopening the table…';
+      var slugR = _attrSlug; hideAttrModal(); openAttributeTable(slugR);   // reload rows so the new values show
+    } catch (e) { st.textContent = 'Failed: ' + e.message; }
+  }
+  async function runDupDelete() {
+    var st = document.getElementById('attr-dup-status');
+    var lid = _attrSlug && slugToLayerDbId[_attrSlug]; if (!lid) return;
+    var node = findNodeById(layers, _attrSlug);
+    var idn = dupIdentity();
+    try {
+      var pv = await db.rpc('ms_dup_preview', { p_layer: lid, p_use_geom: idn.useGeom, p_cols: idn.cols });
+      if (pv.error) throw new Error(pv.error.message);
+      var d = (pv.data && pv.data[0]) || {};
+      if (!+d.removable) { st.textContent = 'Nothing to delete.'; return; }
+      if (!confirm('Delete ' + nfmt(d.removable) + ' duplicate feature' + (+d.removable === 1 ? '' : 's') + ' from “' + (node && node.label || 'this layer') + '”?\n\nOne copy of each group is kept (the oldest). This cannot be undone.')) return;
+      st.textContent = 'Deleting…';
+      var r = await db.rpc('ms_dup_delete', { p_layer: lid, p_use_geom: idn.useGeom, p_cols: idn.cols });
+      if (r.error) throw new Error(r.error.message);
+      var gone = (r.data || []).map(String);
+      _attrRows = _attrRows.filter(function (row) { return !row || gone.indexOf(String(row.feature_id)) < 0; });
+      gone.forEach(function (fid) { delete _attrById[fid]; delete _attrCustom[fid]; try { MSSel.remove(fid); } catch (e) {} });
+      if (_attrWin) _attrWin.setRows(_attrRows, true); else renderAttrBody(true);
+      var foot = document.getElementById('editor-attr-foot');
+      if (foot) foot.textContent = nfmt(_attrRows.length) + ' features (' + nfmt(gone.length) + ' duplicates deleted)';
+      st.textContent = 'Deleted ' + nfmt(gone.length) + ' feature' + (gone.length === 1 ? '' : 's') + '.' +
+        (isTilesetNode(node) ? ' The map still renders the OLD tiles — Re-bake the layer to see the reduction.' : '');
+      if (!isTilesetNode(node)) await loadFeatures();
+      runAudit('after duplicate delete');
+    } catch (e) { st.textContent = 'Failed: ' + e.message; }
+  }
 
   /* ── FEATURES LIST (Rung 1) ───────────────────────────────────────────────
      A docked, lightweight list of a layer's features (icon + label). Opens from the ▦ icon;
