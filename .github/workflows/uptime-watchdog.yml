@@ -15,7 +15,10 @@
 name: uptime-watchdog
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    # EVERY 10 MINUTES (8/19). At */30 an outage shorter than the gap can land entirely BETWEEN
+    # runs and never be seen: the 8/19 database outage lasted ~25 minutes and produced no alert
+    # at all. A watchdog's blind window is its cadence, so the cadence is the alert threshold.
+    - cron: "*/10 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -74,7 +77,22 @@ jobs:
           # proves nothing about the database (it stayed green through a 30-minute outage on
           # 8/15). Read a public row through PostgREST instead — the publishable key is the same
           # one the site ships to every browser, so there is no secret here to leak.
-          check "public map (DB path)"  "https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/projects?select=name&id=eq.86d3286c-e075-4bcd-9085-25336450e36b&apikey=sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD"  "Global Railways Map"
+          DBURL="https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/projects?select=name&id=eq.86d3286c-e075-4bcd-9085-25336450e36b&apikey=sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD"
+          check "public map (DB path)"  "$DBURL"  "Global Railways Map"
+          # ALIVE BUT CRAWLING IS ALSO DOWN (8/19). The database that wedged for 25 minutes spent a
+          # long time answering slowly before it stopped answering at all, and a pass/fail probe
+          # cannot see that: it either gets its substring or it doesn't. This one reads the SAME row
+          # and judges the clock, so degradation shows up while it is still fixable — and unlike the
+          # check above it deliberately does NOT retry, because a retry hides exactly the latency
+          # a real visitor would have felt. Threshold is generous: this row is tiny and cached.
+          DBMS=$(curl -sL -m 20 -o /dev/null -w '%{time_total}' "$DBURL" || echo "99")
+          SLOW=$(awk -v t="$DBMS" 'BEGIN{print (t+0 > 5.0) ? 1 : 0}')
+          if [ "$SLOW" = "1" ]; then
+            echo "FAIL database latency  (${DBMS}s)"
+            FAILS="$FAILS- **database latency** — a one-row read took \`${DBMS}s\` (expected under 5s). The database is answering but degraded; check compute sizing before it wedges.\n"
+          else
+            echo "OK   database latency (${DBMS}s)"
+          fi
           check "legal pages"           "https://mapstructor.com/terms.html"                                                  "Terms of Service"
           if [ -n "$FAILS" ]; then
             printf "fails<<EOF\n%b\nEOF\n" "$FAILS" >> "$GITHUB_OUTPUT"

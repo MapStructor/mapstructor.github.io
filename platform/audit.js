@@ -115,9 +115,15 @@ var MSAudit = (function () {
     safely(out, skip, "layer-type-missing", function () {
       rows.forEach(function (r) {
         if (r.source_type === "geojson-supabase" && r.type == null) {
+          // Accuracy matters here: the loader's fallback is 'circle', which is CORRECT for a point
+          // layer and catastrophic for a polygon one (a dot at every vertex). The row can't tell
+          // us which — so the finding names both outcomes instead of asserting the worse one.
+          // It stays an ERROR either way, because `type` is read well beyond the loader: tilegen
+          // passes it as geomKind and rasterUnfitReason falls back to 'fill', so a typeless POINT
+          // layer is judged fit for a raster it can never render honestly.
           out.push(finding("layer-type-missing", "error", r.slug || r.id,
-            "geojson layer has no `type` — the loader will render it as circles (a polygon layer draws one dot per vertex)",
-            "set layers.type to the geometry kind ('fill' | 'line' | 'circle')"));
+            "geojson layer has no `type` — the loader falls back to 'circle' (right for points, a dot at every vertex for polygons), and the tiler reads the same field as 'fill'",
+            "check the layer's geometry and set layers.type to match ('fill' | 'line' | 'circle')"));
         }
       });
     });
