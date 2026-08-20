@@ -1075,6 +1075,11 @@
   // old URLs and simply never referenced again).
   S.reload = async function () {
     try {
+      // SELF-HEAL A DEAD BOOT (8/19): _pid is only set by load(), and if boot() gave up before
+      // the map existed (heavy editor boots exceed its wait window), a later bake's reload()
+      // returned RIGHT HERE — bake saved, opted in, and the session still scrubbed as a vector
+      // with no error anywhere. The project id global is on the page; use it.
+      if (_pid == null) _pid = (typeof platformProjectId !== "undefined" && platformProjectId) ? platformProjectId : window.platformProjectId;
       if (_pid == null && !Array.isArray(window.rasterScrubData)) return;
       var fresh = await buildItems(_pid);
       S.items.length = 0;
@@ -1100,7 +1105,13 @@
     var staticData = Array.isArray(window.rasterScrubData);   // standalone copy: no Supabase, no project id
     var needPlatform = !staticData && (!pid || typeof MapAuth === "undefined" || !MapAuth.db);
     if (needPlatform || typeof $ === "undefined" || !$.fn || typeof beforeMap === "undefined" || !beforeMap || !beforeMap.getContainer) {
-      if (tries < 40) setTimeout(boot, 500);   // static maps without baked data never qualify — boot gives up quietly
+      // A SLOW map is not a STATIC map (8/19): 40×500ms gave up at 20s while a heavy editor boot
+      // took 42s — the session lost its scrub silently (bake present + opted in, items []). A
+      // page that will never qualify (static, no baked data) still stops at 40 tries; a platform
+      // page (MapAuth is loading or loaded) waits up to 6 minutes and says so if it gives up.
+      var isPlatform = typeof MapAuth !== "undefined" || (typeof platformProjectId !== "undefined" && platformProjectId) || window.platformProjectId;
+      if (tries < 40 || (isPlatform && tries < 720)) setTimeout(boot, 500);
+      else if (isPlatform) console.warn("rasterScrub: gave up waiting for the map after " + Math.round(tries / 2) + "s — baked layers will scrub as vectors this session");
       return;
     }
     load(pid).catch(function (e) { console.warn("rasterScrub: disabled (" + (e && e.message) + ")"); });

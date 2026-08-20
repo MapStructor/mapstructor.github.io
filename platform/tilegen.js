@@ -475,13 +475,27 @@
        single uCol; a bake with no colour-by writes index 0 everywhere and looks exactly as
        before. Colours are frozen at BAKE time — restyling then Re-baking refreshes them, which
        is the same contract as the label bake. */
-    var palBase = "#4a9eff", cbProp = null, cbMap = null;
+    var palBase = "#4a9eff", cbProp = null, cbMap = null, ovById = null;
     try {
-      var lrw = await db.from("layers").select("color, raw_config").eq("id", layerDbId).single();
+      var lrw = await db.from("layers").select("color, type, paint, raw_config").eq("id", layerDbId).single();
       if (lrw.data) {
         if (lrw.data.color && /^#[0-9a-f]{6}$/i.test(String(lrw.data.color).trim())) palBase = String(lrw.data.color).trim();
         var cb0 = lrw.data.raw_config && lrw.data.raw_config.colorBy;
         if (cb0 && cb0.prop && cb0.mapping) { cbProp = cb0.prop; cbMap = cb0.mapping; }
+        // PER-FEATURE RECOLORS (8/19, "the bake didn't do colors again"): the editor stores a
+        // feature recolor as a match-on-ID head in the layer's paint — the raster must read the
+        // SAME truth the vector paints, or a recolored feature scrubs in the wrong colour.
+        var pk0 = { fill: "fill-color", line: "line-color", circle: "circle-color" }[lrw.data.type] || "fill-color";
+        var pe0 = lrw.data.paint && lrw.data.paint[pk0];
+        if (Array.isArray(pe0) && pe0[0] === "match" && Array.isArray(pe0[1]) && pe0[1][0] === "id") {
+          ovById = {};
+          for (var oi = 2; oi + 1 < pe0.length; oi += 2) {
+            var oc = normHex(pe0[oi + 1]);
+            if (!oc) continue;
+            (Array.isArray(pe0[oi]) ? pe0[oi] : [pe0[oi]]).forEach(function (k) { ovById[k] = oc; });
+          }
+          if (!Object.keys(ovById).length) ovById = null;
+        }
       }
     } catch (ePal) {}
     var palette = [palBase.toLowerCase()], palIdx = {};
@@ -492,8 +506,9 @@
       if (/^[0-9a-f]{6}$/i.test(s)) s = "#" + s;
       return /^#[0-9a-f]{6}$/i.test(s) ? s.toLowerCase() : null;
     }
-    function colorIdxOf(p) {
-      var v = normHex(p.ms_color);   // per-feature override outranks the category, like the vector
+    function colorIdxOf(p, fid) {
+      var v = (ovById && fid != null && ovById[fid]) || null;   // editor recolor (paint match-on-ID) outranks all, like the vector
+      if (!v) v = normHex(p.ms_color);   // per-feature override outranks the category, like the vector
       if (!v && cbMap && cbProp != null && p[cbProp] != null) v = normHex(cbMap[String(p[cbProp])]);
       if (!v) return 0;
       if (palIdx[v] != null) return palIdx[v];
@@ -515,8 +530,14 @@
         if (bucket[bi].g.type === f.geometry.type && sameCoords(bucket[bi].g.coordinates, f.geometry.coordinates)) { e = bucket[bi]; break; }
       }
       if (!e) { e = { g: f.geometry, spans: [] }; bucket.push(e); shapes.push(e); }
-      e.spans.push([ys, ye, colorIdxOf(p)]);
+      e.spans.push([ys, ye, colorIdxOf(p, f.id != null ? f.id : (p.feature_id != null ? p.feature_id : null))]);
     });
+    // A COLOURLESS BAKE OF A COLOUR-BY LAYER IS A BUG, NOT A RESULT (8/19): this bake once said
+    // "Snapshot ready" while every era had fallen through to the layer colour (the caller hadn't
+    // fetched the colour column). If colour-by promises a palette and none materialised, say so.
+    if (cbMap && Object.keys(cbMap).length > 1 && palette.length === 1)
+      console.warn("bakeYearsRaster: colour-by (" + cbProp + ") is set on layer " + layerDbId +
+        " but every era baked in the layer colour — the features passed in carry no '" + cbProp + "' property. The scrub will look single-colour.");
     shapes.forEach(function (s) {
       s.spans = mergeSpans(s.spans);
       var bb = [Infinity, Infinity, -Infinity, -Infinity], poly = false;
@@ -1018,9 +1039,23 @@
         if (!rt.error && rt.data && rt.data !== L.id) { dataLid = rt.data; status("This layer is a copy — baking from its source's rows…"); }
       }
     } catch (eRoot) {}
+    // THE SNAPSHOT MUST CARRY THE COLOUR COLUMN (8/19, "The bake didn't do colors again"): the
+    // raster baker colours each era from ms_color → colorBy[prop] → layer colour, but this path
+    // fetched only geometry + days, so EVERY feature fell through to the layer colour and a
+    // colour-by layer scrubbed as a single pink sheet while its vector rendered the full palette.
+    // Fetch the same colour inputs sewUpLayer bakes into tiles: label (dedicated column), the
+    // colour-by column when it isn't label, and the legacy ms_color style column.
+    var cbProp2 = null;
+    try {
+      var lcb = await db.from("layers").select("raw_config").eq("id", L.id).single();
+      var cb2 = lcb.data && lcb.data.raw_config && lcb.data.raw_config.colorBy;
+      if (cb2 && cb2.prop) cbProp2 = cb2.prop;
+    } catch (eCb) {}
+    var sel2 = "feature_id, geom, start_date, end_date, label, msc:custom_fields->>ms_color" +
+      (cbProp2 && cbProp2 !== "label" ? ", cbv:custom_fields->>" + cbProp2 : "");
     var feats = [], lastFid = null, pageSz = 1000, retried = false;
     for (;;) {
-      var q = db.from("features").select("feature_id, geom, start_date, end_date").eq("layer_id", dataLid).order("feature_id").limit(pageSz);
+      var q = db.from("features").select(sel2).eq("layer_id", dataLid).order("feature_id").limit(pageSz);
       if (lastFid != null) q = q.gt("feature_id", lastFid);
       var r = await q;
       if (r.error) {
@@ -1034,13 +1069,14 @@
       if (!r.data || !r.data.length) break;
       lastFid = r.data[r.data.length - 1].feature_id;
       r.data.forEach(function (f) {
-        feats.push({
-          type: "Feature", id: f.feature_id, geometry: f.geom,
-          properties: {
-            DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, "") || 0 : 0,
-            DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, "") || 99999999 : 99999999
-          }
-        });
+        var props = {
+          DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, "") || 0 : 0,
+          DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, "") || 99999999 : 99999999
+        };
+        if (f.label != null && f.label !== "") props.label = f.label;
+        if (f.msc != null && f.msc !== "") props.ms_color = f.msc;
+        if (cbProp2 && cbProp2 !== "label" && f.cbv != null && f.cbv !== "") props[cbProp2] = f.cbv;
+        feats.push({ type: "Feature", id: f.feature_id, geometry: f.geom, properties: props });
       });
       if (feats.length % 25000 < 1000) status("Reading rows… " + feats.length.toLocaleString());
       if (r.data.length < pageSz) break;
