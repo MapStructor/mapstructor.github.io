@@ -4805,7 +4805,23 @@
             if (pg) { pg.title = 'Polygon'; el.appendChild(pg); }
             if (ln) { ln.title = 'Line'; el.appendChild(ln); }
             drawCluster.appendChild(el);
-            if (tr) { tr.title = 'Delete'; trashBox.appendChild(tr); drawCluster.appendChild(trashBox); }
+            if (tr) {
+              tr.title = 'Delete';
+              trashBox.appendChild(tr); drawCluster.appendChild(trashBox);
+              // The trash spoke MapboxDraw only — features selected on the MAP (ctrl-click on a
+              // tileset/engine layer) live in MSSel, not draw, so the button silently did nothing
+              // for them (owner 8/20: "I tried using the delete button in the map tools, it didn't
+              // work. It's supposed to work both ways."). Capture phase: a real draw selection
+              // keeps native behavior untouched; otherwise the MSSel selection routes into the
+              // same confirmed delete the attribute table uses — one deletion path, both doors.
+              tr.addEventListener('click', function (e) {
+                var hasDraw = false;
+                try { hasDraw = draw && draw.getSelectedIds && draw.getSelectedIds().length > 0; } catch (e2) {}
+                if (hasDraw || !window.MSSel || !MSSel.count()) return;
+                e.preventDefault(); e.stopImmediatePropagation();
+                deleteAttrSelected();
+              }, true);
+            }
           } else if (isGeo) {
             var gb = el.querySelector('.mapboxgl-ctrl-geolocate'); if (gb) gb.title = 'Locate';
             searchBox.insertBefore(el, searchBox.firstChild);   // locate always LEFT of the search input
@@ -9474,6 +9490,7 @@
     m.innerHTML =
       '<div id="editor-attr-panel">' +
         '<div id="editor-attr-head"><span class="attr-head-l"><b id="editor-attr-title">Attributes</b>' +
+          '<span id="editor-attr-selcount" style="color:#8a86a0;font-size:12px;margin:0 4px;white-space:nowrap;"></span>' +
           '<button id="editor-attr-zoom" title="Zoom the map to the selected feature(s)" disabled>&#9673; Zoom to selected</button>' +
           '<button id="editor-attr-del" title="Delete the selected feature(s)" disabled>&#128465; Delete selected</button>' +
           '<button id="editor-attr-transfer" title="Copy one column\'s values into another">&#8646; Transfer column</button>' +
@@ -10224,12 +10241,29 @@
   function updateAttrZoomBtn() { var b = document.getElementById('editor-attr-zoom'); if (b) b.disabled = !_attrSel.length; }
   function updateAttrDelBtn() {
     var b = document.getElementById('editor-attr-del'); if (!b) return;
-    b.style.display = (_attrSlug && _drawLayerSlugs[_attrSlug]) ? '' : 'none';   // per-feature delete = editable (MapboxDraw) layers only
+    // EVERY database-backed layer deletes rows now (8/20, owner: "I should be able to delete
+    // selected features from the table"). The old draw-only gate predated the dedupe tools
+    // proving DB-row deletes are fine on tilesets — a tiled layer's rows are as much its
+    // features as a drawn layer's. Hidden only where the rows aren't this layer's to delete
+    // (instances are read-only mirrors of someone else's rows).
+    b.style.display = (_attrSlug && !_attrReadonly && slugToLayerDbId[_attrSlug]) ? '' : 'none';
     b.disabled = !_attrSel.length;
+    b.innerHTML = '&#128465; Delete' + (_attrSel.length ? ' (' + _attrSel.length + ')' : ' selected');
+    // the count lives next to the title too — visible even on read-only layers, and it answers
+    // "how many do I have selected" without hunting for a button state (owner 8/20)
+    var sc = document.getElementById('editor-attr-selcount');
+    if (sc) sc.textContent = _attrSel.length ? _attrSel.length + ' selected' : '';
   }
   async function deleteAttrSelected() {
     if (!MSSel.count()) return;
     var fids = MSSel.ids(), n = fids.length;
+    // TWO deletion paths, one per feature kind (8/20, "It's supposed to work both ways"):
+    // MapboxDraw-resident (drawn) features keep the existing path with its undo; everything else
+    // — tileset rows, engine-rendered features, a map-side selection with no table open — deletes
+    // straight from the database (feature_id is globally unique, RLS decides what's yours), which
+    // is exactly what the dedupe tools already proved safe.
+    var isDrawn = _attrSlug && _drawLayerSlugs[_attrSlug];
+    if (!isDrawn) { await deleteDbFeatures(fids); return; }
     if (!window.confirm('Delete ' + n + ' feature' + (n > 1 ? 's' : '') + ' from this layer? You can undo this.')) return;
     await deleteDrawnByFids(fids, 'delete ' + n + ' feature' + (n > 1 ? 's' : ''));
     if (_attrVirtual) { setStatus('Deleted ' + n + ' feature' + (n > 1 ? 's' : '')); openAttributeTable(_attrSlug); return; }   // sparse rows can't be filtered in place — reopen (count mismatch → fresh stream + rebake)
@@ -10239,6 +10273,53 @@
     buildAttrHead(); renderAttrBody(true);
     scheduleAttrRebake();   // sidecar'd layer: row count changed — refresh the bake in the background
     setStatus('Deleted ' + n + ' feature' + (n > 1 ? 's' : ''));
+  }
+  // Database-row deletion for everything MapboxDraw doesn't hold: tileset rows, engine-rendered
+  // features, and map-side selections made with no table open. Works across layers in one go —
+  // feature_id is the features table's PK, and RLS refuses rows that aren't yours, so a partial
+  // count is REPORTED, never papered over (a 0-row delete that says "deleted" is family B).
+  async function deleteDbFeatures(fids) {
+    var n = fids.length;
+    // which layers do these belong to? (needed for the re-bake note + drawn-layer re-render;
+    // also lets the confirm name the layer when there is exactly one)
+    var byLayer = {};
+    for (var i = 0; i < fids.length; i += 400) {
+      var q = await db.from('features').select('feature_id, layer_id').in('feature_id', fids.slice(i, i + 400));
+      if (q.error) { setStatus('Delete failed: ' + q.error.message); return; }
+      (q.data || []).forEach(function (r) { (byLayer[r.layer_id] = byLayer[r.layer_id] || []).push(r.feature_id); });
+    }
+    var lids = Object.keys(byLayer);
+    if (!lids.length) { setStatus('Nothing to delete'); return; }
+    var lidToNode = {};
+    Object.keys(slugToLayerDbId).forEach(function (s) { lidToNode[slugToLayerDbId[s]] = findNodeById(layers, s); });
+    var oneName = lids.length === 1 && lidToNode[lids[0]] ? '“' + (lidToNode[lids[0]].label || 'this layer') + '”' : lids.length + ' layers';
+    if (!window.confirm('Delete ' + n + ' selected feature' + (n > 1 ? 's' : '') + ' from ' + oneName + '?\n\nThis cannot be undone.')) return;
+    var deleted = 0;
+    for (var j = 0; j < fids.length; j += 400) {
+      var r = await db.from('features').delete({ count: 'exact' }).in('feature_id', fids.slice(j, j + 400));
+      if (r.error) { setStatus('Delete failed after ' + deleted + ': ' + r.error.message); return; }
+      deleted += (r.count || 0);
+    }
+    if (!deleted) { setStatus('Nothing was deleted — those features aren’t yours to delete'); return; }
+    // reconcile every surface that might be showing them
+    fids.forEach(function (fid) { delete _attrById[String(fid)]; delete _attrCustom[String(fid)]; });
+    if (_attrSlug) {
+      if (_attrVirtual) { openAttributeTable(_attrSlug); }
+      else { _attrRows = _attrRows.filter(function (r) { return !r || fids.indexOf(String(r.feature_id)) < 0; }); buildAttrHead(); renderAttrBody(true); scheduleAttrRebake(); }
+    }
+    MSSel.clear();
+    var anyDrawn = false, tiledNames = [];
+    lids.forEach(function (lid2) {
+      var nd = lidToNode[lid2];
+      if (nd && _drawLayerSlugs[nd.id]) anyDrawn = true;
+      else if (nd && isTilesetNode(nd)) tiledNames.push(nd.label || nd.id);
+      else if (nd) anyDrawn = true;   // engine-rendered geojson re-renders through loadFeatures too
+    });
+    if (anyDrawn) { try { await loadFeatures(); } catch (e) {} }
+    setStatus('Deleted ' + deleted + ' feature' + (deleted > 1 ? 's' : ''));
+    if (deleted < n) msProgress('Deleted ' + deleted + ' of ' + n + ' — the rest aren’t yours to delete.');
+    if (tiledNames.length) msProgress('Deleted ' + deleted + ' — the map still renders the OLD tiles for ' + tiledNames.join(', ') + '; Re-bake to see the change.');
+    runAudit('after feature delete');
   }
   function attrMaps() { var a = []; if (typeof beforeMap !== 'undefined' && beforeMap) a.push(beforeMap); if (typeof afterMap !== 'undefined' && afterMap) a.push(afterMap); return a; }
   function ensureAttrHlLayers() {   // selection + hover overlays on BOTH swipe sides (so highlight shows left AND right)
