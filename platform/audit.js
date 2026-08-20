@@ -227,6 +227,16 @@ var MSAudit = (function () {
       rows.forEach(function (r) {
         var rc = rcOf(r), cb = rc.colorBy, ry = rc.rasterYears;
         if (!cb || !cb.mapping || !ry) return;
+        // PRESENCE MODE IS NOT A PALETTE (owner, 8/20: "these were already fine"). A presence
+        // colour-by carries mapping {labeled, unlabeled} — those keys are SENTINELS, not data
+        // values, so the bake's `mapping[feature[prop]]` lookup can never match one and a
+        // 1-colour palette is the expected result, not a defect. Counting mapping keys made this
+        // rule report three healthy railway layers; a rule that cries wolf is worse than no rule.
+        if (cb.mode === "presence") return;
+        // A bake with NEITHER palette NOR timestamp predates per-era colours (8/14). Those render
+        // through the legacy flat-colour path deliberately and were promised zero regression —
+        // they are a re-bake OPPORTUNITY, never an error.
+        if (!ry.palette && !ry.at) return;
         var cats = Object.keys(cb.mapping || {}).length;
         var pal = (ry.palette && ry.palette.length) || 1;
         if (cats > 1 && pal <= 1) {
