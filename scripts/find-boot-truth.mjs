@@ -67,7 +67,11 @@ for (const rel of files) {
 
   lines.forEach((line, i) => {
     if (/^\s*(\*|\/\/)/.test(line)) return;
-    const near = lines.slice(Math.max(0, i - 2), i + 2).join("\n");
+    /* ±12 lines, because the reason a latch is deliberate takes a paragraph to state and the
+       paragraph belongs above the code. A two-line window meant a marker I had just written was
+       invisible to the detector that asked for it — triage the instrument cannot see is not
+       triage, and the list stops converging. */
+    const near = lines.slice(Math.max(0, i - 12), i + 3).join("\n");
     if (/boot-ok/.test(near)) return;
 
     LATCH_SET.lastIndex = 0;

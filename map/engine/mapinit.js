@@ -122,6 +122,16 @@ function initMaps() {
 
 	afterMap.on("style.load", function() {
 		readdSide(afterMap, "right");
+		// boot-ok: the latch is RIGHT for its stated job. `map.on(type, layerId, fn)` attaches to the
+		// Map, not to the style, so these registrations survive setStyle — re-running them on every
+		// basemap switch would STACK duplicate listeners, which is the other half of the same bug
+		// family and the reason one click can end up opening several popups.
+		//
+		// What it does NOT cover, and this is untested: layers created AFTER boot. addEvents() walked
+		// the tree that existed at first style.load; a layer added later gets its handlers from
+		// somewhere else or not at all. That is the "works after a refresh" shape — see the family E
+		// entry in the bug book. Test: create a layer in the editor and click a feature WITHOUT
+		// reloading, on a map that had no layers at boot.
 		if (!initialLoadDone) {
 			initialLoadDone = true;
 			addEvents();

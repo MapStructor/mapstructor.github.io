@@ -4031,7 +4031,14 @@
   }
   async function loadProjectChrome() {   // on load, apply per-project chrome (timeline range) once the slider exists
     if (window.__editorChromeLoaded) return; window.__editorChromeLoaded = true;
-    try { var r = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (r.data && r.data.raw_config) || {}; setModalAbout(rc.about || ''); applyHeaderChrome(rc); setTimeout(function () { applyHeaderChrome(rc); }, 600); setTimeout(function () { applyHeaderChrome(rc); }, 1500); if (rc.popups) { try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; Object.keys(rc.popups).forEach(function (id) { var p = rc.popups[id]; var h = (p && typeof p === 'object') ? p.html : p; var ti = (p && typeof p === 'object') ? p.title : 'Info'; window.modal_content_html[id] = h || ''; window.modal_header_text[id] = ti || 'Info'; }); } catch (x) {} } var tl = rc.timeline; if (tl && tl.start && tl.end) { var tries = 0; var iv = setInterval(function () { if (applyTimelineRange(tl.start, tl.end) || ++tries > 25) clearInterval(iv); }, 400); } } catch (e) {}
+    try { var r = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (r.data && r.data.raw_config) || {}; setModalAbout(rc.about || ''); applyHeaderChrome(rc); setTimeout(function () { applyHeaderChrome(rc); }, 600); setTimeout(function () { applyHeaderChrome(rc); }, 1500); if (rc.popups) { try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; Object.keys(rc.popups).forEach(function (id) { var p = rc.popups[id]; var h = (p && typeof p === 'object') ? p.html : p; var ti = (p && typeof p === 'object') ? p.title : 'Info'; window.modal_content_html[id] = h || ''; window.modal_header_text[id] = ti || 'Info'; }); } catch (x) {} } var tl = rc.timeline; if (tl && tl.start && tl.end) { var tries = 0; var iv = setInterval(function () {
+      if (applyTimelineRange(tl.start, tl.end)) { clearInterval(iv); return; }
+      // The EDITOR's copy of the same give-up already wired in projectLoader.js for the viewer:
+      // same rule, same 25×400ms budget, two files. Both now say so instead of leaving the map on
+      // its default dates looking perfectly fine.
+      if (++tries > 25) { clearInterval(iv); if (window.MSGuard) MSGuard.cliff('timeline-apply-giveup-editor', tries, 25,
+        'the saved timeline range was never applied — the slider was not ready in 10s, so the editor is showing its default dates'); }
+    }, 400); } } catch (e) {}
   }
   async function onTimelineSave() {
     var sd = document.getElementById('esp-tl-start').value, today = document.getElementById('esp-tl-today').checked, ed = today ? 'today' : document.getElementById('esp-tl-end').value;
@@ -7214,7 +7221,7 @@
     if (cb && cb.mode === 'presence') return [{ label: 'Labeled', color: cb.present || '#3bb2d0' }, { label: 'Unlabeled', color: cb.absent || '#cccccc' }];
     if (cb && cb.mapping) {
       var ks = Object.keys(cb.mapping);
-      var items = ks.slice(0, 12).map(function (k) { return { label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; });
+      var items = ks.slice(0, 12).map(function (k) { return { label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; });   // cliff-ok: the legend appends "… +N more" right below, which announces it in the UI
       if (ks.length > 12) items.push({ label: '… +' + (ks.length - 12) + ' more', color: 'transparent' });
       return items;
     }
@@ -8325,7 +8332,7 @@
         + 'Show the values?';
       try {
         if (window.confirm(head9)) {
-          var list9 = kinds9.slice(0, 40).map(function (k) { return '  ' + nfmt(badVals[k]) + ' x   ' + k; }).join('\n');
+          var list9 = kinds9.slice(0, 40).map(function (k) { return '  ' + nfmt(badVals[k]) + ' x   ' + k; }).join('\n');   // cliff-ok: a diagnostic message listing example bad values, not the data itself
           window.alert('Values that could not be read as dates:\n\n' + list9
             + (kinds9.length > 40 ? '\n\n  …and ' + nfmt(kinds9.length - 40) + ' more' : '')
             + '\n\nOpen Table to see them in the column itself.');
@@ -10401,7 +10408,14 @@
       syncNopin();
     }
     if (_attrWin) { _attrWin._measured = false; _attrWin.setRows(_attrRows, keepScroll); }
-    else tbody.innerHTML = _attrRows.slice(0, 1500).map(attrRowHtml).join('');   // attrGrid.js missing — degraded but alive
+    else {
+      // attrGrid.js missing — degraded but alive. "Alive" previously meant showing the first 1,500
+      // rows of a 78,000-row layer with no indication that the rest exist.
+      var DEGRADED_MAX = 1500;
+      if (window.MSGuard) MSGuard.cliff('attr-degraded-rows', _attrRows.length, DEGRADED_MAX,
+        'the windowed table renderer did not load, so only the first ' + DEGRADED_MAX + ' rows are shown — reload to get the full table');
+      tbody.innerHTML = _attrRows.slice(0, DEGRADED_MAX).map(attrRowHtml).join('');
+    }
     if (!_attrDelegated) { _attrDelegated = true; wireAttrDelegation(tbody); }   // delegate once (scales to all features without per-row listeners)
   }
   function wireAttrDelegation(tbody) {

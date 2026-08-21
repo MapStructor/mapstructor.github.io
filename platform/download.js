@@ -637,7 +637,7 @@
       "          } catch (e) { return false; }\n" +
       "        }\n" +
       "        function both() { return ensureSide(curMap(\"before\"), \"left\") & ensureSide(curMap(\"after\"), \"right\"); }\n" +
-      "        var tries = 0, iv = setInterval(function () { tries++; if (both() || tries > 40) clearInterval(iv); }, 500);\n" +
+      "        var tries = 0, iv = setInterval(function () { tries++; if (both() || tries > 40) clearInterval(iv); }, 500);\n" +   // cliff-ok: generated code for the STANDALONE export, which ships without platform/ and so has no MSGuard
       "        setTimeout(function () {\n" +
       "          try {\n" +
       "            var bm = curMap(\"before\"); if (bm) bm.on(\"style.load\", function () { setTimeout(function () { ensureSide(bm, \"left\"); }, 60); });\n" +

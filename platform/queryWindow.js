@@ -318,7 +318,7 @@
             var st2 = await rpc("ms_merge_lines_timeline", { p_layer: p.layer, p_key: key, p_dry_run: !write, p_target: target || null, p_only: null, p_names: chunk, p_simplify: simplify });
             agg.namedSegments += st2.namedSegments; agg.eras += st2.eras; agg.geometryCopies += Number(st2.geometryCopies || 0);
             agg.resultFeatures += st2.eras;
-            if (agg.sample.length < 10) agg.sample = agg.sample.concat(st2.sample || []).slice(0, 10);
+            if (agg.sample.length < 10) agg.sample = agg.sample.concat(st2.sample || []).slice(0, 10);   // cliff-ok: agg.sample is a preview by definition
             bi++; fails = 0; finished(chunk);
           } catch (e2) {
             fails++;
