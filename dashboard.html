@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <!-- <script src="platform/sitelock.js"></script> --> <!-- dev lock DISABLED — uncomment to re-lock -->
+  <!-- <script src="platform/sitelock.js?v=2dd02c9b"></script> --> <!-- dev lock DISABLED — uncomment to re-lock -->
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Your maps — MapStructor</title>
@@ -71,18 +71,18 @@
     .rt-editor:focus { outline: 2px solid #d9cff1; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="platform/auth.js?v=20260728a"></script>
-  <script src="platform/veil.js?v=20260731a"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
-  <script src="platform/topbar.js?v=20260728a"></script>
-  <script src="platform/bookmarks.js?v=20260811a"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
-  <script src="platform/pricing.js?v=20260729a"></script>
-  <script src="platform/sanitize.js?v=20260709"></script>
-  <script src="platform/datasets.js?v=20260814a"></script>   <!-- datasets & provenance: layers as the atoms -->
+  <script src="platform/auth.js?v=5b83bd24"></script>
+  <script src="platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
+  <script src="platform/topbar.js?v=65f7976b"></script>
+  <script src="platform/bookmarks.js?v=32d935e1"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
+  <script src="platform/pricing.js?v=8edf778a"></script>
+  <script src="platform/sanitize.js?v=5854cd2d"></script>
+  <script src="platform/datasets.js?v=396829df"></script>   <!-- datasets & provenance: layers as the atoms -->
   <!-- guards.js = absence is an error at the boundary + hard limits announce themselves.
        Every call site checks window.MSGuard, so this degrades cleanly to silence if removed. -->
-  <script src="platform/guards.js?v=20260821b"></script>
-  <script src="platform/share.js?v=20260821b"></script>
-  <script src="platform/configLoader.js?v=20260821b"></script>   <!-- freeBasemapDefaults for New-map stamping -->
+  <script src="platform/guards.js?v=174bacac"></script>
+  <script src="platform/share.js?v=3e2693b7"></script>
+  <script src="platform/configLoader.js?v=666cf72e"></script>   <!-- freeBasemapDefaults for New-map stamping -->
 </head>
 <body>
   <nav>
@@ -936,7 +936,7 @@
       });
     })();
   </script>
-  <script src="platform/pageEditor.js"></script>
+  <script src="platform/pageEditor.js?v=f59c36c5"></script>
   <style>footer{padding:24px clamp(20px,5vw,64px);border-top:1px solid #ece9f5;font-size:11px;color:#b8b0d4;}footer a{color:#b8b0d4;text-decoration:none;margin-right:14px;}footer a:hover{color:#7c5cbf;}</style>
   <footer><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="report.html">Report a map</a><a href="https://github.com/MapStructor" target="_blank">github.com/MapStructor</a></footer>
 </body>

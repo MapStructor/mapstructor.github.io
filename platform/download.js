@@ -543,11 +543,14 @@
     html = html.replace(/^[ \t]*<script src="https:\/\/cdn\.jsdelivr\.net\/npm\/@supabase\/supabase-js@2"><\/script>.*$\n?/gm, "");
 
     // Google Analytics: the include and the inline gtag bootstrap go away entirely
-    html = html.replace(/^[ \t]*<script src="engine\/google-analytics\.js"[^>]*><\/script>.*$\n?/gm, "");
+    // `[^"]*` after the .js so a cache buster on the include cannot make the removal miss — the
+    // sibling removals above always had it; these two did not, and the day every include got a
+    // ?v= hash both tags survived into the zip pointing at files the zip deliberately omits.
+    html = html.replace(/^[ \t]*<script src="engine\/google-analytics\.js[^"]*"[^>]*><\/script>.*$\n?/gm, "");
     html = html.replace(/<script>\s*window\.dataLayer=window\.dataLayer\|\|\[\];[\s\S]*?<\/script>/, "");
 
     // mobile redirect targets mobile.html, which the zip doesn't carry — a self-redirect would loop
-    html = html.replace(/^[ \t]*<script src="engine\/handle-mobile-devices\.js"><\/script>.*$\n?/gm, "");
+    html = html.replace(/^[ \t]*<script src="engine\/handle-mobile-devices\.js[^"]*"[^>]*><\/script>.*$\n?/gm, "");
 
     // standalone layout: no 40px platform top bar; page scroll clamp + swipe-line pin + header stacking
     // (the deltas the platform pages get from platform css/fixes — applied at zip time so /map stays untouched)
