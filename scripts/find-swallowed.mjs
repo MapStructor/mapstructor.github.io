@@ -95,6 +95,10 @@ for (const rel of files) {
   const P = CLASSES[2].re;
   src.split(/\r?\n/).forEach((l, i) => {
     if (/^\s*(\*|\/\/)/.test(l) || /swallow-ok/.test(l)) return;
+    /* Same exemption the try-block scan applies, and it has to be repeated here because this pass
+       walks lines rather than blocks: a line that already reports through saveGuard/saveSoft/MSGuard
+       is one of the places done PROPERLY, and counting it pads the list with its own good examples. */
+    if (/saveGuard\s*\(|saveSoft\s*\(|MSGuard\./.test(l)) return;
     P.lastIndex = 0;
     if (P.test(l)) hits.push({ rel, line: i + 1, kind: "PROMISE", rank: 3, text: l.trim().slice(0, 104) });
   });

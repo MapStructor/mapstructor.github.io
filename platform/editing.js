@@ -3955,7 +3955,13 @@
                 }).then(function (dF) {
                   msProgress(dF.ok ? ('"' + (n.label || 'layer') + '" is re-folding its edits in the cloud — viewers see them shortly.')
                     : ('Cloud re-fold unavailable for "' + (n.label || 'layer') + '" — its edits stay pending until the next Publish.'));
-                }).catch(function () {});
+                }).catch(function (eRf) {
+                  // The .then above reports BOTH outcomes of a reply that arrives. This branch is
+                  // the request never arriving at all — and it used to say nothing, so a re-fold
+                  // that never started looked exactly like one quietly succeeding.
+                  msProgress('Cloud re-fold could not be reached for "' + (n.label || 'layer') + '" (' +
+                    ((eRf && eRf.message) || 'network error') + ') — its edits stay pending until the next Publish.');
+                });
               });
             });
           });

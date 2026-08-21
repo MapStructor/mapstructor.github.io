@@ -373,11 +373,24 @@ var MSAudit = (function () {
       // containerId is the exception: it becomes a DOM id, and duplicate DOM ids mean one
       // sidebar row silently clobbers the other, so a containerId share is always reportable.
       function slugShaped(v) { return /^new-[a-z0-9]/.test(v) || /-[a-z0-9]{6}$/.test(v); }
+      /* …AND the value has to be a LAYER's identity for the share to mean what this rule says it
+         means. Group ids are slug-shaped too, and `configLoader.js:422` deliberately FORCES every
+         child of a group to carry the GROUP's id in topLayerClass ("leaves persist their own id
+         there, which breaks the caret") — the group-plumbing rule below actively requires it. So
+         the two rules contradicted each other: satisfying group-plumbing guarantees an
+         identity-collision, and every one of the five findings across two real maps on 8/21 was a
+         correctly-grouped fill/outline pair. A rule that can only fire on correct configuration is
+         worse than no rule, because it teaches you to skim the audit.
+         The family this rule is for is "a copy kept its SOURCE'S identity" — so the shared value
+         must be some layer's own slug. A container's id is not. */
+      var layerSlugs = {};
+      rows.forEach(function (r) { if (r && r.slug) layerSlugs[r.slug] = 1; });
       rows.forEach(function (r) {
         ["containerId", "className", "topLayerClass"].forEach(function (k) {
           var v = rcOf(r)[k];
           if (!v) return;
           if (k !== "containerId" && !slugShaped(v)) return;   // deliberate legacy grouping — not a finding
+          if (k === "topLayerClass" && !layerSlugs[v]) return; // a group's id, which is the design
           var key = k + "|" + v;
           if (seen[key] && seen[key] !== r.slug) {
             out.push(finding("identity-collision", "warn", r.slug || r.id,
