@@ -274,6 +274,7 @@ window.msApplyHeaderFeature = function (visible, projectName) {
             $("#ruler-date3").text(m.unix(mid).format("YYYY"));
             $("#ruler-date4").text(m.unix(s + step * 7).format("YYYY"));
             $("#ruler-date5").text(m.unix(s + step * 9).format("YYYY"));
+            window.__msDate = mid;
             $("#date").text(m.unix(mid).format("DD MMM YYYY"));
             if (typeof changeDate === "function") changeDate(mid);
             return true;

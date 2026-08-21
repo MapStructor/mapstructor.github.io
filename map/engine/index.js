@@ -135,6 +135,7 @@ if (jQuery.browser.msie)
 
 
        scheduleChangeDate(ui.value);   // coalesced to one filter pass per frame (see scheduleChangeDate)
+       window.__msDate = ui.value;   // the VALUE is the truth; the label below renders it (see getDate)
        $("#date").text(moment.unix(ui.value).format("DD MMM YYYY"));
 
     },
@@ -168,6 +169,7 @@ if (jQuery.browser.msie)
   // date, and "02 Jul 1872" next to the original's "01 Jul 1872" is exactly the kind of drift a
   // parity check is for.
   var _bootDate = Math.round(sliderMiddle);
+  window.__msDate = _bootDate;
   $("#date").text(moment.unix(_bootDate).format("DD MMM YYYY"));
   // …and if the layers were already added (a local/standalone build loads its style before ready,
   // so they were — see getDate() in mapinit.js), apply that date NOW. Belt-and-braces for the same

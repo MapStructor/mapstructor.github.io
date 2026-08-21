@@ -68,7 +68,15 @@ function initMaps() {
 	// (8/17 — shipped in the railways showcase). Ask the SLIDER first, fall back to the text, and
 	// last to sliderMiddle, which exists from script-eval time and needs no DOM at all.
 	function getDate() {
-		var t = $("#date").text(), v = t ? moment(t).unix() : null;   // #date tracks every drag — still the truth
+		/* Ask the VALUE first — the comment above has said "ask the slider first" since 8/17 while
+		   the code asked the label. `window.__msDate` is a plain unix number written by whoever
+		   moves the timeline (the slider handler, the boot date, projectLoader's saved range), so
+		   the label goes back to being a render target. It produced a NaN boot twice by being both.
+		   The text parse stays as the fallback: a path that forgets to set the value degrades to
+		   the old behaviour rather than breaking. */
+		var v = (typeof window !== "undefined" && typeof window.__msDate === "number" && !isNaN(window.__msDate))
+			? window.__msDate : null;
+		if (v == null) { var t = $("#date").text(); v = t ? moment(t).unix() : null; }   // boot-ok: fallback only — the value is asked first, just above.
 		if ((v == null || isNaN(v)) && typeof sliderMiddle === "number") v = Math.round(sliderMiddle);
 		if (v == null || isNaN(v)) return null;   // null, never NaN — callers test truthiness
 		return parseInt(moment.unix(v).format("YYYYMMDD"));

@@ -620,6 +620,10 @@
       "              if (m && m.getLayer && m.getLayer(flat[0].id + \"-\" + sd)) { var f = m.getFilter(flat[0].id + \"-\" + sd); if (f && f[1] && f[1][2] != null) return f[1][2]; }\n" +
       "            }\n" +
       "          } catch (e) {}\n" +
+      // The exported page runs the same engine, which now writes window.__msDate on every timeline
+      // move — so ask the VALUE before parsing the rendered label, exactly as getDate does. The
+      // label parse stays underneath as the fallback (see the family E note in engine/mapinit.js).
+      "          try { if (typeof window.__msDate === \"number\" && !isNaN(window.__msDate)) return parseInt(moment.unix(window.__msDate).format(\"YYYYMMDD\")); } catch (e) {}\n" +
       "          try { return parseInt(moment.unix(moment(jQuery(\"#date\").text()).unix()).format(\"YYYYMMDD\")); } catch (e) {}\n" +
       "          return null;\n" +
       "        }\n" +

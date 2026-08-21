@@ -1010,6 +1010,15 @@
   // change — which is how a NaN boot shipped twice. The real fix is a `currentDate` owned by the
   // slider module with the label as an output only; consolidating the copies is the step before it.
   function editorCurrentDate() {
+    // Same order as the engine's getDate: the VALUE the slider owns first, the rendered label only
+    // as a fallback. window.__msDate is a plain unix number written by every path that moves the
+    // timeline (8/21).
+    try {
+      if (typeof window.__msDate === 'number' && !isNaN(window.__msDate) && window.moment)
+        return parseInt(moment.unix(window.__msDate).format('YYYYMMDD'), 10);
+    } catch (e0) {}
+    // boot-ok: FALLBACK only — the value above is asked first. Kept so a path that forgets to set
+    // it degrades to the old behaviour instead of returning nothing at all.
     try { var d = (window.moment && window.$) ? moment($('#date').text()).format('YYYYMMDD') : ''; return /^\d{8}$/.test(d) ? parseInt(d, 10) : undefined; } catch (e) { return undefined; }
   }
   function renderTilesetOnMap(node) {
