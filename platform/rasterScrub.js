@@ -1,3 +1,5 @@
+/* keymatch-ok: rasterYears.borders — border bakes only (8 of 34); a fill-only bake has no borders
+   layer and the absence is the feature working. */
 /* rasterScrub.js — EXPERIMENTAL "instant scrub" (7/16, v4). While the timeline slider is being
    DRAGGED, converted layers render from a tiny year-encoded PNG (pixel R = build year − 1799,
    G = end year − 1799, baked at convert/Publish time by tilegen.js) — date-visibility is ONE GPU
@@ -22,6 +24,13 @@
    which is exactly the arrangement that shipped before any of the deck work.
    REMOVE ENTIRELY: delete this file, its <script> include in map/index.html + map/editor.html,
    and the bakeYearsRaster block in platform/tilegen.js. Nothing else references it. */
+
+/* keymatch-ok: rasterYears.lw · keymatch-ok: rasterYears.isBorder · keymatch-ok: rasterYears.fillLid
+   · keymatch-ok: rasterYears.thin — these are read off `it.cfg`, the scrub item's RUNTIME object,
+   which is rasterYears plus fields assembled here and by download.js at export time. They are
+   correctly absent from the stored config; find-key-mismatch compares against stored shape and
+   cannot see that distinction. */
+
 (function () {
   "use strict";
   if (window.MSRasterScrub) return;

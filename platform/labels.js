@@ -1,3 +1,6 @@
+/* keymatch-ok: labels.size · keymatch-ok: labels.sizeUniform — optional per-layer overrides, set
+   on 3 of 32 label configs by design. Absent means "use the default", not "the reader is aimed at
+   the wrong spelling". */
 // MapStructor — map labels for drawn/imported (geojson) layers, any geometry type.
 // One "Map labels" checkbox per layer + a field pick; everything else is opinionated defaults:
 // black text, 1px white halo, DIN Pro, size ramped by zoom. Loaded by BOTH map pages; the engine

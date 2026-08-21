@@ -9,6 +9,14 @@
    item inserts exactly its own row(s); existing rows are never touched (so a
    failure can never corrupt the project, unlike a delete-and-rewrite). Field
    mapping mirrors tools/seed/seed.js. */
+
+/* keymatch-ok: colorBy.present · keymatch-ok: colorBy.absent — presence-mode colour-by only,
+   which 3 of 17 configs use; absent on the other 14 by design.
+   keymatch-ok: colorBy.Features · keymatch-ok: colorBy.Checkboxes — NOT real reads. These come
+   from find-key-mismatch's alias tracking, which is file-wide rather than scope-aware, so a short
+   alias reused elsewhere in this file drags unrelated property reads in. Recorded rather than
+   silenced so the next person knows it is a limit of the tool, not a config key. */
+
 (function () {
   console.log('%c[editing.js] BUILD 2026-06-18z — fix: re-render no longer setStyles (layers stay); map radio switches basemap', 'background:#ce5c00;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;');
   if (typeof platformProjectId === 'undefined' || !platformProjectId) return;
@@ -8064,7 +8072,11 @@
       }
       if (stale && /unreadable/.test(staleWhy) && window.MSGuard)
         MSGuard.warnOnce('bake-date-unreadable', 'a bake or edit timestamp could not be read, so the snapshot is being reported as needing a re-bake');
-      rn.innerHTML = 'Baked' + (when ? ' ' + when : '') + (kb ? ' · ' + kb + ' KB' : '') + (ry.fc ? ' · ' + Number(ry.fc).toLocaleString() + ' features' : '') +
+      // `fc || shapes` — the second spelling of the same count, found by find-key-mismatch right
+      // after the `at`/`bakedAt` one: the indexed baker writes `shapes` (19/34) and only the older
+      // path writes `fc` (4/34), so this line silently omitted the feature count on 88% of bakes.
+      var ryFc = ry.fc || ry.shapes;
+      rn.innerHTML = 'Baked' + (when ? ' ' + when : '') + (kb ? ' · ' + kb + ' KB' : '') + (ryFc ? ' · ' + Number(ryFc).toLocaleString() + ' features' : '') +
         (stale ? '<br><b style="color:#b4453a;">The ' + staleWhy + ' changed since — re-bake.</b>' : '');
       btn.innerHTML = '🔥 Re-bake snapshot';
     }
