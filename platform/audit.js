@@ -297,12 +297,31 @@ var MSAudit = (function () {
     //     reads a property the bake never wrote, every feature takes the match fallback — the
     //     vector-side twin of the colourless bake.
     safely(out, skip, "colorby-prop-not-baked", function () {
+      /* An OUTLINE SPLIT owns no features and no tiles of its own — it draws the fill's edges from
+         the FILL's source, which is why editing.js resolves `outlineOf` before sampling values.
+         Reading the outline's own tilesLabelField therefore reports a defect on a layer that is
+         working: measured 8/21, CShapes-2.0 outline is painted with 253 colour branches on a match
+         over cntry_name, and this rule was calling it broken. Same rule, same structure, one lookup
+         missing. */
+      var bySlug = {};
+      rows.forEach(function (r) { if (r && r.slug) bySlug[r.slug] = r; });
       rows.forEach(function (r) {
         if (r.source_type !== "vector-tiles-url") return;
         var rc = rcOf(r), cb = rc.colorBy;
         if (!cb || !cb.prop || cb.mode === "presence") return;
+        var src = (rc.outlineOf && bySlug[rc.outlineOf]) ? rcOf(bySlug[rc.outlineOf]) : rc;
+        /* UNRECORDED is not ABSENT. `tilesLabelField` is written by tilegen; a layer baked before
+           that existed has the key MISSING, which says nothing about what its tiles contain. Read
+           as "only label is baked", it produced a defect report on a working layer: measured 8/21,
+           US_AtlasHCB_StateTerr's tiles carry TERR_TYPE and its fill is painted with 221 colour
+           branches. `null` is different — tilegen writes that deliberately to mean "label only" —
+           and it stays reportable. This rule is family B inside the tool built to catch family B:
+           an absence treated as a definite answer. */
+        if (src.tilesLabelField === undefined && rc.tilesLabelField === undefined) return;
         var baked = { label: 1 };
+        if (src.tilesLabelField) baked[src.tilesLabelField] = 1;
         if (rc.tilesLabelField) baked[rc.tilesLabelField] = 1;
+        if (src.labels && src.labels.field) baked[src.labels.field] = 1;
         if (rc.labels && rc.labels.field) baked[rc.labels.field] = 1;
         if (!baked[cb.prop]) {
           out.push(finding("colorby-prop-not-baked", "warn", r.slug || r.id,

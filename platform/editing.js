@@ -7433,6 +7433,34 @@
         paint[key] = fallback;
         if (info) info.textContent = '';
       } else {
+        /* SAY IT AT THE MOMENT OF THE CHOICE. A vector-tile layer paints from its TILES, and the
+           tiles only carry the columns that were baked. Colour by a column that was not baked and
+           every feature silently takes the fallback colour — the picker works, the legend fills in,
+           and the map is one flat colour. Five layers across three maps were sitting in exactly
+           that state on 8/21, found by an audit nobody runs rather than at the moment it happened.
+           The bake picks up colorBy.prop, so a re-bake fixes it; what was missing is anyone being
+           told. Warn, do not block: the choice is legitimate and the fix is one button away. */
+        if (isTilesetNode(node)) {
+          /* tilesLabelField lives DIRECTLY on the node: leafFromRow spreads every raw_config key
+             onto the leaf, so `node.raw_config` does not exist at runtime. Reading it there would
+             have left bakedCols as {label} always, and this warning would have fired on every
+             tileset colour-by — a false-positive generator shipped in the name of catching one.
+             The audit's own version of this rule reads DB rows, where raw_config IS the shape;
+             same rule, two worlds, two accessors. */
+          var tlf = node.tilesLabelField != null ? node.tilesLabelField
+                  : (dataNode.tilesLabelField != null ? dataNode.tilesLabelField
+                  : ((dataNode.raw_config || node.raw_config || {}).tilesLabelField));
+          var bakedCols = { label: 1 };
+          if (tlf) bakedCols[tlf] = 1;
+          if (node.labels && node.labels.field) bakedCols[node.labels.field] = 1;
+          if (!bakedCols[prop]) {
+            var msgTb = '"' + prop + '" is not baked into this layer’s tiles (they carry ' +
+                        Object.keys(bakedCols).join(', ') + '), so every feature will take the fallback colour until you re-bake.';
+            if (info) info.textContent = msgTb;
+            showToast(msgTb, 8000);
+            if (window.MSGuard) MSGuard.warnOnce('colorby-not-baked:' + node.id, 'colour-by column is not in the tiles', prop);
+          }
+        }
         var seen = {}, order = [];
         if (isTilesetNode(node)) {
           // tileset layers: distinct values from ONE server call (paging 78k rows would be heavy)
