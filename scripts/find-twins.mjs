@@ -164,11 +164,46 @@ if (idLive.length) {
     g.forEach((f) => console.log(`      ${f.rel}:${f.line}`));
   }
 }
-if (snLive.length) {
-  console.log("\n── SAME NAME, DIFFERENT BODY — a per-surface variant, or a copy that already drifted");
-  for (const g of snLive) {
-    const sizes = g.map((f) => f.lines);
-    console.log(`  ${g[0].name}()  ${Math.min(...sizes)}-${Math.max(...sizes)} lines`);
-    g.forEach((f) => console.log(`      ${f.rel}:${f.line}  (${f.lines} lines)`));
+/* SAME NAME is two different findings wearing one label, and reporting them together is why this
+   list sat at 37 for days without anybody able to act on it. `flat`, `walk`, `boot`, `modal` and
+   `ensureCss` are private helpers in unrelated modules that happen to share an obvious name —
+   there is nothing to fix and never will be. A copy that DRIFTED is the opposite: same name,
+   substantially the same body, one of them quietly changed. Only the second kind is a bug, and it
+   is the kind a reader most needs pointed out.
+   So: measure it. Jaccard over the normalised token multiset — cheap, no parser, and it separates
+   the two cleanly at the observed distribution (drifted pairs score high, coincidences near zero).
+   Same channel, two conditions, again: the same defect this run keeps finding in the product. */
+const toks = (s) => s.toLowerCase().match(/[a-z_$][\w$]*|\d+|[^\s\w]/g) || [];
+function similarity(a, b) {
+  const A = new Set(toks(a)), B = new Set(toks(b));
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const t of A) if (B.has(t)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+const DRIFT_AT = 0.6;
+function peakSimilarity(g) {
+  let best = 0, pair = null;
+  for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+    const s = similarity(g[i].norm, g[j].norm);
+    if (s > best) { best = s; pair = [g[i], g[j]]; }
+  }
+  return { best, pair };
+}
+const scored = snLive.map((g) => ({ g, ...peakSimilarity(g) }));
+const drifted = scored.filter((x) => x.best >= DRIFT_AT).sort((a, b) => b.best - a.best);
+const coincidence = scored.filter((x) => x.best < DRIFT_AT);
+
+if (drifted.length && !COUNT_ONLY) {
+  console.log(`\n── DRIFTED COPY — same name AND ≥${Math.round(DRIFT_AT * 100)}% the same body, so one of them changed and the other did not`);
+  for (const { g, best, pair } of drifted) {
+    console.log(`  ${g[0].name}()  ${Math.round(best * 100)}% alike`);
+    (pair || g).forEach((f) => console.log(`      ${f.rel}:${f.line}  (${f.lines} lines)`));
+  }
+}
+if (coincidence.length && !COUNT_ONLY) {
+  console.log(`\n── SAME NAME ONLY — unrelated bodies sharing an obvious helper name (${coincidence.length}); informational, not a defect`);
+  for (const { g, best } of coincidence) {
+    console.log(`  ${g[0].name}()  ${Math.round(best * 100)}% alike  ·  ${g.map((f) => f.rel + ":" + f.line).join("  ")}`);
   }
 }
