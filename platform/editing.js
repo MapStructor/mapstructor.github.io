@@ -11600,6 +11600,15 @@
       setStatus('Saved');
     } catch (e) { console.warn('editing: unsplit failed', e); setStatus('Merge failed: ' + e.message); }
   }
+  // NOTE (8/21): this removes only the shape and its outline, so deleting a layer leaves its
+  // labels, hover highlight and edited-features overlay drawing on the map — gone from the
+  // sidebar, so nothing can turn them off — until a reload. That leak is real and measured (see
+  // the bug book, "companion fan-out"), and MS_COMPANIONS in engine/utils.js is the list a fix
+  // should iterate. It is NOT fixed here on purpose: removeMapLayers is also called when a layer
+  // is RE-SOURCED (onApplySource) and when an outline is unsplit, and those paths re-add the base
+  // layer without re-adding labels — so widening this blindly would trade a leak for vanished
+  // labels. It needs the re-add paths handled in the same change, with a test that can drive a
+  // real layer delete through the panel.
   function removeMapLayers(id) {
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
       var m = pair[1]; if (!m) return; var main = id + '-' + pair[0], strk = id + '-stroke-' + pair[0];

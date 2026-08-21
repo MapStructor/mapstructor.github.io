@@ -1,3 +1,25 @@
+/* ── THE COMPANION LIST (8/21) ─────────────────────────────────────────────────────────────
+   One logical layer renders as several map layers: the shape itself, its outline, its hover
+   highlight, its labels, and — on a folded layer — the overlay holding its edited features.
+
+   Twenty-one places in this codebase enumerate that set, and before today exactly ONE of them
+   had it complete (the invariant audit). The rest each kept a different subset, which is how
+   `-edited-` ended up being added, refilled and hit-tested but NEVER hidden, removed or
+   reordered by anything: deleting a layer left its labels and its edited overlay still drawing,
+   with no checkbox able to turn them off, until a reload.
+
+   This is the one list. Consumers read it and fall back to their own historical subset, so a
+   load-order surprise degrades to the old behaviour instead of breaking. utils.js is the right
+   home: it loads before every other engine file and already owns flatLayers, the one tree-walk.  */
+var MS_COMPANIONS = ["-stroke-", "-highlighted-", "-label-", "-edited-"];
+
+// every map-layer id one logical layer owns, both swipe sides. Base ids first.
+function msLayerVariants(slug) {
+  const out = [slug + "-left", slug + "-right"];
+  MS_COMPANIONS.forEach((sfx) => out.push(slug + sfx + "left", slug + sfx + "right"));
+  return out;
+}
+
 function flatLayers(nodes) {
   const result = [];
   nodes.forEach(node => {

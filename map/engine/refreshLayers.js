@@ -14,8 +14,12 @@ function refreshLayers() {
             const vis = checkbox && checkbox.checked ? "visible" : "none";
             if (checkbox && beforeMap.getLayer(leftId))  beforeMap.setLayoutProperty(leftId,  "visibility", vis);
             if (checkbox && afterMap.getLayer(rightId))  afterMap.setLayoutProperty(rightId,  "visibility", vis);
-            // keep the companion layers (stroke outline, hover highlight, map labels) in sync with the checkbox
-            ["-stroke-", "-highlighted-", "-label-"].forEach(sfx => {
+            // keep every companion (outline, hover highlight, labels, edited-features overlay) in
+            // sync with the checkbox. This list used to stop at labels, so unticking a folded,
+            // edited layer left its edited shapes painted over a layer that was switched off.
+            // Falls back to the historical subset if utils.js somehow has not loaded.
+            const companions = (typeof MS_COMPANIONS !== "undefined" && MS_COMPANIONS) || ["-stroke-", "-highlighted-", "-label-"];
+            companions.forEach(sfx => {
                 const l = layer.id + sfx + "left", r = layer.id + sfx + "right";
                 if (checkbox && beforeMap.getLayer(l)) beforeMap.setLayoutProperty(l, "visibility", vis);
                 if (checkbox && afterMap.getLayer(r)) afterMap.setLayoutProperty(r, "visibility", vis);
