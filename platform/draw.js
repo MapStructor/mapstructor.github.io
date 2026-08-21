@@ -912,7 +912,16 @@
       var l = leaves[i];
       var srcType = l.source_type || 'geojson-supabase';
       var isDrawn = srcType === 'geojson-supabase';
+      /* A layer with no SLUG is unusable: the slug is its DOM checkbox id and its map-layer id, so
+         it appears in the tree, cannot be ticked, and the engine cannot address it. This payload
+         has never carried one — 11 layers created 12–19 June are still slugless because of it, two
+         of them on the live Ames History Museum map. It stopped mattering when layer creation moved
+         to editing.js (186 layers made since 1 July, none slugless), so this is a dormant trap
+         rather than a live bug — which is exactly the kind that comes back when a path is revived.
+         Same shape as the "every layers INSERT sets user_id" rule that came out of an earlier one. */
+      if (!l.slug) l.slug = 'new-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
       var row = {
+        slug:        l.slug,
         name:        l.name,
         color:       l.color || null,
         // Drawn layers store the Mapbox-GL geometry type (Polygon→fill, …);
