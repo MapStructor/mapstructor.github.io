@@ -260,7 +260,20 @@
   });
 
   /* ─────────────────── 2) style divisions (category rows) ─────────────────── */
-  function opKeyFor(node) { var t = node && node.type; return t === "line" ? "line-opacity" : (t === "circle" ? "circle-opacity" : "fill-opacity"); }
+  /* twin-ok: intentionally mirrored from editing.js opKeyFor, like its two neighbours. CHANGE BOTH.
+     See the note there: these two had drifted, and disagreed for the 9 layers whose type is not
+     one of fill/line/circle. Writing the wrong opacity property does nothing, silently. */
+  function opKeyFor(node) {
+    try {
+      var m0 = (typeof beforeMap !== "undefined") ? beforeMap : null;
+      var L0 = (m0 && node && m0.getLayer) ? m0.getLayer(node.id + "-left") : null;
+      if (L0 && (L0.type === "fill" || L0.type === "line" || L0.type === "circle")) return L0.type + "-opacity";
+    } catch (e) {}
+    var t = String((node && node.type) || "").toLowerCase();
+    if (t === "line" || t === "linestring" || t === "multilinestring") return "line-opacity";
+    if (t === "circle" || t === "point" || t === "multipoint") return "circle-opacity";
+    return "fill-opacity";   // fill, Polygon, MultiPolygon, and unknown: most layers are fills
+  }
   /* twin-ok: styleCatsFor is intentionally mirrored from editing.js. CHANGE BOTH. */
   var STYLE_CATS_MAX = 20;        // mirrored in editing.js styleCatsFor — change both
   function styleCatsFor(node) {   // mirror of the editor's — [{key,label,color}]; [] for single-color layers
@@ -289,6 +302,8 @@
     if (cb && cb.mapping) { var expr = ["match", ["to-string", ["get", cb.prop]]]; hidden.forEach(function (v) { expr.push(v, 0); }); expr.push(base); return expr; }
     return base;
   }
+  /* twin-ok: intentionally mirrored from editing.js applyStyleVisibility. CHANGE BOTH. The one
+     real difference is the point of the mirror: the editor persists, the viewer does not. */
   function applyStyleVisibility(node) {   // session-only in view: map paint updated, nothing persisted
     var key = opKeyFor(node), expr = styleOpacityExpr(node);
     node.paint = node.paint || {}; node.paint[key] = expr;
@@ -297,7 +312,11 @@
       try { if (m.getLayer(node.id + pr[0])) m.setPaintProperty(node.id + pr[0], key, expr); } catch (e) {}
     });
   }
+  /* twin-ok: intentionally mirrored from editing.js syncLayerMaster, like the rest of this
+     cluster. CHANGE BOTH. The `!node` guard was missing here and present there, so a null node
+     threw in the viewer and returned quietly in the editor — the drift find-twins measures. */
   function syncLayerMaster(node) {   // partial → indeterminate dash, exactly like the editor
+    if (!node) return;
     var cats = node.styleRows ? styleCatsFor(node) : []; if (!cats.length) return;
     var cb = document.getElementById(node.toggleElement || node.id); if (!cb) return;
     var hidden = node.styleHidden || [];
@@ -306,6 +325,8 @@
     else if (off >= cats.length) { cb.indeterminate = false; cb.checked = false; }
     else { cb.indeterminate = true; cb.checked = true; }
   }
+  /* twin-ok: intentionally mirrored from editing.js injectStyleRows. CHANGE BOTH. The viewer's
+     copy bails when the editor is present (__msEditorAttr) so only one of them ever renders. */
   function injectStyleRows() {
     if (window.__msEditorAttr) return;   // the editor injects its own
     var panel = document.getElementById("layers-panel-content"); if (!panel) return;

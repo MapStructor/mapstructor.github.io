@@ -7305,7 +7305,26 @@
   // ── Style categories under the layer (7/20) — nested sub-rows in the sidebar, each with a
   // checkbox that shows/hides that category's features on the map (via a slider-safe opacity
   // expression). Opt-in per layer (node.styleRows); only meaningful for color-by layers. ──
-  function opKeyFor(node) { return node.type === 'fill' ? 'fill-opacity' : node.type === 'line' ? 'line-opacity' : 'circle-opacity'; }
+  /* twin-ok: intentionally mirrored in viewerTable.js opKeyFor, like its two neighbours. CHANGE BOTH.
+     These two had already DRIFTED when find-twins learned to measure similarity (8/21): the editor
+     sent anything that was not fill/line to `circle-opacity`, the viewer sent anything that was not
+     line/circle to `fill-opacity`. Nine layers carry a type outside {fill,line,circle} — 6 null,
+     plus "Polygon", "Point" and "LineString" — so the same layer's category dimming wrote a
+     DIFFERENT paint property in the editor than in the viewer, and writing the wrong one does
+     nothing at all, silently. Both were wrong for "LineString".
+     The map knows what it actually painted, so ask it first; `layers.type` is a stored copy that
+     may be null or a geometry name. */
+  function opKeyFor(node) {
+    try {
+      var m0 = (typeof beforeMap !== 'undefined') ? beforeMap : null;
+      var L0 = (m0 && node && m0.getLayer) ? m0.getLayer(node.id + '-left') : null;
+      if (L0 && (L0.type === 'fill' || L0.type === 'line' || L0.type === 'circle')) return L0.type + '-opacity';
+    } catch (e) {}
+    var t = String((node && node.type) || '').toLowerCase();
+    if (t === 'line' || t === 'linestring' || t === 'multilinestring') return 'line-opacity';
+    if (t === 'circle' || t === 'point' || t === 'multipoint') return 'circle-opacity';
+    return 'fill-opacity';   // fill, Polygon, MultiPolygon, and unknown: most layers are fills
+  }
   /* twin-ok: styleCatsFor is intentionally mirrored in viewerTable.js so the viewer can draw the
      same legend rows without loading the editor. CHANGE BOTH. */
   var STYLE_CATS_MAX = 20;        // mirrored in viewerTable.js styleCatsFor — change both
