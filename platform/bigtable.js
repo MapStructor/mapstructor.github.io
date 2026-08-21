@@ -62,11 +62,36 @@
     return _engine;
   }
   var _prefetched = false;
-  function prefetch() {   // warm the engine at idle so a big table's first open doesn't pay the load
+  // Warm at idle so a big table's first open doesn't pay the load.
+  //
+  // 8/21: warming the ENGINE alone left almost all of the cost in place. Measured on the Railways
+  // layer (78,843 rows): opening the features list took 2,905 ms, of which engine init + sidecar
+  // REGISTRATION was 1,738 ms — the first page of rows was 76 ms and loading every row was 785 ms.
+  // Registering the sidecar (fetching the parquet and handing it to DuckDB) is the expensive half,
+  // and it was not being warmed at all. `sidecars` is [{layerId, url, ver}], capped, sequential,
+  // failures swallowed: this is speculative work and must never be able to break an open.
+  function prefetch(sidecars) {
     if (_prefetched) return; _prefetched = true;
-    var go = function () { ensureEngine().catch(function () {}); };
+    var go = async function () {
+      try { await ensureEngine(); } catch (e) { return; }
+      var list = (sidecars || []).slice(0, PREWARM_MAX);
+      for (var i = 0; i < list.length; i++) {
+        if (!list[i] || !list[i].url) continue;
+        try {
+          var s = await registerSidecar(list[i].layerId, list[i].url, list[i].ver);
+          // registerFileURL is lazy — DuckDB fetches nothing until a query runs. A LIMIT 0 forces
+          // the parquet FOOTER over the wire now, at idle, instead of during the click that opens
+          // the table. Without it the warm only removed the engine cost (1,738 ms → 979 ms);
+          // with it the first open pays little more than the query itself.
+          await s.e.conn.query("SELECT * FROM read_parquet(" + sq(s.name) + ") LIMIT 0");
+        } catch (e2) {}
+      }
+    };
     if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 15000 }); else setTimeout(go, 4000);
   }
+  // Speculative memory: each registered sidecar lives in DuckDB's virtual filesystem, so this is a
+  // deliberate ceiling on work done for tables nobody may open.
+  var PREWARM_MAX = 2;
 
   /* ── row shape ↔ parquet shape ─────────────────────────────────────────── */
   // rows are the attr-table's own objects: {feature_id, label, description, start_date,

@@ -5865,7 +5865,22 @@
     });
     // the map contains a big-table layer → warm the columnar engine at idle, so the first table
     // open never pays the engine load (user-proposed prefetch rule, 7/18)
-    try { if (window.MSBigTable && counts.some(function (cn) { return cn > MSBigTable.BIG_ROWS; })) MSBigTable.prefetch(); } catch (e) {}
+    // Warm the columnar engine AND the sidecars it will need. Gating this on geojson row counts
+    // alone missed the layers that need it most: a tiled or folded layer has its rows in a parquet
+    // sidecar and no big `counts` entry at all, so the map with the slowest table never prewarmed.
+    try {
+      if (window.MSBigTable) {
+        var _warmCars = [];
+        (function walkWarm(arr) {
+          (arr || []).forEach(function (n) {
+            if (!n) return;
+            if (n.children) return walkWarm(n.children);
+            if (n.attrParquet && !n.attrParquetDirty) _warmCars.push({ layerId: slugToLayerDbId[n.id] || n._layerDbId, url: n.attrParquet, ver: n.attrParquetAt });
+          });
+        })(layers);
+        if (_warmCars.length || counts.some(function (cn) { return cn > MSBigTable.BIG_ROWS; })) MSBigTable.prefetch(_warmCars);
+      }
+    } catch (e) {}
     hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
     // the engine adds its layers on style.load, which can land AFTER the hide above ran (getLayer misses →
     // nothing hidden → drawn features double-render and the engine's click/panel systems stay live) — re-hide once settled
@@ -10937,7 +10952,13 @@
     _flistSlug = null; _attrSlug = null;
     setAttrHover(null, false);   // selection persists — closing the list only hides the view
   }
-  async function loadFlistRows(lid, gen) {
+  // Rows past this count get an EARLY first page before the full load, because materializing
+  // every row costs real time and the list can only show ~17 of them. Measured 8/21 on the
+  // Railways layer (78,843 rows): the full materialize was 1,608 ms of a 1,922 ms wait, while a
+  // 300-row page off the same sidecar was 76 ms. Same rule the streaming fallback already follows
+  // — paint the first page, keep loading behind it. Visibility never waits on completeness.
+  var FLIST_EARLY_MIN = 5000;
+  async function loadFlistRows(lid, gen, onEarly) {
     // fast path: reuse the tier-2 Parquet sidecar if it's fresh (instant for big layers)
     if (window.MSBigTable) {
       try {
@@ -10949,6 +10970,15 @@
           var cq = foldedF ? null : await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', lid);
           if (gen !== _attrLoadGen) return null;
           if (foldedF || ((cq && cq.count) || 0) === rc.attrParquetRows) {   // folded: rows are gone by design — trust the sidecar
+            if (typeof onEarly === 'function' && (rc.attrParquetRows || 0) > FLIST_EARLY_MIN) {
+              // one page off the same sidecar, painted immediately; the full load continues below
+              try {
+                var prov = await MSBigTable.openProvider(lid, rc.attrParquet, rc.attrParquetAt, rc.attrParquetRows || 0);
+                var page = await prov.range(0, 300, null);
+                if (gen !== _attrLoadGen) return null;
+                if (page && page.length) onEarly(page);
+              } catch (eEarly) {}   // speculative: a failure here must never stop the real load
+            }
             var srows = await MSBigTable.loadAll(lid, rc.attrParquet, rc.attrParquetAt);
             if (gen !== _attrLoadGen) return null;
             return srows;
@@ -11001,7 +11031,14 @@
     updateFlistZoom();
     var gen = ++_attrLoadGen;
     var rows;
-    try { rows = await loadFlistRows(lid, gen); } catch (e) { document.getElementById('editor-flist-tbody').innerHTML = '<tr><td style="padding:12px;color:#b4453a;">Failed to load features.</td></tr>'; return; }
+    try {
+      rows = await loadFlistRows(lid, gen, function (page) {
+        if (gen !== _attrLoadGen) return;
+        _attrRows = page; rebuildFlistIndex(); renderFlist();
+        var f0 = document.getElementById('editor-flist-foot');
+        if (f0) f0.textContent = 'Loading the rest…';
+      });
+    } catch (e) { document.getElementById('editor-flist-tbody').innerHTML = '<tr><td style="padding:12px;color:#b4453a;">Failed to load features.</td></tr>'; return; }
     if (rows == null || gen !== _attrLoadGen) return;   // closed / superseded
     _attrRows = rows; rebuildFlistIndex();
     if (!rows.length) {
