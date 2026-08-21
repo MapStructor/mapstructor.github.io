@@ -279,6 +279,23 @@ function _dpDropFilter(m, id) {
   try { if (m.getLayer(id)) m.setFilter(id, null); } catch (e) {}
 }
 var _DP_KEYS = { fill: ["fill-opacity"], line: ["line-opacity"], circle: ["circle-opacity", "circle-stroke-opacity"] };
+// A `-highlighted-` companion draws every feature of its layer and paints all of them transparent
+// unless that feature is hovered or SELECTED. During a slider drag the pointer is on the slider, so
+// nothing can become hovered — only an existing selection can be visible on it. With no selection
+// there is nothing on that layer for anyone to see, and wrapping its paint every tick is pure waste:
+// measured 8/21, 280 of the 714 style calls in a one-second drag, on two different maps.
+// When we cannot tell (no selection store on the page), we keep painting — unchanged behaviour.
+var _hlCouldShow = true;
+function _highlightCouldShow() {
+  try {
+    if (window.MSSel && typeof MSSel.count === "function") {
+      if (MSSel.count() > 0) return true;
+      if (document.querySelector(".mapboxgl-popup")) return true;   // an open popup means a live selection
+      return false;
+    }
+  } catch (e) {}
+  return true;
+}
 function _dpTargets() {
   var t = [];
   // 8/17 SWAP: a faster renderer (deck.gl, or the baked raster) may be drawing the drag for some
@@ -296,13 +313,16 @@ function _dpTargets() {
     var kind = _DP_KEYS[layer.type] ? layer.type : null;
     if (kind) {
       t.push([beforeMap, layer.id + "-left", kind], [afterMap, layer.id + "-right", kind]);
-      t.push([beforeMap, layer.id + "-highlighted-left", kind], [afterMap, layer.id + "-highlighted-right", kind]);
+      if (_hlCouldShow) t.push([beforeMap, layer.id + "-highlighted-left", kind], [afterMap, layer.id + "-highlighted-right", kind]);
     }
     t.push([beforeMap, layer.id + "-stroke-left", "line"], [afterMap, layer.id + "-stroke-right", "line"]);
   });
   return t;
 }
 function paintDate(unixDate) {
+  // decided ONCE per drag (first tick, while _dpBase is still empty): a selection cannot appear
+  // mid-drag, because the pointer is holding the slider
+  if (!Object.keys(_dpBase).length) _hlCouldShow = _highlightCouldShow();
   var day = parseInt(moment.unix(unixDate).format("YYYYMMDD"));
   var ok = ["all", ["<=", ["coalesce", ["get", "DayStart"], 0], day], [">=", ["coalesce", ["get", "DayEnd"], 99999999], day]];
   _dpTargets().forEach(function (tg) {
