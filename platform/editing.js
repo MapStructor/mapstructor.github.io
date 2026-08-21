@@ -9293,10 +9293,18 @@
     var tiles0 = (node.source && node.source.tiles && node.source.tiles[0]) || node.source_url || '';
     var isConvertedTs = !!(node.pmtiles || tiles0.indexOf('/pmt/') > -1 || /^pmt\//.test(tiles0));   // OUR generated tiles → re-bakeable
     if (kindEl) {
+      // WHAT IS THIS LAYER — every provenance, not just the original three (owner 8/20: "Should
+      // also mention in the panel what type it is — we've only done portal added stuff for this").
+      // The folded state rides along explicitly, because it is the one that silently changes what
+      // the user can DO (tables read the archive snapshot; per-feature editing is off).
       var kt = '';
-      if (node.source_type === 'geojson-supabase') kt = '✏️ Drawn / imported layer — editable features';
-      else if (isConvertedTs) kt = '🧩 Tileset — auto-generated from your data';
-      else if (isTilesetNode(node)) kt = '🧩 Vector tileset — external source';
+      if (node.instanceOf) kt = '🔗 Linked instance — mirrors its source layer’s features (edit the original)';
+      else if (node.outlineOf) { var _op = findNodeById(layers, node.outlineOf); kt = '〰 Outline layer — draws the borders of “' + ((_op && _op.label) || node.outlineOf) + '”'; }
+      else if (node.source_type === 'geojson-supabase') kt = '✏️ Drawn / imported layer — editable features';
+      else if (isConvertedTs) kt = '🧩 Tileset — auto-generated from your data (features editable in the table)';
+      else if (isTilesetNode(node)) kt = '🧩 Vector tileset — external source (features live in the remote tiles)';
+      if (node._msCopyOf && kt) kt += ' · copy';
+      if (node.fold_state === 'folded') kt += (kt ? ' · ' : '') + '📦 FOLDED — feature rows are archived (tables read the archive snapshot; per-feature editing is off)';
       kindEl.textContent = kt; kindEl.style.display = kt ? 'block' : 'none';
     }
     // 7/21 universal bake: tiled layers RE-bake; live geojson layers can FIRST-TIME bake (optional —
@@ -9674,7 +9682,7 @@
     return msid.concat(mid).concat(style);
   }
   var _attrById = {}, _attrSlug = null, _attrHover = null, _attrHoverRAF = false, _attrLastPt = null, _attrHoverWired = false;   // hover brushing (map ↔ row): id→row lookup, open layer, hovered fid
-  var _attrReadonly = false;   // true when the table is sourced from vector tiles (pure tileset) rather than the editable `features` table
+  var _attrReadonly = false, _attrReadonlyWhy = null;   // true when per-feature editing is off; WHY ('instance'|'folded'|'tiles') so every refusal states the real reason instead of a generic shrug
   var _attrDelegated = false;  // event-delegation wired once on tbody (so 18k+ rows don't each get listeners)
   function attrCellVal(r, c) {
     if (c.kind === 'sel') return _attrSel.indexOf(String(r.feature_id)) > -1 ? 0 : 1;   // selected sort to the top
@@ -9889,7 +9897,7 @@
     var thead = document.getElementById('editor-attr-thead'), tbody = document.getElementById('editor-attr-tbody'), foot = document.getElementById('editor-attr-foot');
     thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">Loading…</td></tr>'; foot.textContent = '';
     modal.style.display = 'block';
-    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = !!node.instanceOf; _attrVirtual = null;   // selection PERSISTS across open (map ⇄ table sync always) — rows render pre-starred; mirrors are read-only
+    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = !!node.instanceOf; _attrReadonlyWhy = node.instanceOf ? 'instance' : null; _attrVirtual = null;   // selection PERSISTS across open (map ⇄ table sync always) — rows render pre-starred; mirrors are read-only
     if (_attrWin) _attrWin.onMissing = null;   // virtual-mode page fetcher — re-attached only by openVirtualAttr
     // STREAMED load (7/15, after 78k rows hung the page): the FIRST page renders immediately — the
     // table is usable (sort/edit/drag/close) while the rest loads behind it. Closing the modal bumps
@@ -9949,7 +9957,7 @@
               var srows = await MSBigTable.loadAll(lid, arc.attrParquet, arc.attrParquetAt);
               if (gen !== _attrLoadGen) return;
               rows = srows; total = srows.length;
-              if (foldedA) _attrReadonly = true;   // folded: cell edits would UPDATE missing rows (silent no-op) — read-only until the delta editor (C4)
+              if (foldedA) { _attrReadonly = true; _attrReadonlyWhy = 'folded'; }   // folded: cell edits would UPDATE missing rows (silent no-op) — read-only until the delta editor (C4)
               buildTable(true);
               ensureMsDatasetColumn(lid, gen);   // sidecars baked pre-8/13 lack ms_dataset — backfill uniform stamps
               return;
@@ -10007,7 +10015,7 @@
       });
       if (!tfeats.length) { tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">No tile features loaded here — pan/zoom to the layer, then reopen.</td></tr>'; foot.textContent = '0 features (tiles)'; return; }
       var tkeys = []; tfeats.forEach(function (r) { Object.keys(r.custom_fields).forEach(function (k) { if (tkeys.indexOf(k) < 0) tkeys.push(k); }); }); tkeys = orderAttrKeys(tkeys, 40);
-      _attrRows = tfeats; _attrReadonly = true; _attrSlug = slug; _attrById = {}; tfeats.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
+      _attrRows = tfeats; _attrReadonly = true; _attrReadonlyWhy = 'tiles'; _attrSlug = slug; _attrById = {}; tfeats.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
       _attrCols = [{ title: '\u2605', kind: 'sel', type: '', w: 30, tip: 'Selected features \u2014 click the star to select/deselect; sort this column to bring selected to the top' }].concat(tkeys.length ? tkeys.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 140 }; }) : [{ title: 'feature', kind: 'std', field: 'feature_id', type: 'text', w: 200 }]);
       applyAttrView(findNodeById(layers, slug));
       buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
@@ -10250,9 +10258,18 @@
     b.disabled = !_attrSel.length;
     b.innerHTML = '&#128465; Delete' + (_attrSel.length ? ' (' + _attrSel.length + ')' : ' selected');
     // the count lives next to the title too — visible even on read-only layers, and it answers
-    // "how many do I have selected" without hunting for a button state (owner 8/20)
+    // "how many do I have selected" without hunting for a button state (owner 8/20). A read-only
+    // table says WHAT it is up front (folded archive / instance / pure tiles) instead of letting
+    // each tool refuse one by one with the reason hidden until clicked.
     var sc = document.getElementById('editor-attr-selcount');
-    if (sc) sc.textContent = _attrSel.length ? _attrSel.length + ' selected' : '';
+    if (sc) {
+      var bits = [];
+      if (_attrReadonlyWhy === 'folded') bits.push('📦 folded archive — read-only');
+      else if (_attrReadonlyWhy === 'instance') bits.push('🔗 instance — edit the source layer');
+      else if (_attrReadonlyWhy === 'tiles') bits.push('🧩 external tiles — read-only');
+      if (_attrSel.length) bits.push(_attrSel.length + ' selected');
+      sc.textContent = bits.join(' · ');
+    }
   }
   async function deleteAttrSelected() {
     if (!MSSel.count()) return;
@@ -10559,7 +10576,7 @@
   //    in id-batches so 78k-row layers finish without timeouts. Source-empty rows are never touched.
   function toggleTransferPanel() {
     var p9 = document.getElementById('editor-attr-transfer-panel'); if (!p9) return;
-    if (_attrReadonly || !_attrSlug || !slugToLayerDbId[_attrSlug]) { setStatus('Transfer works on database-backed layers only'); return; }
+    if (_attrReadonly || !_attrSlug || !slugToLayerDbId[_attrSlug]) { setStatus(attrReadonlyMsg()); return; }
     var show = p9.style.display === 'none';
     if (show) {
       var opts = [];
@@ -10608,8 +10625,17 @@
      is the authority, these buttons add none), so the browser never downloads geometry to
      compare it. The table stays open and usable throughout — that was the ask. */
   var ATTR_BUILTIN_COLS = [['label', 'Label'], ['description', 'Notes'], ['start_date', 'Start'], ['end_date', 'End'], ['image_url', 'Image URL']];
+  // A refusal must say WHY (owner 8/20, clicking Transfer on a FOLDED layer got "database-backed
+  // layers only" — the layer IS database-backed; its rows are just archived). Same message
+  // everywhere a readonly table declines a tool.
+  function attrReadonlyMsg() {
+    if (_attrReadonlyWhy === 'folded') return 'This layer is FOLDED — its feature rows are archived, and the table shows the archive snapshot. Editing tools come back when it’s unfolded.';
+    if (_attrReadonlyWhy === 'instance') return 'This layer is a linked instance — it mirrors its source layer. Open the SOURCE layer’s table to edit.';
+    if (_attrReadonlyWhy === 'tiles') return 'This layer’s features live inside external vector tiles, not the database — there are no rows to edit.';
+    return 'This tool needs a database-backed layer you can edit';
+  }
   function toggleAttrToolPanel(id, fillFn) {
-    if (_attrReadonly || !_attrSlug || !slugToLayerDbId[_attrSlug]) { setStatus('This tool works on database-backed layers you can edit'); return; }
+    if (_attrReadonly || !_attrSlug || !slugToLayerDbId[_attrSlug]) { setStatus(attrReadonlyMsg()); return; }
     ['editor-attr-transfer-panel', 'editor-attr-addcol-panel', 'editor-attr-delcol-panel', 'editor-attr-dups-panel'].forEach(function (p) {
       var el = document.getElementById(p); if (!el) return;
       el.style.display = (p === id && el.style.display === 'none') ? 'block' : 'none';
@@ -10913,7 +10939,7 @@
     injectFeaturesList();
     var el = document.getElementById('editor-flist');
     document.getElementById('flist-title').textContent = node.label || 'Features';
-    _flistSlug = slug; _attrSlug = slug; _attrReadonly = !!node.instanceOf;
+    _flistSlug = slug; _attrSlug = slug; _attrReadonly = !!node.instanceOf; _attrReadonlyWhy = node.instanceOf ? 'instance' : null;
     _flistIcon = flistLayerIcon(node);
     _attrById = {}; _attrRows = [];   // selection PERSISTS across open (map ⇄ table sync always)
     ensureAttrHlLayers(); ensureAttrMapHover();
