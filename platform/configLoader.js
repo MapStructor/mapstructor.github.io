@@ -413,7 +413,16 @@ var ConfigLoader = (function () {
   }
 
   async function fetchProjectBundle(db, projectId) {
-    var p = await db.from("projects").select("*").eq("id", projectId).single();
+    // These four reads do not depend on each other — only on the project id we already have.
+    // They used to run one after another, so opening a map paid four serial round trips before
+    // a single feature could be asked for. Boot is a FLOOR, not a slope (measured 8/21: 2.5–3.7s
+    // on every map regardless of size), and serial round trips are what a floor is made of.
+    var pq = db.from("projects").select("*").eq("id", projectId).single();
+    var sq = db.from("layer_sections").select("*").eq("project_id", projectId);
+    var gq = db.from("layer_groups").select("*").eq("project_id", projectId);
+    var lq = db.from("project_layers").select("*, layers(*)").eq("project_id", projectId);
+    var all = await Promise.all([pq, sq, gq, lq]);
+    var p = all[0], s = all[1], g = all[2], l = all[3];
     // A19 (8/6): a link-shared map isn't in the projects table's read policy any more — one row,
     // by id, through the definer function. Owners/editors and public maps never reach this.
     if (p.error || !p.data) {
@@ -423,11 +432,8 @@ var ConfigLoader = (function () {
       } catch (eById) {}
     }
     if (p.error) throw p.error;
-    var s = await db.from("layer_sections").select("*").eq("project_id", projectId);
     if (s.error) throw s.error;
-    var g = await db.from("layer_groups").select("*").eq("project_id", projectId);
     if (g.error) throw g.error;
-    var l = await db.from("project_layers").select("*, layers(*)").eq("project_id", projectId);
     if (l.error) throw l.error;
     var bundle = { project: p.data, sections: s.data, groups: g.data, projectLayers: l.data, featuresByLayer: {} };
 
