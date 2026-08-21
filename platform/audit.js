@@ -553,7 +553,11 @@ var MSAudit = (function () {
     if (map && map.getStyle) safely(out, skip, "orphan-engine-layer", function () {
       var known = {};
       nodes.forEach(function (n) { if (n.id) known[n.id] = 1; });
-      var SUFFIX = /-(left|right|stroke-left|stroke-right|labels-left|labels-right|label-left|label-right|highlighted-left|highlighted-right)$/;
+      // Every companion suffix the engine and editor mint. `-edited-*` was missing (8/21): a folded
+      // layer's edited-features overlay is a COMPANION of its layer, not a node of its own, so this
+      // rule reported a healthy Atlas overlay as an orphan. A rule that cries wolf gets ignored,
+      // and then it protects nothing — which is this file's own stated reason for existing.
+      var SUFFIX = /-(left|right|stroke-left|stroke-right|labels-left|labels-right|label-left|label-right|highlighted-left|highlighted-right|edited-left|edited-right)$/;
       var style = map.getStyle() || {};
       (style.layers || []).forEach(function (L) {
         var id = String(L.id || "");
