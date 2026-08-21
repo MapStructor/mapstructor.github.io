@@ -708,12 +708,19 @@
 
   // make sure every deferred (off-by-default, not-yet-fetched) drawn layer has its features in
   // memory before we freeze the config — the download must carry them, hidden or not
+  // Resolves to null when everything loaded, or to the reason it did not. The `.catch(() => {})`
+  // this replaces is the same defect as the empty-zip bug two hundred lines below: a failure here
+  // does not stop the export, it just makes the zip QUIETLY INCOMPLETE — some layers present, some
+  // silently empty — and a finished wrong artifact is worse than an error, because only the person
+  // you sent the copy to ever finds out.
   function hydrateAll() {
     try {
-      if (!window.ConfigLoader || !window.supabase || typeof layers === "undefined") return Promise.resolve();
+      if (!window.ConfigLoader || !window.supabase || typeof layers === "undefined") return Promise.resolve(null);
       var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-      return Promise.resolve(ConfigLoader.hydrateDeferredFeatures(db, layers, [])).catch(function () {});
-    } catch (e) { return Promise.resolve(); }
+      return Promise.resolve(ConfigLoader.hydrateDeferredFeatures(db, layers, []))
+        .then(function () { return null; })
+        .catch(function (e) { return (e && e.message) || String(e) || "unknown error"; });
+    } catch (e) { return Promise.resolve((e && e.message) || String(e)); }
   }
 
   function extFromType(ct) {
@@ -728,7 +735,17 @@
   async function buildZip(opts) {
     setStatus("Preparing…");
     var JSZipLib = await loadJSZip();
-    await hydrateAll();
+    // A hydration failure means some off-by-default layers have no features in memory, so the zip
+    // would be built from a partial picture and would LOOK complete. Refuse, the same way an empty
+    // tree is refused below, and say what to do about it.
+    var hydrateErr = await hydrateAll();
+    if (hydrateErr) {
+      var hmsg = "Stopped before building the zip — some layers' data could not be loaded (" + String(hydrateErr).slice(0, 120) +
+                 "), so the copy would have been missing features without saying so. Check your connection and try again.";
+      setStatus(hmsg);
+      try { if (window.MSGuard) window.MSGuard.warn("export-partial-hydrate", "the download was stopped because deferred layer features failed to load — the zip would have been quietly incomplete", String(hydrateErr).slice(0, 200)); } catch (e) {}
+      throw new Error(hmsg);
+    }
 
     // REFUSE TO EXPORT AN EMPTY MAP (8/21).
     //

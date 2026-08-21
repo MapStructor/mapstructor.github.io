@@ -7923,11 +7923,26 @@
       cbR.disabled = false;
       var kb = Math.round((ry.bytes || 0) / 1024);
       var when = null; try { when = ry.at ? new Date(ry.at).toLocaleDateString() : null; } catch (eD) {}
-      var stale = false, staleWhy = 'data';
-      try { stale = !!(ry.at && node.tilesGeneratedAt && new Date(node.tilesGeneratedAt) > new Date(ry.at)); } catch (eS) {}
-      // styling is baked into the raster too (colours, stroke width) — a restyle stales it the
-      // same as a data edit (8/19, "the bake didn't do colors again")
-      try { if (!stale && ry.at && node.styleChangedAt && new Date(node.styleChangedAt) > new Date(ry.at)) { stale = true; staleWhy = 'styling'; } } catch (eS2) {}
+      /* `new Date("nonsense")` does not throw — it returns Invalid Date, and EVERY comparison with
+         it is false. So an unparseable timestamp did not fail loudly here; it quietly meant
+         "not stale", and the owner was told their snapshot was current while looking at old tiles.
+         Absence treated as the benign default, in the one direction that misleads.
+         Unknown now counts as STALE and says so: re-baking unnecessarily costs a few minutes,
+         while trusting an old bake costs a wrong map you have no reason to doubt. */
+      var ms = function (v) { var t = v ? new Date(v).getTime() : NaN; return t; };
+      var bakedAt = ms(ry.at), stale = false, staleWhy = 'data';
+      if (ry.at && isNaN(bakedAt)) { stale = true; staleWhy = 'bake date unreadable'; }
+      else if (!isNaN(bakedAt)) {
+        var dataAt = ms(node.tilesGeneratedAt), styleAt = ms(node.styleChangedAt);
+        if (node.tilesGeneratedAt && isNaN(dataAt)) { stale = true; staleWhy = 'edit date unreadable'; }
+        else if (dataAt > bakedAt) { stale = true; staleWhy = 'data'; }
+        // styling is baked into the raster too (colours, stroke width) — a restyle stales it the
+        // same as a data edit (8/19, "the bake didn't do colors again")
+        else if (node.styleChangedAt && isNaN(styleAt)) { stale = true; staleWhy = 'style date unreadable'; }
+        else if (styleAt > bakedAt) { stale = true; staleWhy = 'styling'; }
+      }
+      if (stale && /unreadable/.test(staleWhy) && window.MSGuard)
+        MSGuard.warnOnce('bake-date-unreadable', 'a bake or edit timestamp could not be read, so the snapshot is being reported as needing a re-bake');
       rn.innerHTML = 'Baked' + (when ? ' ' + when : '') + (kb ? ' · ' + kb + ' KB' : '') + (ry.fc ? ' · ' + Number(ry.fc).toLocaleString() + ' features' : '') +
         (stale ? '<br><b style="color:#b4453a;">The ' + staleWhy + ' changed since — re-bake.</b>' : '');
       btn.innerHTML = '🔥 Re-bake snapshot';
