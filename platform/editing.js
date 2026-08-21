@@ -3486,8 +3486,9 @@
         try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; window.modal_content_html[pid] = html; window.modal_header_text[pid] = title || 'Info'; if (_editPopupId === pid) window.$('div.modal-header h1').text(title || 'Info'); } catch (x2) {}
         // persist info_id on the layer/group row so the rendered info button carries this id (viewer + on reload)
         if (node) {
-          if (node.type === 'group' && node._dbId) { await db.from('layer_groups').update({ info_id: pid }).eq('id', node._dbId); }
-          else if (node.type !== 'group' && node.type !== 'section' && slugToLayerDbId[nodeId]) { await db.from('layers').update({ info_id: pid }).eq('id', slugToLayerDbId[nodeId]); }
+          // without this id the row's ℹ button never appears for readers, even though the text saved
+          if (node.type === 'group' && node._dbId) { await saveSoft(db.from('layer_groups').update({ info_id: pid }).eq('id', node._dbId), 'linking the info button to this group'); }
+          else if (node.type !== 'group' && node.type !== 'section' && slugToLayerDbId[nodeId]) { await saveSoft(db.from('layers').update({ info_id: pid }).eq('id', slugToLayerDbId[nodeId]), 'linking the info button to this layer'); }
         }
       }
       var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message);
@@ -5843,7 +5844,9 @@
       var saveGeom = toDbGeom(f.id, f.geometry); if (_engineWasMulti[f.id]) _engineOrigMulti[f.id] = saveGeom;
       var EBu = _engineEditNode[f.id] ? getEditBackend(_engineEditNode[f.id]) : PLATFORM_FEATURES;   // Phase 2a: tileset edits → the layer's backend; drawn → platform features
       var upatch = {}; upatch[EBu.geomCol] = saveGeom;
-      try { await EBu.db.from(EBu.table).update(upatch).eq(EBu.idCol, fid); } catch (err) { console.warn('feature update failed', err); }
+      // moving a shape is the most tactile edit there is; if the database refuses, the shape stays
+      // where you dropped it on screen and snaps back on the next load
+      await saveSoft(EBu.db.from(EBu.table).update(upatch).eq(EBu.idCol, fid), 'saving the moved shape');
       _geomSnap[f.id] = newGeom;
       var lnU = featureLayer[f.id] ? nodeByLayerDbId(featureLayer[f.id]) : null;   // map labels anchor to the geometry — re-anchor after a move (debounced)
       if (lnU && lnU.labels) { clearTimeout(_lblLiveTimer); _lblLiveTimer = setTimeout(function () { try { applyLabelLayers(lnU); } catch (err2) {} }, 400); }
@@ -8620,16 +8623,16 @@
     setStatus('Saving…');
     try {
       if (node.type === 'group') {
-        if (node._dbId) await db.from('layer_groups').update({ checked: on }).eq('id', node._dbId);
+        if (node._dbId) await saveSoft(db.from('layer_groups').update({ checked: on }).eq('id', node._dbId), 'saving the group default');
         var gids = descendantLayerIds(node, on);
-        if (gids.length) await db.from('layers').update({ enabled_by_default: on }).in('id', gids);
+        if (gids.length) await saveSoft(db.from('layers').update({ enabled_by_default: on }).in('id', gids), 'saving which layers start switched on');
       } else if (node.type === 'section') {
-        if (node._dbId) { var cur = await db.from('layer_sections').select('raw_config').eq('id', node._dbId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.checked = on; await db.from('layer_sections').update({ raw_config: rc }).eq('id', node._dbId); }
+        if (node._dbId) { var cur = await db.from('layer_sections').select('raw_config').eq('id', node._dbId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.checked = on; await saveSoft(db.from('layer_sections').update({ raw_config: rc }).eq('id', node._dbId), 'saving the section default'); }
         var sids = descendantLayerIds(node, on);
-        if (sids.length) await db.from('layers').update({ enabled_by_default: on }).in('id', sids);
+        if (sids.length) await saveSoft(db.from('layers').update({ enabled_by_default: on }).in('id', sids), 'saving which layers start switched on');
       } else {
         var lid = slugToLayerDbId[node.id];
-        if (lid) await db.from('layers').update({ enabled_by_default: on }).eq('id', lid);
+        if (lid) await saveSoft(db.from('layers').update({ enabled_by_default: on }).eq('id', lid), 'saving whether this layer starts switched on');
       }
       setStatus('Saved');
     } catch (e) { console.warn('default-visible save failed', e); setStatus('Save failed'); }
