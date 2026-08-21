@@ -437,8 +437,35 @@ window.msApplyHeaderFeature = function (visible, projectName) {
   // deferred: off-by-default drawn layers fetch their features AFTER the visible map is up (fast first
   // paint); they're hidden, so filling their sources late is invisible — but toggling them on just works.
   function deferredMaps() { return [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null]; }
-  setTimeout(function () {
+  /* WAIT FOR THE MAP TO GO QUIET FIRST (8/21). This fired at a flat 1,000 ms — which on a map with
+     many large hidden layers lands exactly when the person is first looking at it and clicking
+     things. Measured on the Ames State Map: five of these fetches at 11.2s, 10.9s, 9.7s, 7.1s and
+     5.7s, every one of them pulling whole geometries for a layer that is switched OFF, ~45 seconds
+     of request time competing with everything the person does.
+     The sweep is still worth doing — its point is that toggling a hidden layer later is instant —
+     but nothing about it is urgent, and the priority path below already covers the case where
+     someone toggles one before the sweep reaches it. So: after the map's first idle, plus a
+     breath. `once("idle")` fires when tiles have finished painting; the timeout is the belt for a
+     map that never idles. */
+  /* …AND NOT ON THE EDITOR AT ALL. editing.js `loadFeatures` already loads every drawn layer's
+     features at boot — it splits them into onIds/offIds precisely so the hidden ones come too — so
+     this sweep was fetching the same whole geometries a second time. Measured on the Ames State
+     Map: each hidden layer appears TWICE in the network log, from two call sites distinguishable
+     by their column order (configLoader "…content_id, image_url, custom_fields" vs editing.js
+     "…content_id, custom_fields, image_url"), at 11.0s and 10.5s for one layer alone.
+     The priority path immediately below has excluded the editor since it was written, for exactly
+     this reason. The sweep never got the same guard. */
+  var _sweepStarted = false;
+  function startDeferredSweep() {
+    if (_sweepStarted) return;
+    _sweepStarted = true;
+    if (/editor\.html/i.test(location.pathname)) return;   // editing.js loadFeatures owns this here
     try { ConfigLoader.hydrateDeferredFeatures(db, layers, deferredMaps()); } catch (e) {}
+  }
+  setTimeout(function () {
+    var m0 = (typeof beforeMap !== "undefined") ? beforeMap : null;
+    if (m0 && m0.once) { m0.once("idle", function () { setTimeout(startDeferredSweep, 2500); }); }
+    setTimeout(startDeferredSweep, 12000);   // never later than this, idle or not
   }, 1000);
   // Toggling a still-deferred layer ON fetches ITS rows immediately (priority) instead of waiting for the
   // background sweep — small layers used to sit invisible behind the sweep's megabytes of polygon data,
