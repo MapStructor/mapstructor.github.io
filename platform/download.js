@@ -726,6 +726,27 @@
     setStatus("Preparing…");
     var JSZipLib = await loadJSZip();
     await hydrateAll();
+
+    // REFUSE TO EXPORT AN EMPTY MAP (8/21).
+    //
+    // Every generator here reads the engine's `layers` global through grab(fn, []), which falls
+    // back to an empty array when it cannot be read. That fallback is what turns a missing config
+    // into a FINISHED, DOWNLOADED, BROKEN zip: measured on this date, an export produced a
+    // 2.9 MB file whose map/project/lists/layersList.js was 195 bytes of comment and nothing else,
+    // and the standalone copy opened cleanly showing no data at all. A silent empty artifact is
+    // worse than an error, because it is only discovered by whoever the copy was sent to.
+    //
+    // This does not fix WHY the tree can be empty here — that is a real bug in its own right and
+    // is written up in the bug book — it makes the failure impossible to miss.
+    var _tree = grab(function () { return layers; }, []);
+    var _leaves = 0;
+    (function w(a) { (a || []).forEach(function (n) { if (!n) return; if (n.children) w(n.children); else _leaves++; }); })(_tree);
+    if (!_leaves) {
+      var msg = "Nothing to export — this page has no layers loaded, so the download would contain an empty map.";
+      setStatus(msg);
+      try { if (window.MSGuard) window.MSGuard.warn("export-empty-tree", "the download was stopped because the page had no layers loaded — the zip would have been a finished, empty map", "layers tree had 0 leaves"); } catch (e) {}
+      throw new Error(msg);
+    }
     // Linked placements' own added columns (Portal 5b): the copy can't reach layer_overlay,
     // so the values are frozen into feature properties before the config is serialized —
     // they then ride in BOTH the generated layersList and the other_data/ raw exports.
