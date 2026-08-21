@@ -60,7 +60,13 @@ function setupLayerEventForMap(map, config, side) {
         try { var st = (typeof infoPanelState !== "undefined") ? infoPanelState[config.id] : null; pillOpen = !!(st && st.isOpen && st.viewId === e.features[0].id); } catch (err) {}
         const val = e.features[0].properties[config.prop];
         // #13: a feature with no label gets NO bubble — never leave the previous feature's label showing
-        if (!pillOpen && val !== undefined && val !== null && String(val) !== "") {
+        // .trim(): a label that is a single SPACE is not a label. Without it, hovering such a
+        // feature opened a bubble containing "<div class='…'> </div>" — a 20×24 empty box with no
+        // text — and on the Global Railways map one click left THREE of them stacked under the
+        // cursor beside the real "Long Island RR" bubble. Measured 8/21 by dumping each popup's
+        // innerHTML; every guard in the codebase tested `String(val) !== ""`, which whitespace
+        // passes, so reading the source could never have found it.
+        if (!pillOpen && val !== undefined && val !== null && String(val).trim() !== "") {
           // panel layers use the layer-coloured pill class (colour rule) instead of the legacy green;
           // colour-by-attribute layers go further — the bubble takes the FEATURE's own colour
           var cls = config.panel ? ("infoPanelPopUp-" + config.id) : config.popupStyle;
@@ -132,7 +138,7 @@ function setupLayerEventForMap(map, config, side) {
 
       // #13: no label → no bubble (the highlight above still shows the selection)
       const val = event.features?.[0]?.properties?.[config.prop];
-      if (val === undefined || val === null || String(val) === "") {
+      if (val === undefined || val === null || String(val).trim() === "") {   // whitespace is not a label — see the hover guard above
         if (afterPopup.isOpen())  afterPopup.remove();
         if (beforePopup.isOpen()) beforePopup.remove();
         return;

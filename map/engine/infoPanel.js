@@ -144,7 +144,11 @@ function handlePanelClick(layer, event) {
       if (cbc) pillStyle = " style=\"background-color:" + hexToRgba(cbc, 0.5) + ";border-color:" + cbc + "\"";
     }
   } catch (e2) {}
-  var popupHTML = popupBody ? "<div class='" + state.popupClass + "'" + pillStyle + ">" + popupBody + "</div>" : null;
+  // .trim() decides PRESENCE only — the body itself is emitted unchanged, so a label with real
+  // leading spaces still renders as the owner typed it. Without this, a feature whose label is a
+  // single space produced "<div class='…'> </div>": a 20×24 bubble with nothing in it. Three of
+  // those were stacking under the cursor on the Global Railways viewer beside the real one.
+  var popupHTML = String(popupBody).trim() ? "<div class='" + state.popupClass + "'" + pillStyle + ">" + popupBody + "</div>" : null;
 
   if (state.viewId === clickedId) {
     if (state.isOpen) {
