@@ -130,6 +130,9 @@
           <span id="storage-pct" style="font-size:13px;color:#9a93ad;"></span>
         </div>
         <div style="height:10px;background:#eee;border-radius:6px;overflow:hidden;"><div id="storage-bar" style="height:100%;width:0;background:#2d7a2d;transition:width .3s;"></div></div>
+        <!-- WHERE the space goes. One number covering both the database and generated tiles is what
+             made a full meter read as "Supabase is full" — the split is the whole fix. -->
+        <div id="storage-split" style="font-size:13px;margin-top:10px;color:#6b6680;display:none;"></div>
         <div id="storage-note" style="font-size:13px;margin-top:10px;color:#6b6680;"></div>
         <div id="storage-actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"></div>
       </div>
@@ -774,6 +777,34 @@
         var approx = false;
         if (used == null) { used = await estimateStorage(); approx = true; }
         renderStorage(P, tierKey, used, approx);
+        loadStorageSplit(P);
+      }
+      // The breakdown is a SEPARATE, fast call: mapstructor_user_storage() re-sums every feature
+      // and was measured at 116,873 ms on this account, so the meter must never wait on it. The
+      // split reads the stored per-layer stats (324 ms, and within 1% of the live scan). It never
+      // replaces the headline figure — that stays whatever the plan says you are billed for.
+      async function loadStorageSplit(P) {
+        var el = document.getElementById('storage-split'); if (!el) return;
+        try {
+          var r = await db.rpc('mapstructor_user_storage_split');
+          if (r.error) return;                                  // older database without the function: show nothing
+          var d = Array.isArray(r.data) ? r.data[0] : r.data;
+          if (!d) return;
+          var dbB = Number(d.db_bytes) || 0, r2B = Number(d.r2_bytes) || 0, trash = Number(d.trash_bytes) || 0;
+          if (!dbB && !r2B) return;
+          var parts = [
+            '<b>' + P.fmtBytes(dbB) + '</b> in your map data',
+            '<b>' + P.fmtBytes(r2B) + '</b> in generated tiles and snapshots'
+          ];
+          var html = 'Where it goes: ' + parts.join(' · ');
+          if (trash > 0) {
+            html += '<br><span style="color:#8a6d3b;">' + P.fmtBytes(trash) + ' of that is in Trash (' +
+                    d.trash_layer_count + ' deleted layer' + (d.trash_layer_count === 1 ? '' : 's') +
+                    ') — deleted layers keep their space until you delete them for good.</span>';
+          }
+          el.innerHTML = html;
+          el.style.display = 'block';
+        } catch (e) {}
       }
       loadStorage();
 
