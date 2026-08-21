@@ -3866,9 +3866,19 @@
         var ry = n.rasterYears;
         if (!ry || !ry.at) return;
         // stale on newer DATA (tiles re-baked) or newer STYLING (colours/width are frozen in the raster — 8/19)
+        /* Unreadable dates count as STALE here too. This collector and the panel's own check are
+           two implementations of one question, and they disagreed: the panel already treats an
+           unparseable timestamp as stale and says why (see msRasterPanel), while this one relied
+           on `new Date("nonsense") > x`, which is false, so the same layer was "needs a re-bake"
+           in the panel and "fine" in the list that drives the warning. Same rule, one place to
+           read it. */
         try {
-          if ((n.tilesGeneratedAt && new Date(n.tilesGeneratedAt) > new Date(ry.at)) ||
-              (n.styleChangedAt && new Date(n.styleChangedAt) > new Date(ry.at))) out.push(n);
+          var ms = function (v) { return v ? new Date(v).getTime() : NaN; };
+          var bakedAt = ms(ry.at), dataAt = ms(n.tilesGeneratedAt), styleAt = ms(n.styleChangedAt);
+          if (isNaN(bakedAt)) out.push(n);                                          // can't date the bake → assume old
+          else if (n.tilesGeneratedAt && isNaN(dataAt)) out.push(n);
+          else if (n.styleChangedAt && isNaN(styleAt)) out.push(n);
+          else if (dataAt > bakedAt || styleAt > bakedAt) out.push(n);
         } catch (e) {}
       });
     })(typeof layers !== 'undefined' ? layers : []);
