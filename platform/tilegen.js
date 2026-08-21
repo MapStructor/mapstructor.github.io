@@ -32,8 +32,20 @@
   var LIMITS = { pointFeatures: 2000, otherFeatures: 500, rawBytes: 4 * 1024 * 1024 };
 
   function needsTiles(featureCount, geomKind, rawBytes) {
-    if (rawBytes != null && rawBytes > LIMITS.rawBytes) return true;
-    var cap = (geomKind === "circle" || geomKind === "Point") ? LIMITS.pointFeatures : LIMITS.otherFeatures;
+    // Crossing this changes how the layer is stored and drawn for good — after it, per-feature
+    // editing works differently and the layer redraws from tiles. Saying which limit was crossed
+    // turns "why did my layer change?" into one sentence.
+    var G = (typeof window !== "undefined" && window.MSGuard) || null;
+    if (rawBytes != null && rawBytes > LIMITS.rawBytes) {
+      // numbers, not "5 MB" strings — cliff() compares with >, and string comparison is a coin flip
+      if (G) G.cliff("auto-tile-bytes", rawBytes, LIMITS.rawBytes,
+        "this layer is about " + Math.round(rawBytes / 1048576) + " MB, past the point where plain data loads quickly, so it is being converted to tiles");
+      return true;
+    }
+    var isPt = (geomKind === "circle" || geomKind === "Point");
+    var cap = isPt ? LIMITS.pointFeatures : LIMITS.otherFeatures;
+    if (featureCount > cap && G) G.cliff("auto-tile-count", featureCount, cap,
+      "this layer has more " + (isPt ? "points" : "shapes") + " than load quickly as plain data, so it is being converted to tiles");
     return featureCount > cap;
   }
 
