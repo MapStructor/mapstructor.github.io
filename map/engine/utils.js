@@ -74,36 +74,10 @@ function findLayer(nodes, label) {
   return null;
 }
 
-function simple_tooltip(target_items, name) {
-    $(target_items).each(function (i) {
-      $("body").append(
-        "<div class='" +
-          name +
-          "' id='" +
-          name +
-          i +
-          "'><p>" +
-          $(this).attr("title") +
-          "</p></div>"
-      );
-      var my_tooltip = $("#" + name + i);
-  
-      $(this)
-        .removeAttr("title")
-        .mouseover(function () {
-          my_tooltip.css({ opacity: 1.0, display: "none" }).fadeIn(200);
-        })
-        .mousemove(function (kmouse) {
-          my_tooltip.css({
-            left: kmouse.pageX + 15,
-            top: kmouse.pageY + 15,
-          });
-        })
-        .mouseout(function () {
-          my_tooltip.fadeOut(200);
-        });
-    });
-  }
+/* simple_tooltip lived here AND in index.js — both files load on both pages, utils.js first, so
+   index.js's definition silently overwrote this one and this copy has never run. The bodies
+   differed by exactly one trailing comma, so nothing was lost; what was lost is the hour anyone
+   would spend editing dead code that looks live. The live one is engine/index.js. */
 
 
 // Function to calculate the

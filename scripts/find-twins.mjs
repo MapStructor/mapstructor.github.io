@@ -95,6 +95,27 @@ for (const rel of files) {
   }
 }
 
+/* SHADOWED GLOBALS — the sharpest version of this whole family.
+   The engine files are plain script-scope: `map/engine/*.js` all declare their functions as
+   globals, every page loads all of them in a fixed order, and a later file's declaration silently
+   OVERWRITES an earlier one. So two engine files declaring the same name means one of them has
+   never run — dead code that looks completely live, and editing it does nothing at all.
+   Found exactly one on 8/21: `simple_tooltip` in both utils.js and index.js, differing by a single
+   trailing comma. Nothing was lost functionally; what was at stake was the hour someone would
+   spend changing a copy that could not possibly take effect. Zero remain, and this keeps it so. */
+const TOP_LEVEL_FN = /^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/gm;
+const globalsByName = new Map();
+for (const rel of files.filter((f) => f.startsWith("map/engine/"))) {
+  const src = readFileSync(join(ROOT, rel), "utf8");
+  TOP_LEVEL_FN.lastIndex = 0;
+  let g;
+  while ((g = TOP_LEVEL_FN.exec(src))) {
+    const set = globalsByName.get(g[1]) || globalsByName.set(g[1], new Set()).get(g[1]);
+    set.add(rel);
+  }
+}
+const shadowed = [...globalsByName.entries()].filter(([, s]) => s.size > 1);
+
 const byHash = new Map(), byName = new Map();
 for (const f of fns) {
   (byHash.get(f.hash) || byHash.set(f.hash, []).get(f.hash)).push(f);
@@ -111,12 +132,21 @@ const sameName = [...byName.values()].filter((g) =>
 const live = (gs) => gs.filter((g) => !g.some((f) => f.ok));
 const idLive = live(identical), snLive = live(sameName);
 
-console.log(`${fns.length} named functions scanned  ·  ${idLive.length} identical twin group(s)  ·  ${snLive.length} same-name-different-body group(s)  ·  ${identical.length - idLive.length + sameName.length - snLive.length} marked deliberate`);
+console.log(`${fns.length} named functions scanned  ·  ${shadowed.length} shadowed engine global(s)  ·  ${idLive.length} identical twin group(s)  ·  ${snLive.length} same-name-different-body group(s)  ·  ${identical.length - idLive.length + sameName.length - snLive.length} marked deliberate`);
+if (shadowed.length && !COUNT_ONLY) {
+  console.log("\n── SHADOWED ENGINE GLOBAL — every page loads both files, so one of these has never run");
+  shadowed.forEach(([n, s]) => console.log(`  ${n}()  declared in  ${[...s].join("  ")}`));
+}
 /* --gate holds the line on the strongest signal only: an UNMARKED identical body in two places.
    The same-name groups are real work but need a judgement each, so gating on them would make the
    suite un-passable — and a gate nobody can pass gets switched off, taking the enforceable half
    with it. */
 if (process.argv.includes("--gate")) {
+  if (shadowed.length) {
+    console.log(`FAIL — ${shadowed.length} function name(s) declared at top level in more than one engine file; every page loads them all, so one copy is dead code that looks live`);
+    shadowed.forEach(([n, s]) => console.log(`         ${n}()  ${[...s].join("  ")}`));
+    process.exit(1);
+  }
   if (idLive.length) {
     console.log(`FAIL — ${idLive.length} identical function bod${idLive.length > 1 ? "ies exist" : "y exists"} in two places with no twin-ok note saying it is deliberate`);
     idLive.forEach((g) => g.forEach((f) => console.log(`         ${f.name}()  ${f.rel}:${f.line}`)));
