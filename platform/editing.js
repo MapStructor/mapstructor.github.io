@@ -3387,6 +3387,10 @@
      which is exactly the shape of the 910 MB found on 8/21.
      A MISSING function stays tolerated — layer-trash-setup.sql may not have been run, and that is
      a documented state, not a failure. Everything else is now said out loud, once. */
+  /* When a snapshot was baked, under EITHER name. See the note on audit.js `bakeAt`: 30 of 34
+     live bakes carry only `bakedAt`, and every freshness check here read `at` alone — so the
+     "re-bake needed" line and staleRasterLayers() were both blind to 88% of raster bakes. */
+  function msRasterBakeAt(ry) { return (ry && (ry.at || ry.bakedAt)) || null; }
   function msTrashRpcCheck(res) {
     var err = res && res.error;
     if (!err || !window.MSGuard) return;
@@ -3885,7 +3889,8 @@
         if (!n) return;
         if (n.children) return walk(n.children);
         var ry = n.rasterYears;
-        if (!ry || !ry.at) return;
+        var ryAt = msRasterBakeAt(ry);
+        if (!ry || !ryAt) return;
         // stale on newer DATA (tiles re-baked) or newer STYLING (colours/width are frozen in the raster — 8/19)
         /* Unreadable dates count as STALE here too. This collector and the panel's own check are
            two implementations of one question, and they disagreed: the panel already treats an
@@ -3895,7 +3900,7 @@
            read it. */
         try {
           var ms = function (v) { return v ? new Date(v).getTime() : NaN; };
-          var bakedAt = ms(ry.at), dataAt = ms(n.tilesGeneratedAt), styleAt = ms(n.styleChangedAt);
+          var bakedAt = ms(ryAt), dataAt = ms(n.tilesGeneratedAt), styleAt = ms(n.styleChangedAt);
           if (isNaN(bakedAt)) out.push(n);                                          // can't date the bake → assume old
           else if (n.tilesGeneratedAt && isNaN(dataAt)) out.push(n);
           else if (n.styleChangedAt && isNaN(styleAt)) out.push(n);
@@ -8037,7 +8042,8 @@
     } else {
       cbR.disabled = false;
       var kb = Math.round((ry.bytes || 0) / 1024);
-      var when = null; try { when = ry.at ? new Date(ry.at).toLocaleDateString() : null; } catch (eD) {}
+      var ryAt2 = msRasterBakeAt(ry);
+      var when = null; try { when = ryAt2 ? new Date(ryAt2).toLocaleDateString() : null; } catch (eD) {}
       /* `new Date("nonsense")` does not throw — it returns Invalid Date, and EVERY comparison with
          it is false. So an unparseable timestamp did not fail loudly here; it quietly meant
          "not stale", and the owner was told their snapshot was current while looking at old tiles.
@@ -8045,8 +8051,8 @@
          Unknown now counts as STALE and says so: re-baking unnecessarily costs a few minutes,
          while trusting an old bake costs a wrong map you have no reason to doubt. */
       var ms = function (v) { var t = v ? new Date(v).getTime() : NaN; return t; };
-      var bakedAt = ms(ry.at), stale = false, staleWhy = 'data';
-      if (ry.at && isNaN(bakedAt)) { stale = true; staleWhy = 'bake date unreadable'; }
+      var bakedAt = ms(ryAt2), stale = false, staleWhy = 'data';
+      if (ryAt2 && isNaN(bakedAt)) { stale = true; staleWhy = 'bake date unreadable'; }
       else if (!isNaN(bakedAt)) {
         var dataAt = ms(node.tilesGeneratedAt), styleAt = ms(node.styleChangedAt);
         if (node.tilesGeneratedAt && isNaN(dataAt)) { stale = true; staleWhy = 'edit date unreadable'; }

@@ -68,6 +68,13 @@ var MSAudit = (function () {
   }
   function isLeaf(n) { return n && n.type !== "section" && n.type !== "group" && n.type !== "divider"; }
   function rcOf(row) { return (row && row.raw_config) || {}; }
+  /* When a snapshot was baked, under EITHER name it has been written under. Measured 8/21: 30 of
+     34 live raster bakes carry only `bakedAt`, and 4 carry `at` — and every staleness check read
+     `at` alone, so for 88% of bakes the "re-bake needed" warning could not fire and this rule
+     returned early. The owner was told their snapshot was current while looking at old tiles,
+     which is the exact failure the 8/19 fix was written to prevent, one field name over.
+     `download.js` and `rasterScrub.js` already read both; only the freshness readers did not. */
+  function bakeAt(ry) { return (ry && (ry.at || ry.bakedAt)) || null; }
   function finding(rule, severity, subject, message, fix) {
     return { rule: rule, severity: severity, subject: subject, message: message, fix: fix || null };
   }
@@ -236,7 +243,7 @@ var MSAudit = (function () {
         // A bake with NEITHER palette NOR timestamp predates per-era colours (8/14). Those render
         // through the legacy flat-colour path deliberately and were promised zero regression —
         // they are a re-bake OPPORTUNITY, never an error.
-        if (!ry.palette && !ry.at) return;
+        if (!ry.palette && !bakeAt(ry)) return;
         var cats = Object.keys(cb.mapping || {}).length;
         var pal = (ry.palette && ry.palette.length) || 1;
         if (cats > 1 && pal <= 1) {
@@ -253,9 +260,10 @@ var MSAudit = (function () {
     safely(out, skip, "raster-stale", function () {
       rows.forEach(function (r) {
         var rc = rcOf(r), ry = rc.rasterYears;
-        if (!ry || !ry.at) return;
+        var at = bakeAt(ry);
+        if (!ry || !at) return;
         function newer(k) {
-          try { return rc[k] && new Date(rc[k]) > new Date(ry.at); } catch (e) { return false; }
+          try { return rc[k] && new Date(rc[k]) > new Date(at); } catch (e) { return false; }
         }
         if (newer("tilesGeneratedAt")) out.push(finding("raster-stale", "warn", r.slug || r.id,
           "the tiles were re-baked after the snapshot — mid-drag shows the OLD data",
