@@ -52,6 +52,16 @@ const CLASSES = [
     re: /getLayer|getSource|querySelector|getElementById|getStyle|closest\(/ }
 ];
 
+/* BLANK — the same family from the other side: a value that is present but says nothing.
+   On 8/21 one click on the public viewer opened FOUR popups: the real label plus three 20×24 boxes
+   containing `<div class="…"> </div>`. Every guard in the code tested `String(val) !== ""`, and a
+   label that is a single SPACE passes that — so it counted as having a label and got a bubble with
+   nothing in it. Every popup site looked correct; only dumping the rendered HTML found it.
+   This finds presence tests that whitespace defeats. It is deliberately narrow: only comparisons
+   against an empty string, and only where the value is not already trimmed. */
+const BLANK_RE = /(?<![.\w])(?:String\([^()]*\)|\b[\w.$\[\]]+)\s*(?:!==|===|!=|==)\s*(?:""|'')/g;
+const BLANK_OK = /\.trim\(\)|trimmed|\.length|swallow-ok|blank-ok/;
+
 /* An empty catch, or one whose whole body is a console call — same thing from the user's side. */
 const EMPTY_CATCH = /catch\s*\((\w+)?\)?\s*\{\s*(?:\/\*[^*]*\*\/\s*)?\}|catch\s*\(\w*\)\s*\{\s*console\.\w+\([^;]*\);?\s*\}/g;
 
@@ -91,6 +101,13 @@ for (const rel of files) {
     hits.push({ rel, line, kind: cls.kind, rank: cls.rank,
                 text: body.replace(/\s+/g, " ").trim().slice(0, 104) });
   }
+  /* Presence tests that whitespace defeats — see BLANK_RE. */
+  src.split(/\r?\n/).forEach((l, i) => {
+    if (/^\s*(\*|\/\/)/.test(l) || BLANK_OK.test(l)) return;
+    BLANK_RE.lastIndex = 0;
+    if (BLANK_RE.test(l)) hits.push({ rel, line: i + 1, kind: "BLANK", rank: 2, text: l.trim().slice(0, 104) });
+  });
+
   /* Bare .catch(noop) is its own shape and never has a try block to inspect. */
   const P = CLASSES[2].re;
   src.split(/\r?\n/).forEach((l, i) => {
@@ -104,6 +121,7 @@ for (const rel of files) {
   });
 }
 
+CLASSES.push({ kind: "BLANK", rank: 2, what: "a presence test that whitespace defeats: a single space counts as a value" });
 const by = (k) => hits.filter((h) => h.kind === k);
 console.log(`${hits.length} swallowed failure(s)  ·  ` +
   CLASSES.map((c) => `${c.kind} ${by(c.kind).length}`).join(" · "));

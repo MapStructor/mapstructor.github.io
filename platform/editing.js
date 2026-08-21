@@ -3241,7 +3241,11 @@
     Object.keys(props).forEach(function (k) {
       if (k === labelKey) return;
       var v = props[k];
-      if (v == null || v === '') return;
+      // A cell holding only whitespace is empty. Storing " " is how a label that LOOKS absent ends
+      // up counting as present everywhere downstream — it is what put three content-free bubbles
+      // under every click on the Global Railways viewer (8/21). The legend already knew: it maps
+      // `k === ' '` to "(blank)". This is the import side of the same fact.
+      if (v == null || (typeof v === 'string' && v.trim() === '')) return;
       // A shapefile's DBF date columns (type D) arrive from shpjs as Date OBJECTS, and
       // JSON.stringify turns a Date into a QUOTED string — the column landed in the database as
       // "\"1886-01-01T04:56:16.000Z\"", quote characters and all. Nothing downstream could read
@@ -6960,7 +6964,7 @@
     if (!row) return null;
     var cf = row.custom_fields;
     if (cf && cf[prop] != null) return cf[prop];
-    if (prop === 'label') return (row.label != null && row.label !== '') ? row.label : null;
+    if (prop === 'label') return (row.label != null && String(row.label).trim() !== '') ? row.label : null;   // whitespace is not a label
     if (prop === 'description') return row.description || null;
     if (prop === 'start_date') return row.start_date ? String(row.start_date).slice(0, 10) : null;
     if (prop === 'end_date') return row.end_date ? String(row.end_date).slice(0, 10) : null;
