@@ -163,7 +163,7 @@ var MapShare = (function () {
     syncLinkRow(current);
     ov.querySelector('#msshare-copy').addEventListener('click', function () {
       var b = this;
-      try { navigator.clipboard.writeText(urlIn.value).then(function () { b.textContent = 'Copied ✓'; setTimeout(function () { b.textContent = 'Copy link'; }, 1800); }, function () { urlIn.select(); }); }
+      try { navigator.clipboard.writeText(urlIn.value).then(function () { b.textContent = 'Copied ✓'; setTimeout(function () { b.textContent = 'Copy link'; }, 1800); }, function () { urlIn.select(); }); }   // cliff-ok: how long a confirmation label stays on screen
       catch (e) { urlIn.select(); }
     });
 
@@ -235,7 +235,7 @@ var MapShare = (function () {
     }
     ov.querySelector('#msshare-addbtn').addEventListener('click', addEmail);
     ov.querySelector('#msshare-addemail').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addEmail(); } });
-    ov.querySelector('#msshare-editcopy').addEventListener('click', function () { var b = this; try { navigator.clipboard.writeText(eurl.value).then(function () { b.textContent = 'Copied ✓'; setTimeout(function () { b.textContent = 'Copy edit link'; }, 1600); }); } catch (e) { eurl.select(); } });
+    ov.querySelector('#msshare-editcopy').addEventListener('click', function () { var b = this; try { navigator.clipboard.writeText(eurl.value).then(function () { b.textContent = 'Copied ✓'; setTimeout(function () { b.textContent = 'Copy edit link'; }, 1600); }); } catch (e) { eurl.select(); } });   // cliff-ok: how long a confirmation label stays on screen
     renderEmails(); syncEditLink();
 
     // ── Map Portal (component 2): list/delist this map in the portal_entries catalog.

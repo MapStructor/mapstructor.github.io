@@ -215,7 +215,7 @@
       if (lastFid != null) q = q.gt("feature_id", lastFid);
       var res = await q;
       if (res.error) {
-        if (!retried) { retried = true; await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }
+        if (!retried) { retried = true; await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }   // cliff-ok: one retry, then it THROWS — the failure propagates rather than being swallowed
         throw new Error(res.error.message);
       }
       retried = false;

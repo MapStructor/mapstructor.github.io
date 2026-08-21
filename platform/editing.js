@@ -2990,7 +2990,7 @@
     var _norm = await normalizeImportFC(fc);
     var groups = _norm.groups, kinds = _norm.kinds;
     var total = kinds.reduce(function (n, k) { return n + groups[k].length; }, 0);
-    if (total > 3000 && !window.__msStreamingImport && !window.confirm('Import ' + total + ' features? Large layers auto-convert to tiles for fast viewing; editing that many features may still be slow.')) { importStatus('Cancelled'); return; }
+    if (total > 3000 && !window.__msStreamingImport && !window.confirm('Import ' + total + ' features? Large layers auto-convert to tiles for fast viewing; editing that many features may still be slow.')) { importStatus('Cancelled'); return; }   // cliff-ok: the confirm() dialog IS the announcement, and a better one than a log line
     var TYPE_LABEL = { circle: 'points', line: 'lines', fill: 'polygons' };
     var sId = null, gId = null;
     if (parent && parent.type === 'group') { gId = parent._dbId; var ps = findParent(layers, parent); if (ps && ps.type === 'section') sId = ps._dbId; }
@@ -3903,7 +3903,7 @@
       // never bake while an import is mid-save — the archive would freeze a partial layer (7/23)
       while (window.__msImportSaving > 0) {
         setStatus('Waiting for the import to finish saving before publishing…');
-        await new Promise(function (rs) { setTimeout(rs, 1500); });
+        await new Promise(function (rs) { setTimeout(rs, 1500); });   // cliff-ok: polls until the import finishes, with a visible status — not a give-up
       }
       // STALE SNAPSHOTS — ASK, DON'T DECIDE (owner 8/17: "let's make it so there's a popup that
       // says that layers haven't been rebaked, and gives them the option to bake or not"). Publish
@@ -4087,7 +4087,7 @@
       if (typeof beforeMap === 'undefined' || !beforeMap) throw new Error('map not ready');
       if (note) note.textContent = 'Capturing…';
       var dataUrl = await new Promise(function (res, rej) {
-        var to = setTimeout(function () { rej(new Error('capture timed out')); }, 8000);
+        var to = setTimeout(function () { rej(new Error('capture timed out')); }, 8000);   // cliff-ok: rejects with a real error, which is the announcement
         try {
           beforeMap.once('render', function () {
             try {
@@ -10196,7 +10196,7 @@
         var ares = await aq;
         if (gen !== _attrLoadGen) return;   // modal closed / another layer opened — stop this load
         if (ares.error) {
-          if (!aRetried) { aRetried = true; await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }
+          if (!aRetried) { aRetried = true; await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }   // cliff-ok: one retry, then it throws
           loadErr = ares.error; break;
         }
         aRetried = false;

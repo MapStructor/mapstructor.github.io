@@ -295,7 +295,7 @@
     // time"): on uV2 bakes, start byte 1 is the reserved "since forever" sentinel (real starts
     // begin at byte 2) and end byte 255 means "open-ended" — dateless CRN used to clamp to the
     // codec floor and vanish when the slider went below 1800.
-    "if(uV2>0.5){if(ysb<1.5)ys=-1e6;if(yeb>254.5)ye=1e6;}" +
+    "if(uV2>0.5){if(ysb<1.5)ys=-1e6;if(yeb>254.5)ye=1e6;}" +   // cliff-ok: GLSL source — 254.5 is a byte-value boundary in the shader, not a data limit
     // the 8/8 fractional-slider rule, now at month granularity: an era whose END month is the
     // viewed month lives through the WHOLE of that month, so the test is ye + one month, not
     // ye + one year. EPS is 1.2% of a month — far too small to admit or drop a month of its own,
@@ -578,8 +578,8 @@
   function bakeTexels(levelW, isBorder) {
     // MUST STAY IN STEP with tilegen.js bakeIndexCanvas (sctx.lineWidth). Bakes made from 8/18 on
     // record it in the config as `lw`; this table is the fallback for everything baked before that.
-    return isBorder ? (levelW >= 16384 ? 1.5 : levelW >= 8192 ? 1.6 : levelW >= 4096 ? 1.8 : 2.0)
-                    : (levelW >= 16384 ? 1.8 : levelW >= 8192 ? 2.0 : levelW >= 4096 ? 2.5 : 3.0);
+    return isBorder ? (levelW >= 16384 ? 1.5 : levelW >= 8192 ? 1.6 : levelW >= 4096 ? 1.8 : 2.0)   // cliff-ok: a line-width ramp by texture size — rendering quality, nothing is dropped
+                    : (levelW >= 16384 ? 1.8 : levelW >= 8192 ? 2.0 : levelW >= 4096 ? 2.5 : 3.0);   // cliff-ok: second line of the same width ramp
   }
   // the vector width this bake stands in for: a plain number, or a zoom interpolate resolved later
   function vecWidth(node, ry) {
@@ -911,7 +911,7 @@
   var _lblLast = 0, _lblPaintBase = {}, _lblFilterDropped = {};
   function labelDate(unixVal) {
     var now = Date.now();
-    if (now - _lblLast < 120) return;
+    if (now - _lblLast < 120) return;   // cliff-ok: a paint throttle, not a deadline
     _lblLast = now;
     var day;
     try { day = parseInt(moment.unix(unixVal).format("YYYYMMDD")); } catch (e) { return; }
@@ -1156,7 +1156,13 @@
       // page (MapAuth is loading or loaded) waits up to 6 minutes and says so if it gives up.
       var isPlatform = typeof MapAuth !== "undefined" || (typeof platformProjectId !== "undefined" && platformProjectId) || window.platformProjectId;
       if (tries < 40 || (isPlatform && tries < 720)) setTimeout(boot, 500);
-      else if (isPlatform) console.warn("rasterScrub: gave up waiting for the map after " + Math.round(tries / 2) + "s — baked layers will scrub as vectors this session");
+      else if (isPlatform) {
+        // Was a bare console.warn — the right words, in a place no test can read and the person
+        // never looks. Through MSGuard it lands in the assertable log as well as the console.
+        var msg = "gave up waiting for the map after " + Math.round(tries / 2) + "s — baked layers will scrub as vectors this session, which is slower than the snapshot they have";
+        if (window.MSGuard) MSGuard.cliff("raster-scrub-boot-giveup", tries, 719, msg);
+        else console.warn("rasterScrub: " + msg);
+      }
       return;
     }
     load(pid).catch(function (e) { console.warn("rasterScrub: disabled (" + (e && e.message) + ")"); });

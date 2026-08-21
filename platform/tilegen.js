@@ -52,7 +52,7 @@
   /* ── PMTiles v3 writer ─────────────────────────────────────────────────── */
 
   function varint(n, out) {
-    while (n > 127) { out.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); }
+    while (n > 127) { out.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); }   // cliff-ok: varint encoding — 127 is the 7-bit boundary, arithmetic rather than a limit
     out.push(n);
   }
 
@@ -524,7 +524,7 @@
       if (!v && cbMap && cbProp != null && p[cbProp] != null) v = normHex(cbMap[String(p[cbProp])]);
       if (!v) return 0;
       if (palIdx[v] != null) return palIdx[v];
-      if (palette.length >= 250) { palOverflow++; return 0; }   // palette full — overflow paints the layer colour
+      if (palette.length >= 250) { palOverflow++; return 0; }   // palette full — overflow paints the layer colour   // cliff-ok: counted here, announced at the end of the bake via MSGuard.cliff raster-palette-full
       palIdx[v] = palette.length; palette.push(v);
       return palIdx[v];
     }
@@ -621,8 +621,8 @@
       // Border pyramid bakes THINNER (8/8): stacked-era rings sit a pixel or two apart, so fat
       // strokes merge into bands mid-timeline ("lines get thicker toward the middle").
       sctx.lineWidth = bordersOnly
-        ? (W >= 16384 ? 1.5 : W >= 8192 ? 1.6 : W >= 4096 ? 1.8 : 2.0)
-        : (W >= 16384 ? 1.8 : W >= 8192 ? 2.0 : W >= 4096 ? 2.5 : 3.0);
+        ? (W >= 16384 ? 1.5 : W >= 8192 ? 1.6 : W >= 4096 ? 1.8 : 2.0)   // cliff-ok: a line-width ramp by texture size — rendering quality, nothing is dropped
+        : (W >= 16384 ? 1.8 : W >= 8192 ? 2.0 : W >= 4096 ? 2.5 : 3.0);   // cliff-ok: second line of the same width ramp
       sctx.lineCap = "round"; sctx.lineJoin = "round";
       bakeIndexCanvas.lastLineWidth = sctx.lineWidth;   // recorded into the config as `lw` (rasterScrub reads it)
       sctx.strokeStyle = sctx.fillStyle = "#ffffff";
@@ -1015,7 +1015,7 @@
       var r = await q;
       if (r.error) {
         if (pageSz > 25) { pageSz = Math.max(25, Math.floor(pageSz / 4)); status("Heavy rows — retrying in pages of " + pageSz + "…"); continue; }
-        if (!retried) { retried = true; status("Row fetch hiccup — retrying…"); await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }
+        if (!retried) { retried = true; status("Row fetch hiccup — retrying…"); await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }   // cliff-ok: one retry, then an explicit ABORTED status and a throw
         status("⚠ Tile bake ABORTED for “" + (L.name || "layer") + "” — row fetch failed at " + feats.length.toLocaleString() + " rows (" + r.error.message + "). The existing archive is kept; try again.");
         throw new Error("bake aborted: feature fetch failed at " + feats.length + " (" + r.error.message + ")");
       }
@@ -1086,7 +1086,7 @@
       var r = await q;
       if (r.error) {
         if (pageSz > 25) { pageSz = Math.max(25, Math.floor(pageSz / 4)); status("Heavy rows — retrying in pages of " + pageSz + "…"); continue; }
-        if (!retried) { retried = true; status("Row fetch hiccup — retrying…"); await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }
+        if (!retried) { retried = true; status("Row fetch hiccup — retrying…"); await new Promise(function (rs) { setTimeout(rs, 1500); }); continue; }   // cliff-ok: one retry, then an explicit ABORTED status and a throw
         // ABORT LOUDLY: a raster baked from a truncated read would hide real features mid-drag,
         // and the loader never second-guesses a raster that exists (the 8/7 rule)
         throw new Error("snapshot aborted: feature fetch failed at " + feats.length + " (" + r.error.message + ")");

@@ -381,7 +381,7 @@ window.msApplyHeaderFeature = function (visible, projectName) {
         // worker + a short settle beat cover it without a reload
         return new Promise(function (res) { setTimeout(res, 150); });
       });
-      await Promise.race([swReady, new Promise(function (res) { setTimeout(res, 3000); })]);
+      await Promise.race([swReady, new Promise(function (res) { setTimeout(res, 3000); })]);   // cliff-ok: losing the service worker costs caching, never correctness
       // ── HARD REFRESH LEAVES THE WORKER BYPASSED (8/7) ──────────────────────────────────
       // Ctrl+Shift+R loads the page with service-worker bypass for the page's WHOLE LIFETIME:
       // registration succeeds, `ready` resolves, claim() runs — and controller stays null, so

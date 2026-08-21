@@ -127,6 +127,20 @@ const wired = files.reduce((n, rel) =>
 
 const tally = KINDS.map((K) => `${K.kind} ${uniq.filter((h) => h.kind === K.kind).length}`).join(" · ");
 console.log(`${uniq.length} unannounced limit(s) in ${files.length} files  ·  ${tally}  ·  ${wired} already wired`);
+
+/* --gate. Worth having only because the count reached zero on 8/21: every hard limit in platform/
+   and map/engine/ either announces when it is crossed, or carries a `cliff-ok` saying why it is
+   deliberately silent. The rule this enforces is not "no limits" — it is "no limit changes what a
+   person gets without anyone having decided that is fine". */
+if (process.argv.includes("--gate")) {
+  if (uniq.length) {
+    console.log(`FAIL — ${uniq.length} hard limit(s) change behaviour with no MSGuard.cliff and no cliff-ok note`);
+    uniq.slice(0, 20).forEach((h) => console.log(`         ${h.rel}:${h.line}  [${h.n}]  ${h.kind}`));
+    process.exit(1);
+  }
+  console.log("PASS — every hard limit either announces or says why it does not");
+  process.exit(0);
+}
 if (COUNT_ONLY) process.exit(0);
 
 let lastFile = "", lastKind = "";

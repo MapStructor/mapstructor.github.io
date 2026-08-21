@@ -167,8 +167,8 @@
         });
       } catch (e) {}
     }
-    var p; if (document.readyState === 'loading') { p = new Promise(function (res) { document.addEventListener('DOMContentLoaded', function () { setTimeout(function () { res(check()); }, 1200); }); }); }
-    else { p = new Promise(function (res) { setTimeout(function () { res(check()); }, 1200); }); }
+    var p; if (document.readyState === 'loading') { p = new Promise(function (res) { document.addEventListener('DOMContentLoaded', function () { setTimeout(function () { res(check()); }, 1200); }); }); }   // cliff-ok: settle time before reading the storage figure; a miss costs a warning banner, never data
+    else { p = new Promise(function (res) { setTimeout(function () { res(check()); }, 1200); }); }   // cliff-ok: the same settle time on the already-loaded path
     window.MSStorageGuard.ready = p;
   })();
 })();

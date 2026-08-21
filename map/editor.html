@@ -111,7 +111,7 @@
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="../platform/auth.js?v=5b83bd24"></script>
+    <script src="../platform/auth.js?v=57f07a19"></script>
   <script src="../platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
     <script src="../platform/guard.js?v=53785522"></script>   <!-- map-load meter + freeze (service guard) -->
     <script src="../platform/topbar.js?v=8154caa8"></script>
@@ -413,21 +413,21 @@
     <script src="../platform/configLoader.js?v=666cf72e" onerror="void(0)"></script>
     <script src="../platform/labels.js?v=3174f020" onerror="void(0)"></script>
     <script src="../platform/attrGrid.js?v=7c15e1cc" onerror="void(0)"></script>
-    <script src="../platform/bigtable.js?v=39a23f29" onerror="void(0)"></script>   <!-- Big-data attribute tier: Parquet sidecar + DuckDB-WASM (vendored, lazy) -->
+    <script src="../platform/bigtable.js?v=ceaa7a54" onerror="void(0)"></script>   <!-- Big-data attribute tier: Parquet sidecar + DuckDB-WASM (vendored, lazy) -->
     <script src="../platform/pricing.js?v=8edf778a" onerror="void(0)"></script>
     <script src="../platform/renderRegistry.js?v=b4b99fd2" onerror="void(0)"></script>
-    <script src="../platform/projectLoader.js?v=63b061c7" onerror="void(0)"></script>
+    <script src="../platform/projectLoader.js?v=7c6d9b29" onerror="void(0)"></script>
     <script src="../platform/download.js?v=8799a304" onerror="void(0)"></script>   <!-- Download whole project (sidebar button) -->
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js" onerror="void(0)"></script>   <!-- deck.gl: instant scrub without bakes (deckScrub.js); raster stays the fallback -->
     <script src="../platform/deckScrub.js?v=dcc056ef" onerror="void(0)"></script>
     <script src="../platform/merge.js?v=65bf9aea" onerror="void(0)"></script>   <!-- merge two or more layers into one dataset -->
     <script src="../platform/layerOrder.js?v=b5ab2a2c" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
-    <script src="../platform/rasterScrub.js?v=2e7dcf6f" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
+    <script src="../platform/rasterScrub.js?v=124cd992" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
     <script src="../platform/tables.js?v=8114d2ae" onerror="void(0)"></script>   <!-- Data tables + joins -->
     <script src="../platform/layerJson.js?v=6ca0f6cc" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
     <script src="../platform/queryWindow.js?v=be8d140a" onerror="void(0)"></script>   <!-- Query & operations (merge lines / SQL / JS) -->
     <script src="../platform/datasets.js?v=ba9ca60e" onerror="void(0)"></script>   <!-- datasets & provenance: layers as the atoms (delete this line + the file to remove) -->
-    <script src="../platform/share.js?v=3e2693b7" onerror="void(0)"></script>   <!-- Share panel (editor top bar; dashboard uses it too) -->
+    <script src="../platform/share.js?v=f6f71a92" onerror="void(0)"></script>   <!-- Share panel (editor top bar; dashboard uses it too) -->
     <script>
       // Standalone deploys ship map/ without platform/ - if ?id= is set but the
       // loader didn't arrive, boot the static config so the page still works.
