@@ -880,6 +880,7 @@
     });
     $s.on("slidestop slidechange", function () {
       restoreVectors();   // vector reappears snapped to the release date (engine applies the real filter)
+      endLabelPaint();    // labels go back to filter-owned visibility (unconditional: the drag may have ended any number of ways)
       if (!S.dragging) return;
       S.dragging = false;
       if (S.usingDeck) { MSDeckScrub.end(); S.usingDeck = false; }
@@ -887,9 +888,20 @@
     });
   }
 
-  // Re-filter the (still-visible) label layers to the dragged date — same coalesce filter
-  // changeDate applies at release, throttled to ~8/s so a fast drag never floods symbol layout.
-  var _lblLast = 0;
+  // Drag-time label visibility runs through PAINT, not setFilter (8/21).
+  //
+  // Changing a symbol layer's FILTER makes the worker re-run layout and glyph collision for every
+  // visible tile. Measured on the Borders map: 80 of the 124 style calls in a one-second drag were
+  // label setFilters — two thirds of the scrub's entire style budget spent re-placing text that is
+  // sliding past too fast to read. `text-opacity` is a paint property: the GPU stops drawing the
+  // glyphs and layout never re-runs. This is the same move `paintDate` already makes for fills,
+  // lines and circles; labels were the one kind left paying the old price.
+  //
+  // The trade, stated plainly: with the filter dropped, out-of-date labels still take part in
+  // COLLISION — an invisible label keeps reserving its box — so a dense map can show fewer labels
+  // DURING a drag than at rest. At release changeDate restores the real filter and placement is
+  // exact again. Dropping the filter costs one re-layout on the first tick, not one per tick.
+  var _lblLast = 0, _lblPaintBase = {}, _lblFilterDropped = {};
   function labelDate(unixVal) {
     var now = Date.now();
     if (now - _lblLast < 120) return;
@@ -905,12 +917,37 @@
       [[typeof beforeMap !== "undefined" ? beforeMap : null, "left"], [typeof afterMap !== "undefined" ? afterMap : null, "right"]].forEach(function (pr) {
         var m = pr[0]; if (!m) return;
         var id = it.slug + "-label-" + pr[1];
-        try { if (m.getLayer(id)) m.setFilter(id, f); } catch (e) {}
+        try { if (!m.getLayer(id)) return; } catch (eL) { return; }
+        if (!_lblFilterDropped[id]) {   // once per drag: paint owns label visibility until release
+          _lblFilterDropped[id] = 1;
+          try { m.setFilter(id, null); } catch (eF) {}
+        }
+        var ck = id + "|text-opacity";
+        if (!(ck in _lblPaintBase)) {
+          var base;
+          try { base = m.getPaintProperty(id, "text-opacity"); } catch (eG) { base = null; }
+          _lblPaintBase[ck] = base == null ? 1 : base;
+        }
+        try { m.setPaintProperty(id, "text-opacity", ["case", f, _lblPaintBase[ck], 0]); } catch (eP) {}
       });
     });
     // group-anchor labels (fills/tileset lines) carry no Day props of their own — the filter above
     // can't touch them. Their anchors recompute from SOURCE features at the dragged date instead.
     try { (window._msLabelRecomputes || []).forEach(function (rr) { rr.fn(day); }); } catch (e) {}
+  }
+  // The inverse of labelDate, on EVERY exit path — a drag that ends without this leaves labels
+  // wearing a case-expression opacity and no filter, which reads as "labels stopped working".
+  // changeDate re-applies the real filters right after, so only the paint has to be put back.
+  function endLabelPaint() {
+    if (!_lblFilterDropped || !Object.keys(_lblPaintBase).length) { _lblPaintBase = {}; _lblFilterDropped = {}; return; }
+    var maps = [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null];
+    Object.keys(_lblPaintBase).forEach(function (ck) {
+      var i = ck.lastIndexOf("|"), id = ck.slice(0, i), key = ck.slice(i + 1);
+      maps.forEach(function (m) {
+        try { if (m && m.getLayer(id)) m.setPaintProperty(id, key, _lblPaintBase[ck]); } catch (e) {}
+      });
+    });
+    _lblPaintBase = {}; _lblFilterDropped = {};
   }
 
   // ONE writer for the renderer choice — whatever was mid-drag stops cleanly (nothing left hidden,
@@ -935,6 +972,7 @@
     S.usingDeck = S.usingRaster = false;
     S.views.forEach(function (v) { v.on = false; repaint(v); });
     restoreVectors();
+    endLabelPaint();
     S.dragging = false;
     var box = document.getElementById("ms-raster-chip");
     if (box) [].forEach.call(box.querySelectorAll("input"), function (i) { i.checked = i.value === m; });
