@@ -5845,7 +5845,13 @@
     if (!node.type) {
       node.type = mapType;
       node.iconType = GEOM_TO_ICON[f.geometry.type] || node.iconType;
-      try { await db.from('layers').update({ type: mapType }).eq('id', lid); } catch (err) { console.warn('editing: set layer type failed', err); }
+      // This is the write that fixes a new layer's geometry type from its first drawn feature.
+      // It was a bare try/console.warn: if it failed, the layer rendered correctly for the rest of
+      // the session and came back TYPELESS after a reload, with only the console any the wiser —
+      // family B feeding family E. saveSoft reports it (toast + assertable log) without throwing
+      // into a drawing gesture, and `rows: 'some'` also catches the RLS shape where the request
+      // succeeds and changes nothing.
+      await saveSoft(db.from('layers').update({ type: mapType }).eq('id', lid), 'set layer type', { rows: 'some' });
       rerender();
     }
 
@@ -8490,7 +8496,9 @@
         var startedAt = new Date().toISOString();
         try {
           var rcMark = L.raw_config || {}; rcMark.rebakeStartedAt = startedAt;
-          await db.from('layers').update({ raw_config: rcMark }).eq('id', lid);
+          // If this write is lost, the re-bake still runs but a RELOAD cannot tell the owner it is
+          // running — which is the whole point of persisting the marker. Report it.
+          await saveSoft(db.from('layers').update({ raw_config: rcMark }).eq('id', lid), 'recording that a re-bake started', { rows: 'some' });
           if (nodeF) nodeF.rebakeStartedAt = startedAt;
         } catch (eMk) { console.warn('could not stamp rebakeStartedAt', eMk); }
         if (nodeF) pollFoldDone(nodeF, lid, (L.raw_config || {}).tilesGeneratedAt || null, startedAt);

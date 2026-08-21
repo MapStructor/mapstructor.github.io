@@ -38,8 +38,12 @@ const COUNT_ONLY = process.argv.includes("--count");
 const SHOW_ALL = process.argv.includes("--all");
 
 const CLASSES = [
+  /* Must be a call that leaves the browser. Matching a bare `.delete(` swept in every
+     `draw.delete(drawId)` — MapboxDraw's local, in-memory removal, which cannot fail the way a
+     save can — and those alone were most of the first WRITE list. The word is the same; the
+     consequence is not. */
   { kind: "WRITE", rank: 1, what: "a save that failed, and the screen said it worked",
-    re: /\.(?:insert|update|delete|upsert|rpc)\s*\(|saveGuard\s*\(|\bfetch\s*\(/ },
+    re: /\bdb\s*\.\s*(?:from\s*\([^)]*\)\s*\.\s*(?:insert|update|delete|upsert)|rpc)\s*\(|saveSoft\s*\(|\bfetch\s*\([^)]*(?:method|PUT|POST|DELETE)/ },
   { kind: "PARSE", rank: 2, what: "bad input became a default, and the map drew something plausible",
     re: /JSON\.parse\s*\(|\bnew Date\s*\(|\bparseFloat\s*\(|\bNumber\s*\(/ },
   { kind: "PROMISE", rank: 3, what: "an async chain failed with nothing to show for it",
@@ -82,7 +86,7 @@ for (const rel of files) {
     /* Already reported by MSGuard inside the try? Then the catch is not swallowing anything — the
        failure has already been announced and this is just belt-and-braces. Counting those as
        WRITEs would pad the list with the very places that are done properly. */
-    if (/saveGuard\s*\(|MSGuard\./.test(body)) continue;
+    if (/saveGuard\s*\(|saveSoft\s*\(|MSGuard\./.test(body)) continue;
     const cls = CLASSES.find((c) => c.re.test(body)) || CLASSES[3];
     hits.push({ rel, line, kind: cls.kind, rank: cls.rank,
                 text: body.replace(/\s+/g, " ").trim().slice(0, 104) });
