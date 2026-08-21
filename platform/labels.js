@@ -392,6 +392,10 @@
           }
         } catch (e) {}
         if (++tries < 40) setTimeout(again, 500);
+        // 20 seconds and the source never arrived: labels for this group never appear, and nothing
+        // has ever said they were meant to.
+        else if (window.MSGuard) MSGuard.cliff("label-recompute-giveup", tries, 39,
+          "labels for one layer stopped waiting for its data and will not appear until the map is reloaded");
       })();
     });
   }

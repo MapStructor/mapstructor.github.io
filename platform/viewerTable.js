@@ -340,7 +340,14 @@
     _tries++;
     var panel = document.getElementById("layers-panel-content");
     var ready = panel && panel.querySelector(".layer-list-row") && typeof beforeMap !== "undefined" && beforeMap;
-    if (!ready) { if (_tries < 80) setTimeout(boot, 500); return; }
+    if (!ready) {
+      if (_tries < 80) { setTimeout(boot, 500); return; }
+      // 40 seconds: the layer panel never populated, so the table button is never added and a
+      // viewer simply has no attribute table — with no sign one was ever coming.
+      if (window.MSGuard) MSGuard.cliff("viewer-table-button", _tries, 79,
+        "the feature table button could not be added because the layer list took too long to appear");
+      return;
+    }
     injectStyleRows();
   })();
 

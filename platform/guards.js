@@ -89,6 +89,30 @@
       return { ok: false, data: null, error: err || { message: msg }, rows: 0 };
     },
 
+    /* A HARD LIMIT announcing itself the first time data crosses it (architectural fix #3).
+       "It worked before" is almost always a cliff, not a regression: the code did not change,
+       the data walked off an edge nobody was told about. Every limit that changes behaviour
+       says so once, in the user's terms, with the number that was crossed.
+
+         MSGuard.cliff('import-cap', n, CAP, 'features past the import cap were not added')
+
+       Returns true when the limit was crossed (so it can drive the branch it describes):
+         if (MSGuard.cliff('draw-cap', feats.length, MAX_DRAW, '...')) renderWithEngine(); */
+    cliff: function (key, value, limit, whatHappens) {
+      if (!(value > limit)) return false;
+      var rec = { t: Date.now(), kind: "cliff", key: key, what: whatHappens,
+                  detail: "reached " + M.num(value) + ", the limit is " + M.num(limit) };
+      if (!seen["cliff:" + key]) {
+        seen["cliff:" + key] = 1;
+        M.log.push(rec); if (M.log.length > LOG_CAP) M.log.splice(0, 100);
+        if (M.loud && typeof console !== "undefined") console.warn("[MapStructor] " + whatHappens + " — " + rec.detail + "  (" + key + ")");
+        if (typeof M.onWarn === "function") { try { M.onWarn(rec); } catch (e) {} }
+      }
+      return true;
+    },
+
+    num: function (n) { return typeof n === "number" ? n.toLocaleString() : String(n); },
+
     /* A lookup whose absence is a bug, not a state. Returns the value or undefined, and says
        so once when it is missing. `where` names the caller so the message is actionable. */
     need: function (value, key, what, where) {
@@ -103,6 +127,7 @@
     report: function () {
       return { warnings: M.log.filter(function (r) { return r.kind === "absence"; }).length,
                writeFailures: M.log.filter(function (r) { return r.kind === "write"; }).length,
+               cliffs: M.log.filter(function (r) { return r.kind === "cliff"; }).length,
                entries: M.log.slice() };
     },
 

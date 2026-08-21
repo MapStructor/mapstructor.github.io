@@ -79,7 +79,15 @@ var ConfigLoader = (function () {
       q = q.order("feature_id").limit(size);
       var r; try { r = await q; } catch (e) { r = { error: e }; }
       if (r.error) {
-        if (size <= minSize) return { rows: rows, error: r.error };   // genuinely failing, not just heavy
+        if (size <= minSize) {
+          // The floor. A layer whose rows are too heavy for even a 25-row page renders NOTHING —
+          // a ticked layer with no features and no error anywhere, which is the single most
+          // confusing outcome in the whole loader.
+          if (typeof window !== "undefined" && window.MSGuard) window.MSGuard.warnOnce("fetch-floor",
+            "a layer's data could not be read even in the smallest pages, so it is showing nothing",
+            (r.error && r.error.message) || "read failed at page size " + minSize);
+          return { rows: rows, error: r.error };   // genuinely failing, not just heavy
+        }
         size = Math.max(minSize, Math.floor(size / 4));
         continue;   // same cursor, smaller bite
       }
@@ -103,7 +111,14 @@ var ConfigLoader = (function () {
     var sel = "feature_id, layer_id, geom, label, description, start_date, end_date, content_id, image_url, custom_fields";
     var hydLid = n._dataLayerId || n._layerDbId;
     var fr = await fetchRowsAdaptive(db, sel, function (q) { return q.eq("layer_id", hydLid); });
-    if (fr.error) { n._hydrating = false; return false; }   // stays _deferred → the next toggle retries
+    if (fr.error) {
+      // Stays _deferred, so the next toggle retries — but until someone toggles it again the
+      // layer is ticked on and empty, and nothing has said why.
+      if (typeof window !== "undefined" && window.MSGuard) window.MSGuard.warnOnce("hydrate-failed:" + (n.id || hydLid),
+        "this layer's features could not be loaded, so it is switched on but showing nothing — switch it off and on to retry",
+        (fr.error && fr.error.message) || "");
+      n._hydrating = false; return false;
+    }
     var rows = fr.rows;
     var fc = { type: "FeatureCollection", features: rows.map(featureToGeo) };
     if (n.source && n.source.type === "geojson") n.source.data = fc;   // style switches re-add with the data

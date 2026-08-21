@@ -427,7 +427,14 @@
   }
   function prefetchWanted(view) {
     var el = view.el, w = el.clientWidth, h = el.clientHeight;
-    if (!w || !h || view.m.getZoom() > S.maxZoom) return;   // deep zoom never draws the raster — don't load for it
+    // deep zoom never draws the raster — don't load for it. Crossing this is exactly the
+    // "it was smooth a second ago" report: the scrub silently falls back to vectors.
+    if (!w || !h) return;
+    if (view.m.getZoom() > S.maxZoom) {
+      if (window.MSGuard) MSGuard.cliff("raster-scrub-zoom", Math.round(view.m.getZoom() * 10) / 10, S.maxZoom,
+        "zoomed in past where the fast timeline snapshot can draw, so the scrub is running on the live shapes and may feel slower");
+      return;
+    }
     // Idle is also where the layer self-heals: a basemap switch drops every custom layer, and
     // textures live in the context we only get through onAdd, so re-add before touching view.gl.
     ensureLayer(view);

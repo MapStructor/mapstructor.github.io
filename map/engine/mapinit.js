@@ -205,7 +205,13 @@ function zoomToLayer(label, _retry) {
   const b = layerExtent(layer);
   // right after boot a tileset's tilejson (or a deferred layer's features) may not have arrived
   // yet — keep trying briefly instead of silently doing nothing
-  if (!b) { if ((_retry || 0) < 15) setTimeout(function () { zoomToLayer(label, (_retry || 0) + 1); }, 300); return; }
+  if (!b) {
+    if ((_retry || 0) < 15) { setTimeout(function () { zoomToLayer(label, (_retry || 0) + 1); }, 300); return; }
+    // Out of retries: the click did nothing at all — no movement, no message. Say so.
+    if (window.MSGuard) MSGuard.cliff("zoom-to-layer:" + label, 16, 15,
+      "Zoom to layer could not find where this layer is yet (its data has not finished arriving) — try again in a moment");
+    return;
+  }
   beforeMap.fitBounds(b, { padding: 60, bearing: 0, maxZoom: 17 });
   afterMap.fitBounds(b, { padding: 60, bearing: 0, maxZoom: 17 });
 }

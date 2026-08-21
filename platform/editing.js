@@ -1311,6 +1311,10 @@
       var r = await db.from('features').select('feature_id, geom, custom_fields, start_date, end_date')
         .eq('layer_id', lid).not('custom_fields->>ms_foldsrc', 'is', null).limit(500);
       if (r.error || !r.data || !r.data.length) return;
+      // Past this cap the OLDER edits to a folded layer simply are not restored, and the next
+      // save writes the un-restored state back — edits disappearing on reload with nothing said.
+      if (window.MSGuard) MSGuard.cliff('fold-delta-restore', r.data.length, 499,
+        'this layer has more edited features than one load restores, so the oldest edits are not showing');
       var eo = (_engineEdited[node.id] = _engineEdited[node.id] || {});
       var eod = (_engineEditedDays[node.id] = _engineEditedDays[node.id] || {});
       var hid = (_engineEditIds[node.id] = _engineEditIds[node.id] || []);
@@ -5851,7 +5855,14 @@
     var datedCounts = await Promise.all(gjList.map(function (gj2) {
       return db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gj2.did).or('start_date.not.is.null,end_date.not.is.null').then(function (cq) { return (cq && cq.count) || 0; }, function () { return 0; });
     }));
-    counts.forEach(function (cn, gi) { if (cn > 0 && cn <= MAX_DRAW && !datedCounts[gi]) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; } });
+    counts.forEach(function (cn, gi) {
+      if (cn > 0 && cn <= MAX_DRAW && !datedCounts[gi]) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; return; }
+      // The single most confusing silent limit in the editor: past MAX_DRAW (or the moment a layer
+      // gains dates) the vertex handles stop appearing and clicking a shape no longer selects it.
+      // The layer looks exactly the same, so it reads as "editing broke", not "this layer is big".
+      if (cn > MAX_DRAW && window.MSGuard) MSGuard.cliff('draw-cap:' + gjList[gi].slug, cn, MAX_DRAW,
+        'this layer is now drawn by the map engine instead of the shape editor, so its points cannot be dragged directly');
+    });
     // the map contains a big-table layer → warm the columnar engine at idle, so the first table
     // open never pays the engine load (user-proposed prefetch rule, 7/18)
     try { if (window.MSBigTable && counts.some(function (cn) { return cn > MSBigTable.BIG_ROWS; })) MSBigTable.prefetch(); } catch (e) {}
@@ -7466,6 +7477,10 @@
       var c = String(x.c || '').trim();
       if (/^#[0-9a-fA-F]{6}$/.test(c) || /^rgba?\([^)]+\)$/i.test(c)) out.push([Number(x.feature_id), c]);
     });
+    // Past the cap the extra recoloured features render in the base colour while the table still
+    // shows the colour that was chosen — the map and the table disagree, silently.
+    if (window.MSGuard) MSGuard.cliff('tiled-color-overrides', ((r && r.data) || []).length, 1999,
+      'more features are individually recoloured than a tiled layer can carry, so the extras are drawing in the layer colour');
     return out;
   }
   function wrapTiledColorOverrides(ovr, base) {
@@ -9167,6 +9182,10 @@
     if (!feats.length) { box.style.display = 'block'; box.innerHTML = '<div style="padding:8px;color:#9a94ad;">No features loaded yet — toggle the layer on first.</div>'; return; }
     var values = window.MSOverlay ? await MSOverlay.load(lid) : {};
     var cap = 200;
+    // The rows past the cap are not rendered, so their values cannot be entered — and the table
+    // gives no sign that it is showing a slice.
+    if (window.MSGuard) MSGuard.cliff('overlay-column-editor', feats.length, cap,
+      'this editor is showing only the first ' + cap + ' features, so values cannot be entered for the rest here');
     var html = '<table style="width:100%;border-collapse:collapse;font-size:11.5px;">'
       + '<tr><th style="text-align:left;padding:4px 6px;color:#9083ad;">feature</th>'
       + cols.map(function (c) { return '<th style="text-align:left;padding:4px 6px;color:#9083ad;">' + String(c).replace(/[<>&]/g, '') + '</th>'; }).join('') + '</tr>';
@@ -9756,6 +9775,10 @@
   // and stale/dirty sidecars (the stream is the fresh truth)
   function maybeBakeAfterStream(lid, rows, total, gen) {
     if (!window.MSBigTable || _attrReadonly || !lid) return;
+    // Above BAKE_MAX no sidecar is ever baked again, so a table that used to open instantly
+    // streams for a minute on EVERY open, permanently, with nothing explaining the change.
+    if (window.MSGuard && MSGuard.cliff('sidecar-bake-ceiling', total, MSBigTable.BAKE_MAX,
+      'this layer is too large to keep a fast table snapshot, so its attribute table loads the slow way every time')) return;
     if (total <= MSBigTable.BIG_ROWS || total > MSBigTable.BAKE_MAX) return;
     if (rows.length >= total) {
       MSBigTable.bakeFromRows(db, projectId, lid, rows, attrBakeStatus).catch(function (e) { console.warn('sidecar bake failed', e); });
