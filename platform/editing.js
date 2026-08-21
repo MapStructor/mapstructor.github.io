@@ -5337,7 +5337,12 @@
   function pushUndo(undo, redo, label) {
     if (_undoing) return;                 // changes made BY undo/redo aren't themselves recorded
     _undoStack.push({ undo: undo, redo: redo, label: label || '' });
-    if (_undoStack.length > 100) _undoStack.shift();
+    if (_undoStack.length > 100) {
+      // the oldest step is gone for good — Ctrl+Z stops going back further, with no sign why
+      if (window.MSGuard) MSGuard.cliff('undo-depth', _undoStack.length, 100,
+        'undo history is full, so the oldest steps can no longer be undone');
+      _undoStack.shift();
+    }
     _redoStack = [];
     updateUndoButtons();
   }
@@ -9768,7 +9773,17 @@
     var style = ['ms_color', 'ms_linecolor', 'ms_opacity', 'ms_thickness', 'ms_labelsize'].filter(function (k) { return keys.indexOf(k) > -1; });
     var msid = keys.indexOf('msid') > -1 ? ['msid'] : [];
     var mid = keys.filter(function (k) { return k !== 'msid' && style.indexOf(k) < 0; });
-    if (cap) mid = mid.slice(0, Math.max(0, cap - msid.length - style.length));
+    if (cap) {
+      // ONE seam for every column cap in the editor (the table, the virtual table, the colour-by
+      // and label pickers all pass through here). Past the cap the extra columns are simply not
+      // there — no ellipsis, no note — so a layer with more columns than this looks like it lost
+      // them. Announced once per cap size rather than once per call site.
+      if (mid.length > Math.max(0, cap - msid.length - style.length) && window.MSGuard) {
+        MSGuard.cliff('attr-column-cap:' + cap, keys.length, cap,
+          'this layer has more columns than the table can show, so the ones past the first ' + cap + ' are not listed');
+      }
+      mid = mid.slice(0, Math.max(0, cap - msid.length - style.length));
+    }
     return msid.concat(mid).concat(style);
   }
   var _attrById = {}, _attrSlug = null, _attrHover = null, _attrHoverRAF = false, _attrLastPt = null, _attrHoverWired = false;   // hover brushing (map ↔ row): id→row lookup, open layer, hovered fid

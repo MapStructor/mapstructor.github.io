@@ -266,7 +266,13 @@ var MapShare = (function () {
         if (!varies) return null;
         var url = cv.toDataURL('image/jpeg', 0.72);
         if (url.length > 110000) url = cv.toDataURL('image/jpeg', 0.5);
-        return url.length > 110000 ? null : url;
+        if (url.length > 110000) {
+          // the share card ends up with no picture at all, and nothing says so
+          if (typeof window !== "undefined" && window.MSGuard) window.MSGuard.cliff("share-thumbnail-too-big", url.length, 110000,
+            "this view is too detailed to save as a share thumbnail, so the shared link will have no preview picture");
+          return null;
+        }
+        return url;
       } catch (e) { return null; }
     }
 
