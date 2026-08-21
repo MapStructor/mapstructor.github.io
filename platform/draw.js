@@ -70,11 +70,19 @@
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  function flatLayers(arr) {
+  /* twin-ok: deliberately NOT engine/utils.js flatLayers/findLayer, and renamed 8/21 so the
+     difference is visible at every call site instead of hiding behind a shadowed name.
+       flatLayers  — utils recurses whenever a node HAS children; this recurses only on type
+                     group/section, so a LEAF that happens to carry a children array comes back
+                     from this one and not from that one.
+       findLayer   — utils matches by LABEL and takes (nodes, label); this matched by ID and took
+                     (id, arr). Same name, reversed arguments, different key: code moved between
+                     the two scopes would have silently done the wrong thing. */
+  function drawFlatLeaves(arr) {
     var out = [];
     (arr || layers).forEach(function (item) {
       if (item.type === 'group' || item.type === 'section') {
-        flatLayers(item.children || []).forEach(function (c) { out.push(c); });
+        drawFlatLeaves(item.children || []).forEach(function (c) { out.push(c); });
       } else {
         out.push(item);
       }
@@ -82,11 +90,11 @@
     return out;
   }
 
-  function findLayer(id, arr) {
+  function drawFindById(id, arr) {
     arr = arr || layers;
     for (var i = 0; i < arr.length; i++) {
       if (arr[i].id === id) return arr[i];
-      if (arr[i].children) { var f = findLayer(id, arr[i].children); if (f) return f; }
+      if (arr[i].children) { var f = drawFindById(id, arr[i].children); if (f) return f; }
     }
     return null;
   }
@@ -281,7 +289,7 @@
     if (_suppressUndo) { updateToolbar(); return; }
 
     var geomType = feature.geometry.type;
-    var activeLayer = findLayer(activeLayerId);
+    var activeLayer = drawFindById(activeLayerId);
     var typeLayer;
 
     if (activeLayer && activeLayer.type === null) {
@@ -290,7 +298,7 @@
     } else if (activeLayer && activeLayer.type === geomType) {
       typeLayer = activeLayer;
     } else {
-      typeLayer = flatLayers().find(function (l) { return l.type === geomType; });
+      typeLayer = drawFlatLeaves().find(function (l) { return l.type === geomType; });
       if (!typeLayer) {
         typeLayer = createLayer(geomType);
       } else {
@@ -322,7 +330,7 @@
       function () {
         _suppressUndo = true;
         draw.add({ type: 'Feature', id: id, geometry: JSON.parse(JSON.stringify(geom)), properties: {} });
-        var layer = findLayer(layerId);
+        var layer = drawFindById(layerId);
         if (layer && layer.featureIds.indexOf(id) === -1) {
           features[id] = { label: '', notes: '', layerId: layerId, dbId: null, dirty: true };
           layer.featureIds.push(id);
@@ -374,7 +382,7 @@
           draw.add({ type: 'Feature', id: d.id, geometry: JSON.parse(JSON.stringify(d.geom)), properties: {} });
           features[d.id] = d.meta;
           features[d.id].dirty = true;
-          var layer = findLayer(d.meta.layerId);
+          var layer = drawFindById(d.meta.layerId);
           if (layer && layer.featureIds.indexOf(d.id) === -1) layer.featureIds.push(d.id);
         });
         renderLayerList();
@@ -412,7 +420,7 @@
 
   // ── Layer management ────────────────────────────────────────────────────────
   function createLayer(type, name) {
-    var color = LAYER_COLORS[flatLayers().length % LAYER_COLORS.length];
+    var color = LAYER_COLORS[drawFlatLeaves().length % LAYER_COLORS.length];
     var names = { Polygon: 'Polygons', LineString: 'Lines', Point: 'Points' };
     var layer = {
       id: 'layer-' + Date.now() + '-' + Math.random().toString(36).slice(2),
@@ -437,7 +445,7 @@
 
   function setActiveLayer(id) {
     activeLayerId = id;
-    _origLayer = id ? findLayer(id) : null;
+    _origLayer = id ? drawFindById(id) : null;
     _layer = _origLayer;
     openEditor();
     syncDrawDisplay();
@@ -453,7 +461,7 @@
   function removeFeatureFromState(drawId) {
     var meta = features[drawId];
     if (!meta) return;
-    var layer = findLayer(meta.layerId);
+    var layer = drawFindById(meta.layerId);
     if (layer) {
       layer.featureIds = layer.featureIds.filter(function (fid) { return fid !== drawId; });
     }
@@ -630,14 +638,14 @@
       nameEl.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); nameEl.blur(); }
         if (e.key === 'Escape') {
-          var layer = findLayer(id);
+          var layer = drawFindById(id);
           if (layer) nameEl.textContent = layer.name;
           nameEl.blur();
         }
       });
       nameEl.addEventListener('blur', function () {
         nameEl.contentEditable = 'false';
-        var layer = findLayer(id);
+        var layer = drawFindById(id);
         if (layer) {
           var newName = nameEl.textContent.trim();
           if (newName && newName !== layer.name) { layer.name = newName; scheduleSave(); }
@@ -690,7 +698,7 @@
   }
 
   function toggleLayerVisibility(layerId, visible) {
-    var layer = findLayer(layerId);
+    var layer = drawFindById(layerId);
     if (!layer) return;
     layer.visible = visible;
     if (layer.source_type && layer.source_type !== 'geojson-supabase') setTilesetVisibility(layer, visible);
@@ -703,7 +711,7 @@
     selectedDrawId = drawId;
     var meta = features[drawId];
     if (!meta) return;
-    var layer = findLayer(meta.layerId);
+    var layer = drawFindById(meta.layerId);
 
     document.getElementById('feature-panel-layer-name').textContent = layer ? layer.name : '';
     document.getElementById('feature-label').value = meta.label || '';
@@ -899,7 +907,7 @@
       .eq('id', projectId), 'project');
 
     // 2. Ensure a layers row for every leaf layer
-    var leaves = flatLayers();
+    var leaves = drawFlatLeaves();
     for (var i = 0; i < leaves.length; i++) {
       var l = leaves[i];
       var srcType = l.source_type || 'geojson-supabase';
@@ -974,7 +982,7 @@
     for (var j = 0; j < drawIds.length; j++) {
       var fid   = drawIds[j];
       var meta  = features[fid];
-      var layer = findLayer(meta.layerId);
+      var layer = drawFindById(meta.layerId);
       var feat  = draw.get(fid);
       if (!layer || !layer.dbId || !feat) continue;
 
@@ -1136,7 +1144,7 @@
       }
       draw.set({ type: 'FeatureCollection', features: drawFeats });
 
-      var fl = flatLayers();
+      var fl = drawFlatLeaves();
       if (fl.length) setActiveLayer(fl[fl.length - 1].id); else renderLayerList();
       if (map.getSource(_DRAW_SRC)) syncDrawDisplay(); else map.once('style.load', syncDrawDisplay);
       paintTilesets();
@@ -1306,7 +1314,7 @@
       var m = pair[0], side = pair[1];
       if (!m) return;
       var add = function () {
-        flatLayers().forEach(function (l) {
+        drawFlatLeaves().forEach(function (l) {
           if (!l.source || l.source_type === 'geojson-supabase') return;
           addMapLayer(m, Object.assign({}, l, { id: l.id + '-' + side }));
         });
@@ -1339,7 +1347,7 @@
     var feats = [];
     raw.features.forEach(function (f) {
       var meta  = features[f.id];
-      var layer = meta ? findLayer(meta.layerId) : null;
+      var layer = meta ? drawFindById(meta.layerId) : null;
       if (layer && layer.visible === false) return;
       var p = (layer && layer.paint) || {};
       feats.push({
