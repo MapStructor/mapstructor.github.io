@@ -470,15 +470,22 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     runDeferredSweep(0);
   }
   function runDeferredSweep(attempt) {
+    // cliff-ok: waiting for editing.js to classify, up to ~20s. Falling through instead of waiting
+    // would sweep with an EMPTY owned-set, i.e. fetch every small layer a second time — the exact
+    // regression this guard exists to prevent. After 10 tries something is wrong enough that one
+    // duplicate sweep is better than a hidden layer that never loads.
     if (IS_EDITOR && !window.__msDrawOwned && attempt < 10) {
       setTimeout(function () { runDeferredSweep(attempt + 1); }, 2000); return;
     }
     try { ConfigLoader.hydrateDeferredFeatures(db, layers, deferredMaps(), IS_EDITOR ? editorOwns : null); } catch (e) {}
   }
+  // cliff-ok: both waits below are deliberate and invisible by construction — the layers they load
+  // are switched OFF, so nothing on screen is waiting for them. See the note above for why they are
+  // not urgent. Restored 8/21 after a rewrite of that comment dropped the original marker.
   setTimeout(function () {
     var m0 = (typeof beforeMap !== "undefined") ? beforeMap : null;
-    if (m0 && m0.once) { m0.once("idle", function () { setTimeout(startDeferredSweep, 2500); }); }
-    setTimeout(startDeferredSweep, 12000);   // never later than this, idle or not
+    if (m0 && m0.once) { m0.once("idle", function () { setTimeout(startDeferredSweep, 2500); }); }   // cliff-ok: a breath after first idle; the layers are hidden, nothing waits on them
+    setTimeout(startDeferredSweep, 12000);   // cliff-ok: never later than this, idle or not — the belt for a map that never idles
   }, 1000);
   // Toggling a still-deferred layer ON fetches ITS rows immediately (priority) instead of waiting for the
   // background sweep — small layers used to sit invisible behind the sweep's megabytes of polygon data,
