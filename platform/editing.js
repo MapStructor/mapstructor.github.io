@@ -7027,6 +7027,10 @@
       // dedicated columns ride along (8/14): the old sample read custom_fields ONLY — and
       // filtered out rows whose only values were dedicated ones, hiding e.g. label entirely
       var r = await db.from('features').select('custom_fields, label, description, start_date, end_date, image_url').eq('layer_id', sampleLid).limit(100);
+      // The column list is discovered from a SAMPLE, so a column that only appears on later rows
+      // is simply not offered — the person looks for it in the dropdown and it is not there.
+      if (window.MSGuard) MSGuard.cliff('colorby-column-sample', ((r.data || []).length >= 100) ? 101 : 0, 100,
+        'the colour and label pickers read the first 100 features to find columns, so a column that only appears further down the layer will not be listed');
       var keys = {};
       (r.data || []).forEach(function (f) {
         Object.keys(f.custom_fields || {}).forEach(function (k) { keys[k] = 1; });

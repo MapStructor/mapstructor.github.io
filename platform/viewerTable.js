@@ -169,6 +169,13 @@
     if (!rc || !rc.attrParquet || rc.attrParquetDirty) return null;
     // > CAP: loadAll would materialize more rows than the list ever shows — the capped stream
     // (first 100,000 + footer note) stays the better behavior there
+    // Past the cap this falls back to the streamed path: the table still works, but it loads the
+    // slow way every time and stops at the first 100,000 rows. Worth saying once — a viewer
+    // otherwise just experiences "this table is slow on this layer" with no reason given.
+    if (rc.attrParquetRows > CAP && typeof window !== "undefined" && window.MSGuard) {
+      window.MSGuard.cliff("viewer-table-sidecar-cap", rc.attrParquetRows, CAP,
+        "this layer is too large for the fast table snapshot, so its table loads the slow way and shows the first " + CAP.toLocaleString() + " rows");
+    }
     if (!(rc.attrParquetRows > 0) || rc.attrParquetRows > CAP) return null;
     // freshness (the editor's 7/23 rule): a failed/timed-out count TRUSTS the sidecar —
     // attrParquetDirty catches real edits; a count mismatch means edited since the bake.
