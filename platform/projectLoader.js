@@ -119,6 +119,9 @@ window.msApplyHeaderFeature = function (visible, projectName) {
   }
 
   function showNotPublished() {
+    // other features need to know this too — the download builder uses it to explain WHY there is
+    // nothing to export instead of just reporting that there isn't
+    try { window.__msNotPublished = true; } catch (e) {}
     var d = document.createElement("div");
     d.style.cssText = "position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:9999;background:#fff;border:1px solid #ddd;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.15);padding:11px 18px;font-family:Source Sans Pro,Arial,sans-serif;font-size:14px;color:#333;";
     d.innerHTML = "This map hasn’t been published yet. <a href=\"" + location.pathname + "?id=" + platformProjectId + "&preview=1" + location.hash + "\" style=\"color:#2d7a2d;font-weight:600;\">Preview the latest edits ↗</a>";

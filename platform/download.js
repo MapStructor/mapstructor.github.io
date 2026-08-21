@@ -742,7 +742,12 @@
     var _leaves = 0;
     (function w(a) { (a || []).forEach(function (n) { if (!n) return; if (n.children) w(n.children); else _leaves++; }); })(_tree);
     if (!_leaves) {
-      var msg = "Nothing to export — this page has no layers loaded, so the download would contain an empty map.";
+      // Say what to DO, not just what went wrong. The overwhelmingly common cause is a map that
+      // has never been published: the viewer boots from the published snapshot, so there is
+      // genuinely nothing here to copy, and the fix is one step the person can take.
+      var msg = (typeof window !== "undefined" && window.__msNotPublished)
+        ? "Nothing to export yet — this map hasn't been published, so this page has no layers to copy. Publish it, or open it in the editor and download from there."
+        : "Nothing to export — this page has no layers loaded, so the download would contain an empty map.";
       setStatus(msg);
       try { if (window.MSGuard) window.MSGuard.warn("export-empty-tree", "the download was stopped because the page had no layers loaded — the zip would have been a finished, empty map", "layers tree had 0 leaves"); } catch (e) {}
       throw new Error(msg);
