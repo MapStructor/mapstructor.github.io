@@ -328,7 +328,7 @@
         })(g.coordinates);
         var props = {};
         if (f.custom_fields && typeof f.custom_fields === 'object') Object.keys(f.custom_fields).forEach(function (k) { props[k] = f.custom_fields[k]; });
-        if (f.label != null && f.label !== '') props.label = f.label;
+        if (f.label != null && String(f.label).trim() !== '') props.label = f.label;   // " " is not a label — see editing.js
         if (f.description) props.description = f.description;
         if (f.start_date) props.start_date = String(f.start_date).slice(0, 10);
         if (f.end_date) props.end_date = String(f.end_date).slice(0, 10);

@@ -3116,7 +3116,10 @@
                 DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, '') || 0 : 0,
                 DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, '') || 99999999 : 99999999
               };
-              if (f.label != null && f.label !== '') props.label = f.label;
+              // .trim(): a label of only spaces is not a label. Same value that put three empty
+              // popups under every click on the public viewer (fixed 8/21) also paints a blank
+              // glyph on the map here, because `!== ''` lets " " through as a real label.
+              if (f.label != null && String(f.label).trim() !== '') props.label = f.label;
               feats2.push({ type: 'Feature', id: f.feature_id, properties: props, geometry: f.geom });
             });
             if (fr2.error) importStatus('Could not read "' + (bn.label || 'layer') + '" back for tiling — use the layer panel’s Bake button.');
@@ -11154,7 +11157,9 @@
   function flistRowHtml(r) {
     if (!r) return '<tr class="flist-ghost"><td style="color:#bbbbbb;">…</td></tr>';
     var sel = _attrSel.indexOf(String(r.feature_id)) > -1;
-    var lbl = (r.label == null || r.label === '') ? '<span class="flist-untitled">(untitled)</span>' : attrEsc(r.label);
+    // A whitespace-only label rendered as an EMPTY row here — not "(untitled)" — so the list
+    // showed a blank line that looked like a rendering fault rather than an unnamed feature.
+    var lbl = (r.label == null || String(r.label).trim() === '') ? '<span class="flist-untitled">(untitled)</span>' : attrEsc(r.label);
     return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + (sel ? ' class="flist-row-sel"' : '') + '><td title="' + attrEsc(r.label || '') + '">' + _flistIcon + '<span class="flist-lbl">' + lbl + '</span></td></tr>';
   }
   function syncFlistSel() {

@@ -298,7 +298,8 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     try {
       window.modal_content_html = window.modal_content_html || {};
       window.modal_header_text = window.modal_header_text || {};
-      if (raw.about != null && raw.about !== "") { window.modal_header_text["about"] = "About"; window.modal_content_html["about"] = raw.about; }
+      // .trim(): an `about` of only whitespace registered an About modal that opened empty.
+      if (raw.about != null && String(raw.about).trim() !== "") { window.modal_header_text["about"] = "About"; window.modal_content_html["about"] = raw.about; }
       Object.keys(raw.popups || {}).forEach(function (id) {
         var p = raw.popups[id];
         var h = (p && typeof p === "object") ? p.html : p;

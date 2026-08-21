@@ -42,7 +42,11 @@ var renderRegistry = {
   "_notes": function(props, _f) {
     function esc(s) { return String(s == null ? "" : s).replace(/[<>&]/g, function(c) { return c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"; }); }
     var img      = props.image_url || props.image || "";
-    var title    = props.label || props.name || props.title || "";   // no placeholder "Details" — an untitled feature just has no heading
+    // pick(): `||` treats " " as a real value, so a whitespace label won the fallback chain and
+    // produced a heading that was present but blank — and, further down, a popup with nothing in
+    // it. Same value, same family as the three empty popups fixed on the viewer 8/21.
+    var pick     = function () { for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; if (v != null && String(v).trim() !== "") return v; } return ""; };
+    var title    = pick(props.label, props.name, props.title);   // no placeholder "Details" — an untitled feature just has no heading
     var notesRaw = props.notes != null ? props.notes : (props.description != null ? props.description : "");
     var isHtml   = /<[a-z!\/][\s\S]*>/i.test(notesRaw);   // WYSIWYG content carries tags
     var notes    = isHtml ? String(notesRaw).replace(/<script[\s\S]*?<\/script>/gi, "") : esc(notesRaw).replace(/\n/g, "<br/>");
