@@ -88,7 +88,7 @@
   }
   function rowHtml(r) {
     if (!r) return '<tr><td style="color:#bbbbbb;">…</td></tr>';
-    var lbl = (r.label == null || r.label === "") ? '<span class="ms-vl-untitled">(untitled)</span>' : esc(r.label);
+    var lbl = (r.label == null || String(r.label).trim() === "") ? '<span class="ms-vl-untitled">(untitled)</span>' : esc(r.label);
     var sel = _selFid != null && String(r.feature_id) === String(_selFid);
     return '<tr data-fid="' + esc(r.feature_id) + '"' + (sel ? ' class="ms-vl-sel"' : "") + '><td title="' + esc(r.label || "") + '">' + _icon + '<span>' + lbl + "</span></td></tr>";
   }

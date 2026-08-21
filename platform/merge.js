@@ -67,7 +67,7 @@
       var samp = await host.db.from("features").select("label, start_date, end_date, custom_fields").eq("layer_id", out.dataLid).limit(200);
       var keys = {};
       (samp.data || []).forEach(function (r) {
-        if (r.label != null && r.label !== "") out.hasLabel = true;
+        if (r.label != null && String(r.label).trim() !== "") out.hasLabel = true;
         if (r.start_date) out.hasStart = true;
         if (r.end_date) out.hasEnd = true;
         Object.keys(r.custom_fields || {}).forEach(function (k) { if (k !== "msid") keys[k] = (keys[k] || 0) + 1; });

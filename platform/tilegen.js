@@ -1029,9 +1029,12 @@
           DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, "") || 0 : 0,
           DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, "") || 99999999 : 99999999
         };
-        if (f.label != null && f.label !== "") props.label = f.label;
-        if (lblField && f.lblv != null && f.lblv !== "") props[lblField] = f.lblv;
-        if (cbField && f.cbv != null && f.cbv !== "") props[cbField] = f.cbv;
+        /* .trim(): a value that is only whitespace is not a value, and baking it makes it PRESENT for
+       every reader of these tiles — popups, labels, colour-by. Three content-free bubbles under one
+       click on the public viewer came from exactly that (8/21). Caught by find-swallowed --kind BLANK. */
+    if (f.label != null && String(f.label).trim() !== "") props.label = f.label;
+        if (lblField && f.lblv != null && String(f.lblv).trim() !== "") props[lblField] = f.lblv;
+        if (cbField && f.cbv != null && String(f.cbv).trim() !== "") props[cbField] = f.cbv;
         feats.push({ type: "Feature", id: f.feature_id, properties: props, geometry: f.geom });
       });
       if (feats.length % 25000 < 1000) status("Fetching rows… " + feats.length.toLocaleString());
@@ -1099,9 +1102,9 @@
           DayStart: f.start_date ? +String(f.start_date).slice(0, 10).replace(/-/g, "") || 0 : 0,
           DayEnd: f.end_date ? +String(f.end_date).slice(0, 10).replace(/-/g, "") || 99999999 : 99999999
         };
-        if (f.label != null && f.label !== "") props.label = f.label;
-        if (f.msc != null && f.msc !== "") props.ms_color = f.msc;
-        if (cbProp2 && cbProp2 !== "label" && f.cbv != null && f.cbv !== "") props[cbProp2] = f.cbv;
+        if (f.label != null && String(f.label).trim() !== "") props.label = f.label;
+        if (f.msc != null && String(f.msc).trim() !== "") props.ms_color = f.msc;
+        if (cbProp2 && cbProp2 !== "label" && f.cbv != null && String(f.cbv).trim() !== "") props[cbProp2] = f.cbv;
         feats.push({ type: "Feature", id: f.feature_id, geometry: f.geom, properties: props });
       });
       if (feats.length % 25000 < 1000) status("Reading rows… " + feats.length.toLocaleString());
