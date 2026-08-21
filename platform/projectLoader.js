@@ -447,20 +447,32 @@ window.msApplyHeaderFeature = function (visible, projectName) {
      someone toggles one before the sweep reaches it. So: after the map's first idle, plus a
      breath. `once("idle")` fires when tiles have finished painting; the timeout is the belt for a
      map that never idles. */
-  /* …AND NOT ON THE EDITOR AT ALL. editing.js `loadFeatures` already loads every drawn layer's
-     features at boot — it splits them into onIds/offIds precisely so the hidden ones come too — so
-     this sweep was fetching the same whole geometries a second time. Measured on the Ames State
-     Map: each hidden layer appears TWICE in the network log, from two call sites distinguishable
-     by their column order (configLoader "…content_id, image_url, custom_fields" vs editing.js
-     "…content_id, custom_fields, image_url"), at 11.0s and 10.5s for one layer alone.
-     The priority path immediately below has excluded the editor since it was written, for exactly
-     this reason. The sweep never got the same guard. */
+  /* …AND ON THE EDITOR, ONLY WHAT editing.js DOES NOT OWN. `loadFeatures` splits drawn layers into
+     onIds/offIds and loads both, so this sweep was fetching the same whole geometries a second
+     time — each hidden layer appeared TWICE in the network log (configLoader "…content_id,
+     image_url, custom_fields" vs editing.js "…content_id, custom_fields, image_url"), 11.0s and
+     10.5s for one layer alone on the Ames State Map.
+     Skipping the whole page was too broad, and it broke something: `_hydrateOne` returns
+     immediately for any layer past MAX_DRAW (1500) — "large layers render via the ENGINE" — so
+     editing.js loads the SMALL hidden layers and nothing loaded the large ones. A 1,600-feature
+     layer that starts OFF then went `visibility: visible` over an EMPTY source, forever, until a
+     reload. Caught 8/21 by late-layer-click-gate, which is the whole reason it exists.
+     So: skip what editing.js publishes as its own (`window.__msDrawOwned`), sweep the rest. If the
+     classification has not happened yet, wait for it rather than sweeping everything — an empty
+     owned-set would silently restore the double fetch. */
+  var IS_EDITOR = /editor\.html/i.test(location.pathname);
+  function editorOwns(n) { var o = window.__msDrawOwned; return !!(o && n && o[n.id]); }
   var _sweepStarted = false;
   function startDeferredSweep() {
     if (_sweepStarted) return;
     _sweepStarted = true;
-    if (/editor\.html/i.test(location.pathname)) return;   // editing.js loadFeatures owns this here
-    try { ConfigLoader.hydrateDeferredFeatures(db, layers, deferredMaps()); } catch (e) {}
+    runDeferredSweep(0);
+  }
+  function runDeferredSweep(attempt) {
+    if (IS_EDITOR && !window.__msDrawOwned && attempt < 10) {
+      setTimeout(function () { runDeferredSweep(attempt + 1); }, 2000); return;
+    }
+    try { ConfigLoader.hydrateDeferredFeatures(db, layers, deferredMaps(), IS_EDITOR ? editorOwns : null); } catch (e) {}
   }
   setTimeout(function () {
     var m0 = (typeof beforeMap !== "undefined") ? beforeMap : null;

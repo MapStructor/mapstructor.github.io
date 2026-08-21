@@ -137,10 +137,12 @@ var ConfigLoader = (function () {
     });
     return true;
   }
-  async function hydrateDeferredFeatures(db, layersArr, maps) {
+  // `skip` (optional): a predicate for layers somebody else is already hydrating. The editor passes
+  // one so this sweep covers only what its own loader declines — see projectLoader.startDeferredSweep.
+  async function hydrateDeferredFeatures(db, layersArr, maps, skip) {
     var flat = [];
     (function w(a) { (a || []).forEach(function (n) { flat.push(n); if (n.children) w(n.children); }); })(layersArr || []);
-    var targets = flat.filter(function (n) { return n._deferred && n._layerDbId; });
+    var targets = flat.filter(function (n) { return n._deferred && n._layerDbId && !(skip && skip(n)); });
     if (!targets.length) return 0;
     // a FEW at a time — 20+ concurrent heavy queries drew HTTP 500s from Supabase (measured); failures
     // keep _deferred and get one retry pass. A toggle-priority hydrate runs unpooled alongside, fine.

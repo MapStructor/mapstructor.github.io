@@ -5952,6 +5952,10 @@
     // MapboxDraw copies carry no dates and apply no timeline filter, so in-draw layers could never animate
     // (the Steamboat bug). Engine-rendered = animates like the viewer; editing = click a feature to pull it in.
     _drawLayerSlugs = {};
+    // Published so projectLoader's deferred sweep can skip exactly what this function owns, instead
+    // of skipping the whole editor page. Same object by reference, so it stays current as the
+    // classification below fills it. Undefined until the first loadFeatures = "not classified yet".
+    window.__msDrawOwned = _drawLayerSlugs;
     var smallIds = [];
     // one COUNT per layer, but in PARALLEL — awaiting them one-by-one stalled boot ~N×roundtrip (20+
     // drawn layers = several seconds before any feature data even started downloading)
@@ -6898,6 +6902,17 @@
       // second off/on toggle once the background fetch happened to finish. Small layers only: a LARGE
       // layer's checkbox is the engine's business (refreshLayers) — hydrating it would dump 10k+ rows into draw.
       if (dbId && _drawLayerSlugs[slug] && typeof _hydrateOne === 'function') _hydrateOne(dbId);
+      // …and a LARGE one needs its ENGINE source filled, which _hydrateOne refuses to do by design
+      // (it would dump 10k+ rows into MapboxDraw). "The engine's business" is only true if something
+      // fetches the rows, and on this page nothing did: measured 8/21 by late-layer-click-gate, a
+      // 1,600-feature layer that starts OFF goes `visibility: visible` with an EMPTY source and stays
+      // empty — no features, no click targets, until a reload. Priority-hydrate it here.
+      else if (dbId) {
+        var nBig = nodeByLayerDbId(dbId);
+        if (nBig && nBig._deferred && typeof ConfigLoader !== 'undefined' && ConfigLoader.hydrateDeferredLayer)
+          ConfigLoader.hydrateDeferredLayer(db, nBig, [beforeMap, typeof afterMap !== 'undefined' ? afterMap : null])
+            .then(function () { try { applyLabelLayers(nBig); } catch (e2) {} }, function () {});
+      }
     }
   }
 
