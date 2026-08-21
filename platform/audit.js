@@ -389,6 +389,77 @@ var MSAudit = (function () {
       });
     });
 
+    // ── The write-path checklist (architectural fix #6) ───────────────────────────────────
+    // Import learned size gates, type stamping, ownership and tiling one incident at a time;
+    // merge then shipped with none of them. The way that stops repeating is for the checklist
+    // to be ASSERTED rather than remembered, so the sixth way to create a layer is caught on
+    // its first run instead of after its first bug report. Rules 1/3/12 already cover type,
+    // owner and size→tiling; these cover the rest.
+
+    // 16. A DERIVED FACT IS NOT STORED AGAIN. The 8/20 migration removed containerId and
+    //     toggleElement from every owner row because the loader derives both. A write path that
+    //     re-stores them re-opens family A at its root — silently, and only on the next copy.
+    //     A stored value that MATCHES today is the dangerous case (it looks fine until a copy
+    //     inherits it); a containerId that differs is either a deliberate legacy AHM name or
+    //     drift that rules 14/15 already report, so it is left to them.
+    safely(out, skip, "derived-identity-stored", function () {
+      rows.forEach(function (r) {
+        var rc = rcOf(r), hits = [];
+        if (rc.toggleElement != null && rc.toggleElement === r.slug) hits.push("toggleElement");
+        if (rc.containerId != null && rc.containerId === "cont-" + r.slug) hits.push("containerId");
+        if (!hits.length) return;
+        out.push(finding("derived-identity-stored", "warn", r.slug || r.id,
+          "raw_config stores " + hits.join(" and ") + ", which the loader derives from the slug — the copy agrees today, and will drift the first time this layer is copied or renamed",
+          "delete " + hits.join("/") + " from raw_config (stripDerivedIdentity does this at every persist site)"));
+      });
+    });
+
+    // 17. ORDER IS INTENT AND MUST BE STORED — and stored ONCE. The inverse of family A: draw
+    //     order was re-derived rather than saved and reverted on every reload (8/18). A link with
+    //     no sort_order has no place in the tree; two links sharing one inside the same container
+    //     make the order depend on whatever the database returns that day.
+    safely(out, skip, "sort-order-broken", function () {
+      if (!links.length) return;   // a caller without project_layers rows cannot judge order — say nothing rather than guess
+      var slugById = {};
+      rows.forEach(function (r) { slugById[r.id] = r.slug || r.id; });
+      var byBucket = {};
+      links.forEach(function (l) {
+        var who = slugById[l.layer_id] || l.layer_id;
+        if (l.sort_order == null) {
+          out.push(finding("sort-order-broken", "warn", who,
+            "this layer's project link has no sort_order — its position falls back to whatever order the database returns, so the stacking a person set is not actually stored",
+            "write sort_order on every project_layers row (persistOrder assigns from one counter)"));
+          return;
+        }
+        var bucket = (l.section_id || "-") + "/" + (l.group_id || "-");
+        (byBucket[bucket] = byBucket[bucket] || {});
+        if (byBucket[bucket][l.sort_order]) {
+          out.push(finding("sort-order-broken", "warn", who,
+            "shares sort_order " + l.sort_order + " with '" + byBucket[bucket][l.sort_order] + "' in the same container — their relative order is undefined and can change between loads",
+            "renumber the container from one counter"));
+        } else byBucket[bucket][l.sort_order] = who;
+      });
+    });
+
+    // 18. A LAYER THAT HOLDS DATA DECLARES HOW MUCH. feature_count / data_bytes are what the
+    //     dashboard and the storage meter read; a creator that skips the stamp makes a layer
+    //     invisible to both — it costs money and reports as free. Scoped to the layers that own
+    //     their own rows (geojson), because tileset and instance layers legitimately have none.
+    safely(out, skip, "stats-unstamped", function () {
+      rows.forEach(function (r) {
+        if (r.deleted_at) return;
+        // the real column value is 'geojson-supabase'; matching only 'geojson' made this rule
+        // dead code on first write — a rule that cannot fire makes the checklist LOOK covered.
+        if (String(r.source_type || "geojson-supabase").indexOf("geojson") !== 0) return;
+        var rc = rcOf(r);
+        if (rc.instanceOf || rc.msd || rc.isInstance) return;          // borrows another layer's rows
+        if (r.feature_count != null || r.data_bytes != null) return;
+        out.push(finding("stats-unstamped", "info", r.slug || r.id,
+          "no feature_count or data_bytes stored — the dashboard and the storage meter cannot see this layer's size, so it bills without appearing",
+          "stamp the stats when the layer's rows change (the same place import and merge stamp type and owner)"));
+      });
+    });
+
     return out;
   };
 

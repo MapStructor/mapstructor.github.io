@@ -278,7 +278,7 @@
     try {
       var tree = (typeof layers !== 'undefined') ? layers : [];
       var findings = []
-        .concat(MSAudit.checkRows({ layers: nodesAsRows(), skip: ['layer-ownerless', 'link-parent-missing'] }))
+        .concat(MSAudit.checkRows({ layers: nodesAsRows(), skip: ['layer-ownerless', 'link-parent-missing', 'stats-unstamped', 'sort-order-broken', 'derived-identity-stored'] }))   // these need the real ROW: the tree carries no feature_count/data_bytes/project_layers, and its nodes hold containerId/toggleElement because the loader DERIVED them — which is the opposite of the defect that rule looks for
         .concat(MSAudit.checkTree(tree, {}))
         .concat(MSAudit.checkLive({ layers: tree, map: (typeof beforeMap !== 'undefined') ? beforeMap : null }));
       if (!o.full) {
