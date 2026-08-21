@@ -126,8 +126,26 @@ const identical = [...byHash.values()].filter((g) => g.length > 1 && new Set(g.m
 // same-name needs more bulk than an exact match before it means anything
 const bulky = (g) => g.every((f) => f.lines >= MIN_LINES);
 const identicalKeys = new Set(identical.flat().map((f) => f.rel + ":" + f.line));
+/* Bulk is the wrong confidence signal for a SHORT pair, and using it as the only one hid the most
+   expensive bug of 8/21: `opKeyFor` is a one-liner mirrored between editing.js and viewerTable.js,
+   the two copies had drifted to different fallbacks, and nine layers got a different paint property
+   in the editor than in the viewer. One line, invisible to a 4-line floor.
+   Similarity is the right signal there — but short bodies have few tokens, so two unrelated
+   one-liners can score high by accident. Hence a stricter bar for shorts: high overlap AND enough
+   distinct tokens for the overlap to mean something. */
+const SHORT_SIM = 0.75, SHORT_MIN_TOKENS = 8;
+const shortButAlike = (g) => {
+  const t = (f) => new Set((f.norm.toLowerCase().match(/[a-z_$][\w$]*|\d+|[^\s\w]/g) || []));
+  for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+    const A = t(g[i]), B = t(g[j]);
+    if (A.size < SHORT_MIN_TOKENS || B.size < SHORT_MIN_TOKENS) continue;
+    let inter = 0; for (const x of A) if (B.has(x)) inter++;
+    if (inter / (A.size + B.size - inter) >= SHORT_SIM) return true;
+  }
+  return false;
+};
 const sameName = [...byName.values()].filter((g) =>
-  g.length > 1 && bulky(g) && new Set(g.map((f) => f.rel)).size > 1 && !g.every((f) => identicalKeys.has(f.rel + ":" + f.line)));
+  g.length > 1 && (bulky(g) || shortButAlike(g)) && new Set(g.map((f) => f.rel)).size > 1 && !g.every((f) => identicalKeys.has(f.rel + ":" + f.line)));
 
 const live = (gs) => gs.filter((g) => !g.some((f) => f.ok));
 const idLive = live(identical), snLive = live(sameName);

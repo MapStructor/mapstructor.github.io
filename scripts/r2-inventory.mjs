@@ -38,6 +38,11 @@ const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 const hmac = (k, s) => crypto.createHmac("sha256", k).update(s).digest();
 const enc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
 
+/* twin-ok: SigV4 listing copied from r2-sweep.mjs, deliberately. That script is the owner's
+   approval path for a 750 MB deletion; refactoring a shared module out from under it to save
+   twenty lines in a read-only report is the wrong trade while it is load-bearing. The copy also
+   differs where it matters: no `prefix` parameter, because the whole point here is the UNFILTERED
+   listing that r2-sweep's prefix scoping cannot give. */
 async function listPage(token) {
   const host = ENDPOINT.replace("https://", "");
   const q = { "list-type": "2", "max-keys": "1000" };

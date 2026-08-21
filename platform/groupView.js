@@ -22,8 +22,12 @@
     };
     var fam = {}, active = null, hoverVal = null, lock = false;
 
+    /* twin-ok: the same two-swipe-maps idiom as deckScrub.js eachMap, deliberately local — it is
+       three lines and shared state between these two modules would cost more than it saves.
+       `beforeMap` was referenced bare here and guarded there, so this copy threw where the other
+       returned quietly; guarded now so the pair really is equivalent. */
     function eachMap(cb) {
-      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) { if (pr[1]) cb(pr[1], pr[0]); });
+      [['left', (typeof beforeMap !== 'undefined' ? beforeMap : null)], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) { if (pr[1]) cb(pr[1], pr[0]); });
     }
     function groupedNodes() {
       var out = [];
