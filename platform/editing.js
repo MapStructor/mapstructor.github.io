@@ -5379,8 +5379,11 @@
     delete featureToDb[drawId]; delete featureMeta[drawId]; delete featureLayer[drawId]; delete _geomSnap[drawId];
   }
   async function addDrawnFeature(drawId, geom, lyr, props) {
-    var ins = await db.from('features').insert({ layer_id: lyr, geom: geom }).select('feature_id').single();
-    if (!ins.error) { featureToDb[drawId] = ins.data.feature_id; featureMeta[drawId] = { label: '', notes: '', start: '', end: '' }; featureLayer[drawId] = lyr; }
+    // undo/paste path: if this insert is refused the shape is on the canvas with no database row
+    // behind it, so every later edit to it silently targets nothing
+    var insR = await saveSoft(db.from('features').insert({ layer_id: lyr, geom: geom }).select('feature_id'), 'restoring the feature');
+    var ins = { error: insR.error, data: Array.isArray(insR.data) ? insR.data[0] : insR.data };
+    if (!ins.error && ins.data) { featureToDb[drawId] = ins.data.feature_id; featureMeta[drawId] = { label: '', notes: '', start: '', end: '' }; featureLayer[drawId] = lyr; }
     try { if (draw && !draw.get(drawId)) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props || {} }); } catch (e) {}
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
   }
@@ -5419,8 +5422,9 @@
     for (var i = 0; i < cap.length; i++) {
       var c = cap[i];
       try {
-        var ins = await db.from('features').insert({ layer_id: c.lyr, geom: c.geom, label: c.label, description: c.description, start_date: c.start_date, end_date: c.end_date, custom_fields: c.custom_fields }).select('feature_id').single();
-        if (!ins.error) {
+        var insU = await saveSoft(db.from('features').insert({ layer_id: c.lyr, geom: c.geom, label: c.label, description: c.description, start_date: c.start_date, end_date: c.end_date, custom_fields: c.custom_fields }).select('feature_id'), 'undoing the delete');
+        var ins = { error: insU.error, data: Array.isArray(insU.data) ? insU.data[0] : insU.data };
+        if (!ins.error && ins.data) {
           featureToDb[c.drawId] = ins.data.feature_id; featureLayer[c.drawId] = c.lyr;
           featureMeta[c.drawId] = { label: c.label || '', notes: c.description || '', start: c.start_date ? String(c.start_date).slice(0, 10) : '', end: c.end_date ? String(c.end_date).slice(0, 10) : '' };
           try { if (draw && !draw.get(c.drawId)) draw.add({ type: 'Feature', id: c.drawId, geometry: c.geom, properties: c.props || {} }); } catch (e) {}
@@ -7475,7 +7479,9 @@
         var orc = (cur.data && cur.data.raw_config) || {};
         if (O.colorBy) orc.colorBy = O.colorBy; else delete orc.colorBy;
         orc.outlineMatchFill = true;
-        await db.from('layers').update({ paint: O.paint, raw_config: orc }).eq('id', oLid);
+        // the outline follows the fill's colour; a silent refusal here leaves the border on the OLD
+        // colour after reload while the fill wears the new one
+        await saveSoft(db.from('layers').update({ paint: O.paint, raw_config: orc }).eq('id', oLid), 'saving the matching border colour');
       } catch (e) { console.warn('editing: matched outline sync failed', e); }
     }
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
