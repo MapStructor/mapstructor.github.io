@@ -5629,7 +5629,14 @@
     try {
       var P = window.MapStructorPricing; if (!P) return;
       var u = await db.auth.getUser(); var uid = u && u.data && u.data.user && u.data.user.id;
-      if (!uid) { if (_storageTries++ < 40) setTimeout(checkStorage, 1500); return; }   // session not ready yet — retry (slow boots can take a while; the DB trigger is the hard backstop regardless)
+      if (!uid) {
+        if (_storageTries++ < 40) { setTimeout(checkStorage, 1500); return; }   // session not ready yet — retry (slow boots can take a while; the DB trigger is the hard backstop regardless)
+        // 60 seconds without a session: the quota check never runs this session, so the
+        // over-quota banner never appears and the first sign of being full is a refused save.
+        if (window.MSGuard) MSGuard.cliff('storage-check-giveup', _storageTries, 40,
+          'your storage usage could not be checked this session, so the space warning will not appear (saving is still protected by the server)');
+        return;
+      }
       // the ADMIN account is quota-exempt (for now) — no banner, no gate; the platform-wide
       // free-infra alert lives on admin.html instead (30% of the Supabase free plan).
       // The ?storagefull=1 test seam OVERRIDES the exemption (it exists to force the full

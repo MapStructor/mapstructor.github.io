@@ -314,6 +314,11 @@
         if (order) {
           var col;
           if (order.selFids) {
+            // Sorting by "selected first" only considers the first 500 selected ids, so past that
+            // the rest of the selection sorts as if it were not selected — the table looks wrong
+            // rather than slow.
+            if (typeof window !== "undefined" && window.MSGuard) window.MSGuard.cliff("sort-by-selection-cap", order.selFids.length, 500,
+              "sorting by selection only groups the first 500 selected rows, so the rest stay where they were");
             var lits = order.selFids.slice(0, 500).map(sq).join(",") || "''";
             col = "(CASE WHEN feature_id IN (" + lits + ") THEN 0 ELSE 1 END)";
             ob = " ORDER BY " + col + " " + (order.dir === "desc" ? "DESC" : "ASC") + ", feature_id";

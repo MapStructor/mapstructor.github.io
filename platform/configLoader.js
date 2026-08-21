@@ -500,7 +500,15 @@ var ConfigLoader = (function () {
     var drawnIds = (l.data || []).filter(function (pl) {
       if (!pl.layers || pl.layers.source_type !== "geojson-supabase" || pl.layers.enabled_by_default === false) return false;
       var hraw = pl.layers.raw_config || {};
-      if (hraw.heavyGeom && !hraw.pmtiles) return false;
+      if (hraw.heavyGeom && !hraw.pmtiles) {
+        // Deliberate (see the note above): pulling this layer's rows back would reproduce the
+        // out-of-memory the streaming import avoided. But the RESULT is a layer that is ticked on
+        // and draws nothing at all, which is indistinguishable from broken — so say it once.
+        if (typeof window !== "undefined" && window.MSGuard) window.MSGuard.warnOnce("heavy-awaiting-tiles:" + (pl.layers.slug || pl.layers.id),
+          "this layer is too large to load directly and is waiting for its tiles, so it is switched on but showing nothing",
+          "re-bake it from the layer panel to make it draw");
+        return false;
+      }
       return true;
     }).map(function (pl) { return pl.layers.id; });
     if (drawnIds.length) {

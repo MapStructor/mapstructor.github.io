@@ -464,7 +464,13 @@
   // maps that have none
   var t = 0;
   (function hook() {
-    if (++t > 40) return;
+    if (++t > 40) {
+      // ~20s and the map never appeared: deck's idle hook is never attached, so its faster scrub
+      // silently never engages for the whole session — "the same map is fast one day, slow the next".
+      if (typeof window !== "undefined" && window.MSGuard) window.MSGuard.cliff("deck-hook-giveup", t, 40,
+        "the faster timeline renderer gave up waiting for the map and will not be used this session — reload if the timeline feels slow");
+      return;
+    }
     var m = typeof beforeMap !== "undefined" ? beforeMap : null;
     if (!m || !m.on) return void setTimeout(hook, 500);
     m.on("idle", function () { try { D.warm(); } catch (e) {} });
