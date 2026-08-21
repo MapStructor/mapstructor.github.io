@@ -201,6 +201,14 @@
       try {
         var rt = await db.rpc('ms_trash_layer_if_orphaned', { p_layer: d.added[m], p_project: projectId });
         if (!rt.error) report.trashed++;
+        // A layer that could not be trashed stays live and keeps using storage. The report counted
+        // only successes and said nothing about the rest, so a revert that half-worked read as a
+        // revert that worked. Missing function stays tolerated (layer-trash-setup.sql).
+        else if (!/does not exist|could not find|schema cache/i.test(rt.error.message || '')) {
+          report.trashFailed = (report.trashFailed || 0) + 1;
+          if (window.MSGuard) MSGuard.warnOnce('revert-trash-failed',
+            'a layer this revert removed could not be moved to Trash, so it stays live and keeps using storage', rt.error.message);
+        }
       } catch (eT) {}
     }
     return report;

@@ -482,7 +482,10 @@
           // visible on the dashboard, billed until "Delete forever" there. Without this the
           // kept-for-undo row outlived the session as an invisible orphan billing its owner
           // forever. Tolerates the migration not being run yet (see layer-trash-setup.sql).
-          try { await db.rpc('ms_trash_layer_if_orphaned', { p_layer: lid, p_project: projectId }); } catch (e) {}
+          try {
+            var tr0 = await db.rpc('ms_trash_layer_if_orphaned', { p_layer: lid, p_project: projectId });
+            msTrashRpcCheck(tr0);
+          } catch (e) {}
         }
         removeMapLayers(node.id, true);     // the layer is going away — take every companion with it
         removeFromTree(layers, node);
@@ -496,7 +499,7 @@
           }
           async function reremove() {
             if (llid) await saveGuard(db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', llid), null, 'Undo failed to save').catch(function () {});
-            if (llid) { try { await db.rpc('ms_trash_layer_if_orphaned', { p_layer: llid, p_project: projectId }); } catch (e) {} }   // redo re-trashes, same as the primary path
+            if (llid) { try { msTrashRpcCheck(await db.rpc('ms_trash_layer_if_orphaned', { p_layer: llid, p_project: projectId })); } catch (e) {} }   // redo re-trashes, same as the primary path
             removeMapLayers(n.id, true); removeFromTree(layers, n); rerender(); await loadFeatures();
           }
           pushUndo(readd, reremove, 'delete ' + (n.label || 'layer'));
@@ -3377,6 +3380,21 @@
   // saveGuard keeps owning the UI POLICY: toast + "Save failed" status + re-throw.
   // opts.rows === 'some' additionally fails a write that succeeded and changed NOTHING (an RLS
   // no-op) — the call site must add .select('id') for there to be anything to count.
+  /* The trash-orphan RPC is fire-and-forget by design, but it was ALSO silent, and supabase-js
+     resolves with `{error}` rather than throwing — so `try { await db.rpc(...) } catch {}` never
+     fired and a failure did nothing at all. The comment at its call site says what that costs: the
+     kept-for-undo row "outlived the session as an invisible orphan billing its owner forever",
+     which is exactly the shape of the 910 MB found on 8/21.
+     A MISSING function stays tolerated — layer-trash-setup.sql may not have been run, and that is
+     a documented state, not a failure. Everything else is now said out loud, once. */
+  function msTrashRpcCheck(res) {
+    var err = res && res.error;
+    if (!err || !window.MSGuard) return;
+    if (/does not exist|could not find|schema cache/i.test(err.message || '')) return;
+    MSGuard.warnOnce('trash-orphan-failed',
+      'a deleted layer could not be moved to Trash, so it stays live and keeps using storage',
+      err.message || String(err));
+  }
   async function saveGuard(op, okMsg, failLabel, opts) {
     var label = failLabel || 'Save failed';
     var G = (typeof window !== 'undefined' && window.MSGuard) || null;
