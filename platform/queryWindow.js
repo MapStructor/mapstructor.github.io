@@ -230,6 +230,14 @@
     status("Creating the result layer…");
     var src = await db().from("layers").select("name, color, type, paint").eq("id", srcLayerId).single();
     var s = (src && src.data) || {};
+    /* EVERY layers INSERT sets user_id — this one did not, so every layer the query window ever
+       created was ownerless. An ownerless row is invisible to policies keyed on user_id, bills its
+       storage to nobody, and (measured 8/21) seeds more of the same: the copy and instance paths
+       carry the source's owner, so one ownerless layer produces ownerless descendants.
+       Refusing beats writing a row nobody owns — there is no correct null here. */
+    var me = null;
+    try { me = (typeof MapAuth !== "undefined" && MapAuth.currentUser) ? await MapAuth.currentUser() : null; } catch (eU) {}
+    if (!me || !me.id) throw new Error("not signed in — refusing to create a layer with no owner");
     var row = {
       slug: "msq" + Math.random().toString(36).slice(2, 8),
       name: (s.name || "layer") + " " + suffix,
@@ -237,7 +245,8 @@
       type: s.type || "line",
       source_type: "geojson-supabase",
       paint: s.paint || null,
-      enabled_by_default: true
+      enabled_by_default: true,
+      user_id: me.id
     };
     var nl = await db().from("layers").insert(row).select("id").single();
     if (nl.error) throw new Error("layer insert: " + nl.error.message);

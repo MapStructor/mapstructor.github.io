@@ -3663,6 +3663,9 @@
     // the COPIER owns the copy (8/5): strip() used to carry the SOURCE's user_id, so a cross-user
     // copy billed its storage to the person being copied FROM, forever. Same-owner copies unchanged.
     if (ownerId) nl.user_id = ownerId;
+    // strip() keeps the source's user_id, so with no ownerId an ownerless source made an ownerless
+    // COPY — the same cascade as the instance path. A copy with no owner is worse than no copy.
+    if (!nl.user_id) throw new Error('cannot copy a layer with no owner — sign in and try again');
     // fresh bake identity: drop the dirty-check stamps so the copy's FIRST Publish bakes its
     // OWN tiles/rasters into its own storage path (until then it renders from the source
     // map's archives — same pixels, shared files, fully independent after one publish)
@@ -8698,9 +8701,14 @@
         // the CREATOR owns the instance — same rule as copyLayerInto. Carrying the SOURCE's
         // user_id made instancing someone else's layer insert a row you don't own, which
         // layers_insert refuses (and would have billed its storage to them).
-        user_id: userId || src.user_id || null,
+        // …and never `|| null`. That fallback is how an ownerless SOURCE produced an ownerless
+        // INSTANCE: measured 8/21, the one ownerless layer created in the last 30 days came
+        // through here, inheriting null from a source that was itself ownerless in June.
+        // Absence is not an owner — refuse rather than write a row nobody owns.
+        user_id: userId || src.user_id,
         raw_config: rc
       };
+      if (!row.user_id) throw new Error('cannot create an instance with no owner — sign in and try again');
       var ins = await db.from('layers').insert(row).select('id').single();
       if (ins.error) throw new Error(ins.error.message);
       var pl = await db.from('project_layers').select('sort_order, section_id, group_id').eq('project_id', projectId).eq('layer_id', srcLid).limit(1);
