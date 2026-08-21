@@ -450,14 +450,16 @@
             else removeFromTree(layers, cnode);
             if (cnode._dbId) {
               try {
-                // same FK-cascade guard as the primary delete path (see onDelete)
+                // same FK-cascade guard as the primary delete path (see onDelete).
+                // These detach-then-delete writes MUST report: if a detach silently changes nothing
+                // the delete on the next line is exactly the FK cascade this guard exists to prevent.
                 if (ctype === 'section') {
-                  await db.from('layer_groups').update({ section_id: null }).eq('section_id', cnode._dbId);
-                  await db.from('project_layers').update({ section_id: null }).eq('section_id', cnode._dbId);
+                  await saveSoft(db.from('layer_groups').update({ section_id: null }).eq('section_id', cnode._dbId), 'detaching groups from the section');
+                  await saveSoft(db.from('project_layers').update({ section_id: null }).eq('section_id', cnode._dbId), 'detaching layers from the section');
                 } else {
-                  await db.from('project_layers').update({ group_id: null }).eq('group_id', cnode._dbId);
+                  await saveSoft(db.from('project_layers').update({ group_id: null }).eq('group_id', cnode._dbId), 'detaching layers from the group');
                 }
-                await db.from(table).delete().eq('id', cnode._dbId);
+                await saveSoft(db.from(table).delete().eq('id', cnode._dbId), 'deleting the ' + ctype);
               } catch (e) {}
             }
             rerender(); await persistOrder();
@@ -483,7 +485,7 @@
         (function (n, llid, fields, arr, idx) {
           async function readd() {
             if (llid) await saveGuard(db.from('project_layers').insert({ project_id: projectId, layer_id: llid, section_id: fields ? fields.section_id : null, group_id: fields ? fields.group_id : null, sort_order: fields ? fields.sort_order : nextSort++ }), null, 'Undo failed to save').catch(function () {});
-            if (llid) { try { await db.from('layers').update({ deleted_at: null }).eq('id', llid); } catch (e) {} }   // un-trash — pairs with ms_trash_layer_if_orphaned on delete
+            if (llid) await saveSoft(db.from('layers').update({ deleted_at: null }).eq('id', llid), 'restoring the layer from Trash');   // un-trash — pairs with ms_trash_layer_if_orphaned on delete
             if (arr) arr.splice(Math.min(idx, arr.length), 0, n); else layers.push(n);
             rerender(); await loadFeatures();
             if (isTilesetNode(n)) renderTilesetOnMap(n);   // (large geojson layers re-render on reload)
@@ -848,7 +850,7 @@
       if (geomKind && !node.type) {
         node.type = geomKind;
         node.iconType = TILESET_ICON[geomKind] || 'square';
-        try { await db.from('layers').update({ type: geomKind }).eq('id', destLid); } catch (eT) {}
+        await saveSoft(db.from('layers').update({ type: geomKind }).eq('id', destLid), 'stamping the merged layer geometry type');   // silently losing this stamp is what drew a merged layer as vertex dots (8/19)
       }
       say('Merged ' + wrote.toLocaleString() + ' rows. Loading…');
       try { await loadFeatures(); } catch (eLF) {}
@@ -2745,7 +2747,7 @@
         var rcC = row.raw_config || {};
         if (rcC.rebakeStartedAt) {
           delete rcC.rebakeStartedAt; delete node.rebakeStartedAt;
-          await db.from('layers').update({ raw_config: rcC }).eq('id', row.id);
+          await saveSoft(db.from('layers').update({ raw_config: rcC }).eq('id', row.id), 'recording the finished bake');
         }
       } catch (eClr) {}
       await ensurePmtSw();   // resume-on-load pages never registered it either (no tiled layer at boot)
@@ -3008,7 +3010,7 @@
         if (wantsFold) { node.fold_state = 'folding'; _foldWatch.push({ node: node, layerId: layerId }); }
         else if (lrow.fold_state === 'folding') {
           node.fold_state = null;
-          try { await db.from('layers').update({ fold_state: 'live' }).eq('id', layerId); } catch (eFs) {}
+          await saveSoft(db.from('layers').update({ fold_state: 'live' }).eq('id', layerId), 'marking the layer live');   // a silently-skipped flip is exactly the half-folded hybrid found on 8/20
         }
         if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; if (parent.type === 'group') node.topLayerClass = parent.id; }
         else layers.push(node);
@@ -3304,13 +3306,40 @@
   // an un-checked write drops the error and the UI still reads "Saved". saveGuard awaits the write,
   // treats {error} OR a throw as failure → prominent toast + the "Save failed" status (which arms the
   // unsaved-changes guard, since the data is NOT persisted) → re-throws so callers can revert/react.
-  async function saveGuard(op, okMsg, failLabel) {
+  // The DETECTION of "did this write happen" lives in MSGuard (platform/guards.js) so the browser
+  // and the headless gates judge a write the same way, and so every failure lands in one log.
+  // saveGuard keeps owning the UI POLICY: toast + "Save failed" status + re-throw.
+  // opts.rows === 'some' additionally fails a write that succeeded and changed NOTHING (an RLS
+  // no-op) — the call site must add .select('id') for there to be anything to count.
+  async function saveGuard(op, okMsg, failLabel, opts) {
+    var label = failLabel || 'Save failed';
+    var G = (typeof window !== 'undefined' && window.MSGuard) || null;
+    if (G) {
+      var res = await G.save(label, (typeof op === 'function' ? op() : op), { rows: opts && opts.rows });
+      if (!res.ok) { setStatus('Save failed'); showToast(label + ': ' + ((res.error && res.error.message) || 'error')); throw new Error((res.error && res.error.message) || 'write failed'); }
+      if (okMsg) setStatus(okMsg);
+      return { data: res.data, error: null };
+    }
     var r;
     try { r = await (typeof op === 'function' ? op() : op); }
-    catch (e) { setStatus('Save failed'); showToast((failLabel || 'Save failed') + ': ' + (e && e.message ? e.message : 'error')); throw e; }
-    if (r && r.error) { setStatus('Save failed'); showToast((failLabel || 'Save failed') + ': ' + (r.error.message || 'error')); throw new Error(r.error.message || 'write failed'); }
+    catch (e) { setStatus('Save failed'); showToast(label + ': ' + (e && e.message ? e.message : 'error')); throw e; }
+    if (r && r.error) { setStatus('Save failed'); showToast(label + ': ' + (r.error.message || 'error')); throw new Error(r.error.message || 'write failed'); }
     if (okMsg) setStatus(okMsg);
     return r;
+  }
+  // Same detector, softer policy: report the failure, do NOT throw. This is for the write paths
+  // that historically swallowed their errors (`catch (e) {}`) — routing them through a THROWING
+  // guard would change control flow in undo/redo and import paths, which is a different and
+  // riskier change than making the failure visible. Absence stops being silent; nothing else moves.
+  async function saveSoft(op, label, opts) {
+    var G = (typeof window !== 'undefined' && window.MSGuard) || null;
+    if (!G) {
+      try { var r0 = await (typeof op === 'function' ? op() : op); if (r0 && r0.error) console.error('[MapStructor] save failed: ' + label + ' — ' + (r0.error.message || 'error')); return r0; }
+      catch (e0) { console.error('[MapStructor] save failed: ' + label + ' — ' + ((e0 && e0.message) || e0)); return { data: null, error: e0 }; }
+    }
+    var res = await G.save(label, (typeof op === 'function' ? op() : op), { rows: opts && opts.rows });
+    if (!res.ok) showToast('Not saved — ' + label + ': ' + ((res.error && res.error.message) || 'error'), 5000);
+    return { data: res.data, error: res.ok ? null : res.error };
   }
   // ── Map settings: rename the map + save the current view as its default (per-project `projects` row) ──
   // ── In-place popup editing: clicking the ℹ "About" button (or a layer/group info button) opens the
@@ -5314,7 +5343,7 @@
     _suppressFeatureDelete = true;
     try { if (draw && draw.get(drawId)) draw.delete(drawId); } catch (e) {}
     setTimeout(function () { _suppressFeatureDelete = false; }, 0);
-    if (fid) { try { await db.from('features').delete().eq('feature_id', fid); } catch (e) {} }
+    if (fid) await saveSoft(db.from('features').delete().eq('feature_id', fid), 'removing the feature');
     delete featureToDb[drawId]; delete featureMeta[drawId]; delete featureLayer[drawId]; delete _geomSnap[drawId];
   }
   async function addDrawnFeature(drawId, geom, lyr, props) {
@@ -5326,7 +5355,7 @@
   async function setDrawnGeom(drawId, geom) {
     var fid = featureToDb[drawId];
     var EBg = _engineEditNode[drawId] ? getEditBackend(_engineEditNode[drawId]) : PLATFORM_FEATURES;   // Phase 2a
-    if (fid) { try { var gpatch = {}; gpatch[EBg.geomCol] = toDbGeom(drawId, geom); await EBg.db.from(EBg.table).update(gpatch).eq(EBg.idCol, fid); } catch (e) {} }
+    if (fid) { var gpatch = {}; gpatch[EBg.geomCol] = toDbGeom(drawId, geom); await saveSoft(EBg.db.from(EBg.table).update(gpatch).eq(EBg.idCol, fid), 'saving the moved shape'); }
     try { var f = draw && draw.get(drawId); var props = f ? f.properties : {}; _suppressFeatureDelete = true; if (f) draw.delete(drawId); if (draw) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props }); setTimeout(function () { _suppressFeatureDelete = false; }, 0); } catch (e) {}
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
   }
@@ -5452,7 +5481,7 @@
     var drawId = 'pst-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
     var props = featureProps(node);   // full styling (radius, opacity, outline, width…) so the copy matches the layer immediately
     await addDrawnFeature(drawId, geom, lid, props);
-    if (!node.type) { node.type = gtype; node.iconType = GEOM_TO_ICON[_clipboard.type] || node.iconType; try { await db.from('layers').update({ type: gtype }).eq('id', lid); } catch (e) {} rerender(); }
+    if (!node.type) { node.type = gtype; node.iconType = GEOM_TO_ICON[_clipboard.type] || node.iconType; await saveSoft(db.from('layers').update({ type: gtype }).eq('id', lid), 'stamping the pasted layer geometry type'); rerender(); }
     pushUndo(function () { return removeDrawnFeature(drawId); }, function () { return addDrawnFeature(drawId, geom, lid, props); }, 'paste');
     setStatus('Pasted');
   }
@@ -7118,7 +7147,7 @@
       var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
       var rc = (cur.data && cur.data.raw_config) || {};
       if (node.legend) rc.legend = true; else delete rc.legend;
-      await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      await saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid), 'saving the legend setting');
     } catch (e) {}
   }
   // ── Style categories under the layer (7/20) — nested sub-rows in the sidebar, each with a
@@ -7160,7 +7189,7 @@
       if (node.styleRows) rc.styleRows = true; else delete rc.styleRows;
       if (node.styleHidden && node.styleHidden.length) rc.styleHidden = node.styleHidden; else delete rc.styleHidden;
       if (typeof node.styleBaseOp === 'number') rc.styleBaseOp = node.styleBaseOp; else delete rc.styleBaseOp;
-      await db.from('layers').update({ paint: node.paint, raw_config: rc }).eq('id', lid);
+      await saveSoft(db.from('layers').update({ paint: node.paint, raw_config: rc }).eq('id', lid), 'saving the style rows');
     } catch (e) {}
   }
   function toggleStyleCat(id, key, visible) {
@@ -8443,14 +8472,14 @@
     if (value == null) return clearStyleMetaRC(lid2, key);
     db.from('layers').select('raw_config').eq('id', lid2).single().then(function (cur) {
       var rc = (cur.data && cur.data.raw_config) || {}; rc[key] = value;
-      return db.from('layers').update({ raw_config: rc }).eq('id', lid2);
+      return saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid2), 'saving the style setting');
     }).then(function () {}, function () {});
   }
   function clearStyleMetaRC(lid2, key) {
     if (!lid2) return;
     db.from('layers').select('raw_config').eq('id', lid2).single().then(function (cur) {
       var rc = (cur.data && cur.data.raw_config) || {}; delete rc[key];
-      return db.from('layers').update({ raw_config: rc }).eq('id', lid2);
+      return saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid2), 'clearing the style setting');
     }).then(function () {}, function () {});
   }
   async function onStyleNumBy(kind, prop) {
@@ -9614,7 +9643,7 @@
         var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
         var rc = (cur.data && cur.data.raw_config) || {};
         rc.attrView = node.attrView;
-        await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+        await saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid), 'saving the table column layout');
       } catch (e) {}
     }, 400);
   }
@@ -11128,7 +11157,7 @@
         if (!lid) return;
         db.from('layers').select('raw_config').eq('id', lid).single().then(function (cur) {
           var rc = (cur.data && cur.data.raw_config) || {}; delete rc.colorBy;
-          return db.from('layers').update({ raw_config: rc }).eq('id', lid);
+          return saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid), 'saving the colour');
         }).then(function () {}, function () {});
       })(slugToLayerDbId[node.id]);
     } else if (_colorExpr) {
@@ -11281,7 +11310,7 @@
     node.iconColor = color || '#3bb2d0'; node.paint = paint ? JSON.parse(JSON.stringify(paint)) : null;
     var op = paintOpacity(paint), outline = paintOutline(paint), ov = (paint && paint['line-opacity'] != null) ? paint['line-opacity'] : null, w = paintWidth(paint), rad = (paint && paint['circle-radius'] != null) ? paint['circle-radius'] : null;
     applyLayerStylePreview(node, op, outline, ov, w, rad);
-    var lid = slugToLayerDbId[slug]; if (lid) { try { await db.from('layers').update({ color: node.iconColor, paint: node.paint }).eq('id', lid); } catch (e) {} }
+    var lid = slugToLayerDbId[slug]; if (lid) await saveSoft(db.from('layers').update({ color: node.iconColor, paint: node.paint }).eq('id', lid), 'applying the style change');
     var icon = (document.querySelector('.layer-list-row[data-node-id="' + slug + '"] label i')); if (icon && node.iconColor) icon.style.color = node.iconColor;
     if (activeLayerId === slug) showLayerPanel(slug);
   }

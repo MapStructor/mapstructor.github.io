@@ -452,6 +452,10 @@
          structural change). Must load BEFORE editing.js. Removing this line disables it cleanly:
          editing.js checks `typeof MSAudit` and stays silent when it isn't there. -->
     <script>document.write('<script src="../platform/audit.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
+    <!-- guards.js = absence is an error at the boundary (MSGuard.warnOnce / MSGuard.save).
+         Must load BEFORE editing.js. Removing this line degrades cleanly: every call site
+         checks `window.MSGuard` and falls back to the plain call. -->
+    <script>document.write('<script src="../platform/guards.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
     <script>document.write('<script src="../platform/editing.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
 
     <!-- Save-to-account: anonymous maps live only at their URL; claim them via the shared MapAuth modal (dev plan Step 6 funnel).
