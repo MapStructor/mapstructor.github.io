@@ -787,9 +787,10 @@
      not the thing the owner means by "msids never change". */
   async function runMerge(spec, onStatus, onDone) {
     var say = function (m) { try { onStatus(m); } catch (e) {} };
+    var node = null, wroteSoFar = 0;   // hoisted: the failure path has to be able to name what it left behind
     try {
       say('Creating the merged layer…');
-      var node = await addItem('layer', spec.name || 'Merged layer', null);
+      node = await addItem('layer', spec.name || 'Merged layer', null);
       if (!node) throw new Error('could not create the layer');
       var destLid = slugToLayerDbId[node.id];
       if (!destLid) throw new Error('the new layer has no database id');
@@ -837,6 +838,7 @@
             var ins = await db.from('features').insert(rows.slice(i, i + 250));
             if (ins.error) throw new Error('write failed after ' + wrote + ' rows: ' + ins.error.message);
             wrote += Math.min(250, rows.length - i);
+            wroteSoFar = wrote;   // the failure path reports how far it got
           }
           done += r.data.length;
           say('Merging… ' + wrote.toLocaleString() + ' of ' + totalIn.toLocaleString() + ' rows');
@@ -875,6 +877,24 @@
       }
     } catch (e) {
       console.warn('merge failed', e);
+      // A merge that dies partway has ALREADY created the destination layer and may have copied
+      // thousands of rows into it. Left alone it sits in the sidebar under the name the person
+      // chose, looking exactly like a finished merge — so the next thing they do is trust it.
+      // Nothing is deleted here (the rows are real, and an error path is the worst place to
+      // destroy data); the layer is simply made to say what it is.
+      try {
+        if (node && node.id) {
+          var partialName = (spec.name || 'Merged layer') + ' — incomplete (' + wroteSoFar.toLocaleString() + ' rows)';
+          node.label = partialName;
+          var plid = slugToLayerDbId[node.id];
+          if (plid) await saveSoft(db.from('layers').update({ name: partialName }).eq('id', plid), 'marking the incomplete merge');
+          rerender();
+        }
+      } catch (eMark) { console.warn('could not mark the incomplete merge', eMark); }
+      if (window.MSGuard) MSGuard.warn('merge-incomplete',
+        'the merge stopped partway — its layer holds only part of the data and is marked "incomplete" in the sidebar',
+        wroteSoFar + ' rows copied before: ' + ((e && e.message) || e));
+      setStatus('Merge stopped — the partial layer is marked "incomplete"');
       onDone(String(e && e.message || e));
     }
   }
