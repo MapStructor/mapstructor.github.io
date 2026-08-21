@@ -862,7 +862,7 @@
 
   function scheduleSave() {
     clearTimeout(_saveTimer);
-    _saveTimer = setTimeout(saveProject, 1200);
+    _saveTimer = setTimeout(saveProject, 1200);   // cliff-ok: an autosave debounce, not a deadline
   }
 
   async function saveProject() {

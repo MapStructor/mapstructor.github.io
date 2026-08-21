@@ -133,7 +133,15 @@
   }
   var tries = 0;
   if (!mountTopbarStar()) {
-    var iv = setInterval(function () { if (mountTopbarStar() || ++tries > 40) clearInterval(iv); }, 250);
+    var iv = setInterval(function () {
+      if (mountTopbarStar()) { clearInterval(iv); return; }
+      if (++tries > 40) {
+        clearInterval(iv);
+        // 10 seconds of trying, then the star simply is not there and nothing says why.
+        if (window.MSGuard) MSGuard.cliff("bookmark-star-giveup", tries, 40,
+          "the ★ bookmark button never mounted — the top bar was not ready in 10s, so the button is missing");
+      }
+    }, 250);
   }
 
   window.MSBookmarks = {

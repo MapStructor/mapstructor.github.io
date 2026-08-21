@@ -98,5 +98,14 @@
   // MapAuth may load after us — try now, then poll briefly
   wireUser();
   var tries = 0;
-  var iv = setInterval(function () { wireUser(); if (bar.querySelector('#ms-topbar-user') || window.__msTopbarUserByPage || ++tries > 40) clearInterval(iv); }, 250);
+  var iv = setInterval(function () {
+    wireUser();
+    if (bar.querySelector('#ms-topbar-user') || window.__msTopbarUserByPage) { clearInterval(iv); return; }
+    if (++tries > 40) {
+      clearInterval(iv);
+      // The header then shows no account at all, which reads as "signed out" to the person.
+      if (window.MSGuard) MSGuard.cliff('topbar-user-giveup', tries, 40,
+        'the signed-in account never appeared in the header — the top bar looks signed out even if you are not');
+    }
+  }, 250);
 })();

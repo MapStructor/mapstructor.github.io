@@ -87,7 +87,7 @@
         } catch (e2) {}
       }
     };
-    if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 15000 }); else setTimeout(go, 4000);
+    if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 15000 }); else setTimeout(go, 4000);   // cliff-ok: an idle prewarm; missing it costs speed, never correctness
   }
   // Speculative memory: each registered sidecar lives in DuckDB's virtual filesystem, so this is a
   // deliberate ceiling on work done for tables nobody may open.

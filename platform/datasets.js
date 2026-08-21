@@ -429,7 +429,7 @@
     }
     if (!job) throw new Error('freeze function: no job appeared');
     var quiet = 0, lastState = '', stale = 0;
-    for (var i = 0; i < 900; i++) {   // 1s cadence, 15 min ceiling — far above any real freeze
+    for (var i = 0; i < 900; i++) {   // 1s cadence, 15 min ceiling — far above any real freeze   // cliff-ok: 15 min ceiling, far above any real freeze
       await new Promise(function (res) { setTimeout(res, 1000); });
       var j = await db.from('freeze_jobs').select('status, phase, error, updated_at').eq('id', job).single();
       if (j.error || !j.data) { if (++quiet > 10) throw new Error('freeze job lost: ' + (j.error && j.error.message)); continue; }

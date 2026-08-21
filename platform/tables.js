@@ -83,10 +83,15 @@
     var r = await db().from("project_layers").select("layers(id, name)").eq("project_id", pid);
     return ((r && r.data) || []).map(function (x) { return x.layers; }).filter(Boolean);
   }
+  var KEY_SAMPLE = 40;
+  /* twin-ok: intentionally mirrored from queryWindow.js layerKeys. CHANGE BOTH, cap included. */
   async function layerKeys(lid) {
-    var r = await db().from("features").select("custom_fields").eq("layer_id", lid).limit(40);
+    var r = await db().from("features").select("custom_fields").eq("layer_id", lid).limit(KEY_SAMPLE);
+    var rows = (r && r.data) || [];
     var keys = {};
-    ((r && r.data) || []).forEach(function (f) { Object.keys(f.custom_fields || {}).forEach(function (k) { keys[k] = 1; }); });
+    rows.forEach(function (f) { Object.keys(f.custom_fields || {}).forEach(function (k) { keys[k] = 1; }); });
+    if (window.MSGuard) MSGuard.cliff("column-sample:" + lid, rows.length, KEY_SAMPLE - 1,
+      "the column list came from the first " + KEY_SAMPLE + " features — a column that only appears later is not listed");
     return ["label"].concat(Object.keys(keys).sort());
   }
   // the join: build { keyValue: {col:val,…} } from the table, one bulk RPC applies it

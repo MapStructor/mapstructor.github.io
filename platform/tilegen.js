@@ -277,10 +277,10 @@
     // directories: root-only while it stays small; leaf directories otherwise (the spec caps
     // header+root at the first 16,384 bytes — readers fetch exactly that much up front)
     var rootBytes, leafBytes = new Uint8Array(0);
-    if (entries.length <= 1200) {
+    if (entries.length <= 1200) {   // cliff-ok: PMTiles format branch — root-only vs leaf directories, both correct
       rootBytes = await gz(serializeDirectory(entries));
     }
-    if (!rootBytes || rootBytes.length > 16257) {
+    if (!rootBytes || rootBytes.length > 16257) {   // cliff-ok: the spec caps header+root at 16,384 bytes
       var CHUNK = 2048, rootEntries = [], leafParts = [], lo = 0;
       for (var s = 0; s < entries.length; s += CHUNK) {
         var chunk = entries.slice(s, s + CHUNK);
@@ -826,8 +826,22 @@
     out.lutCapped = lutCapped;           // ids whose timeline needed more than 8 stretches
     out.palette = palette;               // index → hex; the reader paints each stretch in its own colour (8/14)
     out.bakeMs = Date.now() - t0;
-    if (lutCapped) console.warn("tilegen: " + lutCapped + " of " + out.ids + " pixel timelines held more than 8 stretches — kept the 8 longest");
-    if (palOverflow) console.warn("tilegen: raster palette full (250) — " + palOverflow + " era colours fell back to the layer colour");
+    /* Both of these were console.warn, which means they scrolled past and no test could assert
+       them. Through MSGuard they land in the assertable log, so a gate can prove the bake either
+       did or did not lose colour — and the person can be told, rather than discovering it by
+       noticing the map is the wrong shade. */
+    var GB = (typeof window !== "undefined" && window.MSGuard) || null;
+    if (GB) {
+      /* value = how many were lost, limit = 0: "any at all is too many". Reads honestly in the
+         log ("reached 12, the limit is 0") without inventing a sentinel value for the count. */
+      GB.cliff("raster-lut-stretches", lutCapped, 0,
+        lutCapped + " of " + out.ids + " pixel timelines held more than 8 date stretches — the 8 longest were kept and the rest are not in the bake");
+      GB.cliff("raster-palette-full", palette.length + palOverflow, 249,
+        palOverflow + " era colours did not fit the 250-colour raster palette and fall back to the layer colour");
+    } else {
+      if (lutCapped) console.warn("tilegen: " + lutCapped + " of " + out.ids + " pixel timelines held more than 8 stretches — kept the 8 longest");
+      if (palOverflow) console.warn("tilegen: raster palette full (250) — " + palOverflow + " era colours fell back to the layer colour");
+    }
     console.log("tilegen: indexed instant-scrub raster — " + out.shapes + " shapes, " + out.ids + " ids, LUT " + L.rows + " rows, " + palette.length + " colours, " + Math.round(out.bakeMs / 1000) + "s");
     return out;
   }

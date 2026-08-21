@@ -141,7 +141,13 @@
       refreshAll();
       if (tries > 10) clearInterval(iv);   // ~6 merges over the first minute, all idempotent
     }
-    if (tries > 40) clearInterval(iv);
+    if (tries > 40) {
+      clearInterval(iv);
+      // 4 minutes without the map ever appearing: the person's own columns on Linked layers are
+      // simply not merged in, and the layer looks like it never had them.
+      if (window.MSGuard) MSGuard.cliff("overlay-merge-giveup", tries, 40,
+        "your own columns on Linked layers were never merged in — the map never became ready");
+    }
   }, 6000);
   setTimeout(function () { if (client()) refreshAll(); }, 4000);
 

@@ -105,6 +105,10 @@
     // loadIds can win the race against the map page's own config build, so an early pass sees an
     // EMPTY tree and heals nothing (measured: outlines 0 on a project that has one). Wait for it.
     if (!total && (tries || 0) < 10) { setTimeout(function () { healInvisibleOutlines((tries || 0) + 1); }, 1200); return; }
+    // Twelve seconds of an empty tree and it stops trying — on a slower machine, or a slow first
+    // load, the outlines simply stay invisible and nothing anywhere says the heal never ran.
+    if (!total && window.MSGuard) MSGuard.cliff('outline-heal-giveup', tries || 0, 9,
+      'the layer tree never appeared, so transparent outlines were never repaired — outlines may be invisible until a reload');
     try { window.__msHeal = { nodes: total, outlines: seen, broken: fix.length, tries: tries || 0 }; } catch (eW) {}
     fix.forEach(function (O) {
       var P = findNodeById(layers, O.outlineOf); if (!P) return;
@@ -480,7 +484,7 @@
           // forever. Tolerates the migration not being run yet (see layer-trash-setup.sql).
           try { await db.rpc('ms_trash_layer_if_orphaned', { p_layer: lid, p_project: projectId }); } catch (e) {}
         }
-        removeMapLayers(node.id);           // drop tileset / engine-rendered map layers
+        removeMapLayers(node.id, true);     // the layer is going away — take every companion with it
         removeFromTree(layers, node);
         (function (n, llid, fields, arr, idx) {
           async function readd() {
@@ -493,7 +497,7 @@
           async function reremove() {
             if (llid) await saveGuard(db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', llid), null, 'Undo failed to save').catch(function () {});
             if (llid) { try { await db.rpc('ms_trash_layer_if_orphaned', { p_layer: llid, p_project: projectId }); } catch (e) {} }   // redo re-trashes, same as the primary path
-            removeMapLayers(n.id); removeFromTree(layers, n); rerender(); await loadFeatures();
+            removeMapLayers(n.id, true); removeFromTree(layers, n); rerender(); await loadFeatures();
           }
           pushUndo(readd, reremove, 'delete ' + (n.label || 'layer'));
         })(node, lid, plf, loc ? loc.arr : null, loc ? loc.idx : 0);
@@ -998,7 +1002,14 @@
     var hideNative = fillStrokeWanted(paint) || paint['line-opacity'] === 0;
     return hideNative ? Object.assign({}, paint, { 'fill-outline-color': 'rgba(0,0,0,0)' }) : paint;
   }
-  function editorCurrentDate() {   // the timeline's date as YYYYMMDD, for addMapLayer's filter
+  // THE editor's current timeline date, as YYYYMMDD — for addMapLayer's filter and every caller
+  // that needs "what day is the map showing". One author; `currentMapDate` delegates here.
+  //
+  // KNOWN DEBT, family E: this reads the date back out of the LABEL'S RENDERED TEXT. The label is
+  // a render target, and the moment it is also the source, a formatting change becomes a state
+  // change — which is how a NaN boot shipped twice. The real fix is a `currentDate` owned by the
+  // slider module with the label as an output only; consolidating the copies is the step before it.
+  function editorCurrentDate() {
     try { var d = (window.moment && window.$) ? moment($('#date').text()).format('YYYYMMDD') : ''; return /^\d{8}$/.test(d) ? parseInt(d, 10) : undefined; } catch (e) { return undefined; }
   }
   function renderTilesetOnMap(node) {
@@ -1581,11 +1592,19 @@
   // days were never learned default to always-visible rather than silently vanishing.
   // EXPRESSION syntax throughout — mixing legacy '$type' with expressions makes setFilter
   // throw (the AHM filter bug), so the hl layers' geometry gate is rebuilt as ['geometry-type'].
+  // The ONE owner of the -edited- overlay's date visibility. Other sweeps must call this rather
+  // than enumerate '-edited-' themselves — a fifth copy of the suffix list is the disease.
+  // day === null means "no date rule at all" (the timeline-ignore toggle); it used to be rejected
+  // by the isFinite guard, so turning that toggle ON left the edited features still date-filtered
+  // while every other companion showed everything.
+  // companions-ok: this IS the -edited- owner.
   function applyEditedOverlayDayFilter(day) {
-    if (!isFinite(day)) return;
-    var dOk = ['all', ['<=', ['coalesce', ['get', 'DayStart'], 0], day], ['>=', ['coalesce', ['get', 'DayEnd'], 99999999], day]];
+    var clearing = (day === null);
+    if (!clearing && !isFinite(day)) return;
+    var dOk = clearing ? null : msDateFilter('label', day, false);
     Object.keys(_engineEdited).forEach(function (slug) {
       var node = findNodeById(layers, slug); if (!node) return;
+      // companions-ok: this function IS the -edited- owner.
       var lf = node.timelineIgnore ? null : dOk;
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
         var m = pr[1]; if (!m) return; var lid = slug + '-edited-' + pr[0];
@@ -1603,7 +1622,14 @@
     ];
     [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (m) {
       if (!m) return;
-      HL.forEach(function (pair) { try { if (m.getLayer(pair[0])) m.setFilter(pair[0], pair[1]); } catch (e) {} });
+      // When clearing, the attribute highlights drop their date clause but KEEP their geometry and
+      // fragment clauses — dropping those would stroke tile seams through every shape (8/16).
+      // dOk is the LAST element of every entry above, so dropping it is exact. A bare `true` in its
+      // place would not do: these are legacy-syntax filters and mixing the two forms is invalid.
+      HL.forEach(function (pair) {
+        var f = clearing ? pair[1].slice(0, -1) : pair[1];
+        try { if (m.getLayer(pair[0])) m.setFilter(pair[0], f); } catch (e) {}
+      });
     });
   }
   function finishEngineEdit(node, fid) {
@@ -1836,7 +1862,7 @@
       }
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a'); a.href = url; a.download = safe + ext; document.body.appendChild(a); a.click();
-      setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1500);
+      setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1500);   // cliff-ok: cosmetic cleanup of a blob URL
       setStatus('Downloaded ' + feats.length + ' feature' + (feats.length === 1 ? '' : 's') + ' (' + fmt + ')');
       showButtons();
     } catch (e) { console.warn('editing: export failed', e); if (status) status.textContent = 'Export failed: ' + e.message; if (btn) btn.disabled = false; }
@@ -4908,7 +4934,7 @@
         try { if (hint2) { var s = searchCluster.getBoundingClientRect(); if (s.width) { hint2.style.top = (s.bottom + 11) + 'px'; hint2.style.left = s.left + 'px'; } } } catch (e) {}
       };
       placeHint();
-      var _hintIv = setInterval(placeHint, 500); setTimeout(function () { clearInterval(_hintIv); }, 8000);
+      var _hintIv = setInterval(placeHint, 500); setTimeout(function () { clearInterval(_hintIv); }, 8000);   // cliff-ok: a hint that fades
       window.addEventListener('resize', placeHint);
       var dismissDrawHint = function () { if (!hint) return; hint.remove(); hint = null; };
       var dismissSearchHint = function () { if (!hint2) return; hint2.remove(); hint2 = null; };
@@ -4953,10 +4979,10 @@
             return;
           }
         } catch (e) {}
-        if (++tries > 50) clearInterval(iv);   // compare never showed (single-map deploys) — give up quietly
+        if (++tries > 50) clearInterval(iv);   // compare never showed (single-map deploys) — give up quietly  // cliff-ok: fires on every single-map deploy, so announcing it would be pure noise
       }, 200);
     })();
-    setTimeout(checkStorage, 2500);   // storage-quota state (warn banner / hard-stop) once the session is ready
+    setTimeout(checkStorage, 2500);   // storage-quota state (warn banner / hard-stop) once the session is ready   // cliff-ok: this path has its own retry
     makeHeaderTitleEditable();   // click the map title in the header to rename it
     try { window.infoPanelDefaultHandle = function () {}; } catch (e) {}   // suspend "click map → toggle sidebar" (use the sidebar button instead)
     document.addEventListener('keydown', function (e) {   // Esc cancels measure/split; Ctrl+Z/Y, Ctrl+C/V
@@ -6056,6 +6082,7 @@
         var vis5 = layerOnNow(n5) ? 'visible' : 'none';   // applyLabelLayers adds 'visible' — re-apply the checkbox state
         [[beforeMap, 'left'], [typeof afterMap !== 'undefined' ? afterMap : null, 'right']].forEach(function (pr5) {
           var m5 = pr5[0]; if (!m5) return;
+          // companions-ok: only the label layer was just rebuilt, so only it needs re-hiding.
           try { if (m5.getLayer(n5.id + '-label-' + pr5[1])) m5.setLayoutProperty(n5.id + '-label-' + pr5[1], 'visibility', vis5); } catch (e) {}
         });
       });
@@ -7232,12 +7259,23 @@
   // checkbox that shows/hides that category's features on the map (via a slider-safe opacity
   // expression). Opt-in per layer (node.styleRows); only meaningful for color-by layers. ──
   function opKeyFor(node) { return node.type === 'fill' ? 'fill-opacity' : node.type === 'line' ? 'line-opacity' : 'circle-opacity'; }
+  /* twin-ok: styleCatsFor is intentionally mirrored in viewerTable.js so the viewer can draw the
+     same legend rows without loading the editor. CHANGE BOTH. */
+  var STYLE_CATS_MAX = 20;        // mirrored in viewerTable.js styleCatsFor — change both
   function styleCatsFor(node) {   // [{key,label,color}] — the rows to show; [] for single-color layers
     var cb = node.colorBy;
     if (cb && cb.mode === 'presence') return [{ key: '__present__', label: 'Labeled', color: cb.present || '#3bb2d0' }, { key: '__absent__', label: 'Unlabeled', color: cb.absent || '#cccccc' }];
-    if (cb && cb.mapping) { var ks = Object.keys(cb.mapping); return ks.slice(0, 20).map(function (k) { return { key: k, label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; }); }
+    if (cb && cb.mapping) {
+      var ks = Object.keys(cb.mapping);
+      // Unlike the LEGEND above, which appends "… +N more", these rows are interactive style
+      // controls — so a category past the cap is painted on the map with no row to change it.
+      if (window.MSGuard) MSGuard.cliff('style-cats-cap', ks.length, STYLE_CATS_MAX,
+        'categories past the first ' + STYLE_CATS_MAX + ' are drawn on the map but have no style row you can click');
+      return ks.slice(0, STYLE_CATS_MAX).map(function (k) { return { key: k, label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; });
+    }
     return [];
   }
+  /* twin-ok: intentionally mirrored in viewerTable.js styleOpacityExpr. CHANGE BOTH. */
   function styleOpacityExpr(node) {
     var key = opKeyFor(node), cur = node.paint && node.paint[key];
     if (typeof cur === 'number') node.styleBaseOp = cur;   // remember the flat base before we replace it with an expression
@@ -7628,6 +7666,7 @@
     Object.keys(editByFid).forEach(function (k) { merged.push(editByFid[k]); });   // edits not present in base (rare) still show
     return merged.concat(fresh);
   }
+  // companions-ok: builds and tears down the label layer only, by construction.
   function applyLabelLayers(node) {
     if (typeof msLabelLayerFor !== 'function') return;
     [[beforeMap, 'left'], [typeof afterMap !== 'undefined' ? afterMap : null, 'right']].forEach(function (pair) {
@@ -8067,13 +8106,19 @@
     if (on) node.timelineIgnore = true; else delete node.timelineIgnore;
     // live: clear (on) or re-apply (off) the date filter on both maps, companions included
     var d = (typeof editorCurrentDate === 'function') ? editorCurrentDate() : null;
-    var f = (!on && d) ? ['all', ['<=', 'DayStart', d], ['>=', 'DayEnd', d]] : null;
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
       var m = pair[1]; if (!m) return;
-      [node.id + '-' + pair[0], node.id + '-stroke-' + pair[0], node.id + '-highlighted-' + pair[0]].forEach(function (id) {
-        try { if (m.getLayer(id)) m.setFilter(id, f); } catch (e) {}
+      // LABELS were missing here, so switching "show everything" on left every shape visible with
+      // its label still date-filtered. They follow the same rule with a different expression —
+      // msDateFilter is the sole author of both. (-edited- is owned by applyEditedOverlayDayFilter.)
+      [node.id + '-' + pair[0], node.id + '-stroke-' + pair[0], node.id + '-highlighted-' + pair[0],
+       node.id + '-label-' + pair[0]].forEach(function (id) {
+        try { if (m.getLayer(id)) m.setFilter(id, msDateFilter(msDateKindFor(id), on ? null : d, false)); } catch (e) {}
       });
     });
+    // companions-ok: -edited- is not enumerated here on purpose. It has ONE owner, and the fix for
+    // a missing companion is to call that owner, not to add a fifth copy of the suffix list.
+    try { applyEditedOverlayDayFilter(on ? null : d); } catch (eEd) {}
     setStatus('Saving…');
     try {
       var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
@@ -8228,14 +8273,17 @@
         // so say it loudly instead of letting the status line claim success.
         if (payload.length && !liveMatched) console.warn('live date refresh matched 0 of ' + payload.length + ' features by id — the timeline will not reflect these dates until the page is reloaded');
         var dNow = (typeof editorCurrentDate === 'function') ? editorCurrentDate() : undefined;
-        var fNow = (dNow && !node.timelineIgnore) ? ['all', ['<=', 'DayStart', dNow], ['>=', 'DayEnd', dNow]] : null;
         [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr2) {
           var m2 = pr2[1]; if (!m2) return;
           try { var s2 = m2.getSource(node.id + '-' + pr2[0]); if (s2 && s2.setData) s2.setData(node.source.data); } catch (e2) {}
-          [node.id + '-' + pr2[0], node.id + '-stroke-' + pr2[0], node.id + '-highlighted-' + pr2[0]].forEach(function (lid2) {
-            try { if (m2.getLayer(lid2)) m2.setFilter(lid2, fNow); } catch (e3) {}
+          // -label- added 8/21: re-sourcing left the label layer on the PREVIOUS date filter.
+          [node.id + '-' + pr2[0], node.id + '-stroke-' + pr2[0], node.id + '-highlighted-' + pr2[0],
+           node.id + '-label-' + pr2[0]].forEach(function (lid2) {
+            try { if (m2.getLayer(lid2)) m2.setFilter(lid2, msDateFilter(msDateKindFor(lid2), dNow, node.timelineIgnore)); } catch (e3) {}
           });
         });
+        // companions-ok: -edited- has one owner; call it instead of adding the suffix here again.
+        try { applyEditedOverlayDayFilter(dNow); } catch (eEd2) {}
       }
     } catch (eLive) { console.warn('live date refresh failed', eLive); }
     if (_attrSlug === slug && _attrRows.length) {   // keep an open attribute table on this layer in sync
@@ -8326,7 +8374,11 @@
         try { var cb8 = document.getElementById(node.toggleElement || node.id); if (cb8 && !cb8.checked) vis8 = 'none'; } catch (eCb) {}
         [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr8) {
           var m8 = pr8[1]; if (!m8) return;
-          [node.id + '-' + pr8[0], node.id + '-stroke-' + pr8[0], node.id + '-highlighted-' + pr8[0]].forEach(function (id8) {
+          // -label- added 8/21: this sweep is what an unticked sidebar box runs, and without the
+          // label layer in it the LABELS KEPT DRAWING over a layer that had been switched off.
+          [node.id + '-' + pr8[0], node.id + '-stroke-' + pr8[0], node.id + '-highlighted-' + pr8[0],
+          // companions-ok: a draw-rendered layer has no -edited- overlay to hide.
+           node.id + '-label-' + pr8[0]].forEach(function (id8) {
             try { if (m8.getLayer(id8)) m8.setLayoutProperty(id8, 'visibility', vis8); } catch (eV) {}
           });
         });
@@ -11553,6 +11605,7 @@
     } catch (e) { console.warn('editing: split outline failed', e); setStatus('Split failed: ' + e.message); }
   }
   // Remove a split tileset polygon's auto-outline stroke layers (the new O line layer replaces them).
+  // companions-ok: removes the auto-outline stroke ONLY — the O line layer replaces it.
   function removeTilesetStroke(P) {
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
       var m = pair[1]; if (!m) return; var sid = P.id + '-stroke-' + pair[0];
@@ -11595,7 +11648,7 @@
         var rc = (cur.data && cur.data.raw_config) || {}; delete rc.outlineSplit;
         var r = await db.from('layers').update({ raw_config: Object.keys(rc).length ? rc : null, paint: P.paint }).eq('id', pLid); if (r.error) throw new Error(r.error.message);
       }
-      if (O) { removeMapLayers(O.id); removeFromTree(layers, O); delete slugToLayerDbId[O.id]; }
+      if (O) { removeMapLayers(O.id, true); removeFromTree(layers, O); delete slugToLayerDbId[O.id]; }
       delete P.outlineSplit;
       rerender();
       if (isTs) addTilesetStrokeOn(P);     // re-add P's auto-outline stroke line layer
@@ -11613,17 +11666,37 @@
   // layer without re-adding labels — so widening this blindly would trade a leak for vanished
   // labels. It needs the re-add paths handled in the same change, with a test that can drive a
   // real layer delete through the panel.
-  function removeMapLayers(id) {
+  // `all` = the layer is GOING AWAY (a delete or an unsplit), so take every companion with it.
+  // Without it this removed 2 of the 10 ids a layer owns, and deleting a layer left its LABELS,
+  // its hover highlight and its edited overlay still painted on the map — with no sidebar row
+  // left that could switch them off — until the page was reloaded.
+  //
+  // The default stays narrow ON PURPOSE. The other callers (fold, re-source) remove and then
+  // immediately re-add via renderTilesetOnMap, which does NOT rebuild label layers — so widening
+  // those would trade a leak for labels that silently vanish. Same-change rule: whoever makes the
+  // re-add path complete can drop this parameter, and not before.
+  function removeMapLayers(id, all) {
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
-      var m = pair[1]; if (!m) return; var main = id + '-' + pair[0], strk = id + '-stroke-' + pair[0];
-      try { if (m.getLayer(strk)) m.removeLayer(strk); } catch (e) {}
-      try { if (m.getLayer(main)) m.removeLayer(main); } catch (e) {}
+      var m = pair[1]; if (!m) return; var side = pair[0], main = id + '-' + side;
+      var ids = all && typeof msLayerVariants === 'function'
+        ? msLayerVariants(id).filter(function (x) { return x.slice(-side.length) === side; })
+      // companions-ok: the narrow fallback is deliberate — see the note above.
+        : [id + '-stroke-' + side, main];
+      ids.forEach(function (lid) { try { if (m.getLayer(lid)) m.removeLayer(lid); } catch (e) {} });
       try { if (m.getSource(main)) m.removeSource(main); } catch (e) {}
+      if (all) {
+        // the label layer rides its own anchor source (-labels-, not -label-), and the edited
+        // overlay has one too; leaving those behind is what "source in use" errors are made of
+        [id + '-labels-' + side, id + '-edited-' + side].forEach(function (sid) {
+          try { if (m.getSource(sid)) m.removeSource(sid); } catch (e) {}
+        });
+      }
     });
   }
-  function currentMapDate() {
-    try { var d = (window.moment && window.$) ? moment($('#date').text()).format('YYYYMMDD') : ''; return /^\d{8}$/.test(d) ? parseInt(d, 10) : undefined; } catch (e) { return undefined; }
-  }
+  // Was a byte-identical copy of editorCurrentDate, 10,000 lines away in this same file — two
+  // names for one rule, which is harder to spot than two files because nobody suspects a duplicate
+  // inside one module. Found 8/21 by the boot-truth detector, not by reading.
+  function currentMapDate() { return editorCurrentDate(); }
   function addTilesetStrokeOn(P) {   // re-create a fill tileset's auto-outline stroke line layer (mirrors renderTilesetOnMap)
     if (typeof addMapLayer !== 'function' || P.type !== 'fill' || !P.paint || !P.paint['fill-outline-color']) return;
     var date = currentMapDate();

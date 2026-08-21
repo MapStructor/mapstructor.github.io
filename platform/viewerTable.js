@@ -261,12 +261,20 @@
 
   /* ─────────────────── 2) style divisions (category rows) ─────────────────── */
   function opKeyFor(node) { var t = node && node.type; return t === "line" ? "line-opacity" : (t === "circle" ? "circle-opacity" : "fill-opacity"); }
+  /* twin-ok: styleCatsFor is intentionally mirrored from editing.js. CHANGE BOTH. */
+  var STYLE_CATS_MAX = 20;        // mirrored in editing.js styleCatsFor — change both
   function styleCatsFor(node) {   // mirror of the editor's — [{key,label,color}]; [] for single-color layers
     var cb = node.colorBy;
     if (cb && cb.mode === "presence") return [{ key: "__present__", label: "Labeled", color: cb.present || "#3bb2d0" }, { key: "__absent__", label: "Unlabeled", color: cb.absent || "#cccccc" }];
-    if (cb && cb.mapping) { var ks = Object.keys(cb.mapping); return ks.slice(0, 20).map(function (k) { return { key: k, label: (k === " " || k === "") ? "(blank)" : k, color: cb.mapping[k] }; }); }
+    if (cb && cb.mapping) {
+      var ks = Object.keys(cb.mapping);
+      if (window.MSGuard) MSGuard.cliff("style-cats-cap", ks.length, STYLE_CATS_MAX,
+        "categories past the first " + STYLE_CATS_MAX + " are drawn on the map but have no style row you can click");
+      return ks.slice(0, STYLE_CATS_MAX).map(function (k) { return { key: k, label: (k === " " || k === "") ? "(blank)" : k, color: cb.mapping[k] }; });
+    }
     return [];
   }
+  /* twin-ok: intentionally mirrored from editing.js styleOpacityExpr. CHANGE BOTH. */
   function styleOpacityExpr(node) {
     var key = opKeyFor(node), cur = node.paint && node.paint[key];
     if (typeof cur === "number") node.styleBaseOp = cur;

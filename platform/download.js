@@ -964,7 +964,7 @@
     a.download = slug + "-download.zip";
     document.body.appendChild(a);
     a.click();
-    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);   // cliff-ok: cosmetic cleanup of a blob URL
   }
 
   /* ── boot ───────────────────────────────────────────────────────────────── */
@@ -972,7 +972,14 @@
   function boot() {
     if (injectButton()) return;
     var tries = 0;
-    var iv = setInterval(function () { if (injectButton() || ++tries > 50) clearInterval(iv); }, 300);
+    var iv = setInterval(function () {
+      if (injectButton()) { clearInterval(iv); return; }
+      if (++tries > 50) {
+        clearInterval(iv);
+        if (window.MSGuard) MSGuard.cliff("download-button-giveup", tries, 50,
+          "the ⬇ Download button never mounted — its host was not ready in 15s, so the button is missing");
+      }
+    }, 300);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();

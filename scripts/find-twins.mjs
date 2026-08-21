@@ -37,7 +37,13 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const COUNT_ONLY = process.argv.includes("--count");
-const MIN_LINES = 4;           // anything shorter is a one-liner; twins there are noise
+/* Two thresholds, because the two signals have different confidence. An EXACT body match is strong
+   evidence at any length, so it needs only 2 lines; "same name, different body" needs more bulk
+   before it means anything. The single 4-line threshold hid the pair that mattered most:
+   `editorCurrentDate` and `currentMapDate` are byte-identical 3-line bodies ten thousand lines
+   apart in ONE file — two names for one rule, which the detector could not see. */
+const MIN_IDENTICAL = 2;
+const MIN_LINES = 4;
 
 const files = execSync("git ls-files platform/*.js map/engine/*.js scripts/*.mjs", { cwd: ROOT, encoding: "utf8" })
   .split("\n").map((s) => s.trim()).filter(Boolean);
@@ -72,7 +78,7 @@ for (const rel of files) {
     const body = bodyAt(src, open);
     if (!body) continue;
     const lines = body.split("\n").length;
-    if (lines < MIN_LINES) continue;
+    if (lines < MIN_IDENTICAL) continue;
     /* Normalise away everything that is not the logic: comments, whitespace, quote style. Keeps
        identifiers, so two functions differing only in variable names are NOT called identical —
        that would over-report, and this list has to be believable to be used. */
@@ -96,14 +102,29 @@ for (const f of fns) {
 }
 
 const identical = [...byHash.values()].filter((g) => g.length > 1 && new Set(g.map((f) => f.rel + f.line)).size > 1);
+// same-name needs more bulk than an exact match before it means anything
+const bulky = (g) => g.every((f) => f.lines >= MIN_LINES);
 const identicalKeys = new Set(identical.flat().map((f) => f.rel + ":" + f.line));
 const sameName = [...byName.values()].filter((g) =>
-  g.length > 1 && new Set(g.map((f) => f.rel)).size > 1 && !g.every((f) => identicalKeys.has(f.rel + ":" + f.line)));
+  g.length > 1 && bulky(g) && new Set(g.map((f) => f.rel)).size > 1 && !g.every((f) => identicalKeys.has(f.rel + ":" + f.line)));
 
 const live = (gs) => gs.filter((g) => !g.some((f) => f.ok));
 const idLive = live(identical), snLive = live(sameName);
 
 console.log(`${fns.length} named functions scanned  ·  ${idLive.length} identical twin group(s)  ·  ${snLive.length} same-name-different-body group(s)  ·  ${identical.length - idLive.length + sameName.length - snLive.length} marked deliberate`);
+/* --gate holds the line on the strongest signal only: an UNMARKED identical body in two places.
+   The same-name groups are real work but need a judgement each, so gating on them would make the
+   suite un-passable — and a gate nobody can pass gets switched off, taking the enforceable half
+   with it. */
+if (process.argv.includes("--gate")) {
+  if (idLive.length) {
+    console.log(`FAIL — ${idLive.length} identical function bod${idLive.length > 1 ? "ies exist" : "y exists"} in two places with no twin-ok note saying it is deliberate`);
+    idLive.forEach((g) => g.forEach((f) => console.log(`         ${f.name}()  ${f.rel}:${f.line}`)));
+    process.exit(1);
+  }
+  console.log("PASS — no unmarked identical twins");
+  process.exit(0);
+}
 if (COUNT_ONLY) process.exit(0);
 
 if (idLive.length) {

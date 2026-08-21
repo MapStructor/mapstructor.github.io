@@ -230,7 +230,7 @@ function zoomToLayer(label, _retry) {
 
 function changeDate(unixDate) {
   var date = parseInt(moment.unix(unixDate).format("YYYYMMDD"));
-  var dateFilter = ["all", ["<=", "DayStart", date], [">=", "DayEnd", date]];
+  var dateFilter = msDateFilter("shape", date, false);   // utils.js owns the rule — see msDateFilter
   
 
   //LAYERS FOR FILTERING
@@ -244,6 +244,7 @@ function changeDate(unixDate) {
     if (afterMap.getLayer(rightId))  afterMap.setFilter(rightId,  lf);
     // companion layers (stroke outline, hover highlight) get a date filter at ADD time —
     // they must follow the slider too, or outlines freeze at the boot date
+    // companions-ok: -label- has its own rule below, -edited- is owned by editing.js
     ["-stroke-", "-highlighted-"].forEach(sfx => {
       const l = layer.id + sfx + "left", r = layer.id + sfx + "right";
       if (beforeMap.getLayer(l)) beforeMap.setFilter(l, lf);
@@ -251,8 +252,9 @@ function changeDate(unixDate) {
     });
     // 7/21: LABELS follow the slider too — coalesce keeps dateless anchors (group/point anchors carry
     // no Day props) always visible, while tile-riding labels hide with their features
-    const lblF = layer.timelineIgnore ? null
-      : ["all", ["<=", ["coalesce", ["get", "DayStart"], 0], date], [">=", ["coalesce", ["get", "DayEnd"], 99999999], date]];
+    const lblF = msDateFilter("label", date, layer.timelineIgnore);
+    // companions-ok: -edited- is filtered by editing.js applyEditedOverlayDayFilter, which patches
+    // changeDate and paintDate. Editor-only, and it must not be filtered twice.
     ["-label-"].forEach(sfx => {
       const l = layer.id + sfx + "left", r = layer.id + sfx + "right";
       if (beforeMap.getLayer(l)) beforeMap.setFilter(l, lblF);

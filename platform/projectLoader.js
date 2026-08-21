@@ -91,7 +91,7 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     var msPillKf = document.createElement("style"); msPillKf.textContent = "@keyframes mspillspin{to{transform:rotate(360deg)}}";
     document.head.appendChild(msPillKf);
     document.body.appendChild(msPillEl);
-    setTimeout(msPillHide, 12000);   // HARD CAP — the pill cannot outlive this, no matter what breaks
+    setTimeout(msPillHide, 12000);   // HARD CAP — the pill cannot outlive this, no matter what breaks   // cliff-ok: the hard cap IS the intent
     var msPillN = 0, msPillT = setInterval(function () {   // the map object exists only later — poll cheaply until the cap
       msPillN++;
       if (msPillGone || msPillN > 40) { clearInterval(msPillT); return; }
@@ -280,7 +280,15 @@ window.msApplyHeaderFeature = function (visible, projectName) {
           } catch (err) { return false; }
         }
         var tries = 0;
-        var iv = setInterval(function () { if (applyTL() || ++tries > 25) clearInterval(iv); }, 400);
+        var iv = setInterval(function () {
+          if (applyTL()) { clearInterval(iv); return; }
+          if (++tries > 25) {
+            clearInterval(iv);
+            // The map then shows the DEFAULT date range rather than the saved one, and looks fine.
+            if (window.MSGuard) MSGuard.cliff("timeline-apply-giveup", tries, 25,
+              "the saved timeline range was never applied — the slider was not ready in 10s, so the map is showing its default dates");
+          }
+        }, 400);
       })();
     }
     // Layer/group ℹ popups + the About modal, saved by the editor's in-place popup editing. The engine only
@@ -488,7 +496,16 @@ window.msApplyHeaderFeature = function (visible, projectName) {
       } catch (e) { return false; }
     }
     function both() { return ensureSide(curMap("before"), "left") & ensureSide(curMap("after"), "right"); }
-    var tries = 0, iv = setInterval(function () { tries++; if (both() || tries > 40) clearInterval(iv); }, 500);
+    var tries = 0, iv = setInterval(function () {
+      tries++;
+      if (both()) { clearInterval(iv); return; }
+      if (tries > 40) {
+        clearInterval(iv);
+        // 20s without both sides ready: the swipe comparison has a side with no data on it.
+        if (window.MSGuard) MSGuard.cliff("swipe-sources-giveup", tries, 40,
+          "one side of the swipe comparison never got its sources — that side of the map is empty");
+      }
+    }, 500);
     setTimeout(function () {   // re-ensure after user basemap switches (setStyle wipes custom layers)
       try {
         var bm = curMap("before"); if (bm) bm.on("style.load", function () { setTimeout(function () { ensureSide(bm, "left"); }, 60); });

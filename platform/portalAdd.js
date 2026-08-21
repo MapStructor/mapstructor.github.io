@@ -370,7 +370,7 @@
               // slow query didn't finish would be worse than letting the write path enforce it.
               var ur = await Promise.race([
                 db.rpc('mapstructor_user_storage'),
-                new Promise(function (rs) { setTimeout(function () { rs({ error: { message: 'timed out' } }); }, 8000); })
+                new Promise(function (rs) { setTimeout(function () { rs({ error: { message: 'timed out' } }); }, 8000); })   // cliff-ok: already returns an explicit error
               ]);
               if (ur && !ur.error && typeof ur.data === 'number') { used = ur.data; usedKnown = true; }
             } catch (e1) {}

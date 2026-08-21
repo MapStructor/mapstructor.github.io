@@ -73,7 +73,11 @@
         Object.keys(r.custom_fields || {}).forEach(function (k) { if (k !== "msid") keys[k] = (keys[k] || 0) + 1; });
       });
       out.fields = Object.keys(keys).sort();
-      out.sample = (samp.data || []).slice(0, 25);   // the ▦ table view reads these — no second fetch
+      var SAMPLE_MAX = 25;
+      out.sample = (samp.data || []).slice(0, SAMPLE_MAX);   // the ▦ table view reads these — no second fetch
+      if (typeof window !== "undefined" && window.MSGuard)
+        MSGuard.cliff("merge-preview-sample", (samp.data || []).length, SAMPLE_MAX,
+          "the merge preview shows the first " + SAMPLE_MAX + " rows only — it is a sample, not the whole layer");
     } catch (e) { out.error = String(e && e.message || e); }
     return out;
   };

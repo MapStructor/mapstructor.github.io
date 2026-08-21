@@ -287,7 +287,7 @@
           ? ' ' + rep.unrecoverable.length + ' layer(s) could not return (permanently deleted): ' + rep.unrecoverable.join(', ') + '.'
           : '';
         say('Reverted ✓ — ' + rep.restored + ' layers restored, ' + rep.trashed + ' moved to Trash.' + tail + ' Reloading…');
-        setTimeout(function () { location.reload(); }, 1400);
+        setTimeout(function () { location.reload(); }, 1400);   // cliff-ok: lets the confirmation render before reloading
       } catch (e) {
         status.style.color = '#b4453a';
         status.textContent = 'Revert failed: ' + ((e && e.message) || e) + ' — nothing further was changed. Reload and try again, or use the duplicate.';

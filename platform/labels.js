@@ -58,8 +58,8 @@
     var best = area === 0 ? cell(r0[0][0], r0[0][1], 0) : cell(cx / area, cy / area, 0);
     var bc = cell(minX + width / 2, minY + height / 2, 0);
     if (bc.d > best.d) best = bc;
-    var iter = 0;
-    while (queue.length && iter++ < 5000) {
+    var iter = 0, ITER_MAX = 5000;
+    while (queue.length && iter++ < ITER_MAX) {
       queue.sort(function (a2, b2) { return b2.max - a2.max; });
       var c = queue.shift();
       if (c.d > best.d) best = c;
@@ -69,6 +69,12 @@
       queue.push(cell(c.x - h2, c.y - h2, h2)); queue.push(cell(c.x + h2, c.y - h2, h2));
       queue.push(cell(c.x - h2, c.y + h2, h2)); queue.push(cell(c.x + h2, c.y + h2, h2));
     }
+    // Hitting the cap does not produce a WRONG anchor, it produces a less-good one: the search
+    // stops early and the label sits somewhere less central than it should. Silent until now,
+    // which is why "that label is in a strange place" was never traceable to anything.
+    if (iter >= ITER_MAX && typeof window !== "undefined" && window.MSGuard)
+      MSGuard.cliff("label-anchor-iters", iter, ITER_MAX - 1,
+        "the label position search stopped early on a very complex shape — the label sits less centrally than it should");
     return [best.x, best.y];
   }
   function ringArea(ring) {
@@ -402,6 +408,7 @@
 
   // labels must never hide under fills/strokes added after them (engine layers, MapboxDraw copies,
   // the right-side mirror) — call after any batch of layer adds to put every label back on top
+  // companions-ok: raises labels specifically, which is the whole point of it.
   function msRaiseLabelLayers(map, tree) {
     if (!map) return;
     (function walk(arr) {

@@ -66,20 +66,37 @@ for (const rel of files) {
     while ((m = SUFFIX_RE.exec(line))) found.add(m[1] || m[2]);
     if (!found.size) return;
     const sweep = lines.slice(Math.max(0, i - 2), i + 3).some((l) => SWEEPING.test(l));
-    /* The marker lives on a COMMENT line, and comments are skipped above before it could be read —
-       so look for it in the same window as the verb. Triage that the detector cannot see is
-       triage that does not exist. */
-    const okHere = lines.slice(Math.max(0, i - 3), i + 4).some((l) => /companions-ok/.test(l));
     if (cluster && i - cluster.last <= WINDOW) {
       cluster.last = i;
       found.forEach((s) => cluster.suffixes.add(s));
       if (sweep) cluster.verbs.add("sweep");
-      if (okHere) cluster.ok = true;
     } else {
-      cluster = { rel, line: i + 1, last: i, suffixes: new Set(found), ok: okHere,
+      cluster = { rel, line: i + 1, last: i, suffixes: new Set(found), ok: false,
                   text: line.trim().slice(0, 96), verbs: new Set(sweep ? ["sweep"] : []) };
       sites.push(cluster);
     }
+  });
+}
+
+/* Markers are matched to the cluster they SIT IN (its extent, plus two lines either side), not to
+   any line within six. The looser version silenced neighbouring sites: one marker took the count
+   from 5-to-fix to 0-to-fix, which is a detector lying in the direction that hides work — strictly
+   worse than one that cries wolf. */
+for (const rel of new Set(sites.map((s) => s.rel))) {
+  const lines = readFileSync(join(ROOT, rel), "utf8").split(/\r?\n/);
+  const mine = sites.filter((s) => s.rel === rel);
+  lines.forEach((l, i) => {
+    if (!/companions-ok/.test(l)) return;
+    /* Assign each marker to the NEAREST site, and only that one. A fixed window either silenced
+       neighbours (5-to-fix became 0-to-fix from a single marker) or missed markers written on the
+       enclosing function's line, where they read best. Nearest-wins does both jobs and cannot
+       cover two sites at once. */
+    let best = null, bestD = Infinity;
+    for (const s of mine) {
+      const d = i + 1 < s.line ? s.line - (i + 1) : i + 1 > s.last + 1 ? (i + 1) - (s.last + 1) : 0;
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    if (best && bestD <= 20) best.ok = true;
   });
 }
 
@@ -104,6 +121,16 @@ const triaged = real.filter((s) => s.ok && s.missing.length).length;
 console.log(`canonical set: ${CANON.join(" ")}`);
 console.log(`${real.length} SWEEPING companion site(s)  ·  ${complete} complete  ·  ${triaged} marked deliberate  ·  ${real.length - complete - triaged} to fix`);
 console.log(`not counted: ${buildsOne} site(s) that build or read ONE companion (correct by construction)  ·  ${sidePairOnly} that name only the -left/-right pair`);
+
+/* --gate: the rule this now enforces is "every sweeping site is either complete or explicitly
+   triaged". Both halves matter — without the marker the list never converges, and without the
+   failure the list is a suggestion. */
+if (process.argv.includes("--gate")) {
+  const todo = real.length - complete - triaged;
+  if (todo) { console.log(`FAIL — ${todo} sweeping site(s) walk an incomplete companion set and are not marked companions-ok`); process.exit(1); }
+  console.log("PASS — every sweeping companion site is complete or explicitly triaged");
+  process.exit(0);
+}
 if (COUNT_ONLY) process.exit(0);
 
 let lastFile = "";
