@@ -3960,7 +3960,9 @@
       if (snapTok) try {
         await fetch(snapUrl, { method: 'DELETE', headers: { Authorization: 'Bearer ' + snapTok } });
       } catch (eDel) { console.warn('snapshot R2 pre-delete failed (fallback still correct)', eDel); }
-      await db.from('project_snapshots').delete().eq('project_id', projectId).eq('label', 'published');   // one published snapshot per project
+      // If this delete silently changes nothing and the insert then fails, the map keeps its OLD
+      // published state while the screen says "Published ✓" — the worst kind of quiet.
+      await saveSoft(db.from('project_snapshots').delete().eq('project_id', projectId).eq('label', 'published'), 'clearing the previous published snapshot');   // one published snapshot per project
       var r = await db.from('project_snapshots').insert({ project_id: projectId, label: 'published', state: bundle });
       if (r.error) throw new Error(r.error.message);
       if (snapTok) try {
@@ -5404,7 +5406,10 @@
     _suppressFeatureDelete = true;   // remove the MapboxDraw copies without re-triggering onDrawDelete
     cap.forEach(function (c) { try { if (draw && draw.get(c.drawId)) draw.delete(c.drawId); } catch (e) {} });
     setTimeout(function () { _suppressFeatureDelete = false; }, 0);
-    try { await db.from('features').delete().in('feature_id', fids); } catch (e) { setStatus('Delete failed'); return 0; }
+    // supabase RESOLVES with {error}, so the catch alone never fired on a refused delete: the rows
+    // vanished from the screen and came back on reload.
+    var delR = await saveSoft(db.from('features').delete().in('feature_id', fids), 'deleting the selected features');
+    if (delR.error) { setStatus('Delete failed'); return 0; }
     cap.forEach(function (c) { delete featureToDb[c.drawId]; delete featureMeta[c.drawId]; delete featureLayer[c.drawId]; delete _geomSnap[c.drawId]; });
     pushUndo(function () { return reinsertDrawn(cap); }, function () { return removeDrawnBatch(cap); }, label || ('delete ' + cap.length + ' feature' + (cap.length > 1 ? 's' : '')));
     return cap.length;
@@ -5853,7 +5858,11 @@
     for (var i = 0; i < (e.features || []).length; i++) {
       var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
       var drawId = f.id, geom = JSON.parse(JSON.stringify(f.geometry)), lyr = featureLayer[f.id], props = JSON.parse(JSON.stringify(f.properties || {}));
-      try { await db.from('features').delete().eq('feature_id', fid); delete featureToDb[f.id]; delete featureMeta[f.id]; delete featureLayer[f.id]; delete _geomSnap[f.id]; } catch (err) { console.warn('feature delete failed', err); continue; }
+      // pressing Delete removed the shape from the canvas either way; if the database refused,
+      // it used to come back on the next reload with nothing having said a word
+      var dr = await saveSoft(db.from('features').delete().eq('feature_id', fid), 'deleting the feature');
+      if (dr.error) continue;
+      delete featureToDb[f.id]; delete featureMeta[f.id]; delete featureLayer[f.id]; delete _geomSnap[f.id];
       (function (drawId, geom, lyr, props) {
         pushUndo(function () { return addDrawnFeature(drawId, geom, lyr, props); }, function () { return removeDrawnFeature(drawId); }, 'delete feature');
       })(drawId, geom, lyr, props);
@@ -11559,7 +11568,9 @@
       if (O) {
         var oLid = slugToLayerDbId[O.id];
         if (oLid) {
-          await db.from('features').delete().eq('layer_id', oLid);
+          // this removes EVERY feature of the outline layer — a silent refusal here leaves rows
+          // behind whose layer is about to be deleted, i.e. orphans that bill forever
+          await saveSoft(db.from('features').delete().eq('layer_id', oLid), 'removing the outline layer features');
           var dp = await db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', oLid); if (dp.error) throw new Error(dp.error.message);
           var dl = await db.from('layers').delete().eq('id', oLid); if (dl.error) throw new Error(dl.error.message);
         }
