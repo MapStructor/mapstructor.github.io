@@ -798,7 +798,10 @@
           ];
           var html = 'Where it goes: ' + parts.join(' · ');
           if (trash > 0) {
-            html += '<br><span style="color:#8a6d3b;">' + P.fmtBytes(trash) + ' of that is in Trash (' +
+            // point at the thing that can act on it — the Trash list is already on this page,
+            // and a number with no route to the action is just a nag
+            html += '<br><span style="color:#8a6d3b;">' + P.fmtBytes(trash) + ' of that is in ' +
+                    '<a href="#trash-section" style="color:#8a6d3b;">Trash</a> (' +
                     d.trash_layer_count + ' deleted layer' + (d.trash_layer_count === 1 ? '' : 's') +
                     ') — deleted layers keep their space until you delete them for good.</span>';
           }
