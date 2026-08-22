@@ -217,10 +217,7 @@
     }
     if (!lid) { status("This layer has no editable database row (external tileset?) — applied live only."); if (cj) applyCustom(slug, cj); return; }
     try {
-      var cur = await db().from("layers").select("raw_config").eq("id", lid).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      if (cj) rc.customJson = cj; else delete rc.customJson;
-      var r = await db().from("layers").update({ raw_config: rc }).eq("id", lid);
+      var r = await db().rpc("ms_patch_layer_config", { p_id: lid, p_patch: { customJson: cj ? cj : null } });
       if (r.error) throw new Error(r.error.message);
       var n = cj ? applyCustom(slug, cj) : 0;
       status(cj ? "Saved — " + n + " properties applied live." : "Cleared.");

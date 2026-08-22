@@ -3635,15 +3635,18 @@
     if (!content || !pid) return;
     var html = content.innerHTML; setStatus('Saving…');
     try {
-      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {};
-      if (pid === 'about') { rc.about = html; setModalAbout(html); }
+      // One atomic patch instead of read-mutate-write. The popups branch patches
+      // { popups: { <pid>: … } } and merge-patch keeps every OTHER popup, which is exactly what the
+      // read existed to preserve.
+      var patch = {};
+      if (pid === 'about') { patch.about = html; setModalAbout(html); }
       else {
         var nodeId = pid.replace(/-info$/, ''); var node = findNodeById(layers, nodeId);
         // a layer/group popup is titled by its ROW LABEL — the modal header can be stale (it once
         // trapped "About" here permanently), so it's only the fallback when no node matches
         var title = (node && node.label) || '';
         if (!title) { try { title = (document.querySelector('div.modal-header h1').textContent || '').trim(); } catch (x) {} }
-        rc.popups = rc.popups || {}; rc.popups[pid] = { title: title, html: html };
+        patch.popups = {}; patch.popups[pid] = { title: title, html: html };
         try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; window.modal_content_html[pid] = html; window.modal_header_text[pid] = title || 'Info'; if (_editPopupId === pid) window.$('div.modal-header h1').text(title || 'Info'); } catch (x2) {}
         // persist info_id on the layer/group row so the rendered info button carries this id (viewer + on reload)
         if (node) {
@@ -3652,7 +3655,7 @@
           else if (node.type !== 'group' && node.type !== 'section' && slugToLayerDbId[nodeId]) { await saveSoft(db.from('layers').update({ info_id: pid }).eq('id', slugToLayerDbId[nodeId]), 'linking the info button to this layer'); }
         }
       }
-      var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message);
+      var r = await patchProjectConfig(patch); if (r.error) throw new Error(r.error.message);
       setStatus('Saved');
       rerender();   // the row's ℹ button exists only while there is content — reflect edits immediately
     } catch (e) { setStatus('Save failed'); }
@@ -8875,17 +8878,13 @@
   function setStyleMetaRC(lid2, key, value) {   // style meta lives in raw_config; saveLayerStyle only carries color+paint
     if (!lid2) return;
     if (value == null) return clearStyleMetaRC(lid2, key);
-    db.from('layers').select('raw_config').eq('id', lid2).single().then(function (cur) {
-      var rc = (cur.data && cur.data.raw_config) || {}; rc[key] = value;
-      return saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid2), 'saving the style setting');
-    }).then(function () {}, function () {});
+    var patch = {}; patch[key] = value;
+    saveSoft(patchLayerConfig(lid2, patch), 'saving the style setting').then(function () {}, function () {});
   }
   function clearStyleMetaRC(lid2, key) {
     if (!lid2) return;
-    db.from('layers').select('raw_config').eq('id', lid2).single().then(function (cur) {
-      var rc = (cur.data && cur.data.raw_config) || {}; delete rc[key];
-      return saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid2), 'clearing the style setting');
-    }).then(function () {}, function () {});
+    var patch = {}; patch[key] = null;   // null deletes the key
+    saveSoft(patchLayerConfig(lid2, patch), 'clearing the style setting').then(function () {}, function () {});
   }
   async function onStyleNumBy(kind, prop) {
     if (!activeLayerId) return;
@@ -11611,10 +11610,7 @@
       var _mcIcon = document.querySelector('.layer-list-row[data-node-id="' + node.id + '"] label i'); if (_mcIcon) _mcIcon.classList.remove('multicolor-icon');   // gradient icon → single colour
       (function (lid) {
         if (!lid) return;
-        db.from('layers').select('raw_config').eq('id', lid).single().then(function (cur) {
-          var rc = (cur.data && cur.data.raw_config) || {}; delete rc.colorBy;
-          return saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid), 'saving the colour');
-        }).then(function () {}, function () {});
+        saveSoft(patchLayerConfig(lid, { colorBy: null }), 'saving the colour').then(function () {}, function () {});
       })(slugToLayerDbId[node.id]);
     } else if (_colorExpr) {
       node.paint[_ck] = _colorExpr;
@@ -11864,9 +11860,7 @@
       P.outlineSplit = true;
       var pLid = slugToLayerDbId[P.id];
       if (pLid) {
-        var cur = await db.from('layers').select('raw_config').eq('id', pLid).single();
-        var rc = (cur.data && cur.data.raw_config) || {}; rc.outlineSplit = true;
-        var r = await db.from('layers').update({ raw_config: rc }).eq('id', pLid); if (r.error) throw new Error(r.error.message);
+        var r = await patchLayerConfig(pLid, { outlineSplit: true }); if (r.error) throw new Error(r.error.message);
       }
       var loc = locate(layers, P);
       if (loc) loc.arr.splice(loc.idx + 1, 0, oNode); else layers.push(oNode);
@@ -11924,9 +11918,14 @@
       // clear P.outlineSplit + persist P's restored paint (so the adapter re-emits its auto-stroke)
       var pLid = slugToLayerDbId[P.id];
       if (pLid) {
-        var cur = await db.from('layers').select('raw_config').eq('id', pLid).single();
-        var rc = (cur.data && cur.data.raw_config) || {}; delete rc.outlineSplit;
-        var r = await db.from('layers').update({ raw_config: Object.keys(rc).length ? rc : null, paint: P.paint }).eq('id', pLid); if (r.error) throw new Error(r.error.message);
+        // Two writes, and both are safe: the patch removes ONE key atomically, and `paint` is a
+        // plain column, so updating it cannot clobber the blob the way a whole-blob write does.
+        // The old code set raw_config to NULL when the last key went; it now leaves {}. Every reader
+        // is `(… .raw_config) || {}`, so the two are indistinguishable downstream.
+        var r = await patchLayerConfig(pLid, { outlineSplit: null });
+        if (r.error) throw new Error(r.error.message);
+        var rp = await db.from('layers').update({ paint: P.paint }).eq('id', pLid);
+        if (rp.error) throw new Error(rp.error.message);
       }
       if (O) { removeMapLayers(O.id, true); removeFromTree(layers, O); delete slugToLayerDbId[O.id]; }
       delete P.outlineSplit;

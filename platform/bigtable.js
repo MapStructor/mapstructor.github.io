@@ -192,13 +192,12 @@
         if (!rw.ok) console.warn("bigtable: R2 sidecar mirror " + rw.status + " — reads fall back to Supabase for this layer");
       } catch (ePut) { console.warn("bigtable: R2 sidecar mirror failed — reads fall back to Supabase for this layer", ePut); }
       var url = SUPABASE_URL + "/storage/v1/object/public/" + BUCKET + "/" + path;
-      var cur = await db.from("layers").select("raw_config").eq("id", layerId).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      rc.attrParquet = url;
-      rc.attrParquetRows = rows.length;
-      rc.attrParquetAt = new Date().toISOString();
-      delete rc.attrParquetDirty;
-      await db.from("layers").update({ raw_config: rc }).eq("id", layerId);
+      await db.rpc("ms_patch_layer_config", { p_id: layerId, p_patch: {
+        attrParquet: url,
+        attrParquetRows: rows.length,
+        attrParquetAt: new Date().toISOString(),
+        attrParquetDirty: null,   // null deletes the key
+      } });
       _dirtyDone[layerId] = false;   // re-arm: the NEXT edit after this bake must stamp dirty again
       status("Fast table ready — next open is instant.");
       return { url: url, rows: rows.length, bytes: buf.length };
@@ -235,11 +234,12 @@
   async function noteDirty(db, layerId) {
     if (_dirtyDone[layerId]) return; _dirtyDone[layerId] = true;
     try {
+      // The READ stays — it decides whether to write at all. The WRITE is now a one-key patch,
+      // so a bake finishing between the two cannot have its stamps discarded by this flag.
       var cur = await db.from("layers").select("raw_config").eq("id", layerId).single();
       var rc = (cur.data && cur.data.raw_config) || {};
       if (!rc.attrParquet || rc.attrParquetDirty) return;
-      rc.attrParquetDirty = true;
-      await db.from("layers").update({ raw_config: rc }).eq("id", layerId);
+      await db.rpc("ms_patch_layer_config", { p_id: layerId, p_patch: { attrParquetDirty: true } });
     } catch (e) { _dirtyDone[layerId] = false; }
   }
 

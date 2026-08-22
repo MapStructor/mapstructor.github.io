@@ -1119,13 +1119,8 @@
     if (!ry) return 0;
     ry.at = new Date().toISOString();
     ry.fc = feats.length;
-    var cur = await db.from("layers").select("raw_config").eq("id", L.id).single();
-    if (cur.error) throw new Error(cur.error.message);
-    var rc = (cur.data && cur.data.raw_config) || {};
-    rc.rasterYears = ry;
-    rc.fast = rc.fast || {};
-    rc.fast.raster = true;      // asking for the bake IS the opt-in — nobody waits for one and then has to tick a box
-    var upd = await db.from("layers").update({ raw_config: rc }).eq("id", L.id);
+    // merge-patch keeps fast's other keys (deck), which the old code had to read to preserve
+    var upd = await db.rpc("ms_patch_layer_config", { p_id: L.id, p_patch: { rasterYears: ry, fast: { raster: true } } });
     if (upd.error) throw new Error(upd.error.message);
     status("Snapshot ready — " + Math.round(ry.bytes / 1024) + " KB.");
     // tell the RUNNING scrub, or the session keeps scrubbing from state that predates this bake

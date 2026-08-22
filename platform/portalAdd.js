@@ -560,6 +560,11 @@
       // dropped into it, it cannot be dragged, and clicking it offers to remove it. Editing mode
       // only, by the owner's call; read-merge-write so other project chrome is never clobbered.
       try {
+        /* rmw-ok: APPENDING to an array needs the array. Merge-patch replaces arrays wholesale, so
+           there is nothing to patch with until this has been read. Residual risk, stated rather than
+           hidden: a note added by someone else between this read and the write is dropped. The note
+           is a caption on a portal add, so losing one costs a line of text and no data. A
+           server-side append would close it and is not worth an RPC for this. */
         var pr = await db.from('projects').select('raw_config').eq('id', projectId).single();
         var prc = (pr.data && pr.data.raw_config) || {};
         var notes = Array.isArray(prc.portalNotes) ? prc.portalNotes.slice() : [];
@@ -578,6 +583,10 @@
       for (var m = 0; m < pls.length; m++) {
         var oL = pls[m].layers, newLid = maps.layerIdMap[oL.id];
         if (!newLid || (modes[oL.id] || 'linked') !== 'all') continue;
+        /* rmw-ok: this REMAPS values that are already in the blob — instanceOf and outlineOf are
+           rewritten to point at the copies — so it genuinely needs the current value, and there is
+           nothing to patch with until it has been read. Safe here for a second reason: newLid was
+           created moments ago by this same copy, so no other writer knows it exists yet. */
         var cur = await db.from('layers').select('raw_config').eq('id', newLid).single();
         var rc2 = (cur.data && cur.data.raw_config) || {};
         rc2._msFromMap = srcId;
