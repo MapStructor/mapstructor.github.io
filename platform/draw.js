@@ -320,24 +320,24 @@
 
     pushUndo(
       function () {
-        _suppressUndo = true;
-        draw.delete([id]);
-        removeFeatureFromState(id);
-        renderLayerList();
-        scheduleSave();
-        _suppressUndo = false;
+        withUndoSuppressed(function () {
+          draw.delete([id]);
+          removeFeatureFromState(id);
+          renderLayerList();
+          scheduleSave();
+        });
       },
       function () {
-        _suppressUndo = true;
-        draw.add({ type: 'Feature', id: id, geometry: JSON.parse(JSON.stringify(geom)), properties: {} });
-        var layer = drawFindById(layerId);
-        if (layer && layer.featureIds.indexOf(id) === -1) {
-          features[id] = { label: '', notes: '', layerId: layerId, dbId: null, dirty: true };
-          layer.featureIds.push(id);
-        }
-        renderLayerList();
-        scheduleSave();
-        _suppressUndo = false;
+        withUndoSuppressed(function () {
+          draw.add({ type: 'Feature', id: id, geometry: JSON.parse(JSON.stringify(geom)), properties: {} });
+          var layer = drawFindById(layerId);
+          if (layer && layer.featureIds.indexOf(id) === -1) {
+            features[id] = { label: '', notes: '', layerId: layerId, dbId: null, dirty: true };
+            layer.featureIds.push(id);
+          }
+          renderLayerList();
+          scheduleSave();
+        });
       }
     );
   });
@@ -352,8 +352,8 @@
       if (!prevGeom) return;
       var pg = JSON.parse(JSON.stringify(prevGeom));
       pushUndo(
-        function () { _suppressUndo = true; _setGeometry(id, pg);      _suppressUndo = false; },
-        function () { _suppressUndo = true; _setGeometry(id, newGeom); _suppressUndo = false; }
+        function () { withUndoSuppressed(function () { _setGeometry(id, pg); }); },
+        function () { withUndoSuppressed(function () { _setGeometry(id, newGeom); }); }
       );
       _selectedSnapshot[id] = newGeom;
     });
@@ -377,27 +377,27 @@
 
     pushUndo(
       function () {
-        _suppressUndo = true;
-        deleted.forEach(function (d) {
-          draw.add({ type: 'Feature', id: d.id, geometry: JSON.parse(JSON.stringify(d.geom)), properties: {} });
-          features[d.id] = d.meta;
-          features[d.id].dirty = true;
-          var layer = drawFindById(d.meta.layerId);
-          if (layer && layer.featureIds.indexOf(d.id) === -1) layer.featureIds.push(d.id);
+        withUndoSuppressed(function () {
+          deleted.forEach(function (d) {
+            draw.add({ type: 'Feature', id: d.id, geometry: JSON.parse(JSON.stringify(d.geom)), properties: {} });
+            features[d.id] = d.meta;
+            features[d.id].dirty = true;
+            var layer = drawFindById(d.meta.layerId);
+            if (layer && layer.featureIds.indexOf(d.id) === -1) layer.featureIds.push(d.id);
+          });
+          renderLayerList();
+          scheduleSave();
         });
-        renderLayerList();
-        scheduleSave();
-        _suppressUndo = false;
       },
       function () {
-        _suppressUndo = true;
-        deleted.forEach(function (d) {
-          draw.delete([d.id]);
-          removeFeatureFromState(d.id);
+        withUndoSuppressed(function () {
+          deleted.forEach(function (d) {
+            draw.delete([d.id]);
+            removeFeatureFromState(d.id);
+          });
+          renderLayerList();
+          scheduleSave();
         });
-        renderLayerList();
-        scheduleSave();
-        _suppressUndo = false;
       }
     );
     updateToolbar();
@@ -1164,6 +1164,24 @@
   }
 
   // ── Undo / Redo ──────────────────────────────────────────────────────────────
+  // ONE owner for `_suppressUndo` (8/22). Nine places used to raise the flag and lower it on the
+  // next line, with no try/finally anywhere, and the flag is what stops an edit being recorded
+  // (`if (_suppressUndo) return` guards every recorder). So ANY throw between the two lines — a
+  // draw call on a feature that has gone, a render against a half-built list — left it stuck at
+  // true, and from that moment **undo silently stopped recording for the rest of the session**.
+  // The buttons keep working on the stale stack, so it looks alive while quietly forgetting
+  // everything you do. Found 8/22 by surveying undo; no report, because the failure has no symptom
+  // at the moment it happens.
+  //
+  // It also RESTORES rather than clearing, which fixes a second, quieter bug: performUndo raised
+  // the flag and then called an action closure that raised it again and set it to FALSE on the way
+  // out — releasing the outer suppression while performUndo was still running. Nesting is normal
+  // here, so the flag has to behave like a stack, not a boolean anyone may reset.
+  function withUndoSuppressed(fn) {
+    var prev = _suppressUndo;
+    _suppressUndo = true;
+    try { return fn(); } finally { _suppressUndo = prev; }
+  }
   function pushUndo(undoFn, redoFn) {
     undoStack.push({ undo: undoFn, redo: redoFn });
     redoStack = [];
@@ -1173,9 +1191,7 @@
   function performUndo() {
     if (!undoStack.length) return;
     var action = undoStack.pop();
-    _suppressUndo = true;
-    action.undo();
-    _suppressUndo = false;
+    withUndoSuppressed(action.undo);
     redoStack.push(action);
     updateToolbar();
   }
@@ -1183,9 +1199,7 @@
   function performRedo() {
     if (!redoStack.length) return;
     var action = redoStack.pop();
-    _suppressUndo = true;
-    action.redo();
-    _suppressUndo = false;
+    withUndoSuppressed(action.redo);
     undoStack.push(action);
     updateToolbar();
   }

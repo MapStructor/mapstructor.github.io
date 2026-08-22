@@ -10028,9 +10028,15 @@
           if (spec[1]) panel.style.width = Math.max(340, r0.width + (ev.pageX - x0)) + 'px';
           if (spec[2]) panel.style.height = Math.max(180, r0.height + (ev.pageY - y0)) + 'px';
         }
-        function up() { window._msPanelDrag = false; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.userSelect = ''; }
+        // `up` is also wired to window blur (8/22): _msPanelDrag suppresses map hover, and it was
+        // cleared ONLY by mouseup. Release the button outside the window, or alt-tab mid-drag, and
+        // that mouseup never arrives — the flag stays true and hover highlighting is dead until a
+        // reload, with nothing on screen to explain it. Every mode-enter writes its inverse, on
+        // every exit path including the abandoned one. Found 8/22 by find-unguarded-latch.
+        // latch-ok: mouseup AND blur both clear it, so no exit path leaves it raised.
+        function up() { window._msPanelDrag = false; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); window.removeEventListener('blur', up); document.body.style.userSelect = ''; }
         document.body.style.userSelect = 'none';
-        document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+        document.addEventListener('mousemove', move); document.addEventListener('mouseup', up); window.addEventListener('blur', up);
       });
     });
   }
@@ -11044,9 +11050,11 @@
       panel.style.left = Math.max(0, Math.min(window.innerWidth - 80, ox + (ev.clientX - sx))) + 'px';
       panel.style.top = Math.max(0, Math.min(window.innerHeight - 40, oy + (ev.clientY - sy))) + 'px';
     }
-    function up() { window._msPanelDrag = false; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.userSelect = ''; }
+    // also on blur — see the resize handler's note: a mouseup that never arrives left map hover
+    // suppressed for the rest of the session.  latch-ok: cleared on every exit path now.
+    function up() { window._msPanelDrag = false; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); window.removeEventListener('blur', up); document.body.style.userSelect = ''; }
     document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up); window.addEventListener('blur', up);
   }
   // ── "⇄ Transfer column": copy one column's values into another (e.g. RRname → Label), server-side
   //    in id-batches so 78k-row layers finish without timeouts. Source-empty rows are never touched.
