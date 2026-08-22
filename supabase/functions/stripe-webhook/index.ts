@@ -86,13 +86,28 @@ Deno.serve(async (req) => {
       case "checkout.session.completed": {
         const s = event.data.object as Stripe.Checkout.Session;
         const userId = (s.client_reference_id as string) || (s.metadata?.user_id as string) || undefined;
-        // the tier the client asked for, or — if that's missing — whatever they actually bought
-        let tier = (s.metadata?.tier as string) || "";
+        // 2026-08-22 — SECURITY. This used to read `metadata.tier` FIRST and only fall back to the
+        // line item. `metadata.tier` is whatever the browser sent to create-checkout-session, and
+        // nothing checked it against `priceId`. So a signed-in user could ask for the £1 20 GB
+        // price with `tier: "2tb"`, pay £1, and be granted the £45 step — enforced for real, because
+        // `enforce_storage_quota` is a database trigger that maps subscription_tier to a byte cap.
+        // Found before launch, while payments were still in test mode with no bank account attached.
+        //
+        // THE RULE NOW: the tier is derived from the price Stripe actually charged, and from
+        // nothing else. Client metadata is a diagnostic breadcrumb, never an authority.
+        const li = await stripe.checkout.sessions.listLineItems(s.id, { limit: 1 });
+        const paidPriceId = li.data?.[0]?.price?.id ?? "";
+        const tier = PRICE_TO_TIER[paidPriceId] || "";
         if (!tier) {
-          const li = await stripe.checkout.sessions.listLineItems(s.id, { limit: 1 });
-          tier = PRICE_TO_TIER[li.data?.[0]?.price?.id ?? ""] || "";
+          throw new Error(`session ${s.id} paid for price ${paidPriceId || "(none)"}, which maps to no step — ` +
+            `refusing to grant anything. Add it to PRICE_TO_TIER if it is a real step.`);
         }
-        if (!tier) throw new Error("could not work out which step was bought for session " + s.id);
+        // Log a mismatch rather than swallow it: with the hole closed, a difference here is either
+        // a stale client or somebody probing, and both are worth seeing in the function logs.
+        const asked = (s.metadata?.requested_tier as string) || (s.metadata?.tier as string) || "";
+        if (asked && asked !== tier) {
+          console.warn(`tier mismatch on ${s.id}: client asked for "${asked}", price ${paidPriceId} is "${tier}". Granting "${tier}".`);
+        }
         await setTier(tier, { userId, customerId: (s.customer as string) || undefined });
         break;
       }
@@ -105,8 +120,20 @@ Deno.serve(async (req) => {
         // paused). A real cancellation also fires subscription.deleted → free.
         const keepTier = sub.status === "active" || sub.status === "trialing" || sub.status === "past_due";
         const cid = sub.customer as string;
-        await setTier(keepTier ? (PRICE_TO_TIER[priceId] || "free") : "free",
-                      { userId: await userIdForCustomer(cid), customerId: cid });
+        // 2026-08-22 — this was `PRICE_TO_TIER[priceId] || "free"`, so a price missing from the map
+        // DOWNGRADED A PAYING CUSTOMER TO FREE, silently, on their next subscription event. Adding a
+        // Stripe price without editing this file was all it took. Absence is not a downgrade: raise
+        // instead, so Stripe retries, the event sits in the dashboard unresolved, and somebody finds
+        // out. The customer keeps what they had in the meantime, which is the safe direction.
+        let next = "free";
+        if (keepTier) {
+          next = PRICE_TO_TIER[priceId] || "";
+          if (!next) {
+            throw new Error(`subscription ${sub.id} is ${sub.status} on price ${priceId || "(none)"}, ` +
+              `which maps to no step — refusing to downgrade them to free over a missing mapping.`);
+          }
+        }
+        await setTier(next, { userId: await userIdForCustomer(cid), customerId: cid });
         break;
       }
       case "customer.subscription.deleted": {

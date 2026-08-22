@@ -32,11 +32,32 @@ const stripe = new Stripe(Deno.env.get("STRIPE_SECRET_KEY")!, {
   httpClient: Stripe.createFetchHttpClient(),
 });
 
+// The price IDs that correspond to a real step. Must equal the keys of PRICE_TO_TIER in
+// stripe-webhook and the stripePriceId values in platform/pricing.js — three copies of one fact,
+// which is why `stripe-price-map-gate.mjs` compares all three rather than trusting this comment.
+const KNOWN_PRICES = new Set([
+  "price_1TyfdDLiMJ4gksrjvk7Pq4H9",  // 20gb
+  "price_1TyfcrLiMJ4gksrjTYBnOSmY",  // 50gb
+  "price_1TyfcrLiMJ4gksrj7La8hSx5",  // 100gb
+  "price_1TyfcsLiMJ4gksrjQ5dryqtl",  // 250gb
+  "price_1TyfctLiMJ4gksrjUkNCEhz3",  // 500gb
+  "price_1TyfcuLiMJ4gksrj1lisLpi3",  // 1tb
+  "price_1TyfcuLiMJ4gksrjN2OMgPVH",  // 2tb
+]);
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
     const { priceId, tier, successUrl, cancelUrl } = await req.json();
     if (!priceId) return json({ error: "missing priceId" }, 400);
+    // 2026-08-22 — defence in depth for the metadata.tier hole (see stripe-webhook). The webhook now
+    // derives the tier from the price it was actually charged, so a forged `tier` can no longer
+    // grant anything. This second check refuses a priceId that is not one of our steps at all, so a
+    // stale or archived price cannot open a checkout that the webhook will then have to refuse
+    // AFTER the card is charged. Keep in sync with pricing.js — `stripe-price-map-gate.mjs` holds it.
+    if (!KNOWN_PRICES.has(priceId)) {
+      return json({ error: "unknown price — nothing was charged" }, 400);
+    }
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
@@ -77,7 +98,10 @@ Deno.serve(async (req) => {
       success_url: successUrl || "https://mapstructor.com/dashboard.html",
       cancel_url: cancelUrl || "https://mapstructor.com/dashboard.html",
       client_reference_id: user.id,
-      metadata: { user_id: user.id, tier: tier ?? "" },
+      // `requested_tier`, not `tier`: it is what the browser ASKED for and grants nothing. It was
+      // called `tier` and the webhook trusted it, which is how the escalation worked. The name now
+      // says what it is, so the next reader cannot mistake it for an authority.
+      metadata: { user_id: user.id, requested_tier: tier ?? "" },
     });
     return json({ url: session.url });
   } catch (e) {
