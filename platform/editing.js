@@ -1733,7 +1733,14 @@
       if (t === 'merge') { if (window.MSMerge) MSMerge.open(); return; } markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
     var msEl = document.getElementById('ms-map-size');
     if (msEl) msEl.addEventListener('click', function () { refreshMapSize(true); });
-    if (!_mapSizeRun) refreshMapSize(false);
+    /* AFTER FIRST IDLE. It is a readout — nothing on the map waits for it — and at boot it was
+       competing with the data that IS waited for. Same treatment as the DuckDB warm and the
+       hidden-layer hydration. */
+    if (!_mapSizeRun) {
+      var mS = (typeof beforeMap !== 'undefined') ? beforeMap : null;
+      if (mS && mS.once) mS.once('idle', function () { setTimeout(function () { refreshMapSize(false); }, 1200); });   // cliff-ok: a breath after idle; the readout blocks nothing
+      else setTimeout(function () { refreshMapSize(false); }, 5000);   // cliff-ok: no map to wait on
+    }
   }
   // ── SIZE READOUTS (7/23): exact per-layer bytes via mapstructor_layer_stat, cached; the sidebar
   //    total fills progressively (one paced RPC per layer), the layer panel reads the same cache. ──
@@ -1748,17 +1755,41 @@
       Object.keys(slugToLayerDbId).forEach(function (k) { var v = slugToLayerDbId[k]; if (v && !seen[v]) { seen[v] = 1; ids.push(v); } });
       if (force) ids.forEach(function (id) { delete _layerSizeCache[id]; });
       var total = 0, feats = 0, unmeasured = 0;
-      for (var i = 0; i < ids.length; i++) {
-        if (run !== _mapSizeRun) return;
-        var st = _layerSizeCache[ids[i]];
-        if (!st) {
-          try { var r = await db.rpc('mapstructor_layer_stat', { p_layer: ids[i] }); if (!r.error && r.data) { st = r.data; _layerSizeCache[ids[i]] = st; } } catch (e1) {}
-          await new Promise(function (rs) { setTimeout(rs, 120); });   // pace — Supabase throttles bursts
+      /* ONE call for every uncached layer, not one per layer. This loop used to issue a separate
+         `mapstructor_layer_stat` per layer WITH a deliberate 120ms pause between them, because
+         "Supabase throttles bursts" — 14 of the 22 RPC calls in a boot on a 13-layer map, roughly
+         14 round trips plus 1.5s of self-imposed pacing, for a number that is pure display.
+         The pacing existed because of the burst; removing the burst removes the need for it.
+         `mapstructor_layer_stats(uuid[])` returns the same per-row expression (sql/setup/
+         layer-stats-batch.sql, verified row-for-row against the singular version). If it is not
+         installed the per-layer path still runs — the same tolerance every other RPC here has. */
+      var need = ids.filter(function (id) { return !_layerSizeCache[id]; });
+      if (need.length) {
+        var batched = false;
+        try {
+          var rb = await db.rpc('mapstructor_layer_stats', { p_layers: need });
+          if (!rb.error && Array.isArray(rb.data)) {
+            rb.data.forEach(function (row) {
+              if (row && row.layer_id) _layerSizeCache[row.layer_id] = { count: Number(row.feature_count) || 0, bytes: Number(row.bytes) || 0 };
+            });
+            batched = true;
+          }
+        } catch (eB) {}
+        if (!batched) {
+          for (var j = 0; j < need.length; j++) {
+            if (run !== _mapSizeRun) return;
+            try { var r1 = await db.rpc('mapstructor_layer_stat', { p_layer: need[j] }); if (!r1.error && r1.data) _layerSizeCache[need[j]] = r1.data; } catch (e1) {}
+            await new Promise(function (rs) { setTimeout(rs, 120); });   // pace — Supabase throttles bursts
+          }
         }
+      }
+      if (run !== _mapSizeRun) return;
+      for (var i = 0; i < ids.length; i++) {
+        var st = _layerSizeCache[ids[i]];
         if (st) { total += (st.bytes || 0); feats += (st.count || 0); }
         else unmeasured++;   // stat RPC timed out (big layers on a busy DB) — an under-count must SAY so
-        if (el()) el().textContent = 'Map data: ' + fmtSz(total) + (i < ids.length - 1 ? '…' : '');
       }
+      if (el()) el().textContent = 'Map data: ' + fmtSz(total);
       if (run !== _mapSizeRun) return;
       // baked tile archives count too (Publish writes them to the tiles bucket under this project)
       var tileBytes = 0;
