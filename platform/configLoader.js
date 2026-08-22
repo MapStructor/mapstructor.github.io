@@ -48,7 +48,14 @@ var ConfigLoader = (function () {
   // image + timeline DayStart/DayEnd + custom_fields spread in; reserved keys never overwritten)
   function featureToGeo(f) {
     var props = {
-      label: f.label != null ? f.label : null, description: f.description != null ? f.description : null,
+      /* A label of only whitespace becomes null, the same as no label. This is the CANONICAL
+         builder — every layer's boot features come through here — and it was passing `"   "` and
+         `""` through as real content, so the trims added at the other four sites on 8/21 never
+         covered the path that actually renders most maps. Found by blank-label-gate on its first
+         run, which is the entire argument for writing the gate rather than trusting the fix.
+         `null` rather than `""` because every reader already treats null as absent. */
+      label: (f.label != null && String(f.label).trim() !== "") ? f.label : null,
+      description: f.description != null ? f.description : null,
       content_id: f.content_id != null ? f.content_id : null,
       image_url: f.image_url != null ? f.image_url : null,
       DayStart: ymd(f.start_date, 0), DayEnd: ymd(f.end_date, 99999999)
