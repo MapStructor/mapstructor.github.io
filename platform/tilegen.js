@@ -866,11 +866,24 @@
     // fresh Supabase one (success never fails over). So: DELETE the R2 key BEFORE the Supabase
     // upload; re-PUT after it succeeds. Both R2 legs are best-effort (Supabase stays the
     // publish gate); the Worker enforces ownership of <projectId>.
+    // 8/23 — see the matching note in bigtable.js. The invariant was stated, not enforced: both R2
+    // legs were best-effort AND independent, so one Worker outage spanning a publish left the OLD
+    // archive in R2 while Supabase took the new one. Viewers read R2 first and would serve the
+    // previous bake indefinitely. The mirror leg now repairs the invariant rather than describing
+    // it — if the tile cannot be written, the key is deleted so R2 holds nothing.
     var token = null;
     try { token = (await db.auth.getSession()).data.session.access_token; } catch (e) {}
+    async function r2Abandon(why) {
+      try {
+        var rk = await fetch(WORKER_BASE + "/upload/tiles/" + path, { method: "DELETE", headers: { Authorization: "Bearer " + token } });
+        if (rk.ok || rk.status === 404) { console.warn("tilegen: R2 mirror write failed (" + why + ") — key cleared, viewers fall back to Supabase"); return; }
+        why += ", cleanup HTTP " + rk.status;
+      } catch (eK) { why += ", cleanup " + String((eK && eK.message) || eK); }
+      console.warn("tilegen: R2 mirror write failed (" + why + ") AND could not be cleared — R2 may now serve a STALE archive for " + path);
+    }
     if (token) try {
       await fetch(WORKER_BASE + "/upload/tiles/" + path, { method: "DELETE", headers: { Authorization: "Bearer " + token } });
-    } catch (e) { console.warn("tilegen: R2 pre-delete failed (fallback still correct)", e); }
+    } catch (e) { console.warn("tilegen: R2 pre-delete failed — the mirror PUT below is now what restores the invariant", e); }
 
     // NEVER upsert:true — storage's upsert path needs SELECT visibility on storage.objects and
     // fails as a bogus "violates row-level security" (the 7/15 all-day mystery: plain insert 200,
@@ -887,8 +900,8 @@
         method: "PUT", body: blob,
         headers: { Authorization: "Bearer " + token, "Content-Type": "application/octet-stream" }
       });
-      if (!rw.ok) console.warn("tilegen: R2 mirror write " + rw.status + " — viewers fall back to Supabase for this layer");
-    } catch (e) { console.warn("tilegen: R2 mirror write failed — viewers fall back to Supabase for this layer", e); }
+      if (!rw.ok) await r2Abandon("HTTP " + rw.status);
+    } catch (e) { await r2Abandon(String((e && e.message) || e)); }
   }
 
   // features (geojson Feature[] with .id = features.feature_id) → archive → storage → the layers

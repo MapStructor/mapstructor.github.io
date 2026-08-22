@@ -172,11 +172,30 @@
       // fresh Supabase one (success never fails over). So: DELETE the R2 key BEFORE the Supabase
       // upload; re-PUT after it succeeds. Both R2 legs best-effort (Supabase stays the source of
       // truth); the Worker enforces ownership of <projectId> on the tiles/<pid>/… key.
+      // 8/23 — the invariant above was STATED but not ENFORCED. Both legs were best-effort AND
+      // independent, so one Worker outage spanning the bake left the OLD object in R2: the
+      // pre-delete failed, the Supabase upload succeeded on a different host, and the mirror PUT
+      // failed too. Reads resolve R2 first (see R2-FIRST READ below), find a live, valid, STALE
+      // sidecar, and prefer it — for good, across reloads, with the editor showing the new data.
+      // The two warnings even asserted the opposite ("reads fall back to Supabase"), which is only
+      // true when R2 is actually empty. So the PUT leg now REPAIRS the invariant instead of
+      // describing it: if the mirror cannot be written, the key is deleted so R2 holds nothing.
       var r2tok = null;
       try { r2tok = (await db.auth.getSession()).data.session.access_token; } catch (eTok) {}
+      async function r2Abandon(why) {
+        /* Force R2 to NOTHING so "reads fall back to Supabase" becomes true rather than hopeful.
+           Unconditional rather than gated on whether the pre-delete succeeded: this path is already
+           exceptional, one DELETE is cheap, and the failure it repairs is silent and permanent. */
+        try {
+          var rk = await fetch(WORKER_BASE + "/upload/tiles/" + path, { method: "DELETE", headers: { Authorization: "Bearer " + r2tok } });
+          if (rk.ok || rk.status === 404) { console.warn("bigtable: R2 sidecar mirror failed (" + why + ") — key cleared, reads fall back to Supabase"); return; }
+          why += ", cleanup HTTP " + rk.status;
+        } catch (eK) { why += ", cleanup " + String((eK && eK.message) || eK); }
+        console.warn("bigtable: R2 sidecar mirror failed (" + why + ") AND could not be cleared — R2 may now serve a STALE sidecar for " + path);
+      }
       if (r2tok) try {
         await fetch(WORKER_BASE + "/upload/tiles/" + path, { method: "DELETE", headers: { Authorization: "Bearer " + r2tok } });
-      } catch (eDel) { console.warn("bigtable: R2 pre-delete failed (fallback still correct)", eDel); }
+      } catch (eDel) { console.warn("bigtable: R2 pre-delete failed — the mirror PUT below is now what restores the invariant", eDel); }
       // NEVER upsert:true (storage upsert 403s under RLS — see tilegen.js): insert, on exists delete+retry
       var up = await db.storage.from(BUCKET).upload(path, blob, { upsert: false });
       if (up.error && /exist|duplicate/i.test(up.error.message || "")) {
@@ -189,8 +208,8 @@
           method: "PUT", body: blob,
           headers: { Authorization: "Bearer " + r2tok, "Content-Type": "application/octet-stream" }
         });
-        if (!rw.ok) console.warn("bigtable: R2 sidecar mirror " + rw.status + " — reads fall back to Supabase for this layer");
-      } catch (ePut) { console.warn("bigtable: R2 sidecar mirror failed — reads fall back to Supabase for this layer", ePut); }
+        if (!rw.ok) await r2Abandon("HTTP " + rw.status);
+      } catch (ePut) { await r2Abandon(String((ePut && ePut.message) || ePut)); }
       var url = SUPABASE_URL + "/storage/v1/object/public/" + BUCKET + "/" + path;
       await db.rpc("ms_patch_layer_config", { p_id: layerId, p_patch: {
         attrParquet: url,
