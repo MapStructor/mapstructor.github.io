@@ -197,6 +197,9 @@
 
     // 5 · layers added since the publish are now unreferenced → Trash (recoverable), never deleted
     say('Moving layers added since publishing to Trash…');
+    // nplus1-ok: one trash call per layer a revert removes. There is no batch form of
+    // ms_trash_layer_if_orphaned, each call is a separate ownership decision, and a revert
+    // touches a handful of layers once — not a boot path.
     for (var m = 0; m < d.added.length; m++) {
       try {
         var rt = await db.rpc('ms_trash_layer_if_orphaned', { p_layer: d.added[m], p_project: projectId });

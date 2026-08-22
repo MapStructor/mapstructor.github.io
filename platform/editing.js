@@ -118,6 +118,9 @@
     if (!total && window.MSGuard) MSGuard.cliff('outline-heal-giveup', tries || 0, 9,
       'the layer tree never appeared, so transparent outlines were never repaired — outlines may be invisible until a reload');
     try { window.__msHeal = { nodes: total, outlines: seen, broken: fix.length, tries: tries || 0 }; } catch (eW) {}
+    // nplus1-ok: one update per BROKEN outline layer, and `fix` is only the outlines whose colour
+    // was found transparent — normally empty, occasionally one or two. Each write carries a
+    // different paint object, so there is nothing to batch into.
     fix.forEach(function (O) {
       var P = findNodeById(layers, O.outlineOf); if (!P) return;
       var val = fillColorValue(P);
@@ -1776,6 +1779,8 @@
           }
         } catch (eB) {}
         if (!batched) {
+          // nplus1-ok: the fallback for a database without mapstructor_layer_stats. The batch
+          // path above is the normal one; this exists so an un-migrated database still works.
           for (var j = 0; j < need.length; j++) {
             if (run !== _mapSizeRun) return;
             try { var r1 = await db.rpc('mapstructor_layer_stat', { p_layer: need[j] }); if (!r1.error && r1.data) _layerSizeCache[need[j]] = r1.data; } catch (e1) {}
@@ -9038,6 +9043,10 @@
         if (on) node.editorOnly = true; else delete node.editorOnly;
         var kids = [];
         (function walk(nn) { (nn.children || []).forEach(function (c) { if (c.type === 'group' || c.type === 'section') { if (on) c.editorOnly = true; else delete c.editorOnly; walk(c); } else { kids.push(c); } }); })(node);
+        // nplus1-ok: read-modify-write of each child's raw_config when a group is marked
+        // editor-only. Each row's JSON is modified independently, so a batch would have to
+        // read them all, merge in JS and write them all back — more moving parts for a
+        // user-triggered action on a handful of children. Not a boot path.
         for (var k = 0; k < kids.length; k++) {
           var kn = kids[k], klid = slugToLayerDbId[kn.id]; if (!klid) continue;
           if (on) kn.editorOnly = true; else delete kn.editorOnly;

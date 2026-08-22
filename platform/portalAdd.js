@@ -81,6 +81,9 @@
       // enumerated. A bookmark is a held link, so fetch those one at a time through the
       // by-id function — otherwise someone else's link-shared map silently vanishes here.
       var missing = bmIds.filter(function (id) { return !found[id]; });
+      // nplus1-ok: ms_project_by_id is a definer lookup that resolves ONE link-shared map the
+      // caller cannot see through the table's policy. There is no batch form, and `missing` is
+      // the handful of bookmarks whose name the list could not resolve.
       for (var mi = 0; mi < missing.length; mi++) {
         try {
           var one = await db.rpc('ms_project_by_id', { p_id: missing[mi] });
@@ -330,13 +333,36 @@
         //    And every step now SAYS what it is doing — one frozen message for a hundred seconds is
         //    indistinguishable from a crash. ──
         var est = 0;
-        for (var q = 0; q < copyingIds.length; q++) {
-          var srcL = (pls.filter(function (x) { return x.layers.id === copyingIds[q]; })[0] || {}).layers || {};
-          var known = srcL.raw_config && srcL.raw_config.tilesFeatureCount;
-          if (typeof known === 'number' && known >= 0) { est += known * 600; continue; }
-          note('Checking storage room — measuring “' + (srcL.name || 'layer') + '” (' + (q + 1) + ' of ' + copyingIds.length + ')…');
-          var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', copyingIds[q]);
-          est += (cq.count || 0) * 600;   // rough bytes/row — a pre-check, not an invoice
+        /* ONE call for the layers that need measuring, not one each. This was a count query per
+           layer with a per-layer progress line — and that progress line existed only because the
+           loop was slow, the same relationship the sidebar size readout had with its 120ms pacing.
+           `mapstructor_layer_stats(uuid[])` already implements the exact fallback this loop wants
+           (live rows are truth; a rowless layer reports its baked count), so the per-layer branch
+           collapses into the batch.
+           The ARITHMETIC IS UNCHANGED — still count × 600. The RPC also returns real bytes, which
+           would be a better estimate, but this figure gates whether an add is allowed to proceed
+           and swapping the basis would quietly change who gets blocked. A performance fix does not
+           get to move a guard. */
+        var needCount = [];
+        copyingIds.forEach(function (cid) {
+          var sL = (pls.filter(function (x) { return x.layers.id === cid; })[0] || {}).layers || {};
+          var kn = sL.raw_config && sL.raw_config.tilesFeatureCount;
+          if (typeof kn === 'number' && kn >= 0) est += kn * 600; else needCount.push(cid);
+        });
+        if (needCount.length) {
+          note('Checking storage room — measuring ' + needCount.length + ' layer' + (needCount.length === 1 ? '' : 's') + '…');
+          var counted = false;
+          try {
+            var rs = await db.rpc('mapstructor_layer_stats', { p_layers: needCount });
+            if (!rs.error && Array.isArray(rs.data)) {
+              rs.data.forEach(function (row) { est += (Number(row.feature_count) || 0) * 600; });
+              counted = true;
+            }
+          } catch (eS) {}
+          if (!counted) for (var q = 0; q < needCount.length; q++) {   // nplus1-ok: fallback for a database without the batch function
+            var cq = await db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', needCount[q]);
+            est += (cq.count || 0) * 600;   // rough bytes/row — a pre-check, not an invoice
+          }
         }
         if (est > 0) {
           note('Checking storage room — reading your plan…');
