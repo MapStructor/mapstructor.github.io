@@ -436,7 +436,41 @@ var ConfigLoader = (function () {
     return top.sort(bySort).map(function (e) { return e.node; });
   }
 
-  async function fetchProjectBundle(db, projectId) {
+  /* ── ONE BUNDLE PER BOOT, AND ONLY IF THE CALLER ASKS (8/22) ─────────────────────────────────
+     Measured: an editor boot calls this THREE times — projectLoader, editing.js loadIds, and once
+     more later — costing three reads each of projects, layer_sections, layer_groups and
+     project_layers. The 8/21 note said the calls were sequential so nothing could be shared;
+     timing them showed the first two overlap, and in any case what they need is a shared RESULT,
+     not a shared request: they ask for the same rows and get identical answers.
+
+     OPT-IN, not opt-out, and that is the whole safety argument. Five callers exist and only two are
+     boot: copy-map, publish and revert all need the CURRENT state, and handing any of them a
+     seconds-old bundle would copy or publish the wrong thing — silently, since it would look
+     entirely plausible. With opt-in, a caller added next year is fresh unless somebody deliberately
+     writes `{ shared: true }`, so the dangerous case cannot arise by omission.
+
+     Every shared answer is a CLONE. `leafFromRow` shallow-copies, so two holders of one bundle
+     would share nested objects by reference and one mutating a layer's raw_config would change the
+     other's. Cloning costs far less than four round trips and removes the whole class. */
+  var _sharedBundle = null;   // { id, promise } — the boot's copy, never handed out directly
+  function invalidateBundle() { _sharedBundle = null; }
+  function cloneBundle(b) {
+    try { return (typeof structuredClone === "function") ? structuredClone(b) : JSON.parse(JSON.stringify(b)); }
+    catch (e) { return JSON.parse(JSON.stringify(b)); }
+  }
+  async function fetchProjectBundle(db, projectId, opts) {
+    var shared = !!(opts && opts.shared);
+    if (shared && _sharedBundle && _sharedBundle.id === projectId) {
+      return cloneBundle(await _sharedBundle.promise);
+    }
+    if (!shared) return await fetchProjectBundleFresh(db, projectId);
+    var p = fetchProjectBundleFresh(db, projectId);
+    _sharedBundle = { id: projectId, promise: p };
+    /* A failed fetch must not become the boot's remembered answer. */
+    p.catch(function () { if (_sharedBundle && _sharedBundle.promise === p) _sharedBundle = null; });
+    return cloneBundle(await p);
+  }
+  async function fetchProjectBundleFresh(db, projectId) {
     // These four reads do not depend on each other — only on the project id we already have.
     // They used to run one after another, so opening a map paid four serial round trips before
     // a single feature could be asked for. Boot is a FLOOR, not a slope (measured 8/21: 2.5–3.7s
@@ -598,6 +632,7 @@ var ConfigLoader = (function () {
     leafFromRow: leafFromRow,
     synthesize: synthesize,
     fetchProjectBundle: fetchProjectBundle,
+    invalidateBundle: invalidateBundle,
     loadProjectConfig: loadProjectConfig,
     hydrateDeferredFeatures: hydrateDeferredFeatures,
     hydrateDeferredLayer: hydrateDeferredLayer,

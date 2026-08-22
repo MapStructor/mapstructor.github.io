@@ -69,7 +69,7 @@
   }
   async function loadIds() {
     try {
-      var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);
+      var bundle = await ConfigLoader.fetchProjectBundle(db, projectId, { shared: true });   // boot
       var maxSort = 0, sMap = {}, gMap = {};
       (bundle.sections || []).forEach(function (s) { if (s.slug != null) sMap[s.slug] = s.id; if (s.sort_order > maxSort) maxSort = s.sort_order; });
       (bundle.groups || []).forEach(function (g) { if (g.slug != null) gMap[g.slug] = g.id; if (g.sort_order > maxSort) maxSort = g.sort_order; });
@@ -183,9 +183,14 @@
      trading a lost key for a lost subtree.
      Returns the supabase-shaped `{ data, error }` the call sites already handle. */
   async function patchProjectConfig(patch) {
+    /* The boot bundle carries this row, so a write makes it stale. Only two boot callers read it
+       and neither runs again after this point — but a cache nobody invalidates is a cache waiting
+       to be wrong when a third caller appears. */
+    try { if (window.ConfigLoader && ConfigLoader.invalidateBundle) ConfigLoader.invalidateBundle(); } catch (e) {}
     return await db.rpc('ms_patch_project_config', { p_id: projectId, p_patch: patch });
   }
   async function patchLayerConfig(layerId, patch) {
+    try { if (window.ConfigLoader && ConfigLoader.invalidateBundle) ConfigLoader.invalidateBundle(); } catch (e) {}
     return await db.rpc('ms_patch_layer_config', { p_id: layerId, p_patch: patch });
   }
   function stripDerivedIdentity(raw, slug) {
@@ -3906,7 +3911,7 @@
     setStatus('Copying map…');
     function strip(row, extra) { var o = {}; Object.keys(row).forEach(function (k) { if (k === 'id' || k === 'created_at' || k === 'updated_at' || (extra && extra.indexOf(k) > -1)) return; o[k] = row[k]; }); return o; }
     try {
-      var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);
+      var bundle = await ConfigLoader.fetchProjectBundle(db, projectId);   // NOT shared: a copy must copy the CURRENT state
       // The Fold (C7): folded layers copy as POINTERS — parquet_key keeps naming the SOURCE
       // layer's artifacts (tiles/sidecar/raw/export URLs all ride the carried stamps), zero
       // feature rows are cloned except deltas, and r2_bytes starts 0 (the copy owns no bytes).

@@ -212,7 +212,7 @@ window.msApplyHeaderFeature = function (visible, projectName) {
         try { var pr = await db.from("projects").select("*").eq("id", platformProjectId).maybeSingle(); bundle = { project: pr.data || {}, sections: [], groups: [], projectLayers: [], featuresByLayer: {} }; } catch (e) {}
       }
     }
-    if (!bundle) bundle = await ConfigLoader.fetchProjectBundle(db, platformProjectId);
+    if (!bundle) bundle = await ConfigLoader.fetchProjectBundle(db, platformProjectId, { shared: true });   // boot
     var registry = typeof renderRegistry !== "undefined" ? renderRegistry : {};
     var projectLayers = ConfigLoader.synthesize(bundle, registry);
 
