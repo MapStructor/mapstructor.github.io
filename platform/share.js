@@ -41,12 +41,14 @@ var MapShare = (function () {
     var em = String(user.email || '').toLowerCase();
     return !!em && ea.emails.map(function (e) { return String(e).toLowerCase(); }).indexOf(em) > -1;
   }
+  /* Atomic since 8/22. This used to read raw_config, set one key and write the whole blob back —
+     a lost update by construction, and demonstrated: saving two settings at once discarded one of
+     them silently. WHO CAN EDIT A MAP is the worst key in this blob to lose a write on, because
+     losing it fails OPEN if a stale copy still carries anyoneWithLink. */
   async function saveEditAccess(db, projectId, ea) {
-    var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
-    if (cur.error) throw new Error(cur.error.message);
-    var rc = (cur.data && cur.data.raw_config) || {};
-    rc.editAccess = { anyoneWithLink: !!ea.anyoneWithLink, emails: (ea.emails || []).map(function (e) { return String(e).toLowerCase().trim(); }).filter(Boolean) };
-    var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
+    var r = await db.rpc('ms_patch_project_config', { p_id: projectId, p_patch: {
+      editAccess: { anyoneWithLink: !!ea.anyoneWithLink, emails: (ea.emails || []).map(function (e) { return String(e).toLowerCase().trim(); }).filter(Boolean) }
+    } });
     if (r.error) throw new Error(r.error.message);
   }
 
@@ -75,12 +77,13 @@ var MapShare = (function () {
 
   async function save(db, projectId, vis) {
     // read-merge-write: raw_config carries other project chrome (about, popups, timeline…) — never clobber it
-    var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
-    if (cur.error) throw new Error(cur.error.message);
-    var rc = (cur.data && cur.data.raw_config) || {};
-    rc.visibility = vis;
-    var r = await db.from('projects').update({ raw_config: rc, is_public: vis === 'public' }).eq('id', projectId);
+    /* Two writes on purpose, and it is safe: the RPC patches ONE key of the blob atomically, and
+       is_public is a plain column, so updating it cannot clobber anything else the way a whole-blob
+       write does. */
+    var r = await db.rpc('ms_patch_project_config', { p_id: projectId, p_patch: { visibility: vis } });
     if (r.error) throw new Error(r.error.message);
+    var r2 = await db.from('projects').update({ is_public: vis === 'public' }).eq('id', projectId);
+    if (r2.error) throw new Error(r2.error.message);
     // R2 snapshot sync (7/27, step ②·25): published bundles mirror to the world-readable
     // tiles.mapstructor.com — a flip to private must remove that copy NOW (the live-row gate
     // already blocks the page, but the raw JSON must not stay fetchable); a flip away from

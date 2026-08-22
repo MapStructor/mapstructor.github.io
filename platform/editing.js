@@ -182,11 +182,11 @@
      level — patching `{features:{header:true}}` that way would replace the whole `features` object,
      trading a lost key for a lost subtree.
      Returns the supabase-shaped `{ data, error }` the call sites already handle. */
-  async function patchProjectConfig(pathArr, value) {
-    return await db.rpc('ms_patch_project_config', { p_id: projectId, p_path: pathArr, p_value: value });
+  async function patchProjectConfig(patch) {
+    return await db.rpc('ms_patch_project_config', { p_id: projectId, p_patch: patch });
   }
-  async function patchLayerConfig(layerId, pathArr, value) {
-    return await db.rpc('ms_patch_layer_config', { p_id: layerId, p_path: pathArr, p_value: value });
+  async function patchLayerConfig(layerId, patch) {
+    return await db.rpc('ms_patch_layer_config', { p_id: layerId, p_patch: patch });
   }
   function stripDerivedIdentity(raw, slug) {
     if (!raw) return raw;
@@ -1720,11 +1720,9 @@
   // below it. Clicking a button fills the form area; clicking another button switches the form mid-action.
   async function saveLayerOrder(ids, opts) {
     try {
-      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      rc.layerOrder = ids;
-      if (opts && typeof opts.labelsOnTop === 'boolean') rc.labelsOnTop = opts.labelsOnTop;
-      var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
+      var patch = { layerOrder: ids };
+      if (opts && typeof opts.labelsOnTop === 'boolean') patch.labelsOnTop = opts.labelsOnTop;
+      var r = await patchProjectConfig(patch);
       setStatus(r.error ? 'Layer order save failed' : 'Layer order saved');
     } catch (e) { setStatus('Layer order save failed'); }
   }
@@ -4205,7 +4203,7 @@
     var eUnix = (ed === 'today') ? window.moment().unix() : window.moment(ed).unix();
     if (!sd || (!today && !ed) || eUnix <= window.moment(sd).unix()) { setStatus('Enter a valid start date before the end'); return; }
     setStatus('Saving…');
-    try { var r = await patchProjectConfig(['timeline'], { start: sd, end: ed }); if (r.error) throw new Error(r.error.message); applyTimelineRange(sd, ed); setStatus('Timeline range saved'); } catch (e) { setStatus('Save failed'); }
+    try { var r = await patchProjectConfig({ timeline: { start: sd, end: ed } }); if (r.error) throw new Error(r.error.message); applyTimelineRange(sd, ed); setStatus('Timeline range saved'); } catch (e) { setStatus('Save failed'); }
   }
   function fmtView(lat, lng, z) { return (lat != null && lng != null) ? ('Default: ' + Number(lat).toFixed(4) + ', ' + Number(lng).toFixed(4) + ' · z' + (z != null ? Number(z).toFixed(1) : '?')) : 'Default view not set'; }
   async function openSettingsPanel() {
@@ -4228,10 +4226,8 @@
     if (on && !window.confirm('Lock this map? Editing turns OFF for everyone (including you) until it is unlocked again. Viewing and copying stay available.')) { if (box) box.checked = false; return; }
     setStatus('Saving…');
     try {
-      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      if (on) rc.editLock = true; else delete rc.editLock;
-      var u = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (u.error) throw new Error(u.error.message);
+      var u = await patchProjectConfig({ editLock: on ? true : null });   // null deletes the key
+      if (u.error) throw new Error(u.error.message);
       setStatus('Saved');
       if (on) { showToast('🔒 Locked — reloading into view-only…', 4000); setTimeout(function () { location.reload(); }, 900); }
       else showToast('🔓 Unlocked.');
@@ -4274,10 +4270,7 @@
       if (up.error) throw new Error(up.error.message);
       var pub = db.storage.from('tiles').getPublicUrl(key);
       var url = ((pub && pub.data && pub.data.publicUrl) || '') + '?v=' + Date.now();   // bust the old card image
-      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      rc.thumbnail = url;
-      var u = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
+      var u = await patchProjectConfig({ thumbnail: url });
       if (u.error) throw new Error(u.error.message);
       // on the portal already? the card reads portal_entries.thumb — point it at the capture
       var pe = await db.from('portal_entries').update({ thumb: url }).eq('project_id', projectId).select('project_id');
@@ -4297,10 +4290,7 @@
     var show = document.getElementById('esp-feat-header').checked;
     setStatus('Saving…');
     try {
-      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      rc.features = rc.features || {}; rc.features.header = show;
-      var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId);
+      var r = await patchProjectConfig({ features: { header: show } });
       if (r.error) throw new Error(r.error.message);
       if (window.msApplyHeaderFeature) msApplyHeaderFeature(show, document.getElementById('esp-name').value);
       window.dispatchEvent(new Event('resize'));
@@ -4350,16 +4340,14 @@
     try {
       var dataUrl = await downscaleImage(f, 600);
       applyHeaderLogo(dataUrl);
-      var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {};
-      rc.headerLogo = dataUrl;
-      var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message);
+      var r = await patchProjectConfig({ headerLogo: dataUrl }); if (r.error) throw new Error(r.error.message);
       setStatus('Logo saved');
     } catch (e) { setStatus('Logo save failed'); }
   }
   async function onLogoLink() {
     var url = (document.getElementById('esp-logo-link').value || '').trim();
     applyHeaderLink(url); setStatus('Saving…');
-    try { var r = await patchProjectConfig(['headerLink'], url); if (r.error) throw new Error(r.error.message); setStatus('Logo link saved'); } catch (e) { setStatus('Save failed'); }
+    try { var r = await patchProjectConfig({ headerLink: url }); if (r.error) throw new Error(r.error.message); setStatus('Logo link saved'); } catch (e) { setStatus('Save failed'); }
   }
   async function onSetDefaultView() {
     if (!beforeMap) return;
@@ -4683,7 +4671,7 @@
   }
   async function saveBaseMaps() {
     setStatus('Saving…');
-    try { var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.baseMaps = bmaps(); rc.mapSections = msecs(); rc.zoomButtons = bzbtns(); var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus('Saved'); } catch (e) { setStatus('Save failed'); }
+    try { var r = await patchProjectConfig({ baseMaps: bmaps(), mapSections: msecs(), zoomButtons: bzbtns() }); if (r.error) throw new Error(r.error.message); setStatus('Saved'); } catch (e) { setStatus('Save failed'); }
   }
   function rerenderMaps() {   // re-render the panel only; do NOT re-run setupMapSwitching (it setStyles both maps → wipes layers). enhanceMapRows re-wires the radios.
     try { if (typeof window.generateBaseMapsPanel === 'function') window.generateBaseMapsPanel(); } catch (e) {}
@@ -12131,6 +12119,11 @@
   }
   async function removePortalNote(noteId) {
     try {
+      // rmw-ok: removing ONE item from an array genuinely needs the current array — merge-patch
+      // replaces arrays wholesale, so there is nothing to patch with until we have read it.
+      // Residual risk, stated rather than hidden: a note added by someone else between this read
+      // and the write is dropped. Acceptable today (one editor per map); the real fix is a
+      // server-side filter, and it is not worth an RPC for a path this rare.
       var r = await db.from('projects').select('raw_config').eq('id', projectId).single();
       var rc = (r.data && r.data.raw_config) || {};
       rc.portalNotes = (Array.isArray(rc.portalNotes) ? rc.portalNotes : []).filter(function (n) { return n.id !== noteId; });
@@ -12217,10 +12210,8 @@
     document.getElementById('ms-lock-unlock').addEventListener('click', async function () {
       if (!window.confirm('Unlock this map for editing? It stays unlocked until you lock it again in Settings.')) return;
       try {
-        var cur = await db.from('projects').select('raw_config').eq('id', projectId).single();
-        var rc = (cur.data && cur.data.raw_config) || {};
-        delete rc.editLock;
-        var u = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (u.error) throw new Error(u.error.message);
+        var u = await patchProjectConfig({ editLock: null });   // null deletes the key
+        if (u.error) throw new Error(u.error.message);
         location.reload();
       } catch (e) { alert('Unlock failed: ' + (e && e.message)); }
     });
