@@ -269,6 +269,9 @@
       var L0 = (m0 && node && m0.getLayer) ? m0.getLayer(node.id + "-left") : null;
       if (L0 && (L0.type === "fill" || L0.type === "line" || L0.type === "circle")) return L0.type + "-opacity";
     } catch (e) {}
+    // Fallback delegates to the engine"s sole author rather than repeating the mapping a fifth
+    // time — that repetition is what let the editor and viewer drift apart in the first place.
+    if (typeof msPaintKeyFor === "function") return msPaintKeyFor(node && node.type, "opacity");
     var t = String((node && node.type) || "").toLowerCase();
     if (t === "line" || t === "linestring" || t === "multilinestring") return "line-opacity";
     if (t === "circle" || t === "point" || t === "multipoint") return "circle-opacity";

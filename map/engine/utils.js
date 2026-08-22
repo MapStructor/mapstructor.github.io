@@ -51,6 +51,24 @@ function msDateKindFor(layerId) {
   return /-label-|-labels-/.test(String(layerId)) ? "label" : "shape";
 }
 
+/* WHICH PAINT PROPERTY does a layer of this `type` use? Sole author, for the same reason
+   msDateFilter is: the fill/line/else-circle ternary had been hand-written in at least four places
+   and had already DRIFTED between two of them, so the editor and the viewer wrote different
+   properties for the same layer. Writing the wrong one does nothing at all, silently.
+   `layers.type` is not a clean enum. Nine live layers carry something outside {fill,line,circle}:
+   six are null and one each is "Polygon", "Point", "LineString" — geometry names that arrived
+   through import paths that stamped the geometry instead of the render type. Those must map to the
+   right property rather than fall off the end of a chain, and an unknown type defaults to `fill`
+   because most layers are fills and a fill default is the one that shows something. */
+function msPaintKeyFor(type, kind) {
+  var t = String(type == null ? "" : type).toLowerCase();
+  var base = (t === "line" || t === "linestring" || t === "multilinestring") ? "line"
+    : (t === "circle" || t === "point" || t === "multipoint") ? "circle"
+    : "fill";
+  if (kind === "width") return base === "circle" ? "circle-radius" : "line-width";
+  return base + "-" + (kind || "color");   // color | opacity
+}
+
 function flatLayers(nodes) {
   const result = [];
   nodes.forEach(node => {

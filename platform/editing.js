@@ -1582,7 +1582,9 @@
         var orig = (map.getStyle().layers || []).filter(function (l) { return l.id === node.id + '-' + pair[0]; })[0];
         // match the LAYER's own type — the old hardcoded 'fill' made line/circle overlays invisible
         // (line geometries render nothing in a fill layer), which surfaced with folded line layers (C4)
-        var oType = (node.type === 'line' || node.type === 'circle') ? node.type : 'fill';
+        // enum-ok: defaults to 'fill', which is the right default for a geometry-named or null type
+    // — the same choice msPaintKeyFor makes. Only the ones that defaulted to CIRCLE were bugs.
+    var oType = (node.type === 'line' || node.type === 'circle') ? node.type : 'fill';
         var oDefault = oType === 'line' ? { 'line-color': '#ffb255', 'line-width': 2 }
           : oType === 'circle' ? { 'circle-color': '#ffb255', 'circle-radius': 6 }
           : { 'fill-color': '#ffb255', 'fill-outline-color': '#ff0000' };
@@ -7367,6 +7369,9 @@
       var L0 = (m0 && node && m0.getLayer) ? m0.getLayer(node.id + '-left') : null;
       if (L0 && (L0.type === 'fill' || L0.type === 'line' || L0.type === 'circle')) return L0.type + '-opacity';
     } catch (e) {}
+    // Fallback delegates to the engine's sole author rather than repeating the mapping a fifth
+    // time — that repetition is what let the editor and viewer drift apart in the first place.
+    if (typeof msPaintKeyFor === 'function') return msPaintKeyFor(node && node.type, 'opacity');
     var t = String((node && node.type) || '').toLowerCase();
     if (t === 'line' || t === 'linestring' || t === 'multilinestring') return 'line-opacity';
     if (t === 'circle' || t === 'point' || t === 'multipoint') return 'circle-opacity';
@@ -8768,8 +8773,14 @@
       fallback];
   }
   function numByKeys(node, kind) {
-    if (kind === 'opacity') return [node.type === 'fill' ? 'fill-opacity' : node.type === 'line' ? 'line-opacity' : 'circle-opacity'];
-    return node.type === 'circle' ? ['circle-radius'] : ['line-width'];   // thickness: line width / point radius / fill outline width
+    // Same fill/line/else-circle chain that had drifted in opKeyFor, in a second place: anything
+    // whose `type` is not fill or line got circle-opacity, and nine live layers carry a type
+    // outside {fill,line,circle} — 6 null, plus "Polygon", "Point", "LineString". Writing the
+    // wrong opacity property does nothing at all, silently. Route both through the one function
+    // that already asks the map what it actually painted.
+    if (kind === 'opacity') return [opKeyFor(node)];
+    var t = String((node && node.type) || '').toLowerCase();
+    return (t === 'circle' || t === 'point' || t === 'multipoint') ? ['circle-radius'] : ['line-width'];   // thickness: line width / point radius / fill outline width
   }
   function setStyleMetaRC(lid2, key, value) {   // style meta lives in raw_config; saveLayerStyle only carries color+paint
     if (!lid2) return;
@@ -9695,13 +9706,21 @@
     if (node.outlineOf) { splitBtn.textContent = 'Merge into polygon'; splitBtn.style.display = 'block'; }
     else if (fillStroke) { splitBtn.textContent = node.outlineSplit ? 'Merge outline back in' : 'Split outline into its own layer'; splitBtn.style.display = 'block'; }
     else { splitBtn.style.display = 'none'; }
-    var width = paintWidth(node.paint); if (width == null) width = (node.type === 'circle') ? 1.5 : (node.type === 'fill' ? 0.5 : 2);   // fills: 0.5 border default
+    /* Normalise the type ONCE. Raw `node.type` is not a clean enum: nine live layers carry null,
+       "Polygon", "Point" or "LineString", and each bare comparison below treated those as "some
+       other thing". A Polygon-typed fill got border width 2 instead of the 0.5 default, and a
+       LineString-typed layer was shown no width control at all. Found by find-enum-gaps. */
+    var nType = (typeof msPaintKeyFor === 'function')
+      ? msPaintKeyFor(node.type, 'color').replace(/-color$/, '')
+      // enum-ok: the no-engine-helper fallback; defaults to 'fill' exactly as msPaintKeyFor does.
+      : (node.type === 'line' ? 'line' : node.type === 'circle' ? 'circle' : 'fill');
+    var width = paintWidth(node.paint); if (width == null) width = (nType === 'circle') ? 1.5 : (nType === 'fill' ? 0.5 : 2);   // fills: 0.5 border default
     document.getElementById('elp-width').value = width;
     document.getElementById('elp-width-val').textContent = width;
-    document.getElementById('elp-width-label').textContent = (node.type === 'line') ? 'Width' : 'Outline width';
+    document.getElementById('elp-width-label').textContent = (nType === 'line') ? 'Width' : 'Outline width';
     fillWzoomUI(node);   // 7/21: "Vary width by zoom" checkbox + stops (lines only; parses the stored expression)
     // width = line/outline thickness: lines, un-split polygons (auto-outline), and circles (circle-stroke-width — uncapped, no split needed)
-    document.getElementById('elp-width-row').style.display = ((node.type === 'line') || (fillStroke && !node.outlineSplit) || node.type === 'circle') ? 'block' : 'none';
+    document.getElementById('elp-width-row').style.display = ((nType === 'line') || (fillStroke && !node.outlineSplit) || nType === 'circle') ? 'block' : 'none';
     // offset (8/14): engine-rendered lines only — MapboxDraw's fixed styles can't shift a line sideways
     (function () {
       var offRow = document.getElementById('elp-offset-row'); if (!offRow) return;

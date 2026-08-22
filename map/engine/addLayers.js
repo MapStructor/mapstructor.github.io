@@ -24,8 +24,12 @@ function msNumCol(prop, fallback) {
 function styleColumnPaint(layer) {
   if (!layer.paint || !(layer.source && layer.source.type === "geojson")) return layer.paint;
   const p = { ...layer.paint };
-  const ck = layer.type === "fill" ? "fill-color" : layer.type === "line" ? "line-color" : "circle-color";
-  const ok = layer.type === "fill" ? "fill-opacity" : layer.type === "line" ? "line-opacity" : "circle-opacity";
+  /* msPaintKeyFor, not a hand-written chain. The chain here sent every layer whose type is not
+     fill or line to `circle-color`, so on a Polygon-typed layer `p[ck]` was undefined and the
+     per-feature ms_color / ms_opacity override was skipped without a word. Found 8/21 by
+     find-enum-gaps after the same shape had already drifted between the editor and the viewer. */
+  const ck = msPaintKeyFor(layer.type, "color");
+  const ok = msPaintKeyFor(layer.type, "opacity");
   if (p[ck] != null) p[ck] = ["to-color", ["get", "ms_color"], p[ck]];
   if (p[ok] != null && typeof p[ok] !== "object") p[ok] = msNumCol("ms_opacity", p[ok]);
   // object = a stored expression (e.g. the 7/21 zoom-width interpolate, which already embeds the
