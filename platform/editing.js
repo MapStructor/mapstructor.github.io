@@ -1119,7 +1119,11 @@
   function wireEngineEditClicks() {
     if (typeof layers === 'undefined' || !draw) return;
     if (!_panelClickPatched && typeof window.handlePanelClick === 'function') {   // editor: editable layers own their clicks (edit), so the engine's encyclopedia panel-click must not ALSO fire — the page shows via the feature panel instead
-      _panelClickPatched = true; var _origHPC = window.handlePanelClick;
+      // boot-ok: this makes a monkey-patch of a GLOBAL function idempotent. Clearing it on
+    // style.load would re-wrap the already-wrapped function and run the patch twice per click.
+    // The latch is the fix, not the bug — the danger shape is a latch guarding something the
+    // style REBUILDS, and window.handlePanelClick is not that.
+    _panelClickPatched = true; var _origHPC = window.handlePanelClick;
       window._msOrigHandlePanelClick = _origHPC;   // enterEngineEdit falls back to this for display-only features (their click must still open the viewer's panel)
       window.handlePanelClick = function (layer, event) {
         // ALSO suppress for small drawn layers (their features live in MapboxDraw): if the engine copy is
@@ -1131,7 +1135,8 @@
       };
     }
     if (!_changeDatePatched && typeof window.changeDate === 'function') {   // the timeline's changeDate re-sets each layer's date filter, clobbering our edit-exclusion → re-apply it after
-      _changeDatePatched = true; var _origCD = window.changeDate;
+      // boot-ok: same shape — wrapping a global once. Re-running would double-wrap.
+    _changeDatePatched = true; var _origCD = window.changeDate;
       window.changeDate = function () {
         var r = _origCD.apply(this, arguments);
         try { disarmEngineEditsOutsideDate(arguments[0]); } catch (eDa) {}   // armed features follow the timeline (8/7)
@@ -1152,7 +1157,8 @@
     // paint path's date exactly like every engine layer does. (rasterScrub swaps paintDate for a
     // no-op during raster drags; it saves and restores whatever is installed, so this composes.)
     if (!_paintDatePatched && typeof window.paintDate === 'function') {
-      _paintDatePatched = true; var _origPD = window.paintDate;
+      // boot-ok: same shape — wrapping a global once. Re-running would double-wrap.
+    _paintDatePatched = true; var _origPD = window.paintDate;
       window.paintDate = function () {
         var r2 = _origPD.apply(this, arguments);
         try { disarmEngineEditsOutsideDate(arguments[0]); } catch (eDp) {}
@@ -1170,6 +1176,9 @@
     };
     // ONE map-level click handler per side that queries the editable layers at CLICK time — robust, unlike
     // per-layer handlers that depend on the layer already existing when wiring runs (the flaky "bolting" race).
+    // boot-ok: MAP-level handler, not layer-scoped. map.on('click', fn) lives on the Map, so it
+    // survives a style rebuild — clearing this on style.load would register a SECOND handler on
+    // every basemap switch, which is the doubling this latch exists to prevent.
     if (!_engineMapClickWired) {
       _engineMapClickWired = true;
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
@@ -6464,6 +6473,7 @@
   // so timeline scrubs keep the glow date-correct. One cheap setFilter; no data copying, ever.
   var _groupSyncWired = false;
   function wireGroupFilterSync() {
+    // boot-ok: map-level 'idle' handler, same reasoning as _engineMapClickWired above.
     if (_groupSyncWired || typeof beforeMap === 'undefined' || !beforeMap) return;
     _groupSyncWired = true;
     beforeMap.on('idle', function () { if (_groupActive) applyGroupFilter(); });

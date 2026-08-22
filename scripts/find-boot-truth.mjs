@@ -101,6 +101,20 @@ const blind = latches.filter((l) => !l.clearsOnStyleLoad);
 console.log(`${latches.length} never-cleared latch(es) · ${blind.length} in files with no style.load reset · ${domTruth.length} read state back out of the DOM`);
 if (COUNT_ONLY) process.exit(0);
 
+/* The headline counts ALL never-cleared latches, but only `blind` ones are printed — the rest sit
+   in files that reset something on style.load, which is the detector's own reason for ranking them
+   lower. That gap made the summary line misleading: "5 never-cleared latches" was quoted as open
+   work on the status board for a day while the actionable number was ZERO, and there was no way to
+   see the five without editing this file. A detector must be able to show its own findings.
+   --all prints them, marked with why they were ranked down. (8/22) */
+if (process.argv.includes("--all") && latches.length) {
+  console.log("\n── ALL never-cleared latches, including the ones ranked down");
+  for (const l of latches) {
+    console.log(`  ${l.rel}:${l.line}  ${l.name}` +
+      (l.clearsOnStyleLoad ? "   [its file resets something on style.load — ranked down, not cleared]" : "   [BLIND]"));
+    console.log(`         ${l.text}`);
+  }
+}
 if (blind.length) {
   console.log("\n── NEVER-CLEARED LATCH — wired once; a basemap switch rebuilds the style underneath it");
   let last = "";
