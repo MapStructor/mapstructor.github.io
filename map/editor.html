@@ -111,12 +111,12 @@
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="../platform/auth.js?v=57f07a19"></script>
+    <script src="../platform/auth.js?v=31081333"></script>
   <script src="../platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
     <script src="../platform/guard.js?v=53785522"></script>   <!-- map-load meter + freeze (service guard) -->
     <script src="../platform/topbar.js?v=8154caa8"></script>
-    <script src="../platform/bookmarks.js?v=83773de9"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
-    <script src="../platform/portalAdd.js?v=5900cec3"></script>   <!-- Map Portal: sidebar window — add a bookmarked/own map into this one (All/Linked/Instance per layer) -->
+    <script src="../platform/bookmarks.js?v=7344fd2f"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
+    <script src="../platform/portalAdd.js?v=6784c907"></script>   <!-- Map Portal: sidebar window — add a bookmarked/own map into this one (All/Linked/Instance per layer) -->
     <script src="../platform/overlay.js?v=bc711f61"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
@@ -398,7 +398,7 @@
     <script src="engine/generateMaps.js?v=329b2514"></script>
     <script src="engine/refreshLayers.js?v=8994f49b"></script>
     <script src="engine/addMapLayer.js?v=965cc1a2"></script>
-    <script src="engine/eventsHandle.js?v=8249debd"></script>
+    <script src="engine/eventsHandle.js?v=0c504a12"></script>
     <script src="engine/addLayers.js?v=3baf4b2f"></script>
     <!-- TESTING: delete this block and uncomment line below to clean up -->
     <script>
@@ -407,16 +407,16 @@
     </script>
     <!-- END TESTING -->
     <!-- <script src="js/mapbox-token.js"></script> -->
-    <script src="engine/infoPanel.js?v=0bd1b7a8"></script>
+    <script src="engine/infoPanel.js?v=fb0a91bd"></script>
     <script src="engine/mapinit.js?v=6f4cce2f"></script>
     <script src="engine/sliderpopups.js?v=7eb70257"></script>
-    <script src="../platform/configLoader.js?v=858cd8e6" onerror="void(0)"></script>
+    <script src="../platform/configLoader.js?v=97f495a9" onerror="void(0)"></script>
     <script src="../platform/labels.js?v=285c59c5" onerror="void(0)"></script>
     <script src="../platform/attrGrid.js?v=7c15e1cc" onerror="void(0)"></script>
-    <script src="../platform/bigtable.js?v=ceaa7a54" onerror="void(0)"></script>   <!-- Big-data attribute tier: Parquet sidecar + DuckDB-WASM (vendored, lazy) -->
+    <script src="../platform/bigtable.js?v=ddc3b66c" onerror="void(0)"></script>   <!-- Big-data attribute tier: Parquet sidecar + DuckDB-WASM (vendored, lazy) -->
     <script src="../platform/pricing.js?v=8edf778a" onerror="void(0)"></script>
     <script src="../platform/renderRegistry.js?v=a7b0cf11" onerror="void(0)"></script>
-    <script src="../platform/projectLoader.js?v=5469e0d8" onerror="void(0)"></script>
+    <script src="../platform/projectLoader.js?v=e31334b0" onerror="void(0)"></script>
     <script src="../platform/download.js?v=63210e2d" onerror="void(0)"></script>   <!-- Download whole project (sidebar button) -->
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js" onerror="void(0)"></script>   <!-- deck.gl: instant scrub without bakes (deckScrub.js); raster stays the fallback -->
     <script src="../platform/deckScrub.js?v=dcc056ef" onerror="void(0)"></script>
@@ -424,10 +424,10 @@
     <script src="../platform/layerOrder.js?v=b5ab2a2c" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
     <script src="../platform/rasterScrub.js?v=f2b1c2b1" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
     <script src="../platform/tables.js?v=8114d2ae" onerror="void(0)"></script>   <!-- Data tables + joins -->
-    <script src="../platform/layerJson.js?v=6ca0f6cc" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
+    <script src="../platform/layerJson.js?v=3da3d530" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
     <script src="../platform/queryWindow.js?v=d470d198" onerror="void(0)"></script>   <!-- Query & operations (merge lines / SQL / JS) -->
     <script src="../platform/datasets.js?v=4cef5a84" onerror="void(0)"></script>   <!-- datasets & provenance: layers as the atoms (delete this line + the file to remove) -->
-    <script src="../platform/share.js?v=f6f71a92" onerror="void(0)"></script>   <!-- Share panel (editor top bar; dashboard uses it too) -->
+    <script src="../platform/share.js?v=282beef3" onerror="void(0)"></script>   <!-- Share panel (editor top bar; dashboard uses it too) -->
     <script>
       // Standalone deploys ship map/ without platform/ - if ?id= is set but the
       // loader didn't arrive, boot the static config so the page still works.
@@ -437,7 +437,7 @@
         initMaps();
       }
     </script>
-    <script src="../platform/init.js?v=8575cdb5" onerror="void(0)"></script>
+    <script src="../platform/init.js?v=c63c450e" onerror="void(0)"></script>
 
     <!-- -----------------------------------------------------------------------
          EDITOR: everything above this line is an exact copy of the viewer

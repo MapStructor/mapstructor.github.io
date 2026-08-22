@@ -110,11 +110,11 @@
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="../platform/auth.js?v=57f07a19"></script>
+    <script src="../platform/auth.js?v=31081333"></script>
   <script src="../platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
     <script src="../platform/guard.js?v=53785522"></script>   <!-- map-load meter + freeze (service guard) -->
     <script src="../platform/topbar.js?v=8154caa8"></script>   <!-- #17: header shows the signed-in account (and enables Edit-map/#16 later) -->
-    <script src="../platform/bookmarks.js?v=83773de9"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
+    <script src="../platform/bookmarks.js?v=7344fd2f"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
     <script src="../platform/overlay.js?v=bc711f61"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
@@ -362,7 +362,7 @@
     <script src="engine/generateMaps.js?v=329b2514"></script>
     <script src="engine/refreshLayers.js?v=8994f49b"></script>
     <script src="engine/addMapLayer.js?v=965cc1a2"></script>
-    <script src="engine/eventsHandle.js?v=8249debd"></script>
+    <script src="engine/eventsHandle.js?v=0c504a12"></script>
     <script src="engine/addLayers.js?v=3baf4b2f"></script>
     <!-- TESTING: delete this block and uncomment line below to clean up -->
     <script>
@@ -375,15 +375,15 @@
          (MSGuard.warnOnce / .save / .cliff). Loaded FIRST so every later file can use it; every
          call site checks window.MSGuard, so removing this line degrades cleanly to silence. -->
     <script src="../platform/guards.js?v=174bacac" onerror="void(0)"></script>
-    <script src="engine/infoPanel.js?v=0bd1b7a8"></script>
+    <script src="engine/infoPanel.js?v=fb0a91bd"></script>
     <script src="engine/mapinit.js?v=6f4cce2f"></script>
     <script src="engine/sliderpopups.js?v=7eb70257"></script>
-    <script src="../platform/configLoader.js?v=858cd8e6" onerror="void(0)"></script>
+    <script src="../platform/configLoader.js?v=97f495a9" onerror="void(0)"></script>
     <script src="../platform/labels.js?v=285c59c5" onerror="void(0)"></script>
     <script src="../platform/groupView.js?v=b7a8cd41" onerror="void(0)"></script>   <!-- "treat as one" hover/click in VIEW mode -->
 
     <script src="../platform/renderRegistry.js?v=a7b0cf11" onerror="void(0)"></script>
-    <script src="../platform/projectLoader.js?v=5469e0d8" onerror="void(0)"></script>
+    <script src="../platform/projectLoader.js?v=e31334b0" onerror="void(0)"></script>
     <script src="../platform/download.js?v=63210e2d" onerror="void(0)"></script>   <!-- Download whole project (sidebar button) -->
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js" onerror="void(0)"></script>   <!-- deck.gl: instant scrub without bakes (deckScrub.js); raster stays the fallback -->
     <script src="../platform/deckScrub.js?v=dcc056ef" onerror="void(0)"></script>
@@ -393,7 +393,7 @@
     <script src="../platform/attrGrid.js?v=7c15e1cc" onerror="void(0)"></script>   <!-- windowed table renderer (shared with the editor) -->
     <script src="../platform/viewerTable.js?v=ba892a0b" onerror="void(0)"></script>   <!-- read-only attribute table in VIEW mode (per-row table icon) -->
     <script src="../platform/tables.js?v=8114d2ae" onerror="void(0)"></script>   <!-- Data tables + joins -->
-    <script src="../platform/layerJson.js?v=6ca0f6cc" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
+    <script src="../platform/layerJson.js?v=3da3d530" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
     <script>
       // Standalone deploys ship map/ without platform/ - if ?id= is set but the
       // loader didn't arrive, boot the static config so the page still works.
@@ -403,7 +403,7 @@
         initMaps();
       }
     </script>
-    <script src="../platform/init.js?v=8575cdb5" onerror="void(0)"></script>
+    <script src="../platform/init.js?v=c63c450e" onerror="void(0)"></script>
     <script>
       // ⚑ Report — carries the exact map being viewed to the report form. Hidden in
       // standalone downloads (no site to report to) and while editing your own map.
