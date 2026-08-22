@@ -2743,10 +2743,7 @@
         // the bake below succeeds. Without it, one failed dispatch leaves a map that kills the
         // tab on every future load.
         try {
-          var curH = await db.from('layers').select('raw_config').eq('id', lid).single();
-          var rcH = (curH.data && curH.data.raw_config) || {};
-          rcH.heavyGeom = true; rcH.heavyVertices = state.verts;
-          await db.from('layers').update({ raw_config: rcH }).eq('id', lid);
+          await patchLayerConfig(lid, { heavyGeom: true, heavyVertices: state.verts });
           node.heavyGeom = true;
         } catch (eH) { console.warn('import: could not stamp heavyGeom', eH); }
         var dispatched = false;
@@ -7311,10 +7308,7 @@
     node.groupBy = (value || '').trim() || null;
     setStatus('Saving…');
     try {
-      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      if (node.groupBy) rc.groupBy = node.groupBy; else delete rc.groupBy;
-      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      var r = await patchLayerConfig(lid, { groupBy: (node.groupBy) ? node.groupBy : null });
       if (r.error) throw new Error(r.error.message);
       setStatus('Saved');
     } catch (e) { setStatus('Save failed'); }
@@ -7453,10 +7447,7 @@
     renderLegend();
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;   // still shows this session even if not persistable
     try {
-      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      if (node.legend) rc.legend = true; else delete rc.legend;
-      await saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid), 'saving the legend setting');
+      await saveSoft(patchLayerConfig(lid, { legend: node.legend ? true : null }), 'saving the legend setting');
     } catch (e) {}
   }
   // ── Style categories under the layer (7/20) — nested sub-rows in the sidebar, each with a
@@ -8216,10 +8207,7 @@
     }
     setStatus('Saving…');
     try {
-      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      rc.fast = { raster: f.raster, deck: f.deck };
-      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      var r = await patchLayerConfig(lid, { fast: { raster: f.raster, deck: f.deck } });
       if (r.error) throw new Error(r.error.message);
       setStatus('Saved');
     } catch (e) { console.warn('Make Faster save failed', e); setStatus('Save failed'); }
@@ -8283,10 +8271,7 @@
     } : null;
     setStatus('Saving…');
     try {
-      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      if (node.labels) rc.labels = node.labels; else delete rc.labels;
-      var r2 = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      var r2 = await patchLayerConfig(lid, { labels: (node.labels) ? node.labels : null });
       if (r2.error) throw new Error(r2.error.message);
       applyLabelLayers(node);
       // TILESET LABELS ONLY SAY WHAT THE TILER WROTE (8/7). A symbol layer over a vector source
@@ -8395,10 +8380,7 @@
     try { applyEditedOverlayDayFilter(on ? null : d); } catch (eEd) {}
     setStatus('Saving…');
     try {
-      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      if (on) rc.timelineIgnore = true; else delete rc.timelineIgnore;
-      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      var r = await patchLayerConfig(lid, { timelineIgnore: (on) ? true : null });
       if (r.error) throw new Error(r.error.message);
       setStatus('Saved');
     } catch (e) { console.warn('timelineIgnore save failed', e); setStatus('Save failed'); }
@@ -9095,10 +9077,7 @@
         for (var k = 0; k < kids.length; k++) {
           var kn = kids[k], klid = slugToLayerDbId[kn.id]; if (!klid) continue;
           if (on) kn.editorOnly = true; else delete kn.editorOnly;
-          var kc = await db.from('layers').select('raw_config').eq('id', klid).single();
-          var krc = (kc.data && kc.data.raw_config) || {};
-          if (on) krc.editorOnly = true; else delete krc.editorOnly;
-          await db.from('layers').update({ raw_config: krc }).eq('id', klid);
+          await patchLayerConfig(klid, { editorOnly: (on) ? true : null });
           updateEditorOnlyRow(kn);
         }
         updateEditorOnlyRow(node);
@@ -9107,10 +9086,7 @@
       }
       var lid = slugToLayerDbId[activeLayerId]; if (!lid) { setStatus('That layer has no database id'); return; }
       if (on) node.editorOnly = true; else delete node.editorOnly;
-      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      if (on) rc.editorOnly = true; else delete rc.editorOnly;
-      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+      var r = await patchLayerConfig(lid, { editorOnly: (on) ? true : null });
       if (r.error) throw new Error(r.error.message);
       setStatus('Saved');
       updateEditorOnlyRow(node);   // badge + italic in place — group stays open
@@ -9518,10 +9494,8 @@
     document.getElementById('elp-enc-row').style.display = (mode === 'drupal' || mode === 'both') ? 'block' : 'none';   // toggle the encyclopedia URL field live
     setStatus('Saving…');
     try {
-      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      rc.panel = rc.panel || {}; rc.panel.mode = mode;
-      var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid); if (r.error) throw new Error(r.error.message);
+      var r = await patchLayerConfig(lid, { panel: { mode: mode } });   // merge-patch keeps panel's other keys
+      if (r.error) throw new Error(r.error.message);
       setStatus('Info panel: ' + mode);
     } catch (e) { setStatus('Save failed'); }
   }
@@ -9571,10 +9545,7 @@
     if (cols.indexOf(name) > -1) { setStatus('Column exists'); return; }
     cols.push(name);
     setStatus('Saving…');
-    var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-    var rc = (cur.data && cur.data.raw_config) || {};
-    rc.overlayCols = cols;
-    var r = await db.from('layers').update({ raw_config: rc }).eq('id', lid);
+    var r = await patchLayerConfig(lid, { overlayCols: cols });
     if (r.error) { setStatus('Save failed: ' + r.error.message); return; }
     node.overlayCols = cols;
     if (inp) inp.value = '';
@@ -10085,10 +10056,7 @@
     clearTimeout(_attrViewSaveT);
     _attrViewSaveT = setTimeout(async function () {
       try {
-        var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-        var rc = (cur.data && cur.data.raw_config) || {};
-        rc.attrView = node.attrView;
-        await saveSoft(db.from('layers').update({ raw_config: rc }).eq('id', lid), 'saving the table column layout');
+        await saveSoft(patchLayerConfig(lid, { attrView: node.attrView }), 'saving the table column layout');
       } catch (e) {}
     }, 400);
   }
@@ -11009,10 +10977,8 @@
         var r1 = await db.from('layer_groups').update({ raw_config: rg }).eq('id', node._dbId); if (r1.error) throw new Error(r1.error.message);
       } else {
         var lid2 = slugToLayerDbId[node.id]; if (!lid2) throw new Error('no layer id');
-        var cl = await db.from('layers').select('raw_config').eq('id', lid2).single();
-        var rl = (cl.data && cl.data.raw_config) || {};
-        if (on) delete rl.zoomBtn; else rl.zoomBtn = false;
-        var r2 = await db.from('layers').update({ raw_config: rl }).eq('id', lid2); if (r2.error) throw new Error(r2.error.message);
+        var r2 = await patchLayerConfig(lid2, { zoomBtn: on ? null : false });   // null deletes
+        if (r2.error) throw new Error(r2.error.message);
       }
       setStatus('Saved');
     } catch (e) { console.warn('editing: zoom-button toggle save failed', e); setStatus('Save failed'); }
@@ -11029,10 +10995,8 @@
     setStatus('Saving…');
     try {
       var lidT = slugToLayerDbId[node.id]; if (!lidT) throw new Error('no layer id');
-      var cT = await db.from('layers').select('raw_config').eq('id', lidT).single();
-      var rT = (cT.data && cT.data.raw_config) || {};
-      if (on) delete rT.tableBtn; else rT.tableBtn = false;
-      var uT = await db.from('layers').update({ raw_config: rT }).eq('id', lidT); if (uT.error) throw new Error(uT.error.message);
+      var uT = await patchLayerConfig(lidT, { tableBtn: on ? null : false });   // null deletes
+      if (uT.error) throw new Error(uT.error.message);
       setStatus('Saved');
     } catch (e) { console.warn('editing: table-button toggle save failed', e); setStatus('Save failed'); }
   }
