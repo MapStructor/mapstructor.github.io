@@ -6200,10 +6200,22 @@
         var ws7 = []; for (var i7 = 0; i7 < Math.min(3, q7.length); i7++) ws7.push(w7());
         await Promise.all(ws7);
       }
-      pool7(order).then(function () {
-        var missed = order.filter(function (lid8) { return !_hydratedLayers[lid8]; });
-        if (missed.length) return pool7(missed);   // failures stayed un-hydrated — one retry pass
-      });
+      /* AFTER FIRST IDLE, like the DuckDB warm and projectLoader's own sweep. These are layers
+         whose checkbox is OFF: nobody is looking at them, and hydrating them was 47 REST calls and
+         5.5s of a 16.4s boot, in a pool of three, competing with the data the person IS waiting
+         for. Measured 8/21 by classifying every boot request.
+         Safe and self-healing: ticking a hidden layer on before its turn goes through the
+         on-toggle priority path (_hydrateOne for small layers, hydrateDeferredLayer for large),
+         which is the same route a hydration FAILURE already relies on. */
+      var startWarm = function () {
+        pool7(order).then(function () {
+          var missed = order.filter(function (lid8) { return !_hydratedLayers[lid8]; });
+          if (missed.length) return pool7(missed);   // failures stayed un-hydrated — one retry pass
+        });
+      };
+      var mH = (typeof beforeMap !== 'undefined') ? beforeMap : null;
+      if (mH && mH.once) mH.once('idle', function () { setTimeout(startWarm, 800); });   // cliff-ok: a breath after first idle so hidden layers never race the visible ones
+      else setTimeout(startWarm, 4000);   // cliff-ok: no map to wait on — fall back to a fixed delay
     })();
   }
   // The engine (P0) renders geojson-supabase layers as real GeoJSON layers; in the
