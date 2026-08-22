@@ -2657,6 +2657,35 @@
       grow(computeImportBounds(fcC));   // coords are lng/lat by now (normalizeImportFC ran inside)
       chunk = []; chunkVerts = 0;
     };
+    // A streaming import that dies partway has ALREADY created the layer and written thousands of
+    // rows into it, under the name the person chose, looking finished in the sidebar. That is the
+    // exact bug the MERGE path fixed on 8/21 — and this is the path where it matters more: merge
+    // runs against rows already in the database, while this one runs for MINUTES over a 24 MB+ file
+    // and is far likelier to be interrupted. The checklist did not travel from one write path to
+    // its sibling, which is ranked fix #6 in its purest form. Found 8/22 by surveying import as a
+    // surface, not from a report.
+    //
+    // Nothing is deleted: the rows are real, and an error path is the worst place to destroy data.
+    // The layer is simply made to say what it is, in the tree AND in the database, so a reload
+    // still tells the truth.
+    async function markIncomplete(err) {
+      try {
+        if (!made || !made.length) return;   // died before the layer existed: nothing to mislabel
+        var label = baseName + ' — incomplete (' + state.feats.toLocaleString() + ' features)';
+        for (var q = 0; q < made.length; q++) {
+          var n = made[q]; if (!n) continue;
+          n.label = label;
+          var qlid = slugToLayerDbId[n.id];
+          if (qlid) await saveSoft(db.from('layers').update({ name: label }).eq('id', qlid), 'marking the incomplete import');
+        }
+        rerender();
+      } catch (eMark) { console.warn('could not mark the incomplete import', eMark); }
+      if (window.MSGuard) MSGuard.warn('import-incomplete',
+        'the import stopped partway — its layer holds only part of the file and is marked "incomplete" in the sidebar',
+        state.feats + ' features written before: ' + ((err && err.message) || err));
+      setStatus('Import stopped — the partial layer is marked "incomplete"');
+    }
+
     window.__msStreamingImport = true;
     try {
       for (;;) {
@@ -2673,6 +2702,9 @@
         }
       }
       await flush();
+    } catch (eStream) {
+      await markIncomplete(eStream);
+      throw eStream;   // the caller still reports the failure; this only stops it looking finished
     } finally { window.__msStreamingImport = false; }
     if (!made || !made.length) throw new Error('no features found');
     // Fit to everything that arrived, not just the first chunk.
