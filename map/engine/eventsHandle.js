@@ -13,8 +13,18 @@ function setHoverBoth(config, fid, on) {
 
 let wiredInteraction = {};
 
+/* THE one definition of "eventsHandle owns this layer's hover" (8/22). infoPanel also wired
+   mousemove/mouseleave per layer, doing the same three things — cursor, hoveredId, hover
+   feature-state — so both ran and fought over one piece of state. eventsHandle's version is
+   strictly better: setHoverBoth clears the highlight on BOTH swipe sides and honours the same
+   hoverHighlight/groupBy gates, so infoPanel's adds nothing and subtracts correctness.
+   infoPanel now asks THIS function instead of repeating the filter, because two copies of a
+   predicate is how the two owners appeared in the first place. */
+function msEventsOwnsHover(l) { return !!(l && (l.popupStyle || l.highlight || l.click)); }
+try { window.msEventsOwnsHover = msEventsOwnsHover; } catch (e) {}
+
 function setupLayerEvents() {
-  flatLayers(layers).filter(l => l.popupStyle || l.highlight || l.click).forEach(wireLayerInteraction);   // hover-highlight needs only `highlight` (e.g. curr-builds has no popupStyle); popup stays gated to popupStyle
+  flatLayers(layers).filter(msEventsOwnsHover).forEach(wireLayerInteraction);   // hover-highlight needs only `highlight` (e.g. curr-builds has no popupStyle); popup stays gated to popupStyle
 }
 
 // Idempotent per-layer wiring, also callable LIVE from the editor when the user turns interaction on for a
@@ -124,7 +134,6 @@ function setupLayerEventForMap(map, config, side) {
     }
 
     function clickHandle(event) {
-      if (config.panel) return;   // layers with an info panel: infoPanel.js owns the click (pill + side panel) — never BOTH bubbles stacked
       if (!config.click) { closeInfo(); return; }   // #12: click-popup toggled off live
       const clickedId = event.features?.[0]?.id;
       if (clickedId == null) return;
@@ -152,8 +161,18 @@ function setupLayerEventForMap(map, config, side) {
 
     // Only register click on one side to avoid double-firing
     if (side === "right") {
-      beforeMap.on("click", config.id + "-left",  clickHandle);
-      afterMap.on("click",  config.id + "-right", clickHandle);
+      /* 8/22 — the guard that sat at the top of clickHandle ("if (config.panel) return") moved
+         HERE. Identical behaviour: the handler did nothing at all for a panel layer, so declining
+         to REGISTER it is the same decision taken one step earlier. What changes is that the
+         handler is no longer counted, called, or in the way — interaction-owner-probe measured 140
+         per-layer registrations, click/mousemove/mouseleave each wired twice, and two click
+         handlers firing per click, one of which was this no-op.
+         "Registered, then returns immediately" is how a truce patch reads to a probe, to a
+         profiler and to the next person: as a second owner. Only the comment said otherwise. */
+      if (!config.panel) {
+        beforeMap.on("click", config.id + "-left",  clickHandle);
+        afterMap.on("click",  config.id + "-right", clickHandle);
+      }
 
       const mainCheckbox  = document.getElementById(config.id);
       const groupCheckbox = config.groupId ? document.getElementById(config.groupId) : null;

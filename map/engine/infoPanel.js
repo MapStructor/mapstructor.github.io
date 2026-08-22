@@ -68,9 +68,18 @@ function registerInfoPanelClicks() {
   flatLayers(layers).forEach(function(layer) {
     if (!layer.panel) return;
 
+    /* Hover belongs to eventsHandle wherever it wires the layer — it clears on both swipe sides,
+       which this did not. Wiring it here as well produced two mousemove and two mouseleave
+       handlers per layer (measured: 140 registrations, click/mousemove/mouseleave each doubled)
+       and two writers to one feature-state. The CLICK below stays: the panel is infoPanel's job,
+       and eventsHandle now declines to register a click for panel layers. */
+    var hoverOwnedElsewhere = (typeof window !== 'undefined' && typeof window.msEventsOwnsHover === 'function')
+      ? window.msEventsOwnsHover(layer) : false;
+
     var hoveredId = { left: null, right: null };
     var sourceLayer = layer["source-layer"];
 
+    if (!hoverOwnedElsewhere) {
     beforeMap.on("mousemove", layer.id + "-left", function(e) {
       beforeMap.getCanvas().style.cursor = "pointer";
       if (e.features.length > 0) {
@@ -102,6 +111,7 @@ function registerInfoPanelClicks() {
         afterMap.setFeatureState({ source: layer.id + "-right", sourceLayer: sourceLayer, id: hoveredId.right }, { hover: false });
       hoveredId.right = null;
     });
+    }   // end if (!hoverOwnedElsewhere)
 
     beforeMap.on("click", layer.id + "-left",  function(e) { handlePanelClick(layer, e); });
     afterMap.on("click",  layer.id + "-right", function(e) { handlePanelClick(layer, e); });
