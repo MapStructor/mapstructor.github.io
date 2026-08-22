@@ -55,7 +55,26 @@
       .catch(function () {});
   }
 
-  function listKind(kind) {
+  /* One fetch per kind per page, not one per QUESTION. `hasKind` is a membership test and it was
+     implemented as `listKind` — a full table read — so every widget asking "is this one
+     bookmarked?" pulled the whole list again. Measured 8/22 in a single editor boot: FOUR reads of
+     map_bookmarks, all identical.
+     Caching the PROMISE rather than the result also collapses concurrent askers, which is what
+     boot actually does — several widgets asking at once, before any answer has arrived.
+     Correctness rests on `toggleKind` being the only thing in this module that changes a
+     bookmark; it invalidates, so the cache cannot outlive the truth. Another TAB can still make it
+     stale, exactly as the uncached version could between its own read and use. */
+  var _listCache = {};
+  function invalidateKind(kind) { delete _listCache[kind]; }
+  function listKind(kind, opts) {
+    if (!(opts && opts.fresh) && _listCache[kind]) return _listCache[kind];
+    var p = listKindUncached(kind);
+    _listCache[kind] = p;
+    /* A failed fetch must not be remembered as the answer — drop it so the next ask retries. */
+    p.catch(function () { if (_listCache[kind] === p) delete _listCache[kind]; });
+    return p;
+  }
+  function listKindUncached(kind) {
     var K = KINDS[kind];
     return realUser().then(function (u) {
       if (!u) return localList(kind);
@@ -69,6 +88,7 @@
   function hasKind(kind, id) { return listKind(kind).then(function (ids) { return ids.indexOf(id) > -1; }); }
   function toggleKind(kind, id) {
     var K = KINDS[kind];
+    invalidateKind(kind);   // whatever happens below, the cached list is about to be wrong
     return realUser().then(function (u) {
       if (!u) {
         var a = localList(kind), i = a.indexOf(id);
@@ -77,9 +97,13 @@
         return i === -1;
       }
       return hasKind(kind, id).then(function (on) {
-        if (on) return db.from(K.table).delete().eq('user_id', u.id).eq(K.col, id).then(function () { return false; });
+        /* invalidate AGAIN after the write: hasKind above repopulated the cache with the state
+           from BEFORE this toggle, so leaving it would hand the next reader the old answer —
+           a cache that is only cleared before the read it triggers is not cleared at all. */
+        var after = function (v) { invalidateKind(kind); return v; };
+        if (on) return db.from(K.table).delete().eq('user_id', u.id).eq(K.col, id).then(function () { return after(false); });
         var row = { user_id: u.id }; row[K.col] = id;
-        return db.from(K.table).insert(row).then(function (r) { return !r.error; });
+        return db.from(K.table).insert(row).then(function (r) { return after(!r.error); });
       });
     });
   }
