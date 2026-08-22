@@ -52,7 +52,7 @@
     { id: "deck+raster", label: "Deck + Raster" },
     { id: "mapbox+raster", label: "Mapbox + Raster" }
   ];
-  function isMode(v) { return MODES.some(function (m) { return m.id === v; }); }
+  // isMode() removed 8/21: unreferenced helper.
   function wantsDeck(m) { return m === "layer" || m === "deck" || m === "deck+raster"; }
   function wantsRaster(m) { return m === "layer" || m === "raster" || m === "deck+raster" || m === "mapbox+raster"; }
   // "layer" is absent here on purpose: hiding is already scoped to the slugs a fast renderer
@@ -740,14 +740,8 @@
   function repaint(view) { try { view.m.triggerRepaint(); } catch (e) {} }
 
   function showAll() { S.views.forEach(function (v) { ensureLayer(v); v.on = true; repaint(v); }); }
-  function hideAllSoon() {
-    clearTimeout(S.hideT);
-    S.hideT = setTimeout(function () {
-      S.views.forEach(function (v) {
-        v.on = false; repaint(v);
-      });
-    }, 350);   // give the real filter a beat to land, then fade — the hand-off illusion
-  }
+  // hideAllSoon() removed 8/21: superseded by fadeSoon() below, which is the same body with a
+  // 120ms delay instead of 350. Nothing called it. Dead code that looks live is a trap.
 
   // v4: during the drag the raster answers ALONE — the tiled layers hide (ONE visibility flip,
   // previous state saved/restored exactly) and paintDate freezes (no point repainting an

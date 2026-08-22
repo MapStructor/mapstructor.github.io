@@ -163,24 +163,11 @@
   }
 
   // ── screen 2: per-layer mode picker ───────────────────────────────────────
-  // DOUBLE-ADD GUARD (8/6): adding the same map twice is almost always a mis-click — the layers
-  // arrive again, storage is spent again, and the list doubles. Two independent traces are
-  // checked because either can be cleared by hand: the caption written at add time
-  // (raw_config.portalNotes[].fromMap) and the provenance stamp on every added layer
-  // (raw_config._msFromMap). Warn once, and let the deliberate case through.
-  async function alreadyAdded(srcId) {
-    try {
-      var pr = await db.from('projects').select('raw_config').eq('id', projectId).single();
-      var notes = (pr.data && pr.data.raw_config && pr.data.raw_config.portalNotes) || [];
-      if (notes.some(function (n) { return n && n.fromMap === srcId; })) return true;
-    } catch (e) {}
-    try {
-      var r = await db.from('project_layers').select('layers(raw_config)').eq('project_id', projectId);
-      return ((r && r.data) || []).some(function (x) {
-        return x.layers && x.layers.raw_config && x.layers.raw_config._msFromMap === srcId;
-      });
-    } catch (e) { return false; }
-  }
+  /* The 8/6 DOUBLE-ADD GUARD (`alreadyAdded`) was removed 8/21. It checked two provenance traces
+     — raw_config.portalNotes[].fromMap and the _msFromMap stamp — and warned before adding a map
+     you already had. bf301e4 ("Coming back for more layers now merges instead of duplicating")
+     made the warning unnecessary: a re-add is a merge, so the layers no longer arrive twice and
+     the storage is no longer spent twice. Nothing had called it since. It is in the history. */
 
   // onlyLid (8/11): a bookmarked DATASET adds through this same picker, narrowed to its origin
   // layer — one row, same three modes, same merge.
