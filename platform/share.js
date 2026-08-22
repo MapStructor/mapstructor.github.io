@@ -9,8 +9,18 @@
 //
 // Maps saved before this existed have no raw_config.visibility: they resolve to 'public' when is_public,
 // otherwise 'link' — the exact behavior they had (viewable by URL), so no shared link breaks silently.
-// NEW maps are created with visibility:'private'. Enforcement of 'private' is client-side in the viewer
-// (projectLoader) until the RLS lockdown.
+// NEW maps are created with visibility:'private'.
+//
+// PRIVATE IS ENFORCED SERVER-SIDE (verified 8/23, share-flow-gate). This line used to read
+// "enforcement of 'private' is client-side in the viewer (projectLoader) until the RLS lockdown" —
+// written before that lockdown landed on 7/30, and left behind after it did. Measured against the
+// live API with only the publishable key, a stranger reaches ZERO project rows, ZERO layer links
+// and ZERO feature rows of a private map. The database is carrying it.
+//
+// The stale note was worth correcting rather than deleting: a comment that UNDERSTATES the security
+// model invites two mistakes. Someone may bolt a client-side guard onto a problem already solved,
+// or may assume the server is not protecting this and design the next feature around that. Both
+// start from believing the comment over the system.
 var MapShare = (function () {
   var OPTIONS = [
     { key: 'private', title: 'Private', desc: 'No one can see this map but me.' },

@@ -10111,7 +10111,15 @@
   }
   window.__msSelRows = function () { try { var ids = MSSel.ids(); return _attrRows.filter(function (r) { return ids.indexOf(String(r.feature_id)) > -1; }).length; } catch (e) { return -1; } };   // observability (tests): selection members that have rows in the open list/table
   var _attrLoadGen = 0;        // bump = abort any in-flight attribute load (close/reopen mid-load of a huge layer)
-  var ATTR_LOAD_CAP = 100000;  // tier-1 guardrail: rows STREAMED into memory — past this, a layer needs the big-data tier (Parquet sidecar) instead of a full fetch; rendering is windowed (MSAttrWindow) so DOM size never depends on row count
+  /* Rows STREAMED into memory; past this a layer uses the big-data tier (the Parquet sidecar,
+     paging on demand) instead. Overridable so the two modes can be compared on ONE layer —
+     `attr-virtual-parity-gate` opens the same table both ways and checks the columns and the total
+     match. Without a seam that comparison is impossible, and "virtual mode shows fewer columns" was
+     carried on the checklist for a day as a trade nobody had measured. It is not in the code:
+     the sidecar stores every custom field and openProvider reads the schema. */
+  var ATTR_LOAD_CAP = (typeof window !== 'undefined' && window.__msAttrLoadCap != null)
+    ? window.__msAttrLoadCap : 100000;   // …instead of a full fetch; rendering is windowed
+                                         // (MSAttrWindow) so DOM size never depends on row count
   var _attrWin = null;         // MSAttrWindow instance for the (single, for now) attribute panel
   var _attrVirtual = null;     // big-data tier: {prov, order, pending, N, gen, lid} when the open table pages from a >cap Parquet sidecar
   var _attrRebakeT = null;     // debounce for background sidecar rebakes after edits
