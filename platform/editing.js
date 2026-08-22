@@ -173,6 +173,21 @@
   // called at every place a layer's raw_config is written, so a fifth write path added later
   // inherits the rule by calling the same function all its siblings do. A value that DIFFERS from
   // the derivation is deliberate and still persists — this strips redundancy, never intent.
+  /* ONE KEY, ATOMICALLY (8/22). Every settings save used to read `raw_config`, change one key and
+     write the whole blob back. Two of those overlapping lose one of the keys, silently — measured,
+     not assumed: `rawconfig-lost-update-gate` drives the real settings panel and the timeline range
+     vanishes while the logo link survives, with no error anywhere.
+     `ms_patch_project_config` does the read and the write in one statement, so nothing can slip
+     between them. It takes a PATH rather than an object because jsonb `||` merges only at the top
+     level — patching `{features:{header:true}}` that way would replace the whole `features` object,
+     trading a lost key for a lost subtree.
+     Returns the supabase-shaped `{ data, error }` the call sites already handle. */
+  async function patchProjectConfig(pathArr, value) {
+    return await db.rpc('ms_patch_project_config', { p_id: projectId, p_path: pathArr, p_value: value });
+  }
+  async function patchLayerConfig(layerId, pathArr, value) {
+    return await db.rpc('ms_patch_layer_config', { p_id: layerId, p_path: pathArr, p_value: value });
+  }
   function stripDerivedIdentity(raw, slug) {
     if (!raw) return raw;
     if (raw.containerId === 'cont-' + slug) delete raw.containerId;
@@ -4190,7 +4205,7 @@
     var eUnix = (ed === 'today') ? window.moment().unix() : window.moment(ed).unix();
     if (!sd || (!today && !ed) || eUnix <= window.moment(sd).unix()) { setStatus('Enter a valid start date before the end'); return; }
     setStatus('Saving…');
-    try { var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.timeline = { start: sd, end: ed }; var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message); applyTimelineRange(sd, ed); setStatus('Timeline range saved'); } catch (e) { setStatus('Save failed'); }
+    try { var r = await patchProjectConfig(['timeline'], { start: sd, end: ed }); if (r.error) throw new Error(r.error.message); applyTimelineRange(sd, ed); setStatus('Timeline range saved'); } catch (e) { setStatus('Save failed'); }
   }
   function fmtView(lat, lng, z) { return (lat != null && lng != null) ? ('Default: ' + Number(lat).toFixed(4) + ', ' + Number(lng).toFixed(4) + ' · z' + (z != null ? Number(z).toFixed(1) : '?')) : 'Default view not set'; }
   async function openSettingsPanel() {
@@ -4344,7 +4359,7 @@
   async function onLogoLink() {
     var url = (document.getElementById('esp-logo-link').value || '').trim();
     applyHeaderLink(url); setStatus('Saving…');
-    try { var cur = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (cur.data && cur.data.raw_config) || {}; rc.headerLink = url; var r = await db.from('projects').update({ raw_config: rc }).eq('id', projectId); if (r.error) throw new Error(r.error.message); setStatus('Logo link saved'); } catch (e) { setStatus('Save failed'); }
+    try { var r = await patchProjectConfig(['headerLink'], url); if (r.error) throw new Error(r.error.message); setStatus('Logo link saved'); } catch (e) { setStatus('Save failed'); }
   }
   async function onSetDefaultView() {
     if (!beforeMap) return;
