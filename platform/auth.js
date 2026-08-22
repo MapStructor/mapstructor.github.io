@@ -38,6 +38,30 @@
   }
   async function signOut() { if (db) return await db.auth.signOut(); }
 
+  // ── Password recovery (added 8/22) ──────────────────────────────────────────────────────────
+  // There was none. Not a broken flow — NO flow: `resetPasswordForEmail` appeared nowhere in the
+  // repository, and neither did the word "forgot". A person who forgot their password was locked
+  // out of every map they had made, permanently, with no path back. Found by surveying auth as a
+  // surface rather than chasing a report, which is the only way a MISSING thing gets found: there
+  // is no bug report for a button that was never there.
+  //
+  // The sign-up modal has promised this in writing the whole time — "We only contact you when we
+  // have to — resetting your password, telling you your storage is full." The copy described a
+  // feature that did not exist.
+  //
+  // Supabase's recovery link returns the visitor to `redirectTo` with a recovery session already
+  // established, and fires PASSWORD_RECOVERY. So the flow is: ask for the email → they click the
+  // link → they land back here signed in for one purpose → set a new password.
+  var RECOVER_URL = location.origin + location.pathname.replace(/[^/]*$/, "") + "index.html?recover=1";
+  async function resetPassword(email) {
+    if (!db) return { error: { message: "Auth unavailable." } };
+    return await db.auth.resetPasswordForEmail(email, { redirectTo: RECOVER_URL });
+  }
+  async function setNewPassword(password) {
+    if (!db) return { error: { message: "Auth unavailable." } };
+    return await db.auth.updateUser({ password: password });
+  }
+
   // Bounced-from-a-gated-page flow (7/28): a gated page (dashboard) with no session redirects to
   // index.html?login=1&next=<page> — the front page auto-opens the login modal and returns to the
   // page after login, so the visit's intent survives the bounce. `next` is allow-listed to a bare
@@ -65,7 +89,9 @@
       + '.mapauth-submit{width:100%;padding:11px 0;border:none;border-radius:8px;background:#7c5cbf;color:#fff;font-weight:700;font-size:15px;cursor:pointer;}'
       + '.mapauth-submit:disabled{opacity:.6;cursor:default;}'
       + '.mapauth-msg{margin-top:10px;font-size:13px;min-height:18px;}.mapauth-msg.err{color:#b4453a;}.mapauth-msg.ok{color:#2d7a2d;}'
-      + '.mapauth-spam{margin:2px 0 12px;font-size:12px;color:#6b6680;}.mapauth-spam summary{cursor:pointer;color:#7c5cbf;}.mapauth-spam p{margin:6px 0 0;line-height:1.4;}';
+      + '.mapauth-spam{margin:2px 0 12px;font-size:12px;color:#6b6680;}.mapauth-spam summary{cursor:pointer;color:#7c5cbf;}.mapauth-spam p{margin:6px 0 0;line-height:1.4;}'
+      + '.mapauth-link{display:block;margin:10px auto 0;border:none;background:none;padding:0;font-size:13px;color:#7c5cbf;cursor:pointer;text-decoration:underline;font-family:inherit;}'
+      + '.mapauth-note{margin:-2px 0 12px;font-size:12.5px;color:#6b6680;line-height:1.45;}';
     var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
     var ov = document.createElement('div'); ov.className = 'mapauth-overlay'; ov.id = 'mapauth-overlay';
     ov.innerHTML = '<div class="mapauth-modal">'
@@ -73,28 +99,77 @@
       + '<div class="mapauth-tabs"><button class="mapauth-tab" id="mapauth-tab-login" type="button">Log in</button><button class="mapauth-tab" id="mapauth-tab-signup" type="button">Sign up</button></div>'
       + '<form id="mapauth-form">'
       + '<input id="mapauth-email" type="email" placeholder="you@email.com" autocomplete="email" required>'
+      + '<div class="mapauth-note" id="mapauth-note" style="display:none;"></div>'
       + '<input id="mapauth-pw" type="password" placeholder="password (6+ characters)" minlength="6" required>'
       + '<div class="mapauth-spam" id="mapauth-spam" style="display:none;"><details><summary>We will never spam you. Ever.</summary><p>We only contact you when we have to — resetting your password, telling you your storage is full. No newsletters. No promotions. Nothing you didn’t ask for. That’s a promise, not a policy.</p></details></div>'
       + '<button class="mapauth-submit" id="mapauth-submit" type="submit">Log in</button>'
       + '<div class="mapauth-msg" id="mapauth-msg"></div>'
+      + '<button type="button" class="mapauth-link" id="mapauth-forgot">Forgot your password?</button>'
+      + '<button type="button" class="mapauth-link" id="mapauth-back" style="display:none;">Back to log in</button>'
       + '</form></div>';
     document.body.appendChild(ov);
     var mode = 'login';
-    function setMode(m) { mode = m; document.getElementById('mapauth-tab-login').classList.toggle('on', m === 'login'); document.getElementById('mapauth-tab-signup').classList.toggle('on', m === 'signup'); document.getElementById('mapauth-submit').textContent = m === 'login' ? 'Log in' : 'Sign up'; document.getElementById('mapauth-spam').style.display = m === 'signup' ? 'block' : 'none'; var msg = document.getElementById('mapauth-msg'); msg.textContent = ''; msg.className = 'mapauth-msg'; }
+    // Four modes now. `reset` asks for an email only; `newpw` asks for a password only — the two
+    // halves of recovery. Each mode says which fields exist rather than each field asking which
+    // mode it is in, so adding the third and fourth did not touch the submit handler's structure.
+    var LABEL = { login: 'Log in', signup: 'Sign up', reset: 'Email me a reset link', newpw: 'Set new password' };
+    function setMode(m) {
+      mode = m;
+      var isRecovery = (m === 'reset' || m === 'newpw');
+      document.getElementById('mapauth-tab-login').classList.toggle('on', m === 'login');
+      document.getElementById('mapauth-tab-signup').classList.toggle('on', m === 'signup');
+      document.querySelector('.mapauth-tabs').style.display = isRecovery ? 'none' : 'flex';
+      document.getElementById('mapauth-submit').textContent = LABEL[m] || 'Log in';
+      document.getElementById('mapauth-spam').style.display = m === 'signup' ? 'block' : 'none';
+      // password field is pointless when we are emailing a link; email field is pointless when the
+      // recovery session already knows who they are
+      var em = document.getElementById('mapauth-email'), pw = document.getElementById('mapauth-pw');
+      em.style.display = (m === 'newpw') ? 'none' : ''; em.required = (m !== 'newpw');
+      pw.style.display = (m === 'reset') ? 'none' : ''; pw.required = (m !== 'reset');
+      pw.placeholder = (m === 'newpw') ? 'new password (6+ characters)' : 'password (6+ characters)';
+      var note = document.getElementById('mapauth-note');
+      note.style.display = isRecovery ? 'block' : 'none';
+      note.textContent = (m === 'reset')
+        ? 'Enter the email you signed up with and we will send you a link to set a new password.'
+        : (m === 'newpw' ? 'Choose a new password. You are signed in from the link in your email.' : '');
+      document.getElementById('mapauth-forgot').style.display = (m === 'login') ? 'block' : 'none';
+      document.getElementById('mapauth-back').style.display = (m === 'reset') ? 'block' : 'none';
+      var msg = document.getElementById('mapauth-msg'); msg.textContent = ''; msg.className = 'mapauth-msg';
+    }
     function closeM() { ov.classList.remove('open'); }
     ov._setMode = setMode; ov._close = closeM;
     document.getElementById('mapauth-tab-login').onclick = function () { setMode('login'); };
     document.getElementById('mapauth-tab-signup').onclick = function () { setMode('signup'); };
     document.getElementById('mapauth-close').onclick = closeM;
+    document.getElementById('mapauth-forgot').onclick = function () { setMode('reset'); };
+    document.getElementById('mapauth-back').onclick = function () { setMode('login'); };
     ov.onclick = function (e) { if (e.target === ov) closeM(); };
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && ov.classList.contains('open')) closeM(); });
     document.getElementById('mapauth-form').onsubmit = async function (e) {
       e.preventDefault();
       var email = document.getElementById('mapauth-email').value.trim(), pw = document.getElementById('mapauth-pw').value, msg = document.getElementById('mapauth-msg'), btn = document.getElementById('mapauth-submit');
       btn.disabled = true; msg.textContent = '…'; msg.className = 'mapauth-msg';
-      var res = (mode === 'login') ? await signIn(email, pw) : await signUp(email, pw);
+      var res = (mode === 'login') ? await signIn(email, pw)
+              : (mode === 'reset') ? await resetPassword(email)
+              : (mode === 'newpw') ? await setNewPassword(pw)
+              : await signUp(email, pw);
       btn.disabled = false;
       if (res && res.error) { msg.textContent = res.error.message || 'Something went wrong.'; msg.className = 'mapauth-msg err'; return; }
+      // Deliberately the SAME answer whether or not that email has an account: telling a stranger
+      // which addresses are registered is an account-enumeration gift, and it costs the real user
+      // nothing to read "if there is an account".
+      if (mode === 'reset') {
+        msg.textContent = 'If there is an account for that email, a reset link is on its way.';
+        msg.className = 'mapauth-msg ok'; return;
+      }
+      if (mode === 'newpw') {
+        msg.textContent = 'Password changed. You are signed in.';
+        msg.className = 'mapauth-msg ok'; setTimeout(closeM, 900);
+        // strip ?recover=1 so a refresh does not re-open the set-password step over a session that
+        // is now an ordinary one
+        try { history.replaceState({}, '', location.pathname); } catch (e) {}
+        return;
+      }
       if (mode === 'signup' && res && res.data && !res.data.session) { msg.textContent = 'Check your email to confirm your account.'; msg.className = 'mapauth-msg ok'; return; }
       msg.textContent = (mode === 'login') ? 'Welcome back.' : 'Account created.'; msg.className = 'mapauth-msg ok';
       setTimeout(closeM, 700);
@@ -106,7 +181,43 @@
   }
   function openAuthModal(mode) { ensureAuthModal(); var ov = document.getElementById('mapauth-overlay'); ov._setMode(mode || 'login'); ov.classList.add('open'); setTimeout(function () { var e = document.getElementById('mapauth-email'); if (e) e.focus(); }, 50); }
 
-  window.MapAuth = { db: db, currentUser: currentUser, isReal: isReal, signUp: signUp, signIn: signIn, signOut: signOut, onChange: onChange, openAuthModal: openAuthModal };
+  // Catch the click-through from a recovery email and finish the job. Two triggers on purpose,
+  // because either one alone has a hole: PASSWORD_RECOVERY is the event Supabase actually fires,
+  // but it can land BEFORE this listener is attached on a slow page; `?recover=1` is our own marker
+  // on the redirect and survives that race. Whichever arrives first opens the step, and `opened`
+  // stops the second one re-opening it over a finished flow.
+  // auth.js is loaded from <head> on every page, so at this point `document.body` IS NULL and
+  // ensureAuthModal's appendChild throws — which it did, silently swallowing the whole recovery
+  // landing: ?recover=1 produced no modal, no message, nothing. Family E in the file where I had
+  // just finished counting family E. Everything that touches the DOM waits for a body.
+  function whenBody(fn) {
+    if (document.body) return fn();
+    document.addEventListener('DOMContentLoaded', fn, { once: true });
+  }
+  var recoveryOpened = false;
+  function openRecovery() {
+    if (recoveryOpened) return;
+    recoveryOpened = true;
+    whenBody(function () { openAuthModal('newpw'); });
+  }
+  if (db) {
+    db.auth.onAuthStateChange(function (e) { if (e === 'PASSWORD_RECOVERY') openRecovery(); });
+    if (/[?&]recover=1/.test(location.search)) {
+      // only if the link really signed them in — landing on ?recover=1 with no session means the
+      // link expired or was already used, and showing a password box that cannot work is worse
+      // than saying so.
+      currentUser().then(function (u) {
+        if (u) return openRecovery();
+        whenBody(function () {
+          openAuthModal('reset');
+          var m = document.getElementById('mapauth-msg');
+          if (m) { m.textContent = 'That reset link has expired or was already used. Send a new one.'; m.className = 'mapauth-msg err'; }
+        });
+      });
+    }
+  }
+
+  window.MapAuth = { db: db, currentUser: currentUser, isReal: isReal, signUp: signUp, signIn: signIn, signOut: signOut, onChange: onChange, openAuthModal: openAuthModal, resetPassword: resetPassword, setNewPassword: setNewPassword };
 
   // ?login=1 (the gated-page bounce above): pop the login modal on arrival — or, if a session
   // already exists, skip straight back to the page the visitor was headed to.
