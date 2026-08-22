@@ -624,6 +624,9 @@
       // move — so ask the VALUE before parsing the rendered label, exactly as getDate does. The
       // label parse stays underneath as the fallback (see the family E note in engine/mapinit.js).
       "          try { if (typeof window.__msDate === \"number\" && !isNaN(window.__msDate)) return parseInt(moment.unix(window.__msDate).format(\"YYYYMMDD\")); } catch (e) {}\n" +
+      // boot-ok: this label parse is the FALLBACK, under the __msDate read on the line above —
+      // find-boot-truth sees the line, not the preference in front of it. Kept because an exported
+      // page opened from a file:// URL may run before anything has written __msDate once.
       "          try { return parseInt(moment.unix(moment(jQuery(\"#date\").text()).unix()).format(\"YYYYMMDD\")); } catch (e) {}\n" +
       "          return null;\n" +
       "        }\n" +
