@@ -6,6 +6,65 @@
 (function () {
   var SUPABASE_URL = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co';
   var SUPABASE_KEY = 'sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD';
+
+  /* ── ONE IN-FLIGHT READ IS ENOUGH (8/22) ───────────────────────────────────────────────────
+     `boot-reads-probe` on a 15-layer editor boot: 55 REST requests, 36 of them asking for
+     something already asked for. Nine reads of the same project row, seven of the same layer
+     list. A note from 8/21 said those were sequential and so could not be deduped; measuring the
+     start and finish of each request showed the opposite — **7 of the 9 are in flight together**.
+     That matters because it decides which fix is possible. Sharing a response between requests
+     that OVERLAP is safe by construction: the entry is dropped the instant the request settles,
+     so nothing is ever served from a past state. A later read still goes to the server, exactly
+     as it should, because by then something may have changed.
+     MEASURED EFFECT: 20 GETs go through this in one editor boot and exactly ONE is a hit. That is
+     far less than the "36 removable" the probe reports, and the gap is the point: the probe counts
+     reads of the same ROW, while this can only collapse requests with the same URL — and the nine
+     project reads ask for three different column sets, so they are genuinely different requests.
+     Sharing those needs callers to share a RESULT, not a request, which is the bundle cache and a
+     much more delicate change. Kept anyway: it is correct, costs nothing, and the shape it guards
+     against (a burst of identical reads) is one this codebase produces regularly.
+     GET only. An RPC is a POST and may have side effects, so it is never shared.
+     The key includes the headers that change what comes BACK — `Prefer: count=exact` asks for a
+     count, and handing that caller a response fetched without it would answer the wrong question.
+     Wrapping `createClient` rather than each call site because seven modules build their own
+     client, and a fix applied to six of seven is the kind of drift this codebase specialises in. */
+  (function installReadDedupe() {
+    var sb = window.supabase;
+    if (!sb || !sb.createClient || sb.__msDedupeInstalled) return;
+    var inflight = new Map();
+    function keyFor(url, init) {
+      var h = (init && init.headers) || {};
+      var get = function (n) {
+        if (!h) return '';
+        if (typeof h.get === 'function') return h.get(n) || '';
+        return h[n] || h[n.toLowerCase()] || '';
+      };
+      return url + '\n' + get('Prefer') + '\n' + get('Range') + '\n' + get('Accept');
+    }
+    function dedupeFetch(input, init) {
+      var method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+      var url = (typeof input === 'string') ? input : ((input && input.url) || '');
+      if (method !== 'GET') return window.fetch(input, init);
+      var key = keyFor(url, init);
+      var hit = inflight.get(key);
+      /* Every caller gets a CLONE and the stored original is never read, so the body is still
+         available for each of them. Reading it once would leave the rest with an empty stream. */
+      if (hit) return hit.then(function (r) { return r.clone(); });
+      var p = window.fetch(input, init);
+      inflight.set(key, p);
+      var drop = function () { if (inflight.get(key) === p) inflight.delete(key); };
+      p.then(drop, drop);
+      return p.then(function (r) { return r.clone(); });
+    }
+    var orig = sb.createClient;
+    sb.createClient = function (u, k, opts) {
+      opts = opts || {};
+      opts.global = opts.global || {};
+      if (!opts.global.fetch) opts.global.fetch = dedupeFetch;
+      return orig.call(this, u, k, opts);
+    };
+    sb.__msDedupeInstalled = true;
+  })();
   var db = (window.supabase && window.supabase.createClient)
     ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
     : null;
