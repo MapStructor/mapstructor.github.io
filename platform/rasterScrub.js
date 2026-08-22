@@ -449,6 +449,15 @@
     ensureLayer(view);
     if (!view.gl) return;
     S.items.forEach(function (it) {
+      /* Switched OFF means don't fetch it. `drawItems` already skips inactive items — "layer
+         unchecked in the sidebar → its raster stays dark too" — but this loop never asked, so the
+         snapshot PNGs for hidden layers were downloaded and then never drawn.
+         Measured 8/21 on "Railroads and the Making of Modern America": 2 of 13 layers on at boot,
+         ~11 kB of visible row data, and 43.9 MB pulled over the wire. First data pixels at 20s.
+         Self-healing rather than a trade-off: this runs on every map `idle`, so the moment a layer
+         is ticked on its raster is prefetched by the next idle. Until then the drag falls back to
+         the vectors for that one layer, which is what already happens for an unbaked layer. */
+      if (!itemActive(it)) return;
       if (!itemServes(it, view.m)) return;   // past its own crossover — nothing to prefetch for it
       var want = Math.min(pickLevel(view.m, it), it.levels.length - 1);
       var tiles = it.levels[want].tiles;

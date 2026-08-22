@@ -6037,7 +6037,22 @@
             if (n.attrParquet && !n.attrParquetDirty) _warmCars.push({ layerId: slugToLayerDbId[n.id] || n._layerDbId, url: n.attrParquet, ver: n.attrParquetAt });
           });
         })(layers);
-        if (_warmCars.length || counts.some(function (cn) { return cn > MSBigTable.BIG_ROWS; })) MSBigTable.prefetch(_warmCars);
+        /* AFTER THE MAP IS UP, not during boot. This warm instantiates DuckDB, which means
+           downloading a 33.4 MB WASM engine, and it was firing inside loadFeatures — competing
+           with the map's own data for the connection on a cold cache. Measured 8/21 on "Railroads
+           and the Making of Modern America": 42.9 MB of boot traffic, of which 39.6 MB was the
+           app's own assets and only 1.7 MB the project's data, first pixels at ~18-20s.
+           The warm is speculative by its own description ("must never be able to break an open"),
+           so it has no business ahead of the thing the person is waiting for. Same treatment the
+           deferred feature sweep got: wait for the first idle, then a breath. The belt-timer
+           covers a map that never idles. (The engine is cached across visits — this is a
+           first-visit cost — but a first visit is exactly when a slow map is judged.) */
+        if (_warmCars.length || counts.some(function (cn) { return cn > MSBigTable.BIG_ROWS; })) {
+          var warmNow = function () { try { MSBigTable.prefetch(_warmCars); } catch (eW) {} };
+          var mW = (typeof beforeMap !== 'undefined') ? beforeMap : null;
+          if (mW && mW.once) mW.once('idle', function () { setTimeout(warmNow, 1500); });   // cliff-ok: a breath after first idle, so the warm never races the map's own data
+          setTimeout(warmNow, 15000);   // cliff-ok: belt for a map that never idles; prefetch() is idempotent
+        }
       }
     } catch (e) {}
     hideDrawnEngineLayers();   // hides only small (MapboxDraw) layers' engine copies; large ones stay engine-rendered
