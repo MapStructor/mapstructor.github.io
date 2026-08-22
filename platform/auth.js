@@ -23,7 +23,13 @@
      Sharing those needs callers to share a RESULT, not a request, which is the bundle cache and a
      much more delicate change. Kept anyway: it is correct, costs nothing, and the shape it guards
      against (a burst of identical reads) is one this codebase produces regularly.
-     GET only. An RPC is a POST and may have side effects, so it is never shared.
+     GET, plus a NAMED handful of RPCs. An RPC is a POST and may have side effects, so POST is
+     never shared by default — but `mapstructor_layer_stats` is called four times per boot with
+     identical arguments, overlapping, and it is declared STABLE with no writes in its body. The
+     list below is exactly the functions checked to be STABLE and write-free; `ms_service_state`
+     is deliberately absent because it is VOLATILE, which is the author saying do not assume.
+     `rpc-dedupe-gate` re-checks every name against the live catalogue, so the list cannot quietly
+     rot into a lie if one of them is later made volatile.
      The key includes the headers that change what comes BACK — `Prefer: count=exact` asks for a
      count, and handing that caller a response fetched without it would answer the wrong question.
      Wrapping `createClient` rather than each call site because seven modules build their own
@@ -41,11 +47,19 @@
       };
       return url + '\n' + get('Prefer') + '\n' + get('Range') + '\n' + get('Accept');
     }
+    /* Verified STABLE and write-free in the live database on 8/22. Held by rpc-dedupe-gate. */
+    var SHAREABLE_RPC = ['mapstructor_layer_stats', 'mapstructor_total_storage', 'ms_my_plan', 'ms_project_by_id'];
+    function shareablePost(url) {
+      var m = String(url).match(/\/rest\/v1\/rpc\/([A-Za-z0-9_]+)/);
+      return !!(m && SHAREABLE_RPC.indexOf(m[1]) > -1);
+    }
     function dedupeFetch(input, init) {
       var method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
       var url = (typeof input === 'string') ? input : ((input && input.url) || '');
-      if (method !== 'GET') return window.fetch(input, init);
-      var key = keyFor(url, init);
+      if (method !== 'GET' && !(method === 'POST' && shareablePost(url))) return window.fetch(input, init);
+      /* The ARGUMENTS are part of the identity for an RPC — two calls to the same function with
+         different arguments are different questions. */
+      var key = keyFor(url, init) + String.fromCharCode(10) + (method === 'POST' ? String((init && init.body) || '') : '');
       var hit = inflight.get(key);
       /* Every caller gets a CLONE and the stored original is never read, so the body is still
          available for each of them. Reading it once would leave the rest with an empty stream. */
