@@ -11,7 +11,10 @@
     // shared value, the slider updates just that value; official MapLibre example does filtering this way).
     // Needs v5, so the script version follows the mode. DEFAULT stays v4.7.1 + plain setFilter (the twin).
     var MODE = new URLSearchParams(location.search).get("mode") === "state" ? "state" : "filter";
-    var MLV = MODE === "state" ? "5" : "4.7.1";
+    // ?mlv=5 — run the FILTER idiom on v5, which state mode forces anyway. Exists to separate
+    // version from idiom: the 8/25 bench found v5+state flaps areTilesLoaded for 6-10 s after a
+    // zoom change with no input, and the twin otherwise couples the two variables.
+    var MLV = new URLSearchParams(location.search).get("mlv") || (MODE === "state" ? "5" : "4.7.1");
     document.write('<script src="https://unpkg.com/maplibre-gl@' + MLV + '/dist/maplibre-gl.js"><\/script>');
     document.write('<link href="https://unpkg.com/maplibre-gl@' + MLV + '/dist/maplibre-gl.css" rel="stylesheet" />');
   </script>
@@ -76,19 +79,25 @@
       return ["all", ["<=", num("DayStart", 99999999), d], [">=", num("DayEnd", -1), d]];
     }
 
+    // ?src=geojson — todo #11's SECOND regime: the same 18,772 buildings exported once from the
+    // AHM database (harness/export-ahm-buildings.mjs, gitignored), loaded as ONE geojson source
+    // instead of worker tiles. Same layer, same filter, no source-layer. This block is
+    // byte-identical in both twins, like everything else outside the head.
+    var SRC = new URLSearchParams(location.search).get("src") === "geojson" ? "geojson" : "tiles";
     map.on("load", function () {
-      map.addSource("buildings", { type: "vector", tiles: [TILES], minzoom: 10, maxzoom: 16 });
+      if (SRC === "geojson") map.addSource("buildings", { type: "geojson", data: "buildings.geojson" });
+      else map.addSource("buildings", { type: "vector", tiles: [TILES], minzoom: 10, maxzoom: 16 });
       var layer = {
         id: "buildings-fill",
         type: "fill",
         source: "buildings",
-        "source-layer": "buildings",
         paint: {
           "fill-color": "#ffb255",
           "fill-opacity": 0.8,
           "fill-outline-color": "#cc7700"
         }
       };
+      if (SRC !== "geojson") layer["source-layer"] = "buildings";
       if (MODE === "state") {
         layer.paint["fill-opacity"] = ["case", stateInRange(), 0.8, 0];
         layer.paint["fill-outline-color"] = ["case", stateInRange(), "#cc7700", "rgba(0,0,0,0)"];

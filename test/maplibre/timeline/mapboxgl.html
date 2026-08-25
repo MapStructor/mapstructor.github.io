@@ -54,20 +54,27 @@
       return ["all", ["<=", "DayStart", d], [">=", "DayEnd", d]];
     }
 
+    // ?src=geojson — todo #11's SECOND regime: the same 18,772 buildings exported once from the
+    // AHM database (harness/export-ahm-buildings.mjs, gitignored), loaded as ONE geojson source
+    // instead of worker tiles. Same layer, same filter, no source-layer. This block is
+    // byte-identical in both twins, like everything else outside the head.
+    var SRC = new URLSearchParams(location.search).get("src") === "geojson" ? "geojson" : "tiles";
     map.on("load", function () {
-      map.addSource("buildings", { type: "vector", tiles: [TILES], minzoom: 10, maxzoom: 16 });
-      map.addLayer({
+      if (SRC === "geojson") map.addSource("buildings", { type: "geojson", data: "buildings.geojson" });
+      else map.addSource("buildings", { type: "vector", tiles: [TILES], minzoom: 10, maxzoom: 16 });
+      var layer = {
         id: "buildings-fill",
         type: "fill",
         source: "buildings",
-        "source-layer": "buildings",
         filter: dateFilter(1938),
         paint: {
           "fill-color": "#ffb255",
           "fill-opacity": 0.8,
           "fill-outline-color": "#cc7700"
         }
-      });
+      };
+      if (SRC !== "geojson") layer["source-layer"] = "buildings";
+      map.addLayer(layer);
     });
 
     var slider = document.getElementById("slider");
