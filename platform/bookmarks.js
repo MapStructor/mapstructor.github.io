@@ -49,10 +49,21 @@
     return db.from(K.table).upsert(rows, { onConflict: onC, ignoreDuplicates: true })
       .then(function (r) {
         // rows referencing DELETED targets violate the FK — fall back to one-by-one, drop the dead
-        if (r.error) return Promise.all(rows.map(function (row) { return db.from(K.table).upsert(row, { onConflict: onC, ignoreDuplicates: true }); }));
+        if (!r.error) return true;
+        return Promise.all(rows.map(function (row) { return db.from(K.table).upsert(row, { onConflict: onC, ignoreDuplicates: true }); }))
+          .then(function (rs) {
+            /* 8/25 — the local wipe below used to run UNCONDITIONALLY after this fallback, and
+               supabase-js resolves with {error} rather than throwing, so a row refused for any
+               reason other than the dead-FK (RLS, network, a timeout) still counted as carried.
+               Promise.all resolved, localSave(kind, []) deleted the ONLY remaining copy, and the
+               bookmark was gone with nothing on screen. A dead-FK row is the one failure that
+               SHOULD clear (its target no longer exists); anything else keeps the local copy for
+               the next login to retry. */
+            return rs.every(function (x) { return !x.error || /foreign key|violates.*fkey|23503/i.test(String(x.error.message || x.error.code || "")); });
+          });
       })
-      .then(function () { localSave(kind, []); })
-      .catch(function () {});
+      .then(function (allCarried) { if (allCarried) localSave(kind, []); else carried[kind] = false; })
+      .catch(function () { carried[kind] = false; });   // network throw: nothing certain, keep local, retry next time
   }
 
   /* One fetch per kind per page, not one per QUESTION. `hasKind` is a membership test and it was
