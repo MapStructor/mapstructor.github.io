@@ -30,7 +30,11 @@ const AK = (r2md.match(/SWEEP_ACCESS_KEY_ID = ([0-9a-f]{32})/) || [])[1];
 const SK = (r2md.match(/SWEEP_SECRET_ACCESS_KEY = ([0-9a-f]{64})/) || [])[1];
 const BUCKET = (r2md.match(/SWEEP_BUCKET = (\S+)/) || [])[1];
 if (!ENDPOINT || !AK || !SK || !BUCKET) { console.error("could not read the SWEEP_* R2 credentials"); process.exit(1); }
-const PUBLIC = "https://tiles.mapstructor.com/";   // the worker's read side for maps/*
+/* The domain VISITORS use. tiles.mapstructor.com is the raw R2 custom domain — exact keys only,
+   so the slash form 404s there (found 8/25 when the render smoke hit it); the worker's directory
+   handling lives on mapstructor.com/maps/*. Verifying on the raw domain would pass while the page
+   people actually open failed. */
+const PUBLIC = "https://mapstructor.com/";
 
 const arg = (k) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : null; };
 const SLUG = (arg("--slug") || "").replace(/[^a-z0-9_-]/gi, "");
