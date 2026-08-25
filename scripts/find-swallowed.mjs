@@ -65,8 +65,12 @@ const BLANK_OK = /\.trim\(\)|trimmed|\.length|swallow-ok|blank-ok/;
 /* An empty catch, or one whose whole body is a console call — same thing from the user's side. */
 const EMPTY_CATCH = /catch\s*\((\w+)?\)?\s*\{\s*(?:\/\*[^*]*\*\/\s*)?\}|catch\s*\(\w*\)\s*\{\s*console\.\w+\([^;]*\);?\s*\}/g;
 
+/* vendor/ is excluded IN JS, not via a `:!` pathspec — cmd.exe mangles the quoting and git then
+   dies on a literal `':!platform'` path. 5 of the PARSE class's 20 hits were minified duckdb
+   worker internals: not ours to annotate, and noise that buries the real 15 (8/25 sweep). */
 const files = execSync("git ls-files platform/*.js map/engine/*.js", { cwd: ROOT, encoding: "utf8" })
-  .split("\n").map((s) => s.trim()).filter(Boolean);
+  .split("\n").map((s) => s.trim()).filter(Boolean)
+  .filter((f) => !f.includes("/vendor/"));
 
 /* Walk backwards from the `catch` to the matching `try {`, so the classification looks at the code
    that was actually protected rather than at whatever happens to be on the same line. */
