@@ -826,18 +826,47 @@
   async function runMerge(spec, onStatus, onDone) {
     var say = function (m) { try { onStatus(m); } catch (e) {} };
     var node = null, wroteSoFar = 0;   // hoisted: the failure path has to be able to name what it left behind
+    /* RESUME (8/25, checklist item 1). A failed big merge used to start over from zero. The copy
+       loop is already keyset-paginated, so resume is a CURSOR, not a redesign: on failure the
+       destination layer's own config records { srcKey, si, fid, wrote }, and the next run of the
+       SAME merge (same source layers, matched by srcKey) picks that layer up and continues from
+       the cursor instead of creating a fresh one. The cursor is the last COMMITTED fid, not the
+       read-page fid — an insert that dies mid-page has committed only its earlier slices, and
+       resuming from the page end would silently skip the rest of that page. */
+    var srcKey = spec.descs.map(function (d) { return d.dataLid; }).sort().join('|');
+    var resume = null;
     try {
-      say('Creating the merged layer…');
-      node = await addItem('layer', spec.name || 'Merged layer', null);
-      if (!node) throw new Error('could not create the layer');
-      var destLid = slugToLayerDbId[node.id];
-      if (!destLid) throw new Error('the new layer has no database id');
+      /* leafFromRow SPREADS raw_config keys onto the leaf — node.raw_config does not exist at
+         runtime (the tilesLabelField note further down learned this the hard way), so the cursor
+         is read directly off the node. */
+      var flatAll = (typeof flatLayers === 'function' && typeof layers !== 'undefined') ? flatLayers(layers) : [];
+      for (var fi = 0; fi < flatAll.length; fi++) {
+        var curR = flatAll[fi] && flatAll[fi]._msMergeResume;
+        if (curR && curR.srcKey === srcKey) { resume = { node: flatAll[fi], cur: curR }; break; }
+      }
+    } catch (eRs) {}
+    var committedSi = resume ? (resume.cur.si || 0) : 0;
+    var committedFid = resume ? (resume.cur.fid == null ? null : resume.cur.fid) : null;
+    try {
+      var destLid;
+      if (resume) {
+        node = resume.node;
+        destLid = slugToLayerDbId[node.id];
+        if (!destLid) throw new Error('the incomplete layer has no database id');
+        say('Resuming the earlier merge — ' + (resume.cur.wrote || 0).toLocaleString() + ' rows already copied…');
+      } else {
+        say('Creating the merged layer…');
+        node = await addItem('layer', spec.name || 'Merged layer', null);
+        if (!node) throw new Error('could not create the layer');
+        destLid = slugToLayerDbId[node.id];
+        if (!destLid) throw new Error('the new layer has no database id');
+      }
 
-      var totalIn = spec.descs.reduce(function (t, d) { return t + d.count; }, 0), done = 0, wrote = 0;
+      var totalIn = spec.descs.reduce(function (t, d) { return t + d.count; }, 0), done = 0, wrote = resume ? (resume.cur.wrote || 0) : 0;
       var geomKind = null;   // 'fill' | 'line' | 'circle', from the first geometry copied
-      for (var si = 0; si < spec.descs.length; si++) {
+      for (var si = committedSi; si < spec.descs.length; si++) {
         var d = spec.descs[si], core = spec.plan.core[d.id];
-        var lastFid = null, pageSz = 500;
+        var lastFid = (si === committedSi) ? committedFid : null, pageSz = 500;
         for (;;) {
           var q = db.from('features').select('feature_id, geom, label, start_date, end_date, custom_fields')
                     .eq('layer_id', d.dataLid).order('feature_id').limit(pageSz);
@@ -877,6 +906,10 @@
             if (ins.error) throw new Error('write failed after ' + wrote + ' rows: ' + ins.error.message);
             wrote += Math.min(250, rows.length - i);
             wroteSoFar = wrote;   // the failure path reports how far it got
+            /* the resume cursor: the SOURCE fid of the last row this slice committed — r.data and
+               rows align 1:1, so the slice ending at i+249 committed source rows up to that index */
+            committedFid = r.data[Math.min(i + 249, r.data.length - 1)].feature_id;
+            committedSi = si;
           }
           done += r.data.length;
           say('Merging… ' + wrote.toLocaleString() + ' of ' + totalIn.toLocaleString() + ' rows');
@@ -891,6 +924,16 @@
         node.type = geomKind;
         node.iconType = TILESET_ICON[geomKind] || 'square';
         await saveSoft(db.from('layers').update({ type: geomKind }).eq('id', destLid), 'stamping the merged layer geometry type');   // silently losing this stamp is what drew a merged layer as vertex dots (8/19)
+      }
+      if (resume) {
+        /* the resumed merge finished: drop the cursor and take back the honest-but-alarming
+           "— incomplete (N rows)" name the failure path gave it */
+        try { await db.rpc('ms_patch_layer_config', { p_id: destLid, p_patch: { _msMergeResume: null } }); delete node._msMergeResume; } catch (eClr) {}
+        try {
+          var finalName = spec.name || 'Merged layer';
+          node.label = finalName;
+          await saveSoft(db.from('layers').update({ name: finalName }).eq('id', destLid), 'restoring the merged layer name');
+        } catch (eNm) {}
       }
       say('Merged ' + wrote.toLocaleString() + ' rows. Loading…');
       try { await loadFeatures(); } catch (eLF) {}
@@ -929,10 +972,21 @@
           rerender();
         }
       } catch (eMark) { console.warn('could not mark the incomplete merge', eMark); }
+      // the RESUME CURSOR — running the same merge again continues from here instead of row zero.
+      // Written through the atomic config patch so a concurrent save cannot lose it.
+      try {
+        var plid2 = node && node.id ? slugToLayerDbId[node.id] : null;
+        if (plid2 && wroteSoFar > 0) {
+          await db.rpc('ms_patch_layer_config', { p_id: plid2, p_patch: {
+            _msMergeResume: { srcKey: srcKey, si: committedSi, fid: committedFid, wrote: wroteSoFar }
+          } });
+          node._msMergeResume = { srcKey: srcKey, si: committedSi, fid: committedFid, wrote: wroteSoFar };   // spread-onto-leaf shape, so a same-session retry finds it without a reload
+        }
+      } catch (eCur) { console.warn('could not write the merge resume cursor', eCur); }
       if (window.MSGuard) MSGuard.warn('merge-incomplete',
-        'the merge stopped partway — its layer holds only part of the data and is marked "incomplete" in the sidebar',
+        'the merge stopped partway — its layer holds only part of the data and is marked "incomplete" in the sidebar; running the same merge again will RESUME it',
         wroteSoFar + ' rows copied before: ' + ((e && e.message) || e));
-      setStatus('Merge stopped — the partial layer is marked "incomplete"');
+      setStatus('Merge stopped — the partial layer is marked "incomplete"; run the same merge again to resume it');
       onDone(String(e && e.message || e));
     }
   }
@@ -4145,6 +4199,20 @@
       // fallback instead of a stale publish. Private maps only get the DELETE (custom-domain
       // objects are world-readable; the live-row visibility gate stays authoritative).
       var snapUrl = 'https://mapstructor-worker.mapstructor.workers.dev/upload/snapshots/' + projectId + '.json';
+      /* 8/25 — the third instance of the 8/23 R2-mirror family (bigtable + tilegen were the first
+         two, and their fix comment even NAMED the snapshot mirror as a sibling). The correlated
+         case: worker down for the whole publish → pre-delete fails, Postgres insert succeeds, PUT
+         fails → R2 keeps the PREVIOUS publish, viewers read R2 first, and both warns claim a
+         fallback that is not happening. Same repair: a failed mirror write DELETES the key so
+         "viewers fall back to Postgres" is made true rather than hoped. */
+      async function msSnapAbandon(u2, tok2, why) {
+        try {
+          var rk = await fetch(u2, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok2 } });
+          if (rk.ok || rk.status === 404) { console.warn('snapshot R2 mirror failed (' + why + ') — key cleared, viewers fall back to Postgres'); return; }
+          why += ', cleanup HTTP ' + rk.status;
+        } catch (eK) { why += ', cleanup ' + String((eK && eK.message) || eK); }
+        console.warn('snapshot R2 mirror failed (' + why + ') AND could not be cleared — viewers may see the PREVIOUS publish until the next successful one');
+      }
       var snapTok = null;
       try { snapTok = (await db.auth.getSession()).data.session.access_token; } catch (eTok) {}
       if (snapTok) try {
@@ -4164,9 +4232,9 @@
         if (snapVis !== 'private') {
           var sr = await fetch(snapUrl, { method: 'PUT', body: JSON.stringify(bundle),
             headers: { Authorization: 'Bearer ' + snapTok, 'Content-Type': 'application/json' } });
-          if (!sr.ok) console.warn('snapshot R2 mirror ' + sr.status + ' — viewers fall back to Postgres');
+          if (!sr.ok) await msSnapAbandon(snapUrl, snapTok, 'HTTP ' + sr.status);
         }
-      } catch (eSnap) { console.warn('snapshot R2 mirror failed — viewers fall back to Postgres', eSnap); }
+      } catch (eSnap) { await msSnapAbandon(snapUrl, snapTok, String((eSnap && eSnap.message) || eSnap)); }
       setStatus('Published ✓');
       msClearUnpublished();   // live and public are in sync again
       if (hb) { hb.textContent = 'Published ✓'; setTimeout(function () { hb.textContent = 'Publish'; hb.disabled = false; }, 2500); }
