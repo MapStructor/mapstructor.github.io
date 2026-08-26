@@ -133,6 +133,20 @@
     if (!tok) throw new Error("not signed in");
     if (!window.MSDownload || !window.MSDownload.buildZip) throw new Error("the exporter isn't loaded on this page");
 
+    /* REFUSE TO PUBLISH A HALF-LOADED PAGE (8/26, found by publishing one).
+       The export takes the map's title from #header-text-value and SILENTLY falls back to "map"
+       when that element hasn't been filled in yet. Publish before the page finishes loading and
+       you get a complete-looking copy whose title is "Map" and whose About link is gone — live, on
+       a client's public address, with nothing reporting a problem.
+       A manual download with a wrong title is a nuisance; a published site with one is the client's
+       page title, so the check belongs here. The exporter already refuses an EMPTY map; this is the
+       same refusal for a map that is present but not yet dressed. */
+    var hdr = document.getElementById("header-text-value");
+    if (!hdr || !(hdr.textContent || "").trim()) {
+      throw new Error("the page hasn't finished loading (the map's title isn't on screen yet) — " +
+        "wait a moment and Publish again. Nothing was changed.");
+    }
+
     say("Building the public copy…");
     var variant = window.MSDownload.detectVariant();
     var zip = await window.MSDownload.buildZip({
