@@ -378,7 +378,33 @@ export default {
       // caller must own <projectId>. Checked with the CALLER'S OWN token (RLS lets anyone
       // SELECT public projects, so visibility isn't enough — compare user_id).
       var tm = ukey.match(/^tiles\/([0-9a-f-]{36})\//) || ukey.match(/^snapshots\/([0-9a-f-]{36})\.json$/);
-      if (tm) {
+      /* SHOWCASE WRITES (8/26). maps/<slug>/… was admin-only, which meant only the platform owner
+         could refresh a client's public map. A client updating their OWN public map is the entire
+         point of the feature, so the rule becomes: you may write maps/<slug>/ when you own the
+         project BOUND to that slug.
+
+         The binding is projects.raw_config.showcaseSlug, resolved here with the CALLER'S OWN token.
+         A client cannot claim someone else's slug by asking, because writing showcaseSlug onto a
+         project is itself an owner-only update under RLS. Three guards, each for a specific way
+         this could go wrong:
+           · the slug charset is pinned to [a-z0-9_-], so `..` can never form a path escape;
+           · a slug resolving to ZERO rows is REFUSED, not treated as unowned-and-therefore-free —
+             the empty-result-reads-as-permission trap that made the features view public;
+           · admin still passes through the old branch, so first publishes from the CLI are
+             unaffected. */
+      var sm2 = ukey.match(/^maps\/([a-z0-9_-]+)\//i);
+      if (sm2 && (user.email || "").toLowerCase() !== ADMIN_EMAIL) {
+        try {
+          var sq = await fetch(env.SUPABASE_URL +
+            "/rest/v1/projects?select=id,user_id&raw_config->>showcaseSlug=eq." + encodeURIComponent(sm2[1]), {
+            headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY }
+          });
+          var srows = sq.ok ? await sq.json() : [];
+          if (!srows.length || !srows.some(function (r) { return r.user_id === user.id; })) {
+            return new Response("that showcase slug is not bound to a map you own", { status: 403, headers: cors() });
+          }
+        } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
+      } else if (tm) {
         try {
           var pr = await fetch(env.SUPABASE_URL + "/rest/v1/projects?id=eq." + tm[1] + "&select=user_id", {
             headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY }
@@ -389,7 +415,7 @@ export default {
           }
         } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
       } else if ((user.email || "").toLowerCase() !== ADMIN_EMAIL) {
-        // site/, maps/, archives/, anything else = the public web surfaces — admin only
+        // site/, archives/, anything else = the public web surfaces — admin only
         return new Response("admin only", { status: 403, headers: cors() });
       }
       // TODO(rate-limit): per-user upload counter (Workers KV or Durable Object),

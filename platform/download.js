@@ -980,6 +980,12 @@
     zip.file("start-map.bat", genStartBat());
     zip.file("serve-map.py", await fetchText("../platform/serve-map.py"));
 
+    // "Update the public site" needs the ENTRIES, not a .zip — same build, different ending.
+    // Returning here also skips compressing ~80 MB we would immediately throw away. Everything the
+    // publisher ships is therefore byte-identical to what a person gets from the download button:
+    // one builder, so the public copy can never drift from the copy they can hold.
+    if (opts.returnZip) { setStatus(""); return zip; }
+
     setStatus("Zipping…");
     var blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
     var slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "map";
@@ -1007,4 +1013,9 @@
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
+
+  /* The export, reusable. publishSite.js builds the SAME copy and uploads it instead of
+     downloading it — see the `returnZip` branch in buildZip. Exposed rather than duplicated on
+     purpose: two builders would drift, and the drift would only show up on someone's live site. */
+  window.MSDownload = { buildZip: buildZip, detectVariant: detectVariant, setStatus: setStatus };
 })();
