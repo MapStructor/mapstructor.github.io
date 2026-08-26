@@ -4288,6 +4288,24 @@
       setStatus('Published ✓');
       msClearUnpublished();   // live and public are in sync again
       if (hb) { hb.textContent = 'Published ✓'; setTimeout(function () { hb.textContent = 'Publish'; hb.disabled = false; }, 2500); }
+
+      /* THE PUBLIC SITE (8/26). A map bound to a /maps/<slug>/ address gets that address refreshed
+         here, as part of Publish, rather than behind a second button. Two buttons would mean a
+         client could publish and still be looking at a stale public page with no indication which
+         one they needed — the failure is silent and it lands on THEIR visitors.
+         It runs AFTER Publish has already reported success, and its own failure is reported
+         separately: the snapshot is genuinely published either way, and saying "Publish failed"
+         because an upload hiccuped would be a lie that costs a re-publish. Most runs upload a
+         handful of small files (see publishSite.js on delta uploads). */
+      try {
+        if (window.MSPublishSite) {
+          var pres = await window.MSPublishSite.run(projectId, setStatus);
+          if (pres && !pres.skipped && pres.uploaded) setStatus('Published ✓ · public site updated');
+        }
+      } catch (ePub) {
+        console.warn('public site update failed', ePub);
+        setStatus('Published ✓ — but the public site did not update: ' + ((ePub && ePub.message) || ePub));
+      }
     } catch (e) { console.warn('publish failed', e); setStatus('Publish failed'); if (hb) { hb.textContent = 'Publish'; hb.disabled = false; } }
   }
   // Re-init the bottom timeline slider + rulers to a [startYear, endYear] range (the engine reads a static
