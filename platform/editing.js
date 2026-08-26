@@ -518,7 +518,7 @@
             msTrashRpcCheck(tr0);
           } catch (e) {}
         }
-        removeMapLayers(node.id, true);     // the layer is going away — take every companion with it
+        removeMapLayers(node.id);     // the layer is going away — take every companion with it
         removeFromTree(layers, node);
         (function (n, llid, fields, arr, idx) {
           async function readd() {
@@ -531,7 +531,7 @@
           async function reremove() {
             if (llid) await saveGuard(db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', llid), null, 'Undo failed to save').catch(function () {});
             if (llid) { try { msTrashRpcCheck(await db.rpc('ms_trash_layer_if_orphaned', { p_layer: llid, p_project: projectId })); } catch (e) {} }   // redo re-trashes, same as the primary path
-            removeMapLayers(n.id, true); removeFromTree(layers, n); rerender(); await loadFeatures();
+            removeMapLayers(n.id); removeFromTree(layers, n); rerender(); await loadFeatures();
           }
           pushUndo(readd, reremove, 'delete ' + (n.label || 'layer'));
         })(node, lid, plf, loc ? loc.arr : null, loc ? loc.idx : 0);
@@ -2986,7 +2986,11 @@
         });
       });
       try { removeMapLayers(node.id); } catch (e) {}
+      // companions closed 8/25: removal is WIDE now, and the re-add is complete — render rebuilds
+      // base+stroke+highlight, applyLabelLayers rebuilds the labels, the edited overlay re-ensures
       try { renderTilesetOnMap(node); } catch (eAdd) { console.warn('fold live-add failed — the layer appears on next load', eAdd); }
+      try { applyLabelLayers(node); } catch (eLb) {}
+      try { refreshEditedOverlay(node); } catch (eOv) {}
       try { _engineEditWired[node.id] = false; wireEngineEditClicks(); } catch (e) {}
       try { if (typeof refreshLayers === 'function') refreshLayers(); } catch (e) {}
       // the scrub raster too — the browser bake calls this from tilegen when a bake lands, but the
@@ -9598,7 +9602,9 @@
       var r = await db.from('layers').update({ source_type: rw.source_type, source_url: rw.source_url, source_layer: rw.source_layer, source_minzoom: rw.source_minzoom, source_maxzoom: rw.source_maxzoom }).eq('id', lid);
       if (r.error) throw new Error(r.error.message); setStatus('Source updated');
     } catch (e) { setStatus('Save failed'); return; }
-    removeMapLayers(node.id); renderTilesetOnMap(node);   // re-render with the new source
+    removeMapLayers(node.id); renderTilesetOnMap(node);   // re-render with the new source (wide removal; re-add complete 8/25)
+    try { applyLabelLayers(node); } catch (eLb2) {}
+    try { refreshEditedOverlay(node); } catch (eOv2) {}
     _engineEditWired[node.id] = false; wireEngineEditClicks();   // re-attach click→edit (removeLayer dropped the old handler)
     if (typeof refreshLayers === 'function') refreshLayers();
     showLayerPanel(activeLayerId);
@@ -12014,7 +12020,7 @@
         var rp = await db.from('layers').update({ paint: P.paint }).eq('id', pLid);
         if (rp.error) throw new Error(rp.error.message);
       }
-      if (O) { removeMapLayers(O.id, true); removeFromTree(layers, O); delete slugToLayerDbId[O.id]; }
+      if (O) { removeMapLayers(O.id); removeFromTree(layers, O); delete slugToLayerDbId[O.id]; }
       delete P.outlineSplit;
       rerender();
       if (isTs) addTilesetStrokeOn(P);     // re-add P's auto-outline stroke line layer
@@ -12023,40 +12029,26 @@
       setStatus('Saved');
     } catch (e) { console.warn('editing: unsplit failed', e); setStatus('Merge failed: ' + e.message); }
   }
-  // NOTE (8/21): this removes only the shape and its outline, so deleting a layer leaves its
-  // labels, hover highlight and edited-features overlay drawing on the map — gone from the
-  // sidebar, so nothing can turn them off — until a reload. That leak is real and measured (see
-  // the bug book, "companion fan-out"), and MS_COMPANIONS in engine/utils.js is the list a fix
-  // should iterate. It is NOT fixed here on purpose: removeMapLayers is also called when a layer
-  // is RE-SOURCED (onApplySource) and when an outline is unsplit, and those paths re-add the base
-  // layer without re-adding labels — so widening this blindly would trade a leak for vanished
-  // labels. It needs the re-add paths handled in the same change, with a test that can drive a
-  // real layer delete through the panel.
-  // `all` = the layer is GOING AWAY (a delete or an unsplit), so take every companion with it.
-  // Without it this removed 2 of the 10 ids a layer owns, and deleting a layer left its LABELS,
-  // its hover highlight and its edited overlay still painted on the map — with no sidebar row
-  // left that could switch them off — until the page was reloaded.
-  //
-  // The default stays narrow ON PURPOSE. The other callers (fold, re-source) remove and then
-  // immediately re-add via renderTilesetOnMap, which does NOT rebuild label layers — so widening
-  // those would trade a leak for labels that silently vanish. Same-change rule: whoever makes the
-  // re-add path complete can drop this parameter, and not before.
-  function removeMapLayers(id, all) {
+  // COMPANIONS CLOSED (8/25). This is ALWAYS the wide sweep now: every id a layer owns
+  // (msLayerVariants — base, stroke, highlighted, label, edited; both swipe sides) plus the label
+  // and edited-overlay sources. The 8/21 note that lived here said widening blindly would trade
+  // the leak for vanished labels, because fold and re-source re-added via renderTilesetOnMap,
+  // which does not rebuild labels. The same-change rule is satisfied: both those call sites now
+  // follow the render with applyLabelLayers(node) and refreshEditedOverlay(node), so the re-add
+  // is complete and the narrow branch (and its `all` parameter) is retired.
+  function removeMapLayers(id) {
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
       var m = pair[1]; if (!m) return; var side = pair[0], main = id + '-' + side;
-      var ids = all && typeof msLayerVariants === 'function'
+      var ids = typeof msLayerVariants === 'function'
         ? msLayerVariants(id).filter(function (x) { return x.slice(-side.length) === side; })
-      // companions-ok: the narrow fallback is deliberate — see the note above.
-        : [id + '-stroke-' + side, main];
+        : [id + '-stroke-' + side, id + '-highlighted-' + side, id + '-label-' + side, id + '-edited-' + side, main];
       ids.forEach(function (lid) { try { if (m.getLayer(lid)) m.removeLayer(lid); } catch (e) {} });
       try { if (m.getSource(main)) m.removeSource(main); } catch (e) {}
-      if (all) {
-        // the label layer rides its own anchor source (-labels-, not -label-), and the edited
-        // overlay has one too; leaving those behind is what "source in use" errors are made of
-        [id + '-labels-' + side, id + '-edited-' + side].forEach(function (sid) {
-          try { if (m.getSource(sid)) m.removeSource(sid); } catch (e) {}
-        });
-      }
+      // the label layer rides its own anchor source (-labels-, not -label-), and the edited
+      // overlay has one too; leaving those behind is what "source in use" errors are made of
+      [id + '-labels-' + side, id + '-edited-' + side].forEach(function (sid) {
+        try { if (m.getSource(sid)) m.removeSource(sid); } catch (e) {}
+      });
     });
   }
   // Was a byte-identical copy of editorCurrentDate, 10,000 lines away in this same file — two
