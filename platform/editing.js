@@ -4262,7 +4262,13 @@
   }
   async function loadProjectChrome() {   // on load, apply per-project chrome (timeline range) once the slider exists
     if (window.__editorChromeLoaded) return; window.__editorChromeLoaded = true;
-    try { var r = await db.from('projects').select('raw_config').eq('id', projectId).single(); var rc = (r.data && r.data.raw_config) || {}; setModalAbout(rc.about || ''); applyHeaderChrome(rc); setTimeout(function () { applyHeaderChrome(rc); }, 600); setTimeout(function () { applyHeaderChrome(rc); }, 1500); if (rc.popups) { try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; Object.keys(rc.popups).forEach(function (id) { var p = rc.popups[id]; var h = (p && typeof p === 'object') ? p.html : p; var ti = (p && typeof p === 'object') ? p.title : 'Info'; window.modal_content_html[id] = h || ''; window.modal_header_text[id] = ti || 'Info'; }); } catch (x) {} } var tl = rc.timeline; if (tl && tl.start && tl.end) { var tries = 0; var iv = setInterval(function () {
+    try {
+      // MSBoot (8/25): boot-window share of the row configLoader fetched
+      var mbC = window.MSBoot;
+      var r = (mbC && mbC.pid === projectId && Date.now() < mbC.until)
+        ? await mbC.project
+        : await db.from('projects').select('raw_config').eq('id', projectId).single();
+      var rc = (r.data && r.data.raw_config) || {}; setModalAbout(rc.about || ''); applyHeaderChrome(rc); setTimeout(function () { applyHeaderChrome(rc); }, 600); setTimeout(function () { applyHeaderChrome(rc); }, 1500); if (rc.popups) { try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; Object.keys(rc.popups).forEach(function (id) { var p = rc.popups[id]; var h = (p && typeof p === 'object') ? p.html : p; var ti = (p && typeof p === 'object') ? p.title : 'Info'; window.modal_content_html[id] = h || ''; window.modal_header_text[id] = ti || 'Info'; }); } catch (x) {} } var tl = rc.timeline; if (tl && tl.start && tl.end) { var tries = 0; var iv = setInterval(function () {
       if (applyTimelineRange(tl.start, tl.end)) { clearInterval(iv); return; }
       // The EDITOR's copy of the same give-up already wired in projectLoader.js for the viewer:
       // same rule, same 25×400ms budget, two files. Both now say so instead of leaving the map on
@@ -12155,7 +12161,13 @@
   var _portalNotes = null;
   async function loadPortalNotes() {
     try {
-      var r = await db.from('projects').select('raw_config').eq('id', projectId).single();
+      // MSBoot (8/25): the FIRST load rides the boot row configLoader already fetched. Any later
+      // call (and every pre-write re-read below) stays a direct fetch — notes are edited in
+      // session, and serving a stale raw_config to a writer is the lost-update family.
+      var mb = window.MSBoot;
+      var r = (_portalNotes === null && mb && mb.pid === projectId && Date.now() < mb.until)
+        ? await mb.project
+        : await db.from('projects').select('raw_config').eq('id', projectId).single();
       var rc = (r.data && r.data.raw_config) || {};
       _portalNotes = Array.isArray(rc.portalNotes) ? rc.portalNotes : [];
     } catch (e) { _portalNotes = []; }
@@ -12330,7 +12342,11 @@
     var locked = false;
     try {
       if (projectId && db) {
-        var lr = await db.from('projects').select('raw_config').eq('id', projectId).single();
+        // MSBoot (8/25): boot-window share of the row configLoader fetched
+        var mbL = window.MSBoot;
+        var lr = (mbL && mbL.pid === projectId && Date.now() < mbL.until)
+          ? await mbL.project
+          : await db.from('projects').select('raw_config').eq('id', projectId).single();
         locked = !!(lr.data && lr.data.raw_config && lr.data.raw_config.editLock);
       }
     } catch (eLk) {}

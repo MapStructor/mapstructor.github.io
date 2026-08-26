@@ -269,7 +269,12 @@
     var pid = (typeof platformProjectId !== "undefined" && platformProjectId) || window.platformProjectId;
     if (!pid || !db() || typeof beforeMap === "undefined" || !beforeMap || !beforeMap.getLayer) { if (tries < 40) setTimeout(boot, 500); return; }
     try {
-      var r = await db().from("project_layers").select("layers(id, name, raw_config)").eq("project_id", pid);
+      // MSBoot (8/25): boot() runs once at page load — inside the window it shares configLoader's
+      // layer list instead of re-fetching a narrower slice of it.
+      var mb = window.MSBoot;
+      var r = (mb && mb.pid === pid && Date.now() < mb.until)
+        ? await mb.projectLayers
+        : await db().from("project_layers").select("layers(id, name, raw_config)").eq("project_id", pid);
       var todo = (((r && r.data) || [])).map(function (x) { return x.layers; }).filter(function (L) { return L && L.raw_config && L.raw_config.customJson; });
       if (!todo.length) return;
       var applied = 0, waits = 0;

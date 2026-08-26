@@ -1062,7 +1062,13 @@
     } else {
       // `type` rides along so pickLevel can tell THIN geometry (a line layer) from solid fills —
       // without it every line layer took the coarse fudged level and baked strokes read fat (8/18)
-      var r = await MapAuth.db.from("project_layers").select("layers(id, type, raw_config)").eq("project_id", pid);
+      // MSBoot (8/25): inside the boot window this is the same list configLoader already holds
+      // (layers(*) ⊇ id,type,raw_config). A re-run after a re-bake lands PAST the window and
+      // fetches fresh — stale rasterYears here is exactly the old-data-mid-drag bug.
+      var mb = window.MSBoot;
+      var r = (mb && mb.pid === pid && Date.now() < mb.until)
+        ? await mb.projectLayers
+        : await MapAuth.db.from("project_layers").select("layers(id, type, raw_config)").eq("project_id", pid);
       rows = (r && r.data) || [];
     }
     var items = [];

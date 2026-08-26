@@ -45,7 +45,12 @@
     var projectId = new URLSearchParams(window.location.search).get('id');
     if (!projectId) return;
     try {
-      var r = await db.from('projects').select('id, name').eq('id', projectId).single();
+      // MSBoot (8/25): configLoader already fetched this whole row — share the RESULT inside the
+      // boot window instead of re-asking for two of its columns.
+      var mb = window.MSBoot;
+      var r = (mb && mb.pid === projectId && Date.now() < mb.until)
+        ? await mb.project
+        : await db.from('projects').select('id, name').eq('id', projectId).single();
       if (r.error || !r.data) return;
       // projectLoader owns the on-page header name — for the viewer that is the PUBLISHED name, so
       // setting the header here would leak the live name onto a published view. Tab title only.

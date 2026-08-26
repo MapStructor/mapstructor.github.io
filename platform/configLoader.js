@@ -475,10 +475,18 @@ var ConfigLoader = (function () {
     // They used to run one after another, so opening a map paid four serial round trips before
     // a single feature could be asked for. Boot is a FLOOR, not a slope (measured 8/21: 2.5–3.7s
     // on every map regardless of size), and serial round trips are what a floor is made of.
-    var pq = db.from("projects").select("*").eq("id", projectId).single();
+    var pq = Promise.resolve(db.from("projects").select("*").eq("id", projectId).single());
     var sq = db.from("layer_sections").select("*").eq("project_id", projectId);
     var gq = db.from("layer_groups").select("*").eq("project_id", projectId);
-    var lq = db.from("project_layers").select("*, layers(*)").eq("project_id", projectId);
+    var lq = Promise.resolve(db.from("project_layers").select("*, layers(*)").eq("project_id", projectId));
+    /* MSBoot (8/25) — these two are the WIDEST reads of the project row and the layer list, and
+       four other boot readers used to re-fetch narrower slices of the same rows (probe: projects
+       ×4 in three column shapes, project_layers ×3). They now share THESE results. Promise.resolve
+       matters: a supabase builder executes once per await, so publishing the raw builder would
+       have doubled the request instead of sharing it. `until` is a hard 15-second boot window —
+       past it every consumer falls through to its own fresh fetch, so a mid-session re-run
+       (rasterScrub after a re-bake, layerJson reopened) can never be served stale config. */
+    window.MSBoot = { pid: projectId, project: pq, projectLayers: lq, until: Date.now() + 15000 };
     var all = await Promise.all([pq, sq, gq, lq]);
     var p = all[0], s = all[1], g = all[2], l = all[3];
     // A19 (8/6): a link-shared map isn't in the projects table's read policy any more — one row,
