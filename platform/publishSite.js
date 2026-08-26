@@ -94,9 +94,21 @@
     return out;
   }
 
+  /* EVERY read-back here must bypass Cloudflare's edge cache, and `cache: "no-store"` DOESN'T do
+     that — it only governs the browser's own cache. The Worker serves /maps/* with
+     `Cache-Control: public, max-age=300`, so for five minutes after any publish the edge will hand
+     back the PREVIOUS bytes. That breaks all three reads, each in its own way:
+       · the manifest — a stale one makes a genuinely-changed file look unchanged, so it is never
+         uploaded and the live site keeps serving the old copy with nothing reporting a problem;
+       · the _prev save — would archive a stale version, so revert would restore the wrong thing;
+       · the verify — would compare against the old page and fail a publish that actually worked.
+     Cloudflare keys its cache on the FULL URL, so a unique query string is a fresh fetch, while
+     the Worker derives the R2 key from the path alone and ignores it. */
+  function fresh(u) { return u + (u.indexOf("?") > -1 ? "&" : "?") + "_ms=" + Date.now() + "." + Math.random().toString(36).slice(2, 7); }
+
   async function fetchManifest(slug) {
     try {
-      var r = await fetch(PUBLIC + "maps/" + slug + "/_manifest.json", { cache: "no-store" });
+      var r = await fetch(fresh(PUBLIC + "maps/" + slug + "/_manifest.json"), { cache: "no-store" });
       return r.ok ? await r.json() : null;
     } catch (e) { return null; }
   }
@@ -153,7 +165,7 @@
     var overwriting = changed.filter(function (f) { return liveFiles.indexOf(f.rel) > -1; });
     for (var p = 0; p < overwriting.length; p++) {
       say("Saving the current version… (" + (p + 1) + "/" + overwriting.length + ")");
-      var pr = await fetch(PUBLIC + "maps/" + slug + "/" + overwriting[p].rel, { cache: "no-store" });
+      var pr = await fetch(fresh(PUBLIC + "maps/" + slug + "/" + overwriting[p].rel), { cache: "no-store" });
       if (!pr.ok) continue;                                    // already missing live — nothing to preserve
       await put("maps/" + slug + "/_prev/" + overwriting[p].rel, await pr.arrayBuffer(), mime(overwriting[p].rel), tok);
     }
@@ -167,7 +179,7 @@
        domain and serves exact keys only, so a check there would pass while the page people actually
        open failed (found 8/25). */
     say("Checking the live page…");
-    var vr = await fetch(PUBLIC + "maps/" + slug + "/index.html", { cache: "no-store" });
+    var vr = await fetch(fresh(PUBLIC + "maps/" + slug + "/index.html"), { cache: "no-store" });
     var vb = vr.ok ? new Uint8Array(await vr.arrayBuffer()) : null;
     var same = vb && vb.length === idx.bytes.length && vb.every(function (b, k) { return b === idx.bytes[k]; });
     if (!same) {
