@@ -4297,14 +4297,24 @@
          separately: the snapshot is genuinely published either way, and saying "Publish failed"
          because an upload hiccuped would be a lie that costs a re-publish. Most runs upload a
          handful of small files (see publishSite.js on delta uploads). */
+      /* EVERY OUTCOME SAYS SOMETHING, INCLUDING "I DID NOTHING" (fixed 8/26, same evening).
+         The first version only spoke when it had uploaded files. So when publishSite.js wasn't on
+         the page — an editor tab opened before the script existed, or a blocked/failed include —
+         Publish reported a plain success and the public site silently stayed missing. The owner
+         published, waited five minutes, and got "not found". A skip that looks identical to a
+         success is the exact failure this project keeps re-learning, and I shipped it. */
       try {
-        if (window.MSPublishSite) {
+        if (!window.MSPublishSite) {
+          setStatus('Published ✓ — the public-site updater did not load. Reload this page and Publish again.');
+        } else {
           var pres = await window.MSPublishSite.run(projectId, setStatus);
-          if (pres && !pres.skipped && pres.uploaded) setStatus('Published ✓ · public site updated');
+          if (pres && pres.skipped) { /* no public address bound — the normal case for most maps */ }
+          else if (pres && pres.uploaded) setStatus('Published ✓ · public site updated (' + pres.uploaded + ' file' + (pres.uploaded === 1 ? '' : 's') + ')');
+          else setStatus('Published ✓ · public site already up to date');
         }
       } catch (ePub) {
         console.warn('public site update failed', ePub);
-        setStatus('Published ✓ — but the public site did not update: ' + ((ePub && ePub.message) || ePub));
+        setStatus('Published ✓ — but the public site did NOT update: ' + ((ePub && ePub.message) || ePub));
       }
     } catch (e) { console.warn('publish failed', e); setStatus('Publish failed'); if (hb) { hb.textContent = 'Publish'; hb.disabled = false; } }
   }
