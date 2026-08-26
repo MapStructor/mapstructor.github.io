@@ -32,6 +32,7 @@
   var slugToLayerDbId = {};
   var idsReady = null;
   var _dragId = null;
+  var _touchTimer = null, _touchXY = null, _touchOver = null;   // touch reorder state (8/25)
 
   // ── Admin-only Mapbox token + Mapbox tileset (per the multi-library / no-charge principle) ──────────
   // MapLibre is the tokenless standard; Mapbox is an OPTION. On the hosted site only the ADMIN may add
@@ -734,6 +735,51 @@
         if (!dragNode || !targetNode) return;
         if (moveNode(dragNode, targetNode, dropPos(row, targetNode, e.clientY))) { rerender(); persistOrder(); }
       });
+
+      // ── TOUCH reorder (8/25 — the checklist's last item). HTML5 drag events never fire from a
+      // touchscreen, so on tablets the list only scrolled. LONG-PRESS (450 ms with a still finger)
+      // arms the drag; from there the SAME dropPos/moveNode/persistOrder path runs that the mouse
+      // uses — one reorder rule, two input methods. Scroll stays scroll: until armed, touchmove is
+      // left alone, and >12 px of drift during the hold cancels the arm (that was a scroll).
+      row.addEventListener('touchstart', function (e) {
+        if (e.touches.length !== 1) return;
+        var t0 = e.touches[0];
+        _touchXY = [t0.clientX, t0.clientY];
+        if (_touchTimer) clearTimeout(_touchTimer);
+        _touchTimer = setTimeout(function () { _touchTimer = null; _dragId = id; row.classList.add('editor-dragging'); }, 450);
+      }, { passive: true });
+      row.addEventListener('touchmove', function (e) {
+        var t1 = e.touches && e.touches[0]; if (!t1) return;
+        if (!_dragId) {
+          if (_touchTimer && _touchXY && (Math.abs(t1.clientX - _touchXY[0]) > 12 || Math.abs(t1.clientY - _touchXY[1]) > 12)) { clearTimeout(_touchTimer); _touchTimer = null; }
+          return;
+        }
+        e.preventDefault();   // armed: this finger is carrying a row, not scrolling
+        var el = document.elementFromPoint(t1.clientX, t1.clientY);
+        var over = el && el.closest ? el.closest('.layer-list-row') : null;
+        clearDropMarks();
+        _touchOver = null;
+        if (!over) return;
+        var oid = over.getAttribute('data-node-id');
+        if (!oid || oid === _dragId) return;
+        var tn = findNodeById(layers, oid); if (!tn) return;
+        var pos = dropPos(over, tn, t1.clientY);
+        over.classList.add(pos === 'into' ? 'editor-drop-into' : (pos === 'before' ? 'editor-drop-before' : 'editor-drop-after'));
+        _touchOver = { row: over, id: oid, y: t1.clientY };
+      }, { passive: false });
+      function msTouchFinish(commit) {
+        if (_touchTimer) { clearTimeout(_touchTimer); _touchTimer = null; }
+        var dragId = _dragId; _dragId = null;
+        row.classList.remove('editor-dragging');
+        clearDropMarks();
+        var ov = _touchOver; _touchOver = null;
+        if (!commit || !dragId || !ov || ov.id === dragId) return;
+        var dragNode = findNodeById(layers, dragId), targetNode = findNodeById(layers, ov.id);
+        if (!dragNode || !targetNode) return;
+        if (moveNode(dragNode, targetNode, dropPos(ov.row, targetNode, ov.y))) { rerender(); persistOrder(); }
+      }
+      row.addEventListener('touchend', function () { msTouchFinish(true); });
+      row.addEventListener('touchcancel', function () { msTouchFinish(false); });
     });
     try { injectStyleRows(); } catch (e) {}   // nested style-category sub-rows (opt-in per layer)
   }
