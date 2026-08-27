@@ -288,6 +288,89 @@ export default {
       return new Response(obj.body, { headers: headers });
     }
 
+    /* ── Encyclopedia articles: create one, or find one by its address ──────
+       WHY THIS IS HERE AND NOT IN THE BROWSER. Linking a place to its article used
+       to mean typing a CMS node id into a box. Nobody knows a node id — the site's
+       own addresses are names, so there is nowhere to read one. So the map needs to
+       ask the CMS to make the article and hand back the id.
+
+       Doing that from the page would put a content-creating key in page source.
+       Instead: the browser calls here with its ordinary Supabase login, the Worker
+       checks that person may edit that map, and only then does the Worker — which
+       holds the CMS key — talk to the CMS. Same shape as /fold and the showcase
+       writes, and the same rule the project's plan set for CMS writes long before
+       there was a CMS to write to.
+
+       The CMS base URL is not taken from the request. It is read from the LAYER
+       the caller named, using the caller's own token, so a valid login cannot be
+       pointed at somebody else's CMS. */
+    if ((req.method === "POST" && url.pathname === "/article") ||
+        (req.method === "GET" && url.pathname === "/article/resolve")) {
+      var auser = await supabaseUser(env, req);
+      if (!auser || !auser.id) return new Response(JSON.stringify({ error: "sign in first" }), { status: 401, headers: cors({ "Content-Type": "application/json" }) });
+
+      var q = url.searchParams;
+      var body = req.method === "POST" ? await req.json().catch(function () { return {}; }) : {};
+      var pid = String(body.projectId || q.get("projectId") || "");
+      var lid = String(body.layerId || q.get("layerId") || "");
+      if (!/^[0-9a-f-]{36}$/.test(pid) || !/^[0-9a-f-]{36}$/.test(lid)) {
+        return new Response(JSON.stringify({ error: "projectId and layerId are required" }), { status: 400, headers: cors({ "Content-Type": "application/json" }) });
+      }
+
+      // May this person edit this map? Ask the database's own predicate rather than
+      // re-implementing it here — owner OR invited editor, one source of truth.
+      var okEdit = false;
+      try {
+        var er = await fetch(env.SUPABASE_URL + "/rest/v1/rpc/ms_project_editor", {
+          method: "POST",
+          headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({ pid: pid })
+        });
+        okEdit = er.ok && (await er.json()) === true;
+      } catch (e) { okEdit = false; }
+      if (!okEdit) return new Response(JSON.stringify({ error: "that isn't a map you can edit" }), { status: 403, headers: cors({ "Content-Type": "application/json" }) });
+
+      // The CMS this layer is connected to, read with the caller's token.
+      var cmsBase = "";
+      try {
+        var lr = await fetch(env.SUPABASE_URL + "/rest/v1/layers?id=eq." + lid + "&select=content_base_url", {
+          headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY }
+        });
+        var lrows = lr.ok ? await lr.json() : [];
+        cmsBase = (lrows[0] && lrows[0].content_base_url) || "";
+      } catch (e) { cmsBase = ""; }
+      if (!cmsBase) return new Response(JSON.stringify({ error: "this layer isn't connected to an encyclopedia yet" }), { status: 400, headers: cors({ "Content-Type": "application/json" }) });
+
+      var host = "";
+      try { host = new URL(cmsBase).host; } catch (e) { host = ""; }
+      var keys = {};
+      try { keys = JSON.parse(env.CMS_KEYS || "{}"); } catch (e) { keys = {}; }
+      var cmsKey = keys[host];
+      /* A CMS we hold no key for is refused rather than called without one. Calling it
+         anyway would leak the map's titles to whatever host a layer happens to name. */
+      if (!cmsKey) return new Response(JSON.stringify({ error: "no writing key is configured for " + (host || "that encyclopedia") }), { status: 503, headers: cors({ "Content-Type": "application/json" }) });
+
+      var base = cmsBase.replace(/\/+$/, "");
+      try {
+        var upstream;
+        if (req.method === "POST") {
+          upstream = await fetch(base + "/ms/article", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-MS-Key": cmsKey },
+            body: JSON.stringify({ title: String(body.title || ""), text: String(body.text || "") })
+          });
+        } else {
+          upstream = await fetch(base + "/ms/resolve?url=" + encodeURIComponent(q.get("url") || ""), {
+            headers: { "X-MS-Key": cmsKey }
+          });
+        }
+        var text = await upstream.text();
+        return new Response(text, { status: upstream.status, headers: cors({ "Content-Type": "application/json" }) });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: "the encyclopedia did not answer" }), { status: 502, headers: cors({ "Content-Type": "application/json" }) });
+      }
+    }
+
     /* ── The Fold: dispatch the retile/fold Action (C3, 7/29) ──────────── */
     // The import client can't hold a GitHub token; this is the one place that can.
     // Ownership is checked exactly like /upload (caller's own token → projects.user_id),

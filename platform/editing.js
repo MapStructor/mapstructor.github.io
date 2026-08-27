@@ -6908,8 +6908,20 @@
         '<input id="efp-end" type="date" style="width:100%;box-sizing:border-box;padding:4px 5px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" /></div>' +
       '</div>' +
       '<div style="font-size:10px;color:#888888;margin-top:4px;">Blank = always visible on the timeline.</div>' +
-      '<div id="efp-page-row" style="display:none;margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia page ID</label>' +
-      '<input id="efp-pageid" type="text" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" /></div>' +
+      /* THE PAGE-ID ROW (rebuilt 8/27). It used to be one box asking for a number.
+         Nobody knows that number: the encyclopedia's own addresses are names, so
+         there is nowhere to read one, and the field was unusable by the people it
+         was for. Two buttons replace the guesswork — make the article, or paste its
+         address and let us find it. The box stays, because it is still the truth
+         being stored, but nobody has to type into it. */
+      '<div id="efp-page-row" style="display:none;margin-top:8px;"><label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Encyclopedia article</label>' +
+      '<div style="display:flex;gap:5px;margin-bottom:5px;">' +
+        '<button id="efp-mkart" type="button" style="flex:1;padding:6px 8px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;font-weight:600;cursor:pointer;font-size:12px;">+ Create article</button>' +
+        '<button id="efp-linkart" type="button" title="Paste the address of an article that already exists" style="padding:6px 10px;border:1px solid #cdc6e0;border-radius:4px;background:#f4f1fa;color:#4a3f66;font-weight:600;cursor:pointer;font-size:12px;">Link&hellip;</button>' +
+      '</div>' +
+      '<div id="efp-artlink" style="display:none;font-size:11px;margin-bottom:5px;"></div>' +
+      '<input id="efp-pageid" type="text" placeholder="or type a page ID" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
+      '<div id="efp-artmsg" style="font-size:11px;color:#6b6680;margin-top:4px;min-height:14px;"></div></div>' +
       '<button id="efp-done" style="margin-top:10px;width:100%;padding:7px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;font-weight:600;cursor:pointer;font-size:12px;display:none;">✓ Done editing</button>';
       // #10: "Delete feature" button removed — delete via the draw trash button or the keyboard (Delete/Backspace).
     document.body.appendChild(p);
@@ -6918,7 +6930,88 @@
       _editingDraw = null; _armedSet = []; setArmedHl(null); updateGroupHl(null);
       hideFeaturePanel();
     });
-    document.getElementById('efp-pageid').addEventListener('input', function () { onFeatureField('pageid', this.value); });
+    document.getElementById('efp-pageid').addEventListener('input', function () { onFeatureField('pageid', this.value); msShowArtLink(); });
+
+    /* ── article: create one, or find one by its address ─────────────────────
+       Both go through the Worker, never straight to the encyclopedia: the key that
+       may write content is held there, not in this page. */
+    function msArtMsg(t, bad) {
+      var el = document.getElementById('efp-artmsg');
+      if (el) { el.textContent = t || ''; el.style.color = bad ? '#b4453a' : '#6b6680'; }
+    }
+    function msShowArtLink() {
+      var row = document.getElementById('efp-artlink'); if (!row) return;
+      var meta = featureMeta[selectedDrawId] || {};
+      var node = msArtNode();
+      var base = (node && node.panel && node.panel.encyclopediaBase) || '';
+      if (meta.pageid && base) {
+        row.style.display = 'block';
+        row.innerHTML = '<a href="' + base.replace(/\/+$/, '') + '/node/' + encodeURIComponent(meta.pageid) +
+          '" target="_blank" rel="noopener" style="color:#7c5cbf;font-weight:600;">Open article &#8599;</a>';
+      } else { row.style.display = 'none'; row.innerHTML = ''; }
+    }
+    async function msArtCall(path, opts) {
+      var d = (window.MapAuth && MapAuth.db) || db;
+      var tok = null;
+      try { tok = (await d.auth.getSession()).data.session.access_token; } catch (e) {}
+      if (!tok) throw new Error('sign in first');
+      var r = await fetch(FOLD_WORKER_BASE + path, Object.assign({
+        headers: Object.assign({ Authorization: 'Bearer ' + tok }, (opts && opts.headers) || {})
+      }, opts || {}));
+      var out = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(out.error || ('HTTP ' + r.status));
+      return out;
+    }
+    /* The same fallback showFeaturePanel uses: a feature drawn a moment ago has not
+       had its DB insert resolve yet, so featureLayer has no entry for it — the layer
+       it is going into is the active one. Without this, Create article fails on
+       exactly the feature you just made, which is the common case. */
+    function msArtLayerId() {
+      return featureLayer[selectedDrawId] || activeLayerId || null;
+    }
+    function msArtNode() {
+      var lid = featureLayer[selectedDrawId];
+      var n = lid ? nodeByLayerDbId(lid) : null;
+      if (!n && activeLayerId) n = findNodeById(layers, activeLayerId);
+      return n;
+    }
+    document.getElementById('efp-mkart').addEventListener('click', async function () {
+      var btn = this, meta = featureMeta[selectedDrawId] || {};
+      var title = (meta.label || '').trim();
+      /* The article is titled from the feature's own name, so an unnamed feature has
+         nothing to make an article about. Say that instead of creating "Untitled". */
+      if (!title) { msArtMsg('Give this place a name first — the article takes its title from it.', true); return; }
+      var lid = msArtLayerId();
+      if (!lid) { msArtMsg('Could not tell which layer this feature belongs to.', true); return; }
+      btn.disabled = true; msArtMsg('Creating…');
+      try {
+        var res = await msArtCall('/article', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectId: projectId, layerId: lid, title: title })
+        });
+        document.getElementById('efp-pageid').value = res.nid;
+        onFeatureField('pageid', String(res.nid));
+        msShowArtLink();
+        msArtMsg(res.existing ? 'Linked to the existing article “' + res.title + '”.' : 'Article created and linked.');
+      } catch (e) { msArtMsg(String(e.message || e), true); }
+      btn.disabled = false;
+    });
+    document.getElementById('efp-linkart').addEventListener('click', async function () {
+      var u = window.prompt('Paste the address of the article (or its page ID):', '');
+      if (u == null || !String(u).trim()) return;
+      var lid = msArtLayerId();
+      if (!lid) { msArtMsg('Could not tell which layer this feature belongs to.', true); return; }
+      msArtMsg('Looking it up…');
+      try {
+        var res = await msArtCall('/article/resolve?projectId=' + encodeURIComponent(projectId) +
+          '&layerId=' + encodeURIComponent(lid) + '&url=' + encodeURIComponent(String(u).trim()), { method: 'GET' });
+        document.getElementById('efp-pageid').value = res.nid;
+        onFeatureField('pageid', String(res.nid));
+        msShowArtLink();
+        msArtMsg('Linked to “' + res.title + '”.');
+      } catch (e) { msArtMsg(String(e.message || e), true); }
+    });
     document.getElementById('efp-done').addEventListener('click', function () { var n = _engineEditNode[selectedDrawId]; if (n) finishEngineEdit(n, featureToDb[selectedDrawId]); });
     document.getElementById('efp-label').addEventListener('input', function () { onFeatureField('label', this.value); });
     document.getElementById('efp-color').addEventListener('input', function () { onFeatureColor(this.value); });
@@ -7019,6 +7112,7 @@
     document.getElementById('efp-start').value = meta.start || '';
     document.getElementById('efp-end').value = meta.end || '';
     document.getElementById('efp-pageid').value = meta.pageid || '';
+    try { var _al = document.getElementById('efp-artmsg'); if (_al) _al.textContent = ''; } catch (e) {}
     if (meta.image_url == null && typeof draw !== 'undefined' && draw && draw.get) { try { var _df = draw.get(drawId); if (_df && _df.properties && _df.properties.image_url != null) meta.image_url = _df.properties.image_url; } catch (e) {} }   // recover the saved image from the draw feature's props
     document.getElementById('efp-image').value = meta.image_url || '';
     document.getElementById('efp-image-status').textContent = '';
