@@ -8,3 +8,14 @@ map/ahm_05.29.2026_READ_ONLY/js/mapbox-token.js
 map/test_project/lists/restrictedToken.js
 test/maplibre/timeline/buildings.geojson
 supabase/.temp/
+
+# scratch left by provisioning the Drupal box (8/27) — a CSR, a public cert and
+# some API payloads. Not secret, but not the repo's business either.
+/origin.*
+/cert-req.json
+/cfips.json
+/fw*.json
+/droplet*.json
+/droplet-ip.txt
+/user-data.yaml
+/install-drupal.php
