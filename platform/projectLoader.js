@@ -342,6 +342,12 @@ window.msApplyHeaderFeature = function (visible, projectName) {
         }
       } catch (e) {}
     }, 400);
+    // Custom top-right map buttons (8/27): onto the GLOBAL mapConfig, which is also what the export
+    // freezes — so publishing carries them to the standalone copy with no export-side code.
+    try {
+      if (typeof mapConfig !== "undefined") mapConfig.customButtons = raw.customButtons || [];
+      if (window.msRenderMapButtons) window.msRenderMapButtons();
+    } catch (e) {}
     // Feature: header is HIDDEN BY DEFAULT (the map pages set body.ms-no-header at parse so there's no
     // flash of the header on load). Resolve the real state NOW — header-on maps flip the moment the config
     // is known (not a late timeout), header-off maps just build the sidebar brand and stay hidden.

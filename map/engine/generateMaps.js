@@ -40,6 +40,40 @@ function generateZoomButtonHTML(btn, idx) {
     '</button></center></div>';
 }
 
+// ── Custom map buttons (8/27, owner: "I need to add a button for the encyclopedia that opens in a
+// separate tab"). mapConfig.customButtons = [{label, url}] renders as pill buttons in the map's
+// upper-right, each opening its URL in a new tab. This lives in the ENGINE deliberately: the editor,
+// the viewer and the exported standalone copy all render the same buttons from one implementation —
+// the export freezes mapConfig, so the copy inherits them with no export-side code at all.
+// Body-level FIXED, not inside a map container: the swipe compare plugin clips each map's container
+// at the divider, so anything mounted inside one is sliced in half (the master-tool-panel lesson).
+// Idempotent — projectLoader and the settings panel call it again whenever the list changes.
+function msRenderMapButtons() {
+  var old = document.getElementById('ms-map-buttons'); if (old) old.remove();
+  var btns = (typeof mapConfig !== 'undefined' && mapConfig && mapConfig.customButtons) || [];
+  btns = btns.filter(function (b) { return b && b.label && b.url; });
+  if (!btns.length) return;
+  var wrap = document.createElement('div');
+  wrap.id = 'ms-map-buttons';
+  var top = document.getElementById('ms-topbar') ? 52 : 12;   // clear the site-wide top bar when present
+  wrap.style.cssText = 'position:fixed;top:' + top + 'px;right:14px;z-index:1100;display:flex;gap:8px;font-family:"Source Sans Pro",Arial,sans-serif;';
+  btns.forEach(function (b) {
+    var a = document.createElement('a');
+    a.href = b.url; a.target = '_blank'; a.rel = 'noopener';
+    a.textContent = b.label;
+    a.title = b.url;
+    a.style.cssText = 'display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border:1px solid #cdc6e0;border-radius:8px;' +
+      'background:rgba(255,255,255,0.95);color:#1e1b2e;font-size:13px;font-weight:700;text-decoration:none;' +
+      'box-shadow:0 2px 8px rgba(0,0,0,0.18);cursor:pointer;';
+    a.innerHTML = a.innerHTML + ' <span style="font-size:11px;color:#9a93ad;">&#8599;</span>';
+    wrap.appendChild(a);
+  });
+  document.body.appendChild(wrap);
+}
+try { window.msRenderMapButtons = msRenderMapButtons; } catch (e) {}
+// at boot: static copies carry customButtons inline in mapData.js; platform pages re-call after config load
+try { setTimeout(msRenderMapButtons, 300); } catch (e) {}   // cliff-ok: a beat for the topbar to mount; re-called on config load anyway
+
 // Combined bounds of the map's VISIBLE (checked) layers: geojson layers from their own feature data,
 // vector tilesets from their tilejson bounds; in the editor, small drawn layers live in MapboxDraw
 // (window._msDraw — optional, editor-only). Every source is individually guarded, so a missing piece

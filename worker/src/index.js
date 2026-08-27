@@ -288,6 +288,53 @@ export default {
       return new Response(obj.body, { headers: headers });
     }
 
+    /* ── Invitation email: tell someone they were given edit access ──────────
+       Before this (8/27), sharing a map by email did NOTHING the invited person could see — the
+       address landed in editAccess and they found out only if the owner told them out of band.
+       The Worker sends it because the Resend key must never reach a browser; and it sends ONLY
+       for a map the caller may edit and ONLY to an address actually ON that map's edit list —
+       both checks together are what keep this from being an open relay with our sender on it. */
+    if (req.method === "POST" && url.pathname === "/invite-email") {
+      var iuser = await supabaseUser(env, req);
+      if (!iuser || !iuser.id) return new Response(JSON.stringify({ error: "sign in first" }), { status: 401, headers: cors({ "Content-Type": "application/json" }) });
+      if (!env.RESEND_API_KEY) return new Response(JSON.stringify({ error: "email sending is not configured" }), { status: 503, headers: cors({ "Content-Type": "application/json" }) });
+      var ibody = await req.json().catch(function () { return {}; });
+      var ipid = String(ibody.projectId || "");
+      var ito = String(ibody.email || "").toLowerCase().trim();
+      if (!/^[0-9a-f-]{36}$/.test(ipid) || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ito)) {
+        return new Response(JSON.stringify({ error: "projectId and a valid email are required" }), { status: 400, headers: cors({ "Content-Type": "application/json" }) });
+      }
+      var iAuth = { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY, "Content-Type": "application/json" };
+      var iok = false;
+      try {
+        var ier = await fetch(env.SUPABASE_URL + "/rest/v1/rpc/ms_project_editor", { method: "POST", headers: iAuth, body: JSON.stringify({ pid: ipid }) });
+        iok = ier.ok && (await ier.json()) === true;
+      } catch (e) { iok = false; }
+      if (!iok) return new Response(JSON.stringify({ error: "that isn't a map you can edit" }), { status: 403, headers: cors({ "Content-Type": "application/json" }) });
+      var ipr = await fetch(env.SUPABASE_URL + "/rest/v1/projects?id=eq." + ipid + "&select=name,raw_config", { headers: iAuth });
+      var iprj = (ipr.ok ? await ipr.json() : [])[0];
+      var iea = (iprj && iprj.raw_config && iprj.raw_config.editAccess) || {};
+      var ionList = (iea.emails || []).some(function (e2) { return String(e2).toLowerCase() === ito; });
+      if (!iprj || !ionList) return new Response(JSON.stringify({ error: "that address is not on this map's edit list — add it first" }), { status: 400, headers: cors({ "Content-Type": "application/json" }) });
+      var iname = iprj.name || "a map";
+      var ilink = "https://mapstructor.com/map/editor.html?id=" + ipid;
+      var ires = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + env.RESEND_API_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: "MapStructor <noreply@send.mapstructor.com>",
+          to: [ito],
+          reply_to: iuser.email || undefined,
+          subject: (iuser.email || "Someone") + " invited you to edit “" + iname + "”",
+          html: "<p>" + (iuser.email || "Someone") + " gave you edit access to the map <b>" + iname.replace(/</g, "&lt;") + "</b> on MapStructor.</p>" +
+                "<p><a href=\"" + ilink + "\" style=\"display:inline-block;padding:10px 18px;background:#7c5cbf;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;\">Open the map</a></p>" +
+                "<p style=\"color:#6b6680;font-size:13px;\">Sign in with this email address (" + ito + ") — create the account if you don’t have one yet — and the map will be editable.</p>"
+        })
+      });
+      if (!ires.ok) return new Response(JSON.stringify({ error: "the email service refused: " + (await ires.text()).slice(0, 160) }), { status: 502, headers: cors({ "Content-Type": "application/json" }) });
+      return new Response(JSON.stringify({ ok: true, sent: ito }), { headers: cors({ "Content-Type": "application/json" }) });
+    }
+
     /* ── Encyclopedia articles: create one, or find one by its address ──────
        WHY THIS IS HERE AND NOT IN THE BROWSER. Linking a place to its article used
        to mean typing a CMS node id into a box. Nobody knows a node id — the site's

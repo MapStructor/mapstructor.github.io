@@ -147,6 +147,9 @@ var MapShare = (function () {
       '<div id="msshare-editlist"></div>' +
       '<div style="display:flex;gap:6px;margin-top:6px;"><input id="msshare-addemail" type="email" placeholder="add a person by email" style="flex:1;box-sizing:border-box;padding:7px 9px;border:1px solid #cdc6e0;border-radius:8px;font-size:12px;">' +
         '<button id="msshare-addbtn" style="padding:0 12px;border:1px solid #d9cff1;border-radius:8px;background:#efeaf8;color:#4a3f66;font-weight:600;font-size:12px;cursor:pointer;">Add</button></div>' +
+      // 8/27: without this, an invited person heard NOTHING — the address landed in the list and
+      // they found out only if the owner told them. Checked by default, like every drive-style share.
+      '<label style="display:flex;align-items:center;gap:6px;margin-top:7px;font-size:12px;color:#4a3f66;cursor:pointer;"><input type="checkbox" id="msshare-notify" checked style="margin:0;">Email them an invitation</label>' +
       '<div id="msshare-editlinkrow" style="display:none;margin-top:10px;"><input id="msshare-editurl" readonly style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid #cdc6e0;border-radius:8px;font-size:12px;color:#555;background:#faf9fd;"><button id="msshare-editcopy" style="margin-top:6px;padding:6px 12px;border:1px solid #d9cff1;border-radius:6px;background:#efeaf8;color:#4a3f66;font-weight:600;font-size:12px;cursor:pointer;">Copy edit link</button></div>' +
       '<div id="msshare-editstatus" style="font-size:12px;margin-top:8px;min-height:15px;"></div>' +
       '<hr style="border:none;border-top:1px solid #f0ecf8;margin:16px 0 12px;">' +
@@ -239,12 +242,35 @@ var MapShare = (function () {
       catch (e) { eSay('Save failed: ' + (e && e.message), '#b4453a'); }
     }
     ov.querySelector('#msshare-anyedit').addEventListener('change', function () { eaState.anyoneWithLink = this.checked; persistEA(); });
-    function addEmail() {
+    /* The email goes AFTER the save has succeeded — an invitation to access that was never granted
+       is worse than silence — and the WORKER sends it (it holds the Resend key; it independently
+       re-checks that the caller may edit this map and that the address really is on the list). A
+       failed email never fails the share: access was granted, and the status line says which of
+       the two things happened. */
+    async function sendInvite(v) {
+      var tok = (typeof window.msFreshToken === 'function') ? await window.msFreshToken() : null;
+      if (!tok) throw new Error('could not read your sign-in');
+      var r = await fetch('https://mapstructor-worker.mapstructor.workers.dev/invite-email', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: projectId, email: v })
+      });
+      var out = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(out.error || ('HTTP ' + r.status));
+    }
+    async function addEmail() {
       var inp = ov.querySelector('#msshare-addemail'); var v = (inp.value || '').toLowerCase().trim();
       if (!v || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) { inp.style.borderColor = '#b4453a'; return; }
       inp.style.borderColor = '#cdc6e0';
       if (eaState.emails.indexOf(v) === -1) eaState.emails.push(v);
-      inp.value = ''; persistEA();
+      inp.value = '';
+      await persistEA();
+      var notify = ov.querySelector('#msshare-notify');
+      if (notify && notify.checked) {
+        eSay('Saved ✓ — sending the invitation…', '#2d7a2d');
+        try { await sendInvite(v); eSay('Saved ✓ — invitation emailed to ' + v, '#2d7a2d'); }
+        catch (e) { eSay('Access granted, but the email could not be sent (' + ((e && e.message) || e) + ') — send them the edit link yourself.', '#b4453a'); }
+      }
     }
     ov.querySelector('#msshare-addbtn').addEventListener('click', addEmail);
     ov.querySelector('#msshare-addemail').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addEmail(); } });

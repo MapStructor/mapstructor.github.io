@@ -1886,29 +1886,62 @@
     if (window.MSMerge) MSMerge.host = { db: db, projectId: projectId, slugToLayerDbId: slugToLayerDbId, runMerge: runMerge };
     if (window.MSLayerOrder && !MSLayerOrder.onSave) MSLayerOrder.onSave = saveLayerOrder;
     var bar = document.getElementById('editor-add-bar');
+    /* TWO DOORS, NOT ELEVEN BUTTONS (8/27, owner: "the buttons in the sidebar are crazy numerous").
+       Everything that CREATES lives behind "＋ Add", in the owner's four sections; everything that
+       OPERATES on what exists lives behind "⚙ Operate" (Query/Table inject themselves there —
+       tables.js and queryWindow.js target #editor-operate-buttons). Opening one door closes the
+       other; the door stays open while a form is filled in, so the #2 rule ("the add buttons never
+       disappear mid-action") still holds — it just holds inside the open door. */
     bar.innerHTML = '<div id="editor-add-buttons"><div class="erow" style="margin-bottom:6px;">' +
-      '<button data-type="layer">Layer</button>' +
-      '<button data-type="tileset">Tileset</button>' +
-      '<button data-type="import">Import</button>' +
-      '<button data-type="export">Export</button></div>' +
-      '<div class="erow">' +
-      '<button data-type="group">+ Group</button>' +
-      '<button data-type="section">+ Section</button>' +
-      '<button data-type="divider" title="A plain text line you can drag between items (e.g. to delineate Raw Layers)">+ Divider</button></div>' +
-      // the Portal lives with the other add-things buttons (user 8/5) — it ADDS a whole map
-      '<div class="erow" style="margin-top:6px;"><button data-type="portal" title="Add a bookmarked map into this one (All / Linked / Instance per layer)">⊞ Portal</button>' +
-      '<button data-type="merge" title="Combine two or more layers into one dataset. Nothing is overwritten — the originals stay as they are">⛙ Merge</button></div>' +
-      // admin-only: Mapbox needs a token, so it's gated to the owner on the hosted site (the multi-library
-      // / no-charge principle). Regular users only get the tokenless + Tileset above.
-      (_isAdmin ? '<div class="erow" id="editor-admin-add" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">' +
-        '<button data-type="mbtoken" title="Enter your Mapbox access token (admin only, stored in this browser)">🔑 Mapbox token</button>' +
-        '<button data-type="mbtileset" title="Add a Mapbox tileset (admin only — uses your token)">+ Mapbox tileset</button></div>' : '') +
+      '<button id="editor-add-toggle" class="editor-door">＋ Add</button>' +
+      '<button id="editor-operate-toggle" class="editor-door" title="Work on what\'s already here — queries, data tables, merging layers">⚙ Operate</button></div>' +
+      '<div id="editor-add-menu" style="display:none;">' +
+        '<div class="esec"><div class="esec-h">Create</div><div class="erow">' +
+          '<button data-type="layer" title="A new empty layer to draw features into">Layer</button>' +
+          '<button data-type="group">Group</button>' +
+          '<button data-type="section">Section</button>' +
+          '<button data-type="divider" title="A plain text line you can drag between items (e.g. to delineate Raw Layers)">Divider</button></div></div>' +
+        '<div class="esec"><div class="esec-h">Bring in</div><div class="erow">' +
+          '<button data-type="import" title="GeoJSON · KML · KMZ · Shapefile (.zip)">Import</button>' +
+          '<button data-type="tileset" title="PMTiles / XYZ vector tiles by URL">Tileset</button></div></div>' +
+        '<div class="esec"><div class="esec-h">From another map</div><div class="erow">' +
+          '<button data-type="portal" title="Add a bookmarked map into this one (All / Linked / Instance per layer)">⊞ Portal</button></div></div>' +
+        '<div class="esec"><div class="esec-h">Send out</div><div class="erow">' +
+          '<button data-type="export" title="Export layers as files">Export</button>' +
+          '<button data-type="download" title="A self-contained static copy of this whole map">⬇ Whole project</button></div></div>' +
+      '</div>' +
+      '<div id="editor-operate-buttons" style="display:none;">' +
+        '<div class="erow">' +
+        '<button data-type="merge" title="Combine two or more layers into one dataset. Nothing is overwritten — the originals stay as they are">⛙ Merge</button></div>' +
+        // admin-only: Mapbox needs a token, so it's gated to the owner on the hosted site (the multi-library
+        // / no-charge principle). Regular users only get the tokenless + Tileset above.
+        (_isAdmin ? '<div class="erow" id="editor-admin-add" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">' +
+          '<button data-type="mbtoken" title="Enter your Mapbox access token (admin only, stored in this browser)">🔑 Mapbox token</button>' +
+          '<button data-type="mbtileset" title="Add a Mapbox tileset (admin only — uses your token)">+ Mapbox tileset</button></div>' : '') +
+      '</div>' +
       '</div>' +
       '<div id="editor-add-form"></div>' +
       // map data footprint — exact stored bytes, filled in the background after boot (user 7/23)
       '<div id="ms-map-size" title="Exact stored size of this map’s data — click to refresh" style="margin-top:6px;padding-top:5px;border-top:1px dashed #ddd;font-size:11px;color:#6b6580;cursor:pointer;">' + (_mapSizeText || 'Map data: measuring…') + '</div>';
-    bar.querySelectorAll('#editor-add-buttons button').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'portal') { if (window.MSPortalAdd) MSPortalAdd.open(); return; }
-      if (t === 'merge') { if (window.MSMerge) MSMerge.open(); return; } markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
+    function setDoor(which) {   // 'add' | 'operate' | null — one door open at a time
+      var add = document.getElementById('editor-add-menu'), op = document.getElementById('editor-operate-buttons');
+      var addB = document.getElementById('editor-add-toggle'), opB = document.getElementById('editor-operate-toggle');
+      if (add) add.style.display = which === 'add' ? 'block' : 'none';
+      if (op) op.style.display = which === 'operate' ? 'block' : 'none';
+      if (addB) addB.classList.toggle('door-open', which === 'add');
+      if (opB) opB.classList.toggle('door-open', which === 'operate');
+      if (which !== 'add') closeAddForm();   // a form belongs to the Add door; closing the door closes it
+    }
+    document.getElementById('editor-add-toggle').addEventListener('click', function () {
+      setDoor(document.getElementById('editor-add-menu').style.display === 'none' ? 'add' : null);
+    });
+    document.getElementById('editor-operate-toggle').addEventListener('click', function () {
+      setDoor(document.getElementById('editor-operate-buttons').style.display === 'none' ? 'operate' : null);
+    });
+    bar.querySelectorAll('#editor-add-buttons button[data-type]').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'portal') { if (window.MSPortalAdd) MSPortalAdd.open(); return; }
+      if (t === 'merge') { if (window.MSMerge) MSMerge.open(); return; }
+      if (t === 'download') { var dl = document.getElementById('msdl-open'); if (dl) dl.click(); return; }   // same dialog as the sidebar button — one implementation
+      markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
     var msEl = document.getElementById('ms-map-size');
     if (msEl) msEl.addEventListener('click', function () { refreshMapSize(true); });
     /* AFTER FIRST IDLE. It is a readout — nothing on the map waits for it — and at boot it was
@@ -3888,6 +3921,16 @@
         '<label class="mss-lbl" style="margin-top:8px;">Logo link (URL)</label>' +
         '<input id="esp-logo-link" type="text" placeholder="https://…" class="mss-in" />' +
       '</div>' +
+      // ── MAP BUTTONS (8/27) — owner-defined links floating in the map's upper-right, e.g. the
+      // encyclopedia. Rendered by the engine (msRenderMapButtons), so the published copy gets them.
+      '<div class="mss-sectop">' +
+        MSEC('Map buttons') +
+        '<div id="esp-btn-list"></div>' +
+        '<input id="esp-btn-label" type="text" placeholder="Label — e.g. Encyclopedia" class="mss-in" style="margin-top:4px;" />' +
+        '<input id="esp-btn-url" type="text" placeholder="https://…" class="mss-in" style="margin-top:4px;" />' +
+        '<button id="esp-btn-add" class="mss-btn" style="margin-top:4px;">+ Add button</button>' +
+        '<div class="mss-note">Shows in the map\'s upper-right — here, for visitors, and on the published copy. Opens in a new tab.</div>' +
+      '</div>' +
       '<div class="mss-note" style="margin-top:12px;">To edit the <b>About</b> text, click the <b>ABOUT</b> button (header) or the sidebar <b>About</b> link and edit the popup directly.</div>' +
       // ── LOCK — deliberately LAST, its own section at the bottom (protection, not everyday chrome) ──
       '<div class="mss-sectop">' +
@@ -3908,6 +3951,7 @@
     document.getElementById('esp-lock').addEventListener('change', onEditLockToggle);
     document.getElementById('esp-logo-file').addEventListener('change', onLogoFile);
     document.getElementById('esp-logo-link').addEventListener('change', onLogoLink);
+    document.getElementById('esp-btn-add').addEventListener('click', onMapButtonAdd);
     // Sharing (who can see the map) moved to its own 🔗 Share panel in the top bar — see platform/share.js.
   }
   // ── The per-layer copy engine (extracted 8/5 — Map Portal plan step 3). Copies ONE bundle
@@ -4415,7 +4459,7 @@
     injectSettingsPanel();
     var p = document.getElementById('editor-settings-panel');
     if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
-    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); document.getElementById('esp-lock').checked = !!(r.data.raw_config && r.data.raw_config.editLock); } } catch (e) {}
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); document.getElementById('esp-lock').checked = !!(r.data.raw_config && r.data.raw_config.editLock); _mapBtns = (r.data.raw_config && r.data.raw_config.customButtons || []).slice(); renderMapBtnList(); } } catch (e) {}
     p.style.display = 'block';
   }
   async function saveMapName(name) {
@@ -4548,6 +4592,40 @@
       var r = await patchProjectConfig({ headerLogo: dataUrl }); if (r.error) throw new Error(r.error.message);
       setStatus('Logo saved');
     } catch (e) { setStatus('Logo save failed'); }
+  }
+  // ── Custom map buttons (8/27) — [{label, url}] in raw_config.customButtons, mirrored onto the
+  //    global mapConfig so the engine's msRenderMapButtons (and the export's frozen copy) see them. ──
+  var _mapBtns = [];
+  function renderMapBtnList() {
+    var box = document.getElementById('esp-btn-list'); if (!box) return;
+    box.innerHTML = '';
+    if (!_mapBtns.length) { box.innerHTML = '<div class="mss-note" style="margin:0 0 2px;">None yet.</div>'; return; }
+    _mapBtns.forEach(function (b, i) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px;border:1px solid #e2e0ea;border-radius:6px;margin-bottom:4px;font-size:12px;';
+      var s = document.createElement('span'); s.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      s.innerHTML = '<b>' + String(b.label).replace(/</g, '&lt;') + '</b> <span style="color:#9a93ad;">' + String(b.url).replace(/</g, '&lt;') + '</span>';
+      var x = document.createElement('button'); x.textContent = '×'; x.title = 'Remove this button';
+      x.style.cssText = 'border:none;background:none;color:#b4453a;cursor:pointer;font-size:15px;line-height:1;padding:0 2px;';
+      x.addEventListener('click', function () { _mapBtns.splice(i, 1); saveMapButtons(); });
+      row.appendChild(s); row.appendChild(x); box.appendChild(row);
+    });
+  }
+  async function saveMapButtons() {
+    renderMapBtnList();
+    try { if (typeof mapConfig !== 'undefined') mapConfig.customButtons = _mapBtns.slice(); if (window.msRenderMapButtons) window.msRenderMapButtons(); } catch (e) {}
+    setStatus('Saving…');
+    try { var r = await patchProjectConfig({ customButtons: _mapBtns }); if (r.error) throw new Error(r.error.message); setStatus('Map buttons saved'); }
+    catch (e) { setStatus('Save failed: ' + (e && e.message)); }
+  }
+  function onMapButtonAdd() {
+    var lb = (document.getElementById('esp-btn-label').value || '').trim();
+    var url = (document.getElementById('esp-btn-url').value || '').trim();
+    if (!lb || !url) { setStatus('A button needs both a label and a URL'); return; }
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;   // people type bare domains; javascript: and friends never pass
+    _mapBtns.push({ label: lb, url: url });
+    document.getElementById('esp-btn-label').value = ''; document.getElementById('esp-btn-url').value = '';
+    saveMapButtons();
   }
   async function onLogoLink() {
     var url = (document.getElementById('esp-logo-link').value || '').trim();
@@ -5115,6 +5193,16 @@
       '#editor-add-bar button{flex:1;padding:6px 0;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;background:#e8e8e8;color:#222222;}' +
       '#editor-add-bar button:hover{background:#d8d8d8;}' +
       '#editor-add-bar #editor-add-buttons button.active{background:#23374d;color:#fff;}' +   // #2: shows which add-form is open
+      // the two doors: heavier than the buttons inside them, and visibly held open
+      '#editor-add-bar .editor-door{padding:8px 0;font-size:13px;background:#efeae2;border:1px solid #d8d2c6;}' +
+      '#editor-add-bar .editor-door:hover{background:#e6e0d4;}' +
+      '#editor-add-bar .editor-door.door-open{background:#23374d;color:#fff;border-color:#23374d;}' +
+      '#editor-add-menu .esec{margin-top:7px;padding-top:6px;border-top:1px dashed #ddd;}' +
+      '#editor-add-menu .esec:first-child{margin-top:2px;padding-top:0;border-top:none;}' +
+      '#editor-add-menu .esec-h{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9a93ad;margin:0 0 4px 2px;}' +
+      '#editor-operate-buttons{margin-top:2px;}' +
+      '#editor-operate-buttons .erow{flex-wrap:wrap;}' +
+      '#editor-operate-buttons .erow button{min-width:31%;}' +
       '#editor-add-form{margin-top:6px;}' +
       '#editor-add-bar input,#editor-add-bar select{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +
       '#editor-save-status{font-size:11px;color:#888888;padding:2px 6px;min-height:13px;}' +
@@ -5125,11 +5213,19 @@
       '.editor-setzoom{position:absolute;right:64px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#888888;font-size:14px;line-height:1;padding:0 3px;z-index:2;}' +
       '.layer-list-row:hover .editor-setzoom{opacity:1;}' +
       '.editor-setzoom:hover{color:#ce5c00;}' +
+      /* THE ACTIVE LAYER LOOKS PRESSED (8/27, owner: "the layer does not feel that highlighted…
+         make it feel like a literal button"). A wash of 12% orange read as a hover accident, not a
+         state — people could not tell which layer their next drawn shape would land in. Now: a
+         stronger fill, a full border ring, a left accent bar, and a real shadow, so the row reads
+         as a control that is DOWN. Deliberately declared BEFORE the drop-* rules: they share the
+         box-shadow channel, and during a drag the drop indicator must win on the active row. */
+      '.layer-list-row.editor-active{background:rgba(206,92,0,0.16);border-radius:6px;' +
+        'box-shadow:inset 3px 0 0 #ce5c00, inset 0 0 0 1.5px rgba(206,92,0,0.55), 0 1px 4px rgba(0,0,0,0.18);}' +
+      '.layer-list-row.editor-active label{font-weight:700;}' +
       '.layer-list-row.editor-dragging{opacity:0.4;}' +
       '.layer-list-row.editor-drop-before{box-shadow:inset 0 2px 0 #ce5c00;}' +
       '.layer-list-row.editor-drop-after{box-shadow:inset 0 -2px 0 #ce5c00;}' +
       '.layer-list-row.editor-drop-into{background:rgba(206,92,0,0.15);box-shadow:inset 0 0 0 1px #ce5c00;}' +
-      '.layer-list-row.editor-active{background:rgba(206,92,0,0.12);}' +
       // Master tool panel: one slick frosted card, body-level fixed (OUTSIDE the swipe-clipped #before
       // container — the compare plugin clips the left map's container, controls included, at the divider),
       // LEFT-aligned just past the sidebar + its collapse button. pointer-events:auto on the WHOLE card

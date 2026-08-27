@@ -264,9 +264,11 @@
 
   function open() { modal().style.display = "block"; refresh(); }
 
-  // "+ Table" button in the editor's add-row — re-injected if the row re-renders
+  // "Table" lives behind the ⚙ Operate door (8/27 consolidation) — re-injected if the bar
+  // re-renders. Falls back to the old add-row so a stale editing.js still gets a button somewhere.
   function inject() {
-    var row = document.querySelector("#editor-add-buttons .erow");
+    var row = document.querySelector("#editor-operate-buttons .erow") ||
+              document.querySelector("#editor-add-buttons .erow");
     if (row && !document.getElementById("mst-open")) {
       var b = document.createElement("button");
       b.id = "mst-open";
