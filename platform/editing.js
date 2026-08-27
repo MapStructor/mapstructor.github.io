@@ -6356,6 +6356,16 @@
         if (cbc) props.color = cbc;
       }
       if (dbOpacity[row.layer_id] != null) props.opacity = dbOpacity[row.layer_id];
+      /* A LINE LAYER NEVER PAINTS A POLYGON'S INTERIOR (8/27). MapboxDraw styles a feature by its
+         GEOMETRY, the engine styles it by the LAYER'S TYPE — so a polygon sitting on a line-typed
+         layer comes out a solid block in the editor and a clean boundary in the published copy.
+         Slater's City Limits is exactly that, and the two surfaces disagreed on screen.
+         POLYGONS ONLY. `opacity` feeds gl-draw-polygon-fill's fill-opacity, but the SAME property
+         feeds gl-draw-line's line-opacity and gl-draw-point's circle-opacity — zeroing it for the
+         whole layer would make every genuinely-linear feature on it invisible, which is a far worse
+         bug than the one being fixed. The polygon's own outline rides `strokeopacity`, which is
+         deliberately independent, so the boundary still draws. */
+      if (cbNode && cbNode.type === 'line' && /Polygon$/.test((row.geom && row.geom.type) || '')) props.opacity = 0;
       if (dbOutline[row.layer_id] != null) props.outline = dbOutline[row.layer_id];
       if (dbStrokeOp[row.layer_id] != null) props.strokeopacity = dbStrokeOp[row.layer_id];
       if (dbStrokeWidth[row.layer_id] != null) props.strokewidth = dbStrokeWidth[row.layer_id];
