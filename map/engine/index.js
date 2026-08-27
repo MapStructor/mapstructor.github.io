@@ -66,7 +66,15 @@ function simple_tooltip(target_items, name) {
 
 $(document).ready(function () {
   $("#logo-link").attr("href", siteLogoLink);
-  $("#header-text-value").text(siteHeaderText);
+  /* ONE OWNER FOR THE TITLE (8/27). On platform pages projectLoader writes the real map name after
+     the config loads; this line writes the static default ("Map") on DOM-ready. Those race, and on
+     a warm cache the config WINS the race and then loses the element — DOM-ready lands last and
+     stamps "Map" over the real name, in the header AND in the <title> of every publish (that is how
+     a client's public page came to be called "Map" on 8/26). Platform pages: projectLoader owns it.
+     Static copies (no platformProjectId): this line owns it, exactly as before. */
+  if (typeof platformProjectId === "undefined" || !platformProjectId) {
+    $("#header-text-value").text(siteHeaderText);
+  }
 
   headerButtons.forEach(btn => {
     let el;

@@ -63,6 +63,8 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     brand.querySelector("#about-info").style.display = (hasAbout || isEditor) ? "block" : "none";
   } catch (e) {}
   document.body.classList.toggle("ms-no-header", visible === false);
+  // custom map buttons render differently per header state (header row vs floating) — re-render on toggle
+  try { if (window.msRenderMapButtons) window.msRenderMapButtons(); } catch (e) {}
   setTimeout(function () {   // the map containers changed height — re-measure both swipe sides + re-seat any header-relative chrome (editor tool dock, save callout)
     try { if (typeof beforeMap !== "undefined" && beforeMap) beforeMap.resize(); if (typeof afterMap !== "undefined" && afterMap) afterMap.resize(); } catch (e) {}
     try { window.dispatchEvent(new Event("resize")); } catch (e) {}

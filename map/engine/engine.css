@@ -441,6 +441,23 @@ button.active {
 div.layer-list-row {
   width: 100%;
 }
+/* Row alignment (8/27, owner: "things are not aligned horizontally — and never were").
+   The row is inline flow — checkbox, swatch, label text, right-anchored icons — and inline
+   content baseline-aligns, so each piece sat at its own height. Middle-align every direct
+   piece and give the row one consistent line, WITHOUT switching to flex: the group children
+   indent with leading &nbsp;s, which flex layout would silently swallow. */
+div.layer-list-row > input[type="checkbox"],
+div.layer-list-row > label,
+div.layer-list-row > i,
+div.layer-list-row label > i {
+  vertical-align: middle;
+}
+div.layer-list-row > input[type="checkbox"] { margin-top: 0; margin-bottom: 0; }
+div.layer-list-row > label:not(.ms-divider-label) { display: inline-block; line-height: 22px; }   /* dividers size their own text (S/M/L) — the 22px row line must not clamp them */
+/* the right-anchored icon block centers against the ROW — which must therefore be the positioned
+   ancestor here too, not just in the editor's own stylesheet */
+div.layer-list-row { position: relative; }
+div.layer-buttons-block { top: 50%; transform: translateY(-50%); }
 
 /* Breathing room between top-level sections in the layer list (7/21) — sections
    used to stack flush; give each section block space above so they read as distinct. */

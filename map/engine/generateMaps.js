@@ -50,22 +50,40 @@ function generateZoomButtonHTML(btn, idx) {
 // Idempotent — projectLoader and the settings panel call it again whenever the list changes.
 function msRenderMapButtons() {
   var old = document.getElementById('ms-map-buttons'); if (old) old.remove();
+  document.querySelectorAll('.ms-custom-mapbtn').forEach(function (e) { e.remove(); });
   var btns = (typeof mapConfig !== 'undefined' && mapConfig && mapConfig.customButtons) || [];
   btns = btns.filter(function (b) { return b && b.label && b.url; });
   if (!btns.length) return;
+  /* HEADER VISIBLE → these are header buttons, full stop (8/27, owner: "needs to have same styling
+     as About button" — v1 floated its own pill over the header and sat ON the About button). The
+     About button is a `.header-btn` in #header-right-buttons; a custom button becomes the exact
+     same thing in the exact same row, so it can never collide with or diverge from it. */
+  var headerRow = document.getElementById('header-right-buttons');
+  var headerVisible = headerRow && !document.body.classList.contains('ms-no-header');
+  if (headerVisible) {
+    btns.forEach(function (b) {
+      var a = document.createElement('a');
+      a.className = 'header-btn ms-custom-mapbtn';
+      a.href = b.url; a.target = '_blank'; a.rel = 'noopener'; a.title = b.url;
+      a.textContent = b.label + ' ↗';
+      headerRow.insertBefore(a, headerRow.firstChild);   // custom buttons first, About keeps the end
+    });
+    return;
+  }
+  // header hidden → float over the map's upper-right, wearing the SAME header-btn look
+  // (body-level fixed: the swipe compare plugin clips each map container at the divider)
   var wrap = document.createElement('div');
   wrap.id = 'ms-map-buttons';
   var top = document.getElementById('ms-topbar') ? 52 : 12;   // clear the site-wide top bar when present
-  wrap.style.cssText = 'position:fixed;top:' + top + 'px;right:14px;z-index:1100;display:flex;gap:8px;font-family:"Source Sans Pro",Arial,sans-serif;';
+  wrap.style.cssText = 'position:fixed;top:' + top + 'px;right:14px;z-index:1100;display:flex;gap:6px;';
   btns.forEach(function (b) {
     var a = document.createElement('a');
-    a.href = b.url; a.target = '_blank'; a.rel = 'noopener';
-    a.textContent = b.label;
-    a.title = b.url;
-    a.style.cssText = 'display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border:1px solid #cdc6e0;border-radius:8px;' +
-      'background:rgba(255,255,255,0.95);color:#1e1b2e;font-size:13px;font-weight:700;text-decoration:none;' +
-      'box-shadow:0 2px 8px rgba(0,0,0,0.18);cursor:pointer;';
-    a.innerHTML = a.innerHTML + ' <span style="font-size:11px;color:#9a93ad;">&#8599;</span>';
+    a.href = b.url; a.target = '_blank'; a.rel = 'noopener'; a.title = b.url;
+    a.textContent = b.label + ' ↗';
+    // .header-btn's own recipe, inlined (the class's float/margins assume the header row)
+    a.style.cssText = 'display:inline-block;color:black;text-align:center;padding:10px;text-decoration:none;' +
+      'font-size:15px;line-height:25px;border-radius:4px;border:solid black;font-weight:bold;' +
+      'font-family:Arial;background:rgba(255,255,255,0.95);cursor:pointer;';
     wrap.appendChild(a);
   });
   document.body.appendChild(wrap);

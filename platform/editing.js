@@ -712,6 +712,9 @@
       row.addEventListener('click', function (e) {
         if (e.target.closest('input,.layer-buttons-block,.editor-del,.editor-setzoom,.compress-expand-icon,.toggle')) return;
         if (e.target.closest('label')) e.preventDefault();
+        // a second click on the selected layer DESELECTS it (8/27, owner) — a button you can press
+        // must un-press, and before this the only way out of a selection was selecting another layer
+        if (id === activeLayerId) { clearActiveLayer(); return; }
         setActiveLayer(id);
       });
       var enNode = findNodeById(layers, id);
@@ -5213,14 +5216,21 @@
       '.editor-setzoom{position:absolute;right:64px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#888888;font-size:14px;line-height:1;padding:0 3px;z-index:2;}' +
       '.layer-list-row:hover .editor-setzoom{opacity:1;}' +
       '.editor-setzoom:hover{color:#ce5c00;}' +
-      /* THE ACTIVE LAYER LOOKS PRESSED (8/27, owner: "the layer does not feel that highlighted…
-         make it feel like a literal button"). A wash of 12% orange read as a hover accident, not a
-         state — people could not tell which layer their next drawn shape would land in. Now: a
-         stronger fill, a full border ring, a left accent bar, and a real shadow, so the row reads
-         as a control that is DOWN. Deliberately declared BEFORE the drop-* rules: they share the
-         box-shadow channel, and during a drag the drop indicator must win on the active row. */
-      '.layer-list-row.editor-active{background:rgba(206,92,0,0.16);border-radius:6px;' +
+      /* THE LAYER ROW IS A BUTTON (8/27, owner). Three asks, one block:
+         · rows get padding + a hover state + pointer cursor, so hovering FEELS like a button;
+         · the active row looks PRESSED — fill, ring, left accent bar, shadow;
+         · v2 after "pressed looks really bad": the row's pieces are now middle-aligned
+           (engine.css) and the row has real padding, so the ring wraps a coherent shape
+           instead of underlining a ragged line.
+         Declared BEFORE the drop-* rules: they share the box-shadow channel, and during a drag
+         the drop indicator must win on the active row. */
+      '.layer-list-row{padding:4px 6px;border-radius:6px;cursor:pointer;transition:background .1s ease;}' +
+      '.layer-list-row:hover{background:rgba(35,55,77,0.07);}' +
+      '.layer-list-row label{cursor:pointer;}' +
+      '.layer-list-row.ms-divider-row{cursor:default;}.layer-list-row.ms-divider-row:hover{background:none;}' +
+      '.layer-list-row.editor-active{background:rgba(206,92,0,0.16);' +
         'box-shadow:inset 3px 0 0 #ce5c00, inset 0 0 0 1.5px rgba(206,92,0,0.55), 0 1px 4px rgba(0,0,0,0.18);}' +
+      '.layer-list-row.editor-active:hover{background:rgba(206,92,0,0.22);}' +
       '.layer-list-row.editor-active label{font-weight:700;}' +
       '.layer-list-row.editor-dragging{opacity:0.4;}' +
       '.layer-list-row.editor-drop-before{box-shadow:inset 0 2px 0 #ce5c00;}' +
@@ -5508,6 +5518,14 @@
     { id: 'gl-draw-point-active', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'active', 'true'], ['==', 'meta', 'feature']], paint: { 'circle-radius': 6, 'circle-color': '#fbb03b' } },
   ];
 
+  // Deselect: no active layer, no ring, no style panel. New drawing needs a layer picked again —
+  // that is the point: a person can put the editor back into a state where a click means nothing.
+  function clearActiveLayer() {
+    activeLayerId = null;
+    var panel = document.getElementById('layers-panel-content');
+    if (panel) panel.querySelectorAll('.layer-list-row.editor-active').forEach(function (el) { el.classList.remove('editor-active'); });
+    hideLayerPanel();
+  }
   function setActiveLayer(id, opts) {
     activeLayerId = id;
     var panel = document.getElementById('layers-panel-content'); if (!panel) return;
