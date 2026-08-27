@@ -1,6 +1,7 @@
-/* keymatch-ok: labels.size · keymatch-ok: labels.sizeUniform — optional per-layer overrides, set
-   on 3 of 32 label configs by design. Absent means "use the default", not "the reader is aimed at
-   the wrong spelling". */
+/* keymatch-ok: labels.size · keymatch-ok: labels.sizeUniform · keymatch-ok: labels.minzoom ·
+   keymatch-ok: labels.maxzoom — optional per-layer overrides. Absent means "use the default", not
+   "the reader is aimed at the wrong spelling". The two zoom keys are new on 8/27 and are therefore
+   on 0 configs until someone sets one, which is the shape a brand-new optional setting always has. */
 // MapStructor — map labels for drawn/imported (geojson) layers, any geometry type.
 // One "Map labels" checkbox per layer + a field pick; everything else is opinionated defaults:
 // black text, 1px white halo, DIN Pro, size ramped by zoom. Loaded by BOTH map pages; the engine
@@ -118,7 +119,8 @@
 
   // the symbol layer (+ its own source for polygon/point anchors) for one layer/side.
   // Lines share the layer's existing source and curve along the path.
-  // labels config: { field, color?, halo?, haloWidth?, bold?, sizeUniform?, varyZoom?, size?, density? }
+  // labels config: { field, color?, halo?, haloWidth?, bold?, sizeUniform?, varyZoom?, size?, density?,
+  //                  minzoom?, maxzoom? }
   //   default sizing is UNIFORM (sizeUniform px at every zoom, default 14) — edits respond instantly;
   //   varyZoom:true switches to the size=[far,mid,close] ramp at z6/z11/z16.
   //   density = text-padding: the collision margin around each label — bigger margin, fewer labels drawn.
@@ -173,6 +175,24 @@
         'text-halo-width': halo
       }
     };
+    // ── zoom range (8/27) ────────────────────────────────────────────────────────────────────
+    // "labels should disappear past a certain zoom". Until now there was NO minzoom/maxzoom on a
+    // label layer at all, so the only way to hide one was a size stop of 0 px — which is a
+    // workaround, not an off switch: the symbol still occupies its collision box, so a zero-size
+    // label goes on suppressing REAL labels around it. minzoom/maxzoom removes it from the render.
+    // Set on `base`, so all five return paths below (geojson anchors, geojson lines, tileset lines,
+    // tileset fills, tileset points) get it — a control that works on four geometries out of five
+    // is the kind of gap this codebase keeps finding.
+    // Mapbox semantics, mirrored in the editor's wording: drawn AT minzoom and above, hidden AT
+    // maxzoom and above. Invalid or inverted values are dropped rather than applied — addLayer
+    // THROWS on maxzoom <= minzoom, and a throw here loses the whole label layer.
+    var zLo = cfg.minzoom != null && cfg.minzoom !== '' ? +cfg.minzoom : null;
+    var zHi = cfg.maxzoom != null && cfg.maxzoom !== '' ? +cfg.maxzoom : null;
+    if (zLo != null && (isNaN(zLo) || zLo < 0 || zLo > 24)) zLo = null;
+    if (zHi != null && (isNaN(zHi) || zHi < 0 || zHi > 24)) zHi = null;
+    if (zLo != null && zHi != null && zHi <= zLo) zHi = null;
+    if (zLo != null) base.minzoom = zLo;
+    if (zHi != null) base.maxzoom = zHi;
     if (layer.type === 'circle') {   // sit below the marker, not on top of it
       base.layout['text-anchor'] = 'top';
       base.layout['text-offset'] = [0, 0.7];

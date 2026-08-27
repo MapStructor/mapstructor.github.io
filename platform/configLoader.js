@@ -302,8 +302,16 @@ var ConfigLoader = (function () {
       // split off the lines for CShapes-Europe and there is no line". Hiding a border is
       // line-opacity 0, which is handled on its own below, so treating it as unset is safe.
       var focRaw = leaf.paint["fill-outline-color"];
-      if (focRaw != null && String(focRaw).replace(/\s+/g, "") === "rgba(0,0,0,0)") focRaw = null;
-      var oc = focRaw || leaf.iconColor || "#3bb2d0";
+      /* THE SENTINEL RESOLVES TO BLACK, NOT TO THE LAYER COLOUR (8/27). Blanking it to null and
+         then falling through to iconColor gives the border the FILL's own colour — a green border
+         on a green fill, invisible, while the styling panel goes on showing black because the
+         sentinel is not a hex. That is Slater's Parcels layer: "border lines (not split off) is
+         not working", with the outline switched on, the swatch black, and nothing on screen.
+         Black is what the panel displays for an unset border, and this file already seeds black
+         when it has to invent a paint from scratch (see the comment above) — so the two agree now. */
+      var focSentinel = focRaw != null && String(focRaw).replace(/\s+/g, "") === "rgba(0,0,0,0)";
+      if (focSentinel) focRaw = null;
+      var oc = focRaw || (focSentinel ? "#000000" : (leaf.iconColor || "#3bb2d0"));
       // "Match fill colors": the border takes the fill's own colour value — a hex on a
       // single-colour layer, the colour-by match expression on a categorical one, so every
       // polygon's border comes out its own colour.
@@ -409,6 +417,18 @@ var ConfigLoader = (function () {
       var praw = pl.layers.raw_config || {};
       if (praw.outlineSplit && !claimedOutlines[pl.layers.slug]) {
         praw = Object.assign({}, praw); delete praw.outlineSplit;   // copy — never mutate the fetched row
+        pl = Object.assign({}, pl, { layers: Object.assign({}, pl.layers, { raw_config: praw }) });
+      }
+      /* THE SAME ORPHAN, THE OTHER WAY ROUND (8/27). `outlineOf` points at the polygon whose border
+         this layer draws. Delete that polygon and the pointer dangles: the layer keeps drawing its
+         own stored geometry, so nothing looks broken on the map, but the styling panel introduces
+         it as *"Outline layer — draws the borders of new-mtb44f3gw1t"*, showing a client a raw
+         internal slug for a layer that no longer exists, and every "what does my parent look like"
+         lookup (Match fill colors, the inherited colour-by) quietly finds nothing. Found on
+         Slater's live map: City Limits still names a parent that was deleted. A pointer to nothing
+         is not a relationship — drop it and let the layer be what it now is, a line layer. */
+      if (praw.outlineOf && !slugToId[praw.outlineOf]) {
+        praw = Object.assign({}, praw); delete praw.outlineOf;
         pl = Object.assign({}, pl, { layers: Object.assign({}, pl.layers, { raw_config: praw }) });
       }
       var featLayerId = praw.outlineOf ? slugToId[praw.outlineOf] : (praw.instanceOf || pl.layers.id);   // outline layers draw their parent's features; instances (7/21) share their source layer's

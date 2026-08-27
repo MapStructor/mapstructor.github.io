@@ -118,8 +118,27 @@
       method: "PUT", body: body,
       headers: { Authorization: "Bearer " + tok, "Content-Type": type }
     });
-    if (!r.ok) throw new Error("upload " + key + " → HTTP " + r.status + " " + (await r.text()).slice(0, 120));
+    // cliff-ok: the Worker's refusals are one short sentence ("that showcase slug is not bound to a
+    // map you own"); 400 chars is far past the longest of them, and truncating a reason is exactly
+    // the failure that cost a day on 8/27 — so this is deliberately generous, not a data cap.
+    if (!r.ok) throw new Error("upload " + key + " → HTTP " + r.status + " " + (await r.text()).slice(0, 400));
     return true;
+  }
+
+  /* Read index.html back through the route a VISITOR uses and say precisely how it differs.
+     tiles.mapstructor.com is the raw R2 domain and serves exact keys only, so a check there would
+     pass while the page people actually open failed (found 8/25). */
+  async function verify(slug, want) {
+    var r;
+    try { r = await fetch(fresh(PUBLIC + "maps/" + slug + "/index.html"), { cache: "no-store" }); }
+    catch (e) { return { ok: false, why: "the live page could not be fetched (" + ((e && e.message) || e) + ")" }; }
+    if (!r.ok) return { ok: false, why: "the live page answered HTTP " + r.status };
+    var got = new Uint8Array(await r.arrayBuffer());
+    if (got.length !== want.length)
+      return { ok: false, why: "the live page is " + got.length + " bytes and the copy sent is " + want.length };
+    for (var i = 0; i < got.length; i++)
+      if (got[i] !== want[i]) return { ok: false, why: "the live page differs from the copy sent, from byte " + i + " on" };
+    return { ok: true };
   }
 
   /* ── the run ─────────────────────────────────────────────────────────────── */
@@ -158,9 +177,66 @@
     var idx = files.filter(function (f) { return f.rel === "index.html"; })[0];
     if (!idx) throw new Error("the build produced no index.html");
 
+    /* REFUSE TO PUBLISH A MAP THAT DRAWS NOTHING (8/27, after doing it twice to a paying client).
+       The exporter already refuses an EMPTY map — no layers at all. This map had three, so the
+       refusal never fired, and the copy that went live was 4 KB of layer definitions with zero
+       shapes in them: a basemap and a legend, at a client's public address, for hours. The cause
+       was upstream (a deleted layer had quietly emptied another) but the publish had every chance
+       to notice and said "Published ✓" instead.
+       The test is deliberately narrow — refuse only when NOTHING would draw. A single empty layer
+       among several is a normal work-in-progress state and stays allowed. */
+    var ll = files.filter(function (f) { return f.rel === "project/lists/layersList.js"; })[0];
+    if (ll) {
+      try {
+        var arr = JSON.parse(new TextDecoder().decode(ll.bytes).match(/const layers = ([\s\S]*);\s*$/)[1]);
+        var drawn = 0, blank = [];
+        (function walk(a) {
+          (a || []).forEach(function (n) {
+            if (n.children) { walk(n.children); return; }
+            if (n.checked === false) return;                       // switched off on purpose
+            var s = n.source || {};
+            if (s.type !== "geojson") { drawn++; return; }          // tilesets carry their own data
+            var fc = (s.data && s.data.features) || [];
+            if (fc.length) drawn++; else blank.push(n.label || n.id);
+          });
+        })(arr);
+        if (!drawn && blank.length) {
+          throw new Error("this would publish a blank map — " + blank.join(", ") +
+            (blank.length > 1 ? " are" : " is") + " switched on but " + (blank.length > 1 ? "have" : "has") +
+            " no shapes, and nothing else would draw. Nothing was changed.");
+        }
+      } catch (e) {
+        // A parse failure must not block a publish — but a real refusal above must not be swallowed
+        // by this catch either, which is exactly the kind of guard that silently stops guarding.
+        if (/would publish a blank map/.test(e.message || "")) throw e;
+      }
+    }
+
     say("Checking what changed…");
     var man = await fetchManifest(slug);
     var known = (man && man.hashes) || null;
+
+    /* THE MANIFEST IS A CLAIM ABOUT WHAT IS LIVE, AND NOTHING USED TO CHECK IT (8/27).
+       Anything that writes maps/<slug>/ without finishing the manifest desynchronises it — a CLI
+       `showcase-update.mjs` push, a publish that died after uploading, a hand-fix. After that the
+       delta logic reads the stale record, decides index.html is "unchanged", skips it — and the
+       verify then compares the page it did NOT send against the page it built. It fails, the
+       manifest stays stale, and it fails again on EVERY subsequent publish, forever, with a message
+       that blames the upload. That is exactly what happened to Slater's map: live index.html was a
+       CLI push (Content-Type `text/html`), the manifest still described the browser publish
+       (`text/html; charset=utf-8`, preserved in _prev), and Publish could never succeed again.
+       So: hash what is ACTUALLY live and compare it to what the manifest claims. Disagreement means
+       the record cannot be trusted for any file, so send the whole copy — self-healing, one extra
+       21 KB GET per publish. */
+    if (known) {
+      var lr = await fetch(fresh(PUBLIC + "maps/" + slug + "/index.html"), { cache: "no-store" });
+      var liveHash = lr.ok ? await sha256(new Uint8Array(await lr.arrayBuffer())) : null;
+      if (liveHash !== known["index.html"]) {
+        known = null;
+        say("The record of what's published was out of date — sending the whole copy…");
+      }
+    }
+
     var hashes = {}, changed = [];
     for (var i = 0; i < files.length; i++) {
       var h = await sha256(files[i].bytes);
@@ -171,6 +247,9 @@
       if (!known || known[files[i].rel] !== h) changed.push(files[i]);
     }
     if (!changed.length) { say("Already up to date."); return { slug: slug, uploaded: 0, url: PUBLIC + "maps/" + slug + "/" }; }
+    /* Whenever anything ships, index.html ships with it — it is the file the verify judges the whole
+       publish by, so it must be one this run actually wrote. */
+    if (!changed.some(function (f) { return f.rel === "index.html"; })) changed.push(idx);
 
     /* _prev BEFORE any overwrite. Only files this publish will actually replace need saving —
        untouched files are still their own backup. Read through the public route (they are public
@@ -193,12 +272,19 @@
        domain and serves exact keys only, so a check there would pass while the page people actually
        open failed (found 8/25). */
     say("Checking the live page…");
-    var vr = await fetch(fresh(PUBLIC + "maps/" + slug + "/index.html"), { cache: "no-store" });
-    var vb = vr.ok ? new Uint8Array(await vr.arrayBuffer()) : null;
-    var same = vb && vb.length === idx.bytes.length && vb.every(function (b, k) { return b === idx.bytes[k]; });
-    if (!same) {
-      throw new Error("the live page didn't come back matching what was uploaded — the previous version's " +
-        "record is untouched, so `showcase-update.mjs --revert --slug " + slug + "` restores it");
+    var v = await verify(slug, idx.bytes);
+    if (!v.ok) {
+      /* ONE REPAIR PASS before declaring failure. The old code had a single verdict for three
+         different failures — a page that never arrived, a page of the wrong length, and a page that
+         differs mid-body — and gave the same sentence for all of them, which is why the real cause
+         took a day to find. Now: say which, re-send the page once, and look again. */
+      say("The live page didn't match — re-sending it…");
+      await put("maps/" + slug + "/index.html", idx.bytes, mime("index.html"), tok);
+      v = await verify(slug, idx.bytes);
+    }
+    if (!v.ok) {
+      throw new Error("the public site did not update — " + v.why + ". The previous version's record is " +
+        "untouched, so `showcase-update.mjs --revert --slug " + slug + "` restores it.");
     }
 
     var allFiles = files.map(function (f) { return f.rel; });

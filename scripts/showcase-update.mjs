@@ -86,7 +86,10 @@ async function listAll(prefix) {
   }
   return keys;
 }
-const MIME = { html: "text/html", js: "application/javascript", css: "text/css", json: "application/json",
+/* Kept CHARACTER-FOR-CHARACTER in step with publishSite.js's MIME map. They write the same objects,
+   so a divergence stores a different Content-Type depending on which one last pushed — and a page
+   served as bare `text/html` leaves the browser guessing the encoding on non-ASCII content. */
+const MIME = { html: "text/html; charset=utf-8", js: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", json: "application/json",
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", svg: "image/svg+xml", webp: "image/webp",
   pbf: "application/x-protobuf", pmtiles: "application/octet-stream", geojson: "application/geo+json",
   parquet: "application/octet-stream", ico: "image/x-icon", woff2: "font/woff2" };

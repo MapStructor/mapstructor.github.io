@@ -505,6 +505,23 @@
       } else {
         // Leaf: remove from the project but KEEP the features + layers row, so it's fully undoable
         // (re-adding its project_layers row restores it with its data — works for any layer size).
+        /* DELETING A POLYGON WHOSE BORDER WAS SPLIT OFF (8/27, found on a client's live map).
+           A split-off outline owns NO shapes — it draws its parent's. Delete the parent and the
+           outline stays in the project, ticked, with a colour swatch, drawing absolutely nothing,
+           and nothing anywhere says why. Slater's "City Limits" sat like that for hours and was
+           published to their public address in that state, twice.
+           So: refuse, and say what to do instead. A refusal a person can act on beats a deletion
+           that silently empties another layer. */
+        var outlineChild = null;
+        (function walk(a) { (a || []).forEach(function (n2) { if (n2 && n2.outlineOf === node.id) outlineChild = n2; if (n2 && n2.children) walk(n2.children); }); })(layers);
+        if (outlineChild) {
+          var oName = outlineChild.label || outlineChild.id;
+          setStatus('Nothing deleted');
+          msProgress('“' + oName + '” draws this layer’s border and has no shapes of its own — deleting “' +
+            (node.label || node.id) + '” would leave it switched on and empty. Open “' + oName +
+            '” and press “Merge outline back in” first, or delete that layer too. Nothing was deleted.');
+          return;
+        }
         var lid = slugToLayerDbId[node.id];
         var loc = locate(layers, node), plf = null;
         if (lid) {
@@ -1174,7 +1191,18 @@
       if (node.type === 'fill' && fillStrokeWanted(node.paint)) {
         var sid = node.id + '-stroke-' + side;
         if (!map.getLayer(sid)) {
-          var sc = { id: sid, type: 'line', source: id, paint: { 'line-color': node.paint['fill-outline-color'], 'line-width': node.paint['line-width'] != null ? node.paint['line-width'] : FILL_BORDER_DEFAULT, 'line-opacity': node.paint['line-opacity'] != null ? node.paint['line-opacity'] : 1 }, layout: { 'line-cap': 'round', 'line-join': 'round' } };
+          /* THE BORDER COLOUR COMES FROM node.stroke, NOT from the fill's paint (8/27). By the time
+             a fill HAS a stroke companion, configLoader has already blanked the fill's own
+             `fill-outline-color` to `rgba(0,0,0,0)` — the "something else draws this" sentinel — and
+             moved the real colour to node.stroke['line-color']. Reading the fill's value here handed
+             the border a fully transparent colour, so the editor drew a border nobody could see
+             while the panel showed a black swatch and the switch said On. The public viewer
+             (addLayers.js) had always used layer.stroke and was right the whole time, which is why
+             this only ever showed up in the editor. */
+          var stk = node.stroke || {};
+          var scColor = stk['line-color'] != null ? stk['line-color'] : node.paint['fill-outline-color'];
+          if (typeof scColor === 'string' && isTransparentColor(scColor)) scColor = '#000000';
+          var sc = { id: sid, type: 'line', source: id, paint: { 'line-color': scColor, 'line-width': stk['line-width'] != null ? stk['line-width'] : (node.paint['line-width'] != null ? node.paint['line-width'] : FILL_BORDER_DEFAULT), 'line-opacity': stk['line-opacity'] != null ? stk['line-opacity'] : (node.paint['line-opacity'] != null ? node.paint['line-opacity'] : 1) }, layout: { 'line-cap': 'round', 'line-join': 'round' } };
           if (node['source-layer']) sc['source-layer'] = node['source-layer'];
           try { addMapLayer(map, sc, date); } catch (e) { console.warn('editing: tileset stroke failed', e); }
         }
@@ -7076,9 +7104,13 @@
         // layer fallback (same rule the engine-edit pull-in applies when it builds the copy)
         try { if (!hex && nodeC && nodeC.colorBy && nodeC.colorBy.mapping) { var cbv3 = metaCbValue(m, nodeC.colorBy.prop); var mc3 = cbv3 != null ? nodeC.colorBy.mapping[String(cbv3)] : null; if (mc3) backC = mc3; } } catch (e3) {}
         f.properties.color = hex || backC;
+        /* The latch says "this delete is a repaint, not a deletion" — so if `draw.delete` throws
+           between raising and lowering it, it STAYS RAISED and every later delete on this page is
+           silently swallowed: the feature vanishes from the map and stays in the database. Lower it
+           in a finally, and keep the deferred lower as well (the delete event arrives async). */
         _suppressFeatureDelete = true;
-        draw.delete(did); draw.add(f);
-        setTimeout(function () { _suppressFeatureDelete = false; }, 0);
+        try { draw.delete(did); draw.add(f); }
+        finally { setTimeout(function () { _suppressFeatureDelete = false; }, 0); }
       }
     } catch (e) {}
     if (_featColorT) clearTimeout(_featColorT);
@@ -7336,6 +7368,21 @@
     var v = paint['fill-outline-color']; if (v == null) v = paint['circle-stroke-color'];
     return typeof v === 'string' ? v : null;
   }
+  /* THE BORDER COLOUR A PERSON ACTUALLY CHOSE (8/27) — `fill-outline-color` alone is not it.
+     Once a fill's border renders as a stroke companion, configLoader blanks the fill's own outline
+     to `rgba(0,0,0,0)`: our sentinel for "something else draws this border". The real colour moved
+     to node.stroke['line-color']. Reading the sentinel as a colour is how Slater's Parcels layer
+     came to have an invisible border — the sentinel is not a hex, so the panel fell back to showing
+     BLACK, while the renderer fell back to the LAYER's colour and painted a green border on a green
+     fill. The panel said one thing and the map did another, and "borders are not working" was the
+     only symptom. One reader now, for the panel and the paint rebuild alike. */
+  function outlineColorOf(node) {
+    var v = paintOutline(node && node.paint);
+    if (v && !isTransparentColor(v)) return v;
+    var s = node && node.stroke && node.stroke['line-color'];
+    if (typeof s === 'string' && !isTransparentColor(s)) return s;
+    return null;
+  }
   function paintWidth(paint) {   // outline/line thickness — line-width (line/polygon stroke) or circle-stroke-width
     if (!paint) return null;
     var v = paint['line-width']; if (v == null) v = paint['circle-stroke-width'];
@@ -7345,7 +7392,11 @@
     var w = width != null ? width : 2;
     // fills default their border width to 0.5 (thinner than mapbox's native 1px fill-outline —
     // the stroke companion renders it; exactly 1 = native, anything else = companion)
-    if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': outline || color, 'fill-opacity': op != null ? op : 0.35, 'line-opacity': outlineVis != null ? outlineVis : 1, 'line-width': width != null ? width : 0.5 };
+    // An unset border is BLACK, not the fill's own colour (8/27). "Border in the layer colour" is a
+    // border you cannot see against that layer's fill — and the panel's swatch has always shown
+    // black for an unset one, so the old default made the map disagree with the control. Wanting the
+    // border to track the fill is a real thing to want, and it has its own checkbox: Match fill colors.
+    if (type === 'fill') return { 'fill-color': color, 'fill-outline-color': outline || '#000000', 'fill-opacity': op != null ? op : 0.35, 'line-opacity': outlineVis != null ? outlineVis : 1, 'line-width': width != null ? width : 0.5 };
     if (type === 'line') return { 'line-color': color, 'line-width': w, 'line-opacity': op != null ? op : 1 };
     return { 'circle-color': color, 'circle-radius': radius != null ? radius : 6, 'circle-stroke-width': width != null ? width : 1.5, 'circle-stroke-color': outline || '#ffffff', 'circle-opacity': op != null ? op : 1 };
   }
@@ -7592,6 +7643,8 @@
     var hv = document.getElementById('elp-lbl-halow-val'); if (hv) hv.textContent = lbc.haloWidth != null ? lbc.haloWidth : 2;
     var bd = document.getElementById('elp-lbl-bold'); if (bd) bd.checked = lbc.bold !== false;
     setv('elp-lbl-density', 60 - (lbc.density != null ? lbc.density : 10));
+    setv('elp-lbl-minz', lbc.minzoom != null ? lbc.minzoom : '');
+    setv('elp-lbl-maxz', lbc.maxzoom != null ? lbc.maxzoom : '');
     // size is ALWAYS the zoom ramp now (uniform mode + its checkbox removed 7/15): saved
     // sizeStops → legacy size triple (fixed z6/11/16) → a legacy uniform size as a flat one-stop → defaults
     renderLblStops((lbc.sizeStops && lbc.sizeStops.length) ? lbc.sizeStops
@@ -8189,6 +8242,9 @@
           var L = ll.layer;
           if (L.layout) Object.keys(L.layout).forEach(function (k) { try { m.setLayoutProperty(lyrId, k, L.layout[k]); } catch (e) {} });
           if (L.paint) Object.keys(L.paint).forEach(function (k) { try { m.setPaintProperty(lyrId, k, L.paint[k]); } catch (e) {} });
+          // minzoom/maxzoom are NOT layout or paint properties — the two loops above silently skip
+          // them, so an in-place update would keep the old zoom range while the panel showed the new
+          try { m.setLayerZoomRange(lyrId, L.minzoom != null ? L.minzoom : 0, L.maxzoom != null ? L.maxzoom : 24); } catch (e) {}
         } else {
           teardown();
           if (ll.sourceId && !m.getSource(ll.sourceId)) m.addSource(ll.sourceId, ll.source);
@@ -8504,7 +8560,27 @@
       fillFastSection(node);
     }
   }
-  async function onMapLabelsChange() {
+  // one zoom-range input → a number in 0…24, or null for "no limit" (blank, or anything unreadable)
+  function lblZoomInput(id) {
+    var el = document.getElementById(id);
+    if (!el || String(el.value).trim() === '') return null;
+    var z = parseFloat(el.value);
+    if (isNaN(z) || z < 0 || z > 24) return null;
+    return z;
+  }
+  /* Label saves run ONE AT A TIME (8/27). Each one writes the WHOLE `labels` object, and the write
+     is a round trip, so two changes made close together — the two zoom-range inputs, a stop edit
+     followed by a colour — could land out of order and let the earlier snapshot overwrite the later
+     one. The symptom is a control that visibly worked and then wasn't there after a reload, which
+     reads as "it didn't save" rather than as a race. Caught by label-zoom-gate: the layer had the
+     right zoom range on screen while the stored config had only half of it.
+     Each queued run re-reads the panel when its turn comes, so the last write is always current. */
+  var _lblSaveQueue = Promise.resolve();
+  function onMapLabelsChange() {
+    _lblSaveQueue = _lblSaveQueue.then(doMapLabelsChange, doMapLabelsChange);
+    return _lblSaveQueue;
+  }
+  async function doMapLabelsChange() {
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
@@ -8521,6 +8597,10 @@
       bold: boldEl ? !!boldEl.checked : true,
       varyZoom: true,   // uniform mode removed 7/15 — size is always the stops ramp (a single stop = constant)
       density: 60 - parseFloat(v2('elp-lbl-density', 50)),   // slider right = "more" = tiny collision margin
+      // zoom range (8/27): blank stays NULL, not 0 — a stored 0 minzoom reads as "set" everywhere
+      // downstream and would be indistinguishable from a deliberate floor
+      minzoom: lblZoomInput('elp-lbl-minz'),
+      maxzoom: lblZoomInput('elp-lbl-maxz'),
       sizeStops: (function (st) { return st.length ? st : [[6, 10], [11, 13], [16, 17]]; })(readLblStops())   // editable zoom→size stops (legacy size:[3] still read by labels.js)
     } : null;
     setStatus('Saving…');
@@ -9441,6 +9521,16 @@
         // vary-by-zoom checkbox were removed 7/15 (a single stop covers the constant case)
         '<label class="ms-lbl" style="margin-top:8px;">Size by zoom</label>' +
         '<div id="elp-lbl-zoomsizes" style="margin-top:2px;"></div>' +
+        // 8/27: a real off switch by zoom. The workaround was a 0 px size stop, which still leaves the
+        // label's collision box on the map suppressing its neighbours. Blank = no limit.
+        '<label class="ms-lbl" style="margin-top:8px;">Show labels only between these zooms</label>' +
+        '<div style="display:flex;gap:6px;align-items:center;margin-top:2px;">' +
+          '<button type="button" id="elp-lbl-minz-go" title="Use the zoom the map is at now" style="width:26px;height:26px;border:none;border-radius:4px;background:#2b7de0;color:#ffffff;cursor:pointer;font-size:17px;font-weight:700;padding:0;line-height:24px;">⌖</button>' +
+          '<input id="elp-lbl-minz" type="number" min="0" max="24" step="0.5" placeholder="from" class="ms-in" style="flex:1;padding:4px;" />' +
+          '<input id="elp-lbl-maxz" type="number" min="0" max="24" step="0.5" placeholder="to" class="ms-in" style="flex:1;padding:4px;" />' +
+          '<button type="button" id="elp-lbl-maxz-go" title="Use the zoom the map is at now" style="width:26px;height:26px;border:none;border-radius:4px;background:#2b7de0;color:#ffffff;cursor:pointer;font-size:17px;font-weight:700;padding:0;line-height:24px;">⌖</button>' +
+        '</div>' +
+        '<div class="ms-note">Leave blank for no limit. Labels appear <b>at</b> the “from” zoom and disappear <b>at</b> the “to” zoom.</div>' +
         '<label class="ms-lbl" style="margin-top:6px;">Halo width <span id="elp-lbl-halow-val">2</span></label>' +
         '<input id="elp-lbl-halow" type="range" min="0" max="4" step="0.5" value="2" class="ms-range" />' +
         '<label class="ms-lbl" style="margin-top:6px;">Label density</label>' +
@@ -9657,6 +9747,15 @@
     document.getElementById('elp-tlignore').addEventListener('change', function () { onTlIgnore(this.checked); });
     document.getElementById('elp-lbl-halow').addEventListener('input', function () { var v = document.getElementById('elp-lbl-halow-val'); if (v) v.textContent = this.value; });
     document.getElementById('elp-lbl-halow').addEventListener('change', onMapLabelsChange);
+    ['elp-lbl-minz', 'elp-lbl-maxz'].forEach(function (zid) {
+      document.getElementById(zid).addEventListener('change', onMapLabelsChange);
+    });
+    [['elp-lbl-minz-go', 'elp-lbl-minz'], ['elp-lbl-maxz-go', 'elp-lbl-maxz']].forEach(function (pz) {
+      document.getElementById(pz[0]).addEventListener('click', function () {
+        var z; try { z = Math.round(beforeMap.getZoom() * 2) / 2; } catch (e) { return; }
+        document.getElementById(pz[1]).value = z; onMapLabelsChange();
+      });
+    });
     document.getElementById('elp-opacity').addEventListener('input', function () { document.getElementById('elp-opacity-val').textContent = this.value; onLayerStyle('opacity', parseFloat(this.value)); });
     document.getElementById('elp-outline').addEventListener('input', function () { onLayerStyle('outline', this.value); });
     document.getElementById('elp-outline-match').addEventListener('change', function () { onLayerStyle('outlineMatch', this.checked); });
@@ -9969,7 +10068,7 @@
     document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
     var op = paintOpacity(node.paint); if (op == null) op = (node.type === 'fill') ? 0.35 : 1;
-    var outline = paintOutline(node.paint) || (node.type === 'fill' ? color : '#000000');
+    var outline = outlineColorOf(node) || '#000000';
     document.getElementById('elp-title').textContent = node.label || 'Layer style';
     // what IS this layer? (user 7/15: the panel must say tileset vs drawn/GIS)
     var kindEl = document.getElementById('elp-kind');
@@ -11831,7 +11930,7 @@
     var color = node.iconColor || '#3bb2d0';
     var curStrokeVis = (node.paint && node.paint['line-opacity'] != null) ? node.paint['line-opacity'] : 1;
     var op = field === 'opacity' ? value : (field === 'fillVisible' ? (value ? 0.35 : 0) : paintOpacity(node.paint));
-    var outline = field === 'outline' ? value : paintOutline(node.paint);
+    var outline = field === 'outline' ? value : outlineColorOf(node);
     var outlineVis = field === 'outlineVisible' ? (value ? 1 : 0) : curStrokeVis;
     var width = field === 'width' ? value : paintWidth(node.paint);
     var radius = field === 'radius' ? value : ((node.paint && node.paint['circle-radius'] != null) ? node.paint['circle-radius'] : null);
@@ -11954,7 +12053,10 @@
             try { m.setPaintProperty(id, 'fill-opacity', hoverInlinePaint(node, { 'fill-opacity': tp['fill-opacity'] })['fill-opacity']); } catch (e) {}
           }
           if (m.getLayer(sid)) {
-            if (tp['fill-outline-color'] != null) { try { m.setPaintProperty(sid, 'line-color', tp['fill-outline-color']); } catch (e) {} }
+            // never paint the companion with the sentinel — that is an invisible border, not a colour
+            var lc2 = tp['fill-outline-color'];
+            if (typeof lc2 === 'string' && isTransparentColor(lc2)) lc2 = outlineColorOf(node) || '#000000';
+            if (lc2 != null) { try { m.setPaintProperty(sid, 'line-color', lc2); } catch (e) {} }
             try { m.setPaintProperty(sid, 'line-width', tp['line-width'] != null ? tp['line-width'] : FILL_BORDER_DEFAULT); } catch (e) {}
             if (tp['line-opacity'] != null) { try { m.setPaintProperty(sid, 'line-opacity', tp['line-opacity']); } catch (e) {} }
           }
