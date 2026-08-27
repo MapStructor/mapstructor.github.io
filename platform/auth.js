@@ -147,6 +147,30 @@
   // Fires the callback with the current user (or null) on every auth change.
   function onChange(cb) { if (db) db.auth.onAuthStateChange(function (_e, s) { cb(s && s.user ? s.user : null); }); }
 
+  /* THE TOKEN A PRIVILEGED CALL SHOULD USE — one implementation, 8/27.
+     Every write path had its own two lines: read the session, and if anything at all went wrong,
+     tell the person to sign in. Three of them fired during a client demo while the screen showed
+     the person signed in, which is the worst shape an error can take — it names a cause, the cause
+     is wrong, and the only action it suggests cannot help.
+     This does the thing those two lines never did: if the token is missing, or expires within two
+     minutes, it TRIES TO RENEW IT before concluding anything. A session that has simply been open a
+     while — a long editing session, a backgrounded tab, a laptop that slept — is the normal case,
+     not a signed-out person. It only reports a sign-in problem when a renewal was actually
+     attempted and actually failed, and it says so in those words.
+     `force` re-reads after a 401, for a token that went stale between the check and the request. */
+  async function freshToken(force) {
+    if (!db) throw new Error("the sign-in system did not load on this page — reload and try again");
+    var s = null;
+    try { s = (await db.auth.getSession()).data.session || null; } catch (e) {}
+    var expiringSoon = !!(s && s.expires_at && (s.expires_at * 1000 - Date.now() < 120000));
+    if (force || !s || expiringSoon) {
+      try { var r = await db.auth.refreshSession(); if (r && r.data && r.data.session) s = r.data.session; } catch (e) {}
+    }
+    if (!s || !s.access_token) throw new Error("your sign-in could not be renewed — reload the page and sign in again");
+    return s.access_token;
+  }
+  try { window.msFreshToken = freshToken; } catch (e) {}
+
   // ── Shared login / signup modal (one implementation, used on every page) ──
   function ensureAuthModal() {
     if (document.getElementById('mapauth-overlay')) return;
@@ -290,7 +314,7 @@
     }
   }
 
-  window.MapAuth = { db: db, currentUser: currentUser, isReal: isReal, signUp: signUp, signIn: signIn, signOut: signOut, onChange: onChange, openAuthModal: openAuthModal, resetPassword: resetPassword, setNewPassword: setNewPassword };
+  window.MapAuth = { db: db, currentUser: currentUser, isReal: isReal, signUp: signUp, signIn: signIn, signOut: signOut, onChange: onChange, openAuthModal: openAuthModal, resetPassword: resetPassword, setNewPassword: setNewPassword, freshToken: freshToken };
 
   // ?login=1 (the gated-page bounce above): pop the login modal on arrival — or, if a session
   // already exists, skip straight back to the page the visitor was headed to.

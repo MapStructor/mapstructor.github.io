@@ -7009,15 +7009,26 @@
       } else { row.style.display = 'none'; row.innerHTML = ''; }
     }
     async function msArtCall(path, opts) {
-      var d = (window.MapAuth && MapAuth.db) || db;
-      var tok = null;
-      try { tok = (await d.auth.getSession()).data.session.access_token; } catch (e) {}
-      if (!tok) throw new Error('sign in first');
+      /* "SIGN IN FIRST" WAS A GUESS, AND IT WAS SAID TO A CLIENT IN A DEMO (8/27). This read the
+         session and, on ANY failure to get a token out of it — an expired one, a refresh that had
+         not run, a null — told the person to sign in, while the screen showed them signed in. That
+         is the worst kind of error message: it names a cause, the cause is wrong, and the person
+         does the one thing that cannot help.
+         Now: ask msFreshToken, which actually tries to refresh before giving up and says which step
+         failed; and retry ONCE on a 401, because a token that went stale between the check and the
+         request is a thing that happens and is not the person's fault. */
+      var tok = await msFreshToken();
       var r = await fetch(FOLD_WORKER_BASE + path, Object.assign({
         headers: Object.assign({ Authorization: 'Bearer ' + tok }, (opts && opts.headers) || {})
       }, opts || {}));
+      if (r.status === 401) {
+        tok = await msFreshToken(true);
+        r = await fetch(FOLD_WORKER_BASE + path, Object.assign({
+          headers: Object.assign({ Authorization: 'Bearer ' + tok }, (opts && opts.headers) || {})
+        }, opts || {}));
+      }
       var out = await r.json().catch(function () { return {}; });
-      if (!r.ok) throw new Error(out.error || ('HTTP ' + r.status));
+      if (!r.ok) throw new Error(out.error || ('the server answered HTTP ' + r.status));
       return out;
     }
     /* The same fallback showFeaturePanel uses: a feature drawn a moment ago has not

@@ -26,8 +26,10 @@
  *   · _manifest.json is written LAST, after that verify. A half-dead upload therefore leaves the
  *     OLD manifest describing what _prev holds, so revert still knows what to undo.
  *
- * AUTHORITY. Writes go through the Worker, which checks that the caller owns the project bound to
- * this slug (projects.raw_config.showcaseSlug). The client never holds an R2 credential.
+ * AUTHORITY. Writes go through the Worker, which asks the DATABASE whether the caller may edit the
+ * project bound to this slug (projects.raw_config.showcaseSlug → ms_project_editor). Owner or
+ * invited editor — the same predicate /article uses, so "who may edit this map" has one definition.
+ * The client never holds an R2 credential.
  */
 (function () {
   var WORKER = "https://mapstructor-worker.mapstructor.workers.dev";
@@ -35,10 +37,16 @@
 
   function db() { return (window.MapAuth && MapAuth.db) || window.__msDb || null; }
 
+  /* One token reader for the whole platform (MapAuth.freshToken), which RENEWS an expiring session
+     instead of concluding the person is signed out. This used to return null on any hiccup and the
+     caller said "not signed in" — during a client demo, to someone who was signed in. */
   async function token() {
-    var d = db(); if (!d) return null;
-    try { var s = await d.auth.getSession(); return (s.data && s.data.session && s.data.session.access_token) || null; }
-    catch (e) { return null; }
+    if (typeof window.msFreshToken === "function") return await window.msFreshToken();
+    var d = db(); if (!d) throw new Error("the sign-in system did not load on this page — reload and try again");
+    var s = await d.auth.getSession();
+    var t = (s.data && s.data.session && s.data.session.access_token) || null;
+    if (!t) throw new Error("your sign-in could not be read — reload the page and sign in again");
+    return t;
   }
 
   /* The slug bound to this project, or null when it has no public site. Read fresh rather than
@@ -148,8 +156,7 @@
     var slug = await slugFor(projectId);
     if (!slug) return { skipped: true };                      // no public site bound — nothing to do, not an error
 
-    var tok = await token();
-    if (!tok) throw new Error("not signed in");
+    var tok = await token();   // throws with the real reason, and renews an expiring session first
     if (!window.MSDownload || !window.MSDownload.buildZip) throw new Error("the exporter isn't loaded on this page");
 
     /* REFUSE TO PUBLISH A HALF-LOADED PAGE (8/26, found by publishing one).

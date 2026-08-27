@@ -477,14 +477,35 @@ export default {
              unaffected. */
       var sm2 = ukey.match(/^maps\/([a-z0-9_-]+)\//i);
       if (sm2 && (user.email || "").toLowerCase() !== ADMIN_EMAIL) {
+        /* AN INVITED EDITOR MAY PUBLISH (8/27). This compared user_id and refused everyone else, so
+           the one person a map had been shared with — the client, on their own map — got
+           "that showcase slug is not bound to a map you own" when they pressed Publish. In front of
+           the room. An editor who may change the map is exactly the person who should be able to
+           put it live; anything else means every update routes through the owner forever.
+           The rule is the DATABASE'S OWN predicate, the same one /article already asks, so "who may
+           edit this map" has one definition and cannot drift between two routes. Both guards stay:
+           a slug resolving to ZERO rows is still REFUSED rather than treated as unclaimed, and the
+           slug charset still forbids `..`. */
         try {
           var sq = await fetch(env.SUPABASE_URL +
-            "/rest/v1/projects?select=id,user_id&raw_config->>showcaseSlug=eq." + encodeURIComponent(sm2[1]), {
+            "/rest/v1/projects?select=id&raw_config->>showcaseSlug=eq." + encodeURIComponent(sm2[1]), {
             headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY }
           });
           var srows = sq.ok ? await sq.json() : [];
-          if (!srows.length || !srows.some(function (r) { return r.user_id === user.id; })) {
-            return new Response("that showcase slug is not bound to a map you own", { status: 403, headers: cors() });
+          if (!srows.length) {
+            return new Response("that showcase slug is not bound to any map you can see", { status: 403, headers: cors() });
+          }
+          var mayPublish = false;
+          for (var si = 0; si < srows.length && !mayPublish; si++) {
+            var pr2 = await fetch(env.SUPABASE_URL + "/rest/v1/rpc/ms_project_editor", {
+              method: "POST",
+              headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+              body: JSON.stringify({ pid: srows[si].id })
+            });
+            mayPublish = pr2.ok && (await pr2.json()) === true;
+          }
+          if (!mayPublish) {
+            return new Response("that showcase belongs to a map you cannot edit", { status: 403, headers: cors() });
           }
         } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
       } else if (tm) {
