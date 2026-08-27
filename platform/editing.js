@@ -380,6 +380,26 @@
     try { node.highlight = (type === 'fill') ? true : ((window.ConfigLoader && ConfigLoader.defaultHighlightPaint) ? ConfigLoader.defaultHighlightPaint(type, color) : null); } catch (e) {}
     return node;
   }
+  /* THE HOVER HIGHLIGHT A RELOAD WOULD HAVE SYNTHESIZED (8/27).
+     configLoader gives every fill / line / circle a hover highlight at LOAD, and the styling panel
+     shows "Highlight on hover" only where one exists. A layer created THIS session never went
+     through the loader, so it has none — and the control silently does not appear. The owner
+     imported a polygon and could not find the switch at all: *"I'm not seeing the option to have it
+     not be hoverable"*. It was there, on every layer old enough to have been loaded once, and
+     missing on the one they had just made. That is the "works after refresh" smell, and the answer
+     is never to make someone refresh.
+     Tileset FILLS hover INLINE (the marker `true` — addLayers.hoverInlinePaint dims the fill's own
+     opacity); everything else gets the overlay twin. Same rule as the loader's, and the same rule
+     the tileset factory above already applies at creation. */
+  function ensureNodeHighlight(node) {
+    if (!node || node.highlight != null || !node.type) return;
+    if (node.type === 'fill' && isTilesetNode(node)) { node.highlight = true; return; }
+    if (node.type !== 'fill' && node.type !== 'line' && node.type !== 'circle') return;
+    try {
+      if (window.ConfigLoader && ConfigLoader.defaultHighlightPaint)
+        node.highlight = ConfigLoader.defaultHighlightPaint(node.type, node.iconColor || '#3bb2d0');
+    } catch (e) {}
+  }
   // A tileset/vector layer renders via the engine's map layers (not MapboxDraw), so it's styled by
   // setPaintProperty on <id>-left/right. True for freshly-added (node.source.type) and loaded
   // (source_type stamped from the column) tilesets; false for drawn layers + containers.
@@ -9554,7 +9574,8 @@
         SEC('Popups &amp; info') +
         '<label class="ms-check" style="margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
         '<label class="ms-check" style="margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
-        '<label id="elp-hl-label" class="ms-check" style="display:none;margin-bottom:6px;"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
+        '<label id="elp-hl-label" class="ms-check" style="display:none;margin-bottom:2px;" title="Off means the mouse does nothing to this layer — no glow, no pointer cursor"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
+        '<div id="elp-inert-note" class="ms-note" style="display:none;margin:0 0 6px;">All three off = the layer ignores the mouse completely: no glow, no pointer, nothing to click.</div>' +
         '<label class="ms-lbl">Label field (what the popup shows)</label>' +
         '<select id="elp-labelfield" class="ms-in"><option value="label">label (the feature\'s own Label)</option></select>' +
       '<div id="elp-groupby-row" style="display:none;margin-top:8px;"><label class="ms-lbl">Treat as one (highlight group)</label>' +
@@ -9814,6 +9835,10 @@
     node.click = click;
     node.prop = labelField;
     node.hoverHighlight = hl;
+    (function () {   // keep the "ignores the mouse" note honest as the three boxes are ticked
+      var n0 = document.getElementById('elp-inert-note');
+      if (n0) n0.style.display = (node.highlight && !hover && !click && !hl) ? 'block' : 'none';
+    })();
     if ((hover || click || hl) && typeof window.wireLayerInteraction === 'function') { try { window.wireLayerInteraction(node); } catch (e) {} }
     setStatus('Saving…');
     try { var r = await db.from('layers').update({ popup_style: popupStyle, popup_prop: labelField, click: click, hover: hl }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
@@ -10206,11 +10231,18 @@
     }
     document.getElementById('elp-hover').checked = (node._uiHover != null) ? node._uiHover : !!node.popupStyle;
     document.getElementById('elp-click').checked = (node._uiClick != null) ? node._uiClick : !!node.click;
+    ensureNodeHighlight(node);   // a layer created THIS session has no highlight yet — see below
     document.getElementById('elp-hl').checked = node.hoverHighlight !== false;
     document.getElementById('elp-zoombtn').checked = node.zoomBtn !== false;   // per-row ⌖ toggle — default on
     document.getElementById('elp-tablebtn').checked = node.tableBtn !== false;   // per-row ▦-in-view toggle — default on
     document.getElementById('elp-tablebtn-row').style.display = (node.type === 'group' || node.type === 'section') ? 'none' : 'block';   // ▦ exists on leaves only
     document.getElementById('elp-hl-label').style.display = node.highlight ? 'block' : 'none';   // hover-highlight toggle only where a highlight exists
+    (function () {   // the "it ignores the mouse" note only earns its space once everything IS off
+      var n0 = document.getElementById('elp-inert-note'); if (!n0) return;
+      var inert = node.highlight && !document.getElementById('elp-hover').checked &&
+        !document.getElementById('elp-click').checked && !document.getElementById('elp-hl').checked;
+      n0.style.display = inert ? 'block' : 'none';
+    })();
     (function () {   // label-field is a SELECT now — make sure the saved value exists as an option before setting it
       var lf = document.getElementById('elp-labelfield');
       var want = (node._uiLabel != null) ? node._uiLabel : (node.prop || 'label');
@@ -12037,14 +12069,25 @@
           if (op != null) m.setPaintProperty(id, 'line-opacity', op);
         } catch (e) {}
       });
-    } else if (isTilesetNode(node)) {
-      // a tileset is an engine map layer (fill/line/circle) — repaint <id>-left/right via
-      // setPaintProperty; apply only paint keys that match the layer type (e.g. 'fill-*' to a fill).
+    } else if (isTilesetNode(node) || (node.source_type === 'geojson-supabase' && !_drawLayerSlugs[node.id])) {
+      /* ONE BRANCH FOR EVERY ENGINE-RENDERED LAYER (8/27). Tilesets and engine-rendered drawn layers
+         (large ones, and any layer with dates) are the same thing to the renderer: <id>-left/right
+         map layers repainted with setPaintProperty. They had two near-identical branches, and the
+         second one — added 7/21 for large geojson — was never given the fill-outline lifecycle the
+         first one gained on 8/8. So on those layers the outline width, colour and on/off switch
+         silently did nothing, while the same controls worked on every small layer. Owner: *"Outline
+         thickness is not changing. Looks like it happens on and off."* On and off is exactly right:
+         it depended on which of two copies of this code your layer happened to reach.
+         Two copies of one rule is how the last four bugs in this panel were made. Now there is one. */
       var tp = node.paint || {};
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
         var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0]; var ml = m.getLayer(id); if (!ml) return;
         Object.keys(tp).forEach(function (k) { if (k.indexOf(ml.type + '-') === 0) { try { m.setPaintProperty(id, k, tp[k]); } catch (e) {} } });
         if (ml.type === 'line') { try { m.setPaintProperty(id, 'line-offset', tp['line-offset'] != null ? tp['line-offset'] : 0); } catch (e) {} }   // offset back to 0 needs an explicit reset — the keys loop skips deleted keys
+        // from the old geojson branch: fill in a colour when the paint carries none. Only when the
+        // paint has none — overwriting an explicit paint colour with iconColor would flatten a
+        // tileset the loop above just painted correctly.
+        if (node.iconColor && !node.colorBy && tp[ml.type + '-color'] == null) { try { m.setPaintProperty(id, ml.type + '-color', node.iconColor); } catch (e) {} }
         if (ml.type === 'fill') {
           // outline lifecycle, LIVE: width ≤ 1 → native fill-outline only; width > 1 → a stroke line
           // layer owns the outline (native blanked) — created/removed here so the preview always
@@ -12071,17 +12114,6 @@
             if (tp['line-opacity'] != null) { try { m.setPaintProperty(sid, 'line-opacity', tp['line-opacity']); } catch (e) {} }
           }
         }
-      });
-    } else if (node.source_type === 'geojson-supabase' && !_drawLayerSlugs[node.id]) {
-      // 7/21: ENGINE-rendered geojson (large or dated layers) — no MapboxDraw copies to repaint;
-      // repaint the engine layers directly, exactly like tilesets. (Before this, styling a large
-      // layer silently previewed nothing.)
-      var gp = node.paint || {};
-      [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
-        var m = pair[1]; if (!m) return; var id = node.id + '-' + pair[0]; var ml = m.getLayer(id); if (!ml) return;
-        Object.keys(gp).forEach(function (k) { if (k.indexOf(ml.type + '-') === 0) { try { m.setPaintProperty(id, k, gp[k]); } catch (e) {} } });
-        if (ml.type === 'line') { try { m.setPaintProperty(id, 'line-offset', gp['line-offset'] != null ? gp['line-offset'] : 0); } catch (e) {} }
-        if (node.iconColor && !node.colorBy) { try { m.setPaintProperty(id, ml.type + '-color', node.iconColor); } catch (e) {} }
       });
     } else if (draw) {
       // Repaint the layer's features with the new color/opacity. Only a delete+add

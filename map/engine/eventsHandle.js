@@ -23,6 +23,23 @@ let wiredInteraction = {};
 function msEventsOwnsHover(l) { return !!(l && (l.popupStyle || l.highlight || l.click)); }
 try { window.msEventsOwnsHover = msEventsOwnsHover; } catch (e) {}
 
+/* "DOES THE MOUSE DO ANYTHING ON THIS LAYER?" — one definition (8/27, owner: "I'm not seeing the
+   option to have it not be hoverable, not just a popup").
+   Turning "Highlight on hover" off already stopped the highlight (setHoverBoth honours it) but the
+   pointer cursor stayed on, so the layer still felt live under the mouse and there was no way to
+   make it inert. The reason: the gate tested `config.highlight` — the highlight PAINT, which the
+   loader synthesizes for every fill, line and circle whether anyone asked for one — instead of
+   `config.hoverHighlight`, the switch a person actually turned off. Two different facts with
+   similar names, and only one of them is a choice.
+   With no hover popup, no click and no hover highlight, the layer now ignores the mouse entirely.
+   `groupBy` stays interactive on purpose: a "treat as one" layer hovers as a group, and the group
+   overlay — not this gate — owns that. */
+function msHoverDoesSomething(config) {
+  return !!(config && (config.popupStyle || config.click || config.groupBy ||
+    (config.highlight && config.hoverHighlight !== false)));
+}
+try { window.msHoverDoesSomething = msHoverDoesSomething; } catch (e) {}
+
 function setupLayerEvents() {
   flatLayers(layers).filter(msEventsOwnsHover).forEach(wireLayerInteraction);   // hover-highlight needs only `highlight` (e.g. curr-builds has no popupStyle); popup stays gated to popupStyle
 }
@@ -48,13 +65,14 @@ function setupLayerEventForMap(map, config, side) {
   hoverPopUp[index] = new mapboxgl.Popup({ closeButton: false, closeOnClick: false });
 
   map.on("mouseenter", layerID, function (e) {
-    if (!config.popupStyle && !config.click && !config.highlight) return;   // #12: interaction toggled off live → no cursor/popup
+    if (!msHoverDoesSomething(config)) return;   // #12: interaction toggled off live → no cursor/popup
     map.getCanvas().style.cursor = "pointer";
     // #13: don't open the popup here — it would show the PREVIOUS feature's HTML until mousemove
     // overwrites it (the stale-label bug). mousemove opens it once it has this feature's own label.
   });
 
   map.on("mousemove", layerID, function (e) {
+    if (!msHoverDoesSomething(config)) return;
     map.getCanvas().style.cursor = "pointer";
     if (e.features.length > 0) {
       if (hoveredID[index]) {

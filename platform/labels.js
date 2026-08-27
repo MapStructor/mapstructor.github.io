@@ -112,6 +112,17 @@
       var props = { lbl: String(v) };
       var ls = f.properties ? parseFloat(f.properties.ms_labelsize) : NaN;
       if (!isNaN(ls) && ls > 0) props.sz = ls;
+      /* THE ANCHOR CARRIES THE FEATURE'S DAYS (8/27, seen on a client's live public map: the dot
+         disappeared with the slider and its label stayed). A label anchor is a NEW point built here,
+         not the feature itself, and it only ever carried the text — so the timeline filter that
+         mapinit puts on every `-label-` layer found no DayStart/DayEnd and its `coalesce` defaults
+         ("no dates = always visible", which is right for group anchors) kept every one of them on
+         screen forever. The layer was date-filtered; its labels were not, and a label for something
+         that is not there is worse than no label. */
+      if (f.properties) {
+        if (f.properties.DayStart != null) props.DayStart = f.properties.DayStart;
+        if (f.properties.DayEnd != null) props.DayEnd = f.properties.DayEnd;
+      }
       out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: at }, properties: props });
     });
     return { type: 'FeatureCollection', features: out };
