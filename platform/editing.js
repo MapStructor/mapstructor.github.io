@@ -717,6 +717,7 @@
       // In EDIT mode ONLY the checkbox toggles visibility — a label click must not ALSO flip the
       // checkbox (it used to do both at once), so cancel the label's native for= activation.
       row.addEventListener('click', function (e) {
+        if (CLICK_MODES && _msMode !== 'edit') return;   // view mode: rows behave like the published sidebar (label click = show/hide)
         if (e.target.closest('input,.layer-buttons-block,.editor-del,.editor-setzoom,.compress-expand-icon,.toggle')) return;
         if (e.target.closest('label')) e.preventDefault();
         // a second click on the selected layer DESELECTS it (8/27, owner) — a button you can press
@@ -728,7 +729,10 @@
           var lpT = document.getElementById('editor-layer-panel');
           if (lpT && lpT.style.display !== 'none') { clearActiveLayer(); return; }
         }
-        setActiveLayer(id);
+        // Panel OFF = clicking a row still ACTIVATES the layer (drawing target, active highlight)
+        // but pops no style panel — the Panel switch governs every click-opened panel (owner 8/28).
+        // noPanel still re-targets an ALREADY-open panel, so it never goes stale.
+        setActiveLayer(id, { noPanel: CLICK_MODES && !_msPanelOn });
       });
       var enNode = findNodeById(layers, id);
       var enCb = row.querySelector('input[type="checkbox"]');
@@ -1327,7 +1331,7 @@
     _msPanelOn = !!on;
     try { localStorage.setItem(modeStoreKey('panel'), _msPanelOn ? '1' : '0'); } catch (e) {}
     refreshModeBar();
-    if (!_msPanelOn) hideFeaturePanel();
+    if (!_msPanelOn) { hideFeaturePanel(); try { hideLayerPanel(); } catch (e) {} }   // the style panel is click-opened chrome too
     else if (_editingDraw) showFeaturePanel(_editingDraw);   // a feature is mid-edit → its panel comes back
   }
   // Leaving edit mode must leave nothing half-edited on screen: the ONE draw deselect below both
@@ -1343,6 +1347,7 @@
       try { if (node && fid != null) finishEngineEdit(node, fid); } catch (e) { console.warn('editing: view-flush', e); }
     });
     try { clearArmedSet(); } catch (e) {}
+    try { clearActiveLayer(); } catch (e) {}   // active-row highlight + style panel are edit chrome too
     try { hideFeaturePanel(); } catch (e) {}
     try { closeClickPops(); closeHoverPops(); } catch (e) {}
     try { clearAttrHighlight(); } catch (e) {}   // the working selection is editor chrome — view shows the published look
@@ -1399,7 +1404,8 @@
   window.__msModeDebug = function () {   // read-only snapshot for the harness (same precedent as __msArmDebug)
     var dm = null, dc = null, ds = null;
     try { dm = draw.getMode(); dc = draw.getAll().features.length; ds = draw.getSelectedIds().length; } catch (e) {}
-    return { clickModes: CLICK_MODES, mode: _msMode, panel: _msPanelOn, editing: _editingDraw, drawMode: dm, drawCount: dc, drawSel: ds };
+    return { clickModes: CLICK_MODES, mode: _msMode, panel: _msPanelOn, editing: _editingDraw, drawMode: dm, drawCount: dc, drawSel: ds,
+             dirty: Object.keys(_engineGeomDirty), edited: Object.keys(_engineEdited) };
   };
   function wireEngineEditClicks() {
     if (typeof layers === 'undefined' || !draw) return;
@@ -1411,8 +1417,11 @@
     _panelClickPatched = true; var _origHPC = window.handlePanelClick;
       window._msOrigHandlePanelClick = _origHPC;   // enterEngineEdit falls back to this for display-only features (their click must still open the viewer's panel)
       window.handlePanelClick = function (layer, event) {
-        // VIEW MODE: the viewer's own panel behavior runs, gated only by the sidebar Panel switch.
-        if (CLICK_MODES && _msMode !== 'edit') { if (!_msPanelOn) return; return _origHPC.apply(this, arguments); }
+        // Panel OFF governs EVERY click-opened panel, both modes (8/28 bug: display-only layers
+        // leaked past the switch in edit mode because only the view branch was gated).
+        if (CLICK_MODES && !_msPanelOn) return;
+        // VIEW MODE: the viewer's own panel behavior runs.
+        if (CLICK_MODES && _msMode !== 'edit') return _origHPC.apply(this, arguments);
         // ALSO suppress for small drawn layers (their features live in MapboxDraw): if the engine copy is
         // ever visible/clickable (e.g. it rendered after hideDrawnEngineLayers ran), the engine's panel
         // toggle runs IN PARALLEL with the editor's — its second-click closePanelInfo slideUp collapses
@@ -1830,29 +1839,46 @@
       // pulled feature permanently immune to the timeline. This check exists to protect real
       // unsaved work only.
       try { if (cur && _geomSnap[drawId] && !_geomEq(cur.geometry, _geomSnap[drawId])) return; } catch (e1) {}
-      var fid = featureToDb[drawId];
-      // deleting the feature draw is actively pointed at → leave edit mode first, or draw's
-      // current mode keeps referencing a feature that no longer exists
-      if (_editingDraw === drawId) { try { draw.changeMode('simple_select', { featureIds: [] }); } catch (eM) {} _editingDraw = null; }
-      try { if (cur) draw.delete(drawId); } catch (e2) {}
-      var list = _engineEditIds[node.id] || [];
-      var ix = list.indexOf(fid); if (ix < 0) ix = list.indexOf(Number(fid)); if (ix < 0) ix = list.indexOf(String(fid));
-      if (ix > -1) list.splice(ix, 1);
-      delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId];
-      delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId]; delete _engineMultiPartIx[drawId];
-      try { _armedSet = (_armedSet || []).filter(function (x) { return x !== drawId; }); updateArmedHl(); } catch (e3) {}
-      // the edit-hover chrome tracks mouseleave, but a feature deleted OUT FROM UNDER the
-      // pointer never emits one — its hover halo would float at every date (8/8)
-      [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (mH) {
-        if (!mH) return; try { var sH = mH.getSource('edit-hover-hl'); if (sH) sH.setData({ type: 'FeatureCollection', features: [] }); } catch (eH) {}
-      });
+      // the date JUST changed, so the stored base filters are stale — refresh them from the live
+      // filter (which changeDate has just set clean) before the return rebuilds from the store
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
-        var m = pr[1]; if (!m) return;
+        var mBf = pr[1]; if (!mBf) return;
         [node.id + '-' + pr[0], node.id + '-stroke-' + pr[0], node.id + '-highlighted-' + pr[0]].forEach(function (lid) { delete _engineBaseFilter[lid]; });
       });
-      try { if (typeof selectedDrawId !== 'undefined' && selectedDrawId === drawId) hideFeaturePanel(); } catch (e4) {}
-      try { applyEngineEditFilter(node); } catch (e5) {}
+      returnEngineEditToTiles(drawId, node);
     });
+  }
+  // Return a pulled feature to the TILES untouched — the exact inverse of enterEngineEdit.
+  // Factored out of the timeline disarm (8/28); now also the flush/Done path for features whose
+  // geometry never changed, because parking an untouched feature on the -edited- overlay is how
+  // City Limits vanished: the overlay copies only the base layer's paint, so a transparent-fill +
+  // stroke layer rendered an INVISIBLE overlay while the real (visible) render stayed filtered out.
+  function returnEngineEditToTiles(drawId, node) {
+    var fid = featureToDb[drawId];
+    // deleting the feature draw is actively pointed at → leave edit mode first, or draw's
+    // current mode keeps referencing a feature that no longer exists
+    if (_editingDraw === drawId) { try { draw.changeMode('simple_select', { featureIds: [] }); } catch (eM) {} _editingDraw = null; }
+    try { if (draw && draw.get(drawId)) draw.delete(drawId); } catch (e2) {}
+    var list = _engineEditIds[node.id] || [];
+    var ix = list.indexOf(fid); if (ix < 0) ix = list.indexOf(Number(fid)); if (ix < 0) ix = list.indexOf(String(fid));
+    if (ix > -1) list.splice(ix, 1);
+    delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId];
+    delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId]; delete _engineMultiPartIx[drawId];
+    delete _engineGeomDirty[drawId];
+    try { _armedSet = (_armedSet || []).filter(function (x) { return x !== drawId; }); updateArmedHl(); } catch (e3) {}
+    // the edit-hover chrome tracks mouseleave, but a feature deleted OUT FROM UNDER the
+    // pointer never emits one — its hover halo would float at every date (8/8)
+    [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (mH) {
+      if (!mH) return; try { var sH = mH.getSource('edit-hover-hl'); if (sH) sH.setData({ type: 'FeatureCollection', features: [] }); } catch (eH) {}
+    });
+    // NOTE this helper never touches _engineBaseFilter. The STORED base is the clean filter
+    // (captured at pull; the changeDate wrapper keeps it current), and applyEngineEditFilter must
+    // rebuild from it. Deleting entries here made apply re-capture the LIVE filter — which still
+    // contains the exclusion — so the returned feature stayed filtered out FOREVER (the gate's
+    // "fid in []", 8/28). The one context where the stored base is stale — the timeline just
+    // moved — is the disarm's, and the disarm refreshes the entries itself before calling here.
+    try { if (typeof selectedDrawId !== 'undefined' && selectedDrawId === drawId) hideFeaturePanel(); } catch (e4) {}
+    try { applyEngineEditFilter(node); } catch (e5) {}
   }
   function applyEngineEditFilter(node) {
     var ids = (_engineEditIds[node.id] || []).map(Number);
@@ -1878,6 +1904,8 @@
   var _engineEdited = {};     // node.id → { feature_id: geometry } currently shown on the overlay
   var _engineEditedDays = {}; // node.id → { feature_id: [DayStart, DayEnd] } — overlay features render rowless, so their dates must be remembered at fold time or the overlay can never follow the timeline (8/8)
   var _engineEditNode = {};   // drawId → node (so the feature panel knows it's an engine edit → show "Done editing")
+  var _engineGeomDirty = {};  // drawId → true once a geometry save actually happened — the ONLY honest "was the shape changed"
+                              // signal, because _geomSnap re-baselines after every save and so always equals the current shape
   var _panelClickPatched = false;
   var _changeDatePatched = false;
   var _paintDatePatched = false;
@@ -1899,6 +1927,13 @@
           : { 'fill-color': '#ffb255', 'fill-outline-color': '#ff0000' };
         var paint = (orig && orig.paint) || node.paint || oDefault;
         map.addLayer({ id: sid, type: oType, source: sid, paint: paint });   // styled like the layer, above the tile copy
+        // fills carry a -stroke- companion in the engine, and some layers are ONLY visible through
+        // it (transparent fill + outline — City Limits). An overlay without the twin rendered
+        // those features invisible after Done/flush (8/28). Same source, so setData feeds both.
+        if (oType === 'fill') {
+          var sOrig = (map.getStyle().layers || []).filter(function (l) { return l.id === node.id + '-stroke-' + pair[0]; })[0];
+          if (sOrig) try { map.addLayer({ id: node.id + '-edited-stroke-' + pair[0], type: 'line', source: sid, paint: sOrig.paint || {} }); } catch (eS) {}
+        }
         map.on('click', sid, (function (n) { return function (e) { onEngineFeatureClick(n, e); }; })(node));   // re-click → re-edit
       } catch (e) { console.warn('editing: edited overlay', e); }
     });
@@ -1938,8 +1973,11 @@
       // companions-ok: this function IS the -edited- owner.
       var lf = node.timelineIgnore ? null : dOk;
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
-        var m = pr[1]; if (!m) return; var lid = slug + '-edited-' + pr[0];
-        try { if (m.getLayer(lid)) m.setFilter(lid, lf); } catch (e) {}
+        var m = pr[1]; if (!m) return;
+        // companions-ok: this function IS the -edited- owner — the stroke twin filters with it.
+        [slug + '-edited-' + pr[0], slug + '-edited-stroke-' + pr[0]].forEach(function (lid) {
+          try { if (m.getLayer(lid)) m.setFilter(lid, lf); } catch (e) {}
+        });
       });
     });
     var gt = function (kinds) { return ['match', ['geometry-type'], kinds, true, false]; };
@@ -1966,8 +2004,20 @@
   function finishEngineEdit(node, fid) {
     if (!node || fid == null) return;
     var drawId = 'db-' + fid, geom = null;
+    // UNCHANGED shape → back to the TILES, not the overlay (8/28, the vanishing City Limits):
+    // an untouched feature needs no overlay at all — the tiles are still its truth, at full
+    // fidelity (paint, stroke companion, everything). "Changed" is the dirty flag onDrawUpdate
+    // sets, NOT a compare against _geomSnap: the snap re-baselines after every save, so by
+    // Done-time it always equals the current shape and the compare would always say "unchanged".
+    if (!_engineGeomDirty[drawId]) {
+      returnEngineEditToTiles(drawId, node);
+      hideFeaturePanel();
+      setStatus('Done editing');
+      return;
+    }
     try { var f = draw && draw.get(drawId); if (f) geom = f.geometry; } catch (e) {}
     if (!geom) geom = _geomSnap[drawId];
+    if (geom) geom = toDbGeom(drawId, geom);   // a Multi edited as ONE part folds back into its slot — the overlay must show the WHOLE feature, not the part
     if (geom) {
       (_engineEdited[node.id] = _engineEdited[node.id] || {})[fid] = geom;
       // carry the feature's days onto the overlay BEFORE featureMeta is dropped below — the
@@ -1981,7 +2031,7 @@
     }
     try { if (draw && draw.get(drawId)) draw.delete(drawId); } catch (e) {}
     // fid stays in _engineEditIds → the tile copy remains hidden; the overlay shows the saved geometry instead
-    delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId]; delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId]; delete _engineMultiPartIx[drawId];
+    delete _engineEditNode[drawId]; delete featureToDb[drawId]; delete featureLayer[drawId]; delete featureMeta[drawId]; delete _geomSnap[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId]; delete _engineMultiPartIx[drawId]; delete _engineGeomDirty[drawId];
     // the feature is no longer armed — clear its ring, or a stale _armedSet entry makes
     // updateArmedHl feed draw.get() nulls and the ring freezes on screen at every date (8/8)
     try { _armedSet = (_armedSet || []).filter(function (x) { return x !== drawId; }); updateArmedHl(); } catch (eAh) {}
@@ -5352,9 +5402,14 @@
       '#editor-mode-bar{position:sticky;top:0;z-index:60;display:flex;gap:6px;padding:8px 6px;background:#fff;border-bottom:1px solid #e3e0d8;box-shadow:0 2px 6px rgba(31,51,73,0.06);}' +
       '#editor-mode-bar button{flex:1;padding:8px 0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;font-size:13px;font-weight:700;font-family:Source Sans Pro,Arial,sans-serif;background:#fff;color:#222222;}' +
       '#editor-mode-bar button:active{transform:translateY(1px);}' +
-      '#editor-mode-toggle.ms-to-edit{background:#ce5c00;border-color:#ce5c00;color:#fff;}' +
-      '#editor-panel-toggle{background:#23374d;border-color:#23374d;color:#fff;}' +
-      '#editor-panel-toggle.ms-off{background:#fff;border-color:#bbbbbb;color:#777777;}' +
+      /* the mode button wears the color of the mode it TAKES YOU TO — blue like the Viewing
+         badge, orange like the Editing badge ("buttons need coloring", owner 8/28). The selectors
+         DOUBLE the bar id: "#editor-mode-bar button" is (1,0,1) and outranks a bare id's (1,0,0),
+         which is exactly why both buttons rendered white in round 1. */
+      '#editor-mode-bar #editor-mode-toggle{background:#46627f;border-color:#46627f;color:#fff;}' +
+      '#editor-mode-bar #editor-mode-toggle.ms-to-edit{background:#ce5c00;border-color:#ce5c00;color:#fff;}' +
+      '#editor-mode-bar #editor-panel-toggle{background:#23374d;border-color:#23374d;color:#fff;}' +
+      '#editor-mode-bar #editor-panel-toggle.ms-off{background:#fff;border-color:#bbbbbb;color:#777777;}' +
       'body.ms-view-mode #editor-draw-cluster,body.ms-view-mode #editor-map-tools,body.ms-view-mode #editor-measure-readout,' +
       'body.ms-view-mode #editor-draw-hint,body.ms-view-mode #editor-search-hint{display:none !important;}' +   // the draw-onboarding pair points at tools view mode hides
       '.layer-list-row{position:relative;}' +
@@ -5900,13 +5955,24 @@
         // groups (NTAD had none → no cursor → "really hard to select"). Cheap: only queried when
         // draw + group hover both missed; only touches the cursor when it would actually change.
         try {
-          if (!isDrawArmed() && !(CLICK_MODES && _msMode !== 'edit')) {   // view mode: the engine owns the cursor
-            var hitU = !!did || !!_lastGroupGv;
+          if (!isDrawArmed()) {
+            // 8/28 (owner: "hovering shows a hand, not a finger"): this manager now runs in BOTH
+            // modes. Edit: pointer over anything editable OR viewer-interactive (locked layers
+            // still open panels/popups). View: pointer over viewer-interactive features only —
+            // the engine's own layer-scoped cursor writes lose to whatever moves last at map
+            // level, so the one map-level owner decides. View uses a TIGHT hit box: the engine's
+            // clicks are exact-hit, and a 10px halo would promise clicks that do nothing.
+            var vwC = CLICK_MODES && _msMode !== 'edit';
+            var hitU = !vwC && (!!did || !!_lastGroupGv);
             if (!hitU) {
               var sdU = (m === beforeMap) ? 'left' : 'right', eLids = [];
-              (function walkU(arr) { (arr || []).forEach(function (n) { if (isEngineEditable(n) && m.getLayer(n.id + '-' + sdU)) eLids.push(n.id + '-' + sdU); if (n.children) walkU(n.children); }); })(layers);
+              (function walkU(arr) { (arr || []).forEach(function (n) {
+                var viU = (typeof msHoverDoesSomething === 'function' ? msHoverDoesSomething(n) : !!(n.popupStyle || n.click)) || (!!n.panel && _msPanelOn);
+                var careU = vwC ? viU : (isEngineEditable(n) || viU);
+                if (careU) [n.id + '-' + sdU, n.id + '-edited-' + sdU].forEach(function (L) { if (m.getLayer(L)) eLids.push(L); });
+                if (n.children) walkU(n.children); }); })(layers);
               if (eLids.length) {
-                var bxU = 10;
+                var bxU = vwC ? 2 : 10;
                 var fsU = m.queryRenderedFeatures([[e.point.x - bxU, e.point.y - bxU], [e.point.x + bxU, e.point.y + bxU]], { layers: eLids });
                 hitU = !!(fsU && fsU.length);
               }
@@ -6459,6 +6525,14 @@
     if (storageGate()) { var gid = f.id; setTimeout(function () { try { if (draw) { draw.changeMode('simple_select'); draw.delete(gid); } } catch (e) {} }, 0); return; }
     var lid = activeLayerDbId();
     var node = activeLayerId ? findNodeById(layers, activeLayerId) : null;
+    // 8/28: a LOCKED layer never receives new features. Only when the drawing would actually land
+    // in it (type matches or the layer is still typeless) — a mismatched type falls through to the
+    // normal routing (auto-create / "select a layer") like any other layer.
+    if (node && node.editable === false && (!node.type || node.type === GEOM_TO_TYPE[f.geometry.type])) {
+      try { if (draw) draw.delete(f.id); } catch (eLk) {}
+      showToast((node.name || 'This layer') + ' is locked');
+      return;
+    }
     // Need a drawn layer that accepts this geometry. If nothing is selected, OR the selected layer already
     // holds a different geometry type, auto-create a fresh layer of THIS type and draw into it (Step 13) —
     // never reject the drawing. (One geometry type per layer is still enforced; we just make a new layer.)
@@ -6524,6 +6598,7 @@
   async function onDrawUpdate(e) {
     for (var i = 0; i < (e.features || []).length; i++) {
       var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
+      if (_engineEditNode[f.id]) _engineGeomDirty[f.id] = true;   // set BEFORE the await — a mode flip mid-save must still see it
       var oldGeom = _geomSnap[f.id], newGeom = JSON.parse(JSON.stringify(f.geometry));
       var saveGeom = toDbGeom(f.id, f.geometry); if (_engineWasMulti[f.id]) _engineOrigMulti[f.id] = saveGeom;
       var EBu = _engineEditNode[f.id] ? getEditBackend(_engineEditNode[f.id]) : PLATFORM_FEATURES;   // Phase 2a: tileset edits → the layer's backend; drawn → platform features
@@ -9071,6 +9146,26 @@
       setStatus('Saved');
     } catch (e) { console.warn('timelineIgnore save failed', e); setStatus('Save failed'); }
   }
+  // 8/28 (owner): per-layer geometry lock. node.editable === false already opts a layer out of
+  // click-to-edit (isEngineEditable) and rides raw_config through configLoader's passthrough —
+  // this is the missing UI for it. Locking also finishes any of this layer's features that are
+  // mid-edit right now (changed shapes fold to the overlay, untouched ones return to the tiles),
+  // and onDrawCreate refuses to add NEW features to a locked layer.
+  async function onLockShape(locked) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) { setStatus('That layer has no database id'); return; }
+    if (locked) node.editable = false; else delete node.editable;
+    if (locked) Object.keys(_engineEditNode).slice().forEach(function (dId) {
+      if (_engineEditNode[dId] === node) { try { finishEngineEdit(node, featureToDb[dId]); } catch (e) {} }
+    });
+    setStatus('Saving…');
+    try {
+      var r = await patchLayerConfig(lid, { editable: locked ? false : null });
+      if (r.error) throw new Error(r.error.message);
+      setStatus(locked ? 'Locked — clicks behave like the published map' : 'Unlocked — clicks edit again');
+    } catch (e) { console.warn('lock save failed', e); setStatus('Save failed'); }
+  }
   var _dateSecGen = 0;
   async function fillDateSection(node) {   // populate the column picks from a 60-row sample; reveal only for layers with DB rows
     var sec = document.getElementById('elp-dates-sec'); if (!sec) return;
@@ -9897,6 +9992,10 @@
         '<label class="ms-check" style="margin-bottom:3px;"><input id="elp-hover" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on hover</label>' +
         '<label class="ms-check" style="margin-bottom:6px;"><input id="elp-click" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Popup on click</label>' +
         '<label id="elp-hl-label" class="ms-check" style="display:none;margin-bottom:2px;" title="Off means the mouse does nothing to this layer — no glow, no pointer cursor"><input id="elp-hl" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Highlight on hover</label>' +
+        // 8/28 (owner): per-layer geometry lock — "some layers are meant to not be changeable,
+        // like city limits". Clicks on a locked layer behave like the published map (popups/panel
+        // per the settings above); nothing gets pulled into editing and nothing can be drawn in.
+        '<label class="ms-check" style="margin-bottom:6px;" title="Features can\'t be moved or reshaped, and nothing can be drawn into this layer — clicks behave like the published map"><input id="elp-lockshape" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />&#128274; Lock shape editing</label>' +
         '<div id="elp-inert-note" class="ms-note" style="display:none;margin:0 0 6px;">All three off = the layer ignores the mouse completely: no glow, no pointer, nothing to click.</div>' +
         '<label class="ms-lbl">Label field (what the popup shows)</label>' +
         '<select id="elp-labelfield" class="ms-in"><option value="label">label (the feature\'s own Label)</option></select>' +
@@ -10134,6 +10233,7 @@
     document.getElementById('elp-src-apply').addEventListener('click', onApplySource);
     document.getElementById('elp-src-url').addEventListener('input', function () { document.getElementById('elp-src-zooms').style.display = (this.value.trim().indexOf('mapbox://') === 0) ? 'none' : 'block'; });
     document.getElementById('elp-hover').addEventListener('change', onInteraction);
+    var lockEl = document.getElementById('elp-lockshape'); if (lockEl) lockEl.addEventListener('change', function () { onLockShape(this.checked); });
     document.getElementById('elp-click').addEventListener('change', onInteraction);
     document.getElementById('elp-hl').addEventListener('change', onInteraction);
     document.getElementById('elp-labelfield').addEventListener('change', onInteraction);
@@ -10552,6 +10652,7 @@
       document.getElementById('elp-src-info').textContent = (node.source_type || (isTilesUrl ? 'vector-tiles-url' : 'mapbox-tileset')) + (node.type ? ' · ' + node.type : '');
     }
     document.getElementById('elp-hover').checked = (node._uiHover != null) ? node._uiHover : !!node.popupStyle;
+    var lockCbP = document.getElementById('elp-lockshape'); if (lockCbP) lockCbP.checked = node.editable === false;
     document.getElementById('elp-click').checked = (node._uiClick != null) ? node._uiClick : !!node.click;
     ensureNodeHighlight(node);   // a layer created THIS session has no highlight yet — see below
     document.getElementById('elp-hl').checked = node.hoverHighlight !== false;
