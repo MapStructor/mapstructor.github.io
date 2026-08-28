@@ -13,6 +13,14 @@ compatibility_date = "2026-07-01"
 binding = "TILES"
 bucket_name = "mapstructor-tiles"
 
+# The PRIVATE bucket (no public custom domain — the tiles bucket is world-readable at
+# tiles.mapstructor.com, so anything sensitive must live here instead). Holds the nightly
+# DB dumps AND the business tools' data (invoices/…), all of which the nightly workflow
+# mirrors wholesale to Backblaze — private storage and off-provider backup in one move.
+[[r2_buckets]]
+binding = "PRIVATE"
+bucket_name = "mapstructor-db-backups"
+
 # Secrets (set with `wrangler secret put <NAME>`, never in this file):
 #   SUPABASE_URL          — https://eqpxlwbjqiwfjlsuapvu.supabase.co
 #   SUPABASE_ANON_KEY     — the publishable key (used to validate user tokens)

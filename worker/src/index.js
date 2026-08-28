@@ -182,7 +182,79 @@ export default {
   async fetch(req, env) {
     var url = new URL(req.url);
 
+    // business.mapstructor.com is a second door onto the /business/* tools — same handlers,
+    // one implementation. (Needs the dashboard route business.mapstructor.com/* → this Worker.)
+    if (url.hostname === "business.mapstructor.com") {
+      url = new URL(url.origin.replace("business.", "") + "/business" + url.pathname + url.search);
+    }
+
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors() });
+
+    /* ── /business/invoices — the owner's invoicing app (8/28) ────────────────
+       PASSWORD-PROTECTED, and the password is checked HERE, before anything is served,
+       because the page's data endpoint holds client names, amounts and bank details.
+       Basic auth on purpose: the browser prompts natively, caches the credentials, and
+       re-attaches them to the page's own fetch() calls — so one password covers the page
+       AND its data with no session machinery to break.
+       Everything lives in the PRIVATE bucket: the tiles bucket is world-readable through
+       its custom domain, so neither the page nor the data may ever be stored there. */
+    if (url.pathname === "/business/invoices" || url.pathname.startsWith("/business/invoices/")) {
+      var bOk = false;
+      try {
+        var bAuth = req.headers.get("Authorization") || "";
+        if (bAuth.startsWith("Basic ") && env.INVOICES_PASS) {
+          var bDec = atob(bAuth.slice(6));
+          var bSep = bDec.indexOf(":");
+          var bUser = bDec.slice(0, bSep), bPass = bDec.slice(bSep + 1);
+          // length-equalized comparison — not perfectly constant-time, but the realm has
+          // exactly one user and the rate is bounded by the network round-trip
+          var wantU = env.INVOICES_USER || "nitty", wantP = env.INVOICES_PASS;
+          var diff = (bUser.length ^ wantU.length) | (bPass.length ^ wantP.length);
+          for (var bi = 0; bi < Math.max(bPass.length, wantP.length); bi++)
+            diff |= (bPass.charCodeAt(bi % Math.max(1, bPass.length)) ^ wantP.charCodeAt(bi % Math.max(1, wantP.length)));
+          for (var bj = 0; bj < Math.max(bUser.length, wantU.length); bj++)
+            diff |= (bUser.charCodeAt(bj % Math.max(1, bUser.length)) ^ wantU.charCodeAt(bj % Math.max(1, wantU.length)));
+          bOk = diff === 0;
+        }
+      } catch (e) { bOk = false; }
+      if (!bOk) {
+        return new Response("This area is password-protected.", {
+          status: 401,
+          headers: { "WWW-Authenticate": 'Basic realm="MapStructor business", charset="UTF-8"', "Cache-Control": "no-store" }
+        });
+      }
+      // extensionless entry → the slash form, so the page's relative "data" URL resolves under it
+      if (url.pathname === "/business/invoices") {
+        return new Response(null, { status: 301, headers: { "Location": "/business/invoices/" } });
+      }
+      if (url.pathname === "/business/invoices/") {
+        var bPage = await env.PRIVATE.get("invoices/index.html");
+        if (!bPage) return new Response("the app has not been uploaded yet", { status: 404 });
+        return new Response(bPage.body, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+      }
+      if (url.pathname === "/business/invoices/data") {
+        var bKey = url.searchParams.get("key") || "";
+        // the key becomes an R2 object name — pin the charset so it can never traverse
+        if (!/^[A-Za-z0-9:_\-\.]{1,64}$/.test(bKey)) return new Response("bad key", { status: 400 });
+        var bObj = "invoices/data/" + bKey.replace(/:/g, "_");
+        if (req.method === "GET") {
+          var bGot = await env.PRIVATE.get(bObj);
+          if (!bGot) return new Response("not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+          var bVal = await bGot.text();
+          return new Response(JSON.stringify({ key: bKey, value: bVal }), {
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+          });
+        }
+        if (req.method === "PUT") {
+          var bBody = await req.text();
+          if (bBody.length > 4 * 1024 * 1024) return new Response("too large", { status: 413 });
+          await env.PRIVATE.put(bObj, bBody, { httpMetadata: { contentType: "application/json" } });
+          return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+        }
+        return new Response("method not allowed", { status: 405 });
+      }
+      return new Response("not found", { status: 404 });
+    }
 
     if (url.pathname === "/health") {
       return new Response(JSON.stringify({ ok: true, at: new Date().toISOString() }),
