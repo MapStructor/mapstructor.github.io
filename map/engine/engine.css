@@ -453,7 +453,6 @@ div.layer-list-row label > i {
   vertical-align: middle;
 }
 div.layer-list-row > input[type="checkbox"] { margin-top: 0; margin-bottom: 0; }
-div.layer-list-row > label:not(.ms-divider-label) { display: inline-block; line-height: 22px; }   /* dividers size their own text (S/M/L) — the 22px row line must not clamp them */
 /* the right-anchored icon block centers against the ROW — which must therefore be the positioned
    ancestor here too, not just in the editor's own stylesheet */
 div.layer-list-row { position: relative; }

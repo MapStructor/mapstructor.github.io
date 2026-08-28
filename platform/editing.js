@@ -5195,6 +5195,10 @@
       '#editor-add-bar .erow{display:flex;gap:6px;}' +
       '#editor-add-bar button{flex:1;padding:6px 0;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;background:#e8e8e8;color:#222222;}' +
       '#editor-add-bar button:hover{background:#d8d8d8;}' +
+      // pressed feedback (8/27, owner: "the buttons don't change colors when they are pressed") —
+      // every sidebar button darkens and dips on mousedown, and the form-openers keep .active after
+      '#editor-add-bar button:active{background:#c4c4c4;transform:translateY(1px);}' +
+      '#editor-add-bar .editor-door:active{background:#1a2a3d;color:#fff;}' +
       '#editor-add-bar #editor-add-buttons button.active{background:#23374d;color:#fff;}' +   // #2: shows which add-form is open
       // the two doors: heavier than the buttons inside them, and visibly held open
       '#editor-add-bar .editor-door{padding:8px 0;font-size:13px;background:#efeae2;border:1px solid #d8d2c6;}' +
@@ -5224,12 +5228,16 @@
            instead of underlining a ragged line.
          Declared BEFORE the drop-* rules: they share the box-shadow channel, and during a drag
          the drop indicator must win on the active row. */
-      '.layer-list-row{padding:4px 6px;border-radius:6px;cursor:pointer;transition:background .1s ease;}' +
+      /* v3 (owner: "all I wanted was for things to align… the space and width changed"): NO
+         padding, NO geometry changes — the rows keep their original size and spacing; alignment
+         comes from engine.css's vertical-align rules alone. This block adds only paint: pointer
+         cursor, a hover tint, and the pressed look for the active layer. */
+      '.layer-list-row{cursor:pointer;border-radius:4px;transition:background .1s ease;}' +
       '.layer-list-row:hover{background:rgba(35,55,77,0.07);}' +
       '.layer-list-row label{cursor:pointer;}' +
       '.layer-list-row.ms-divider-row{cursor:default;}.layer-list-row.ms-divider-row:hover{background:none;}' +
       '.layer-list-row.editor-active{background:rgba(206,92,0,0.16);' +
-        'box-shadow:inset 3px 0 0 #ce5c00, inset 0 0 0 1.5px rgba(206,92,0,0.55), 0 1px 4px rgba(0,0,0,0.18);}' +
+        'box-shadow:inset 3px 0 0 #ce5c00, inset 0 0 0 1.5px rgba(206,92,0,0.55);}' +
       '.layer-list-row.editor-active:hover{background:rgba(206,92,0,0.22);}' +
       '.layer-list-row.editor-active label{font-weight:700;}' +
       '.layer-list-row.editor-dragging{opacity:0.4;}' +
@@ -10398,7 +10406,13 @@
       '#editor-attr-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #cccccc;font-size:15px;color:#2b3a4a;cursor:move;}' +   // header doubles as the drag handle (move the panel off the map)
       '#editor-attr-head .attr-head-l{display:flex;align-items:center;gap:10px;min-width:0;}' +
       '#editor-attr-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '#editor-attr-zoom,#editor-attr-transfer{font-size:12px;padding:3px 9px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;white-space:nowrap;}' +
+      '#editor-attr-zoom,#editor-attr-ops{font-size:12px;padding:3px 9px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;white-space:nowrap;}' +
+      '#editor-attr-ops:active{background:#e0e0e0;}' +
+      '#editor-attr-ops.open{background:#23374d;color:#fff;border-color:#23374d;}' +
+      '#editor-attr-ops-menu{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:185px;background:#ffffff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.2);padding:4px;flex-direction:column;gap:2px;}' +
+      '#editor-attr-ops-menu.open{display:flex;}' +
+      '#editor-attr-ops-menu button{font-size:12px;text-align:left;padding:6px 10px;border:1px solid transparent;border-radius:4px;background:none;cursor:pointer;white-space:nowrap;color:#2b3a4a;}' +
+      '#editor-attr-ops-menu button:hover{background:#eef2f7;}' +
       '#editor-attr-zoom:disabled{opacity:0.45;cursor:default;}' +
       '#editor-attr-del{font-size:12px;padding:3px 9px;border:1px solid #e0b4b4;border-radius:4px;background:#fdeaea;color:#b4453a;cursor:pointer;white-space:nowrap;}' +
       '#editor-attr-del:disabled{opacity:0.45;cursor:default;}' +
@@ -10458,10 +10472,17 @@
           '<span id="editor-attr-selcount" style="color:#8a86a0;font-size:12px;margin:0 4px;white-space:nowrap;"></span>' +
           '<button id="editor-attr-zoom" title="Zoom the map to the selected feature(s)" disabled>&#9673; Zoom to selected</button>' +
           '<button id="editor-attr-del" title="Delete the selected feature(s)" disabled>&#128465; Delete selected</button>' +
+          '<span id="attr-ops-wrap" style="position:relative;display:inline-block;">' +
+          // 8/27 (owner): the four per-layer column ops fold into ONE "⚙ Operations" menu — the
+          // toolbar was becoming the sidebar problem again. The buttons keep their ids and
+          // handlers; they just live inside the dropdown now.
+          '<button id="editor-attr-ops" title="Column &amp; data operations for this layer">&#9881; Operations &#9662;</button>' +
+          '<span id="editor-attr-ops-menu">' +
           '<button id="editor-attr-transfer" title="Copy one column\'s values into another">&#8646; Transfer column</button>' +
           '<button id="editor-attr-addcol" title="Add a new (empty) column to this layer">+ Column</button>' +
           '<button id="editor-attr-delcol" title="Delete a column from every feature of this layer">&#8722; Column</button>' +
-          '<button id="editor-attr-dups" title="Find identical or overlapping features — mark them in a column, or delete the extras">&#10697; Duplicates</button></span>' +
+          '<button id="editor-attr-dups" title="Find identical or overlapping features — mark them in a column, or delete the extras">&#10697; Duplicates</button>' +
+          '</span></span></span>' +
           '<span id="editor-attr-close" title="Close">&times;</span></div>' +
         '<div id="editor-attr-addcol-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#faf9fd;font-size:12.5px;">' +
           'New column <input id="attr-ac-name" placeholder="column name" style="font-size:12px;width:160px;">' +
@@ -10506,6 +10527,13 @@
     document.getElementById('editor-attr-del').addEventListener('click', deleteAttrSelected);
     document.getElementById('editor-attr-transfer').addEventListener('click', toggleTransferPanel);
     document.getElementById('attr-tr-go').addEventListener('click', runColumnTransfer);
+    (function () {   // the ⚙ Operations dropdown: toggle on the button, close on pick or outside click
+      var ob = document.getElementById('editor-attr-ops'), om = document.getElementById('editor-attr-ops-menu');
+      function setOpen(on) { om.classList.toggle('open', on); ob.classList.toggle('open', on); }
+      ob.addEventListener('click', function (e) { e.stopPropagation(); setOpen(!om.classList.contains('open')); });
+      om.addEventListener('click', function () { setOpen(false); });   // picking an item closes the menu; the item's own handler still runs
+      document.addEventListener('click', function (e) { if (om.classList.contains('open') && !e.target.closest('#attr-ops-wrap')) setOpen(false); });
+    })();
     document.getElementById('editor-attr-addcol').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-addcol-panel'); });
     document.getElementById('editor-attr-delcol').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-delcol-panel', fillDelColSelect); });
     document.getElementById('editor-attr-dups').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-dups-panel', fillDupIdentity); });
