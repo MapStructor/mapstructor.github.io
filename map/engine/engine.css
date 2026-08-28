@@ -453,6 +453,17 @@ div.layer-list-row label > i {
   vertical-align: middle;
 }
 div.layer-list-row > input[type="checkbox"] { margin-top: 0; margin-bottom: 0; }
+/* The type swatch sat LOW — 0.6px on a square, 1.9px on an indented child, and a different
+   amount per icon, which is what read as crooked rather than merely low (8/28, owner: "make
+   this icon aligned vertically"). Two causes, both from the rule above. The swatch lives
+   INSIDE the label, so it middle-aligns against a baseline the label's own middle-align has
+   already moved — a group's caret, which is a direct child of the row, was always fine.
+   And `middle` centres on the parent's x-height while the name beside it reads as cap-height;
+   half that difference is ~0.09em for this face. Nudging the swatch, rather than taking the
+   label back out of the chain, is deliberate: baseline-aligning the label fixes the leaves but
+   throws the caret 1.75px out and shrinks the row 16.2px → 15.1px — the size change rejected in
+   v2. MEASURED, not guessed: every row now lands within 0.38px of its checkbox, identically. */
+div.layer-list-row label > i { position: relative; top: -0.09em; }
 /* the right-anchored icon block centers against the ROW — which must therefore be the positioned
    ancestor here too, not just in the editor's own stylesheet */
 div.layer-list-row { position: relative; }
