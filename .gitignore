@@ -19,3 +19,6 @@ supabase/.temp/
 /droplet-ip.txt
 /user-data.yaml
 /install-drupal.php
+
+# wrangler dev leaves a local R2/KV simulator and caches here — machine state, not source
+worker/.wrangler/

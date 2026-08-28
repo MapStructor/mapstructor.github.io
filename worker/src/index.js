@@ -123,6 +123,92 @@ async function serviceLocked(env) {
   return _svc;
 }
 
+/* ── /business/invoices sign-in ────────────────────────────────────────────
+   A real form, not the browser's native Basic prompt: the prompt cannot be styled, cannot
+   say which site is asking, and its Cancel button leaves a blank grey page with no way back.
+   A signed cookie carries the session instead, so one sign-in covers the page AND the data
+   endpoint it fetches. The cookie is signed WITH the password, so changing the password
+   signs every device out — no separate revocation to remember. */
+var IV_DAYS = 30;
+
+async function ivHmac(secret, msg) {
+  var enc = new TextEncoder();
+  var key = await crypto.subtle.importKey("raw", enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  var sig = await crypto.subtle.sign("HMAC", key, enc.encode(msg));
+  var out = "";
+  var bytes = new Uint8Array(sig);
+  for (var i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, "0");
+  return out;
+}
+function ivEq(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  var d = 0;
+  for (var i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+function ivSecret(env) { return (env.INVOICES_PASS || "") + "|" + (env.INVOICES_USER || "nitty"); }
+
+async function ivSessionOk(env, req) {
+  if (!env.INVOICES_PASS) return false;
+  var m = /(?:^|;\s*)iv_sess=([^;]+)/.exec(req.headers.get("Cookie") || "");
+  if (!m) return false;
+  var parts = decodeURIComponent(m[1]).split(".");
+  if (parts.length !== 2) return false;
+  var exp = parseInt(parts[0], 10);
+  if (!isFinite(exp) || exp * 1000 < Date.now()) return false;
+  return ivEq(parts[1], await ivHmac(ivSecret(env), "iv|" + exp));
+}
+async function ivSetCookie(env) {
+  var exp = Math.floor(Date.now() / 1000) + IV_DAYS * 86400;
+  var sig = await ivHmac(ivSecret(env), "iv|" + exp);
+  return "iv_sess=" + exp + "." + sig + "; Path=/business/invoices; Max-Age=" +
+    (IV_DAYS * 86400) + "; HttpOnly; Secure; SameSite=Lax";
+}
+/* Scripts (backups, checks) may still send Basic credentials — accepted, but never
+   ASKED for, because asking is what summons the browser popup. */
+function ivBasicOk(env, req) {
+  try {
+    var a = req.headers.get("Authorization") || "";
+    if (!a.startsWith("Basic ") || !env.INVOICES_PASS) return false;
+    var dec = atob(a.slice(6)), sep = dec.indexOf(":");
+    return ivEq(dec.slice(0, sep), env.INVOICES_USER || "nitty") &&
+           ivEq(dec.slice(sep + 1), env.INVOICES_PASS);
+  } catch (e) { return false; }
+}
+function ivLoginPage(msg) {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow"><title>Invoices — sign in</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:#eceef1;
+    font:14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#1a1d21; }
+  form { width:min(340px,92vw); background:#fff; border:1px solid #dfe3e7; border-radius:10px;
+    padding:26px 24px; box-shadow:0 1px 2px rgba(16,20,26,.05); }
+  h1 { margin:0 0 4px; font-size:17px; }
+  p.sub { margin:0 0 18px; font-size:12.5px; color:#878e96; }
+  label { display:block; font-size:12px; font-weight:600; letter-spacing:.03em;
+    text-transform:uppercase; color:#878e96; margin-bottom:6px; }
+  input { width:100%; box-sizing:border-box; padding:9px 11px; font-size:14px;
+    border:1px solid #cfd5db; border-radius:6px; background:#fff; }
+  input:focus { outline:2px solid #b7c6d8; outline-offset:1px; border-color:#9fb0c4; }
+  button { margin-top:16px; width:100%; padding:9px 12px; font-size:14px; font-weight:500;
+    color:#fff; background:#1a1d21; border:1px solid #1a1d21; border-radius:6px; cursor:pointer; }
+  button:hover { background:#33383f; }
+  .err { margin:0 0 14px; padding:8px 10px; font-size:12.5px; color:#8c3b28;
+    background:#fbeeea; border:1px solid #eed6cf; border-radius:6px; }
+</style></head><body>
+<form method="POST" action="login">
+  <h1>Invoices</h1>
+  <p class="sub">MapStructor business tools</p>
+  ${msg ? `<p class="err">${msg}</p>` : ""}
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password" autofocus required>
+  <button type="submit">Sign in</button>
+</form></body></html>`;
+}
+
 var WRITE_LIMIT_PER_MIN = 600;
 var _rate = new Map();   // userId → { n, windowStart, alerted }
 var _rpcMissing = false;   // remembered per isolate: don't re-probe a function that isn't installed
@@ -193,39 +279,62 @@ export default {
     /* ── /business/invoices — the owner's invoicing app (8/28) ────────────────
        PASSWORD-PROTECTED, and the password is checked HERE, before anything is served,
        because the page's data endpoint holds client names, amounts and bank details.
-       Basic auth on purpose: the browser prompts natively, caches the credentials, and
-       re-attaches them to the page's own fetch() calls — so one password covers the page
-       AND its data with no session machinery to break.
+       Sign-in is a form (see ivLoginPage) that sets a signed session cookie; the cookie
+       rides the page's own fetch() calls, so one sign-in covers the page AND its data.
        Everything lives in the PRIVATE bucket: the tiles bucket is world-readable through
        its custom domain, so neither the page nor the data may ever be stored there. */
     if (url.pathname === "/business/invoices" || url.pathname.startsWith("/business/invoices/")) {
-      var bOk = false;
-      try {
-        var bAuth = req.headers.get("Authorization") || "";
-        if (bAuth.startsWith("Basic ") && env.INVOICES_PASS) {
-          var bDec = atob(bAuth.slice(6));
-          var bSep = bDec.indexOf(":");
-          var bUser = bDec.slice(0, bSep), bPass = bDec.slice(bSep + 1);
-          // length-equalized comparison — not perfectly constant-time, but the realm has
-          // exactly one user and the rate is bounded by the network round-trip
-          var wantU = env.INVOICES_USER || "nitty", wantP = env.INVOICES_PASS;
-          var diff = (bUser.length ^ wantU.length) | (bPass.length ^ wantP.length);
-          for (var bi = 0; bi < Math.max(bPass.length, wantP.length); bi++)
-            diff |= (bPass.charCodeAt(bi % Math.max(1, bPass.length)) ^ wantP.charCodeAt(bi % Math.max(1, wantP.length)));
-          for (var bj = 0; bj < Math.max(bUser.length, wantU.length); bj++)
-            diff |= (bUser.charCodeAt(bj % Math.max(1, bUser.length)) ^ wantU.charCodeAt(bj % Math.max(1, wantU.length)));
-          bOk = diff === 0;
-        }
-      } catch (e) { bOk = false; }
-      if (!bOk) {
-        return new Response("This area is password-protected.", {
-          status: 401,
-          headers: { "WWW-Authenticate": 'Basic realm="MapStructor business", charset="UTF-8"', "Cache-Control": "no-store" }
-        });
-      }
-      // extensionless entry → the slash form, so the page's relative "data" URL resolves under it
+      var bNoStore = { "Cache-Control": "no-store" };
+
+      // extensionless entry → the slash form FIRST, before any page is served, so the
+      // sign-in form's relative action ("login") always resolves inside this folder
       if (url.pathname === "/business/invoices") {
         return new Response(null, { status: 301, headers: { "Location": "/business/invoices/" } });
+      }
+
+      if (url.pathname === "/business/invoices/logout") {
+        return new Response(null, {
+          status: 303,
+          headers: {
+            "Location": "/business/invoices/",
+            "Set-Cookie": "iv_sess=; Path=/business/invoices; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
+            "Cache-Control": "no-store"
+          }
+        });
+      }
+
+      if (url.pathname === "/business/invoices/login") {
+        if (req.method !== "POST") {
+          return new Response(ivLoginPage(""), { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", ...bNoStore } });
+        }
+        // one password, so guessing is the only attack — cap the guesses per isolate per minute
+        var bIp = req.headers.get("CF-Connecting-IP") || "anon";
+        if (rateCheck("iv-login:" + bIp, 10).over) {
+          return new Response(ivLoginPage("Too many attempts. Wait a minute and try again."),
+            { status: 429, headers: { "Content-Type": "text/html; charset=utf-8", ...bNoStore } });
+        }
+        var bForm = await req.formData();
+        var bTry = String(bForm.get("password") || "");
+        if (!env.INVOICES_PASS || !ivEq(bTry, env.INVOICES_PASS)) {
+          return new Response(ivLoginPage("That password is not right."),
+            { status: 401, headers: { "Content-Type": "text/html; charset=utf-8", ...bNoStore } });
+        }
+        return new Response(null, {
+          status: 303,
+          headers: { "Location": "/business/invoices/", "Set-Cookie": await ivSetCookie(env), ...bNoStore }
+        });
+      }
+
+      var bOk = (await ivSessionOk(env, req)) || ivBasicOk(env, req);
+      if (!bOk) {
+        // The app's own fetches want a status they can act on; a person wants the form.
+        if (url.pathname === "/business/invoices/data") {
+          return new Response("signed out", { status: 401, headers: bNoStore });
+        }
+        return new Response(ivLoginPage(""), {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8", ...bNoStore }
+        });
       }
       if (url.pathname === "/business/invoices/") {
         var bPage = await env.PRIVATE.get("invoices/index.html");
