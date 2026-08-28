@@ -5251,17 +5251,16 @@
          padding, NO geometry changes — the rows keep their original size and spacing; alignment
          comes from engine.css's vertical-align rules alone. This block adds only paint: pointer
          cursor, a hover tint, and the pressed look for the active layer. */
-      /* v4 (owner 8/28: "this makes it look like a button"): the two things that made a ROW read
-         as a BUTTON are gone — the rounded corners, and the 1.5px ring drawn all the way around
-         the active row. What stays is what says "this one is selected" without pretending to be
-         a control: the fill, the 3px left accent bar, and the bold label. The pointer cursor and
-         hover tint stay too; those are clickability, which the rows genuinely have. */
-      '.layer-list-row{cursor:pointer;transition:background .1s ease;}' +
+      /* v4 (owner 8/28, exact values given): corners at 2px, and the active row's inset ring +
+         left accent bar replaced by a real drop shadow. Note this shadow is OUTSET where every
+         other row state is inset — the drop-* rules below still win during a drag because they
+         are declared after this and share the same channel. */
+      '.layer-list-row{cursor:pointer;border-radius:2px;transition:background .1s ease;}' +
       '.layer-list-row:hover{background:rgba(35,55,77,0.07);}' +
       '.layer-list-row label{cursor:pointer;}' +
       '.layer-list-row.ms-divider-row{cursor:default;}.layer-list-row.ms-divider-row:hover{background:none;}' +
       '.layer-list-row.editor-active{background:rgba(206,92,0,0.16);' +
-        'box-shadow:inset 3px 0 0 #ce5c00;}' +
+        'box-shadow:0 0px 4px 1px #000000;}' +
       '.layer-list-row.editor-active:hover{background:rgba(206,92,0,0.22);}' +
       '.layer-list-row.editor-active label{font-weight:700;}' +
       '.layer-list-row.editor-dragging{opacity:0.4;}' +
