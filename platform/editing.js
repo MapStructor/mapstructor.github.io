@@ -1300,6 +1300,107 @@
     if (node.source_type === 'geojson-supabase' && !_drawLayerSlugs[node.id]) return true;   // large drawn layer (engine-rendered, not in MapboxDraw)
     return isTilesetNode(node);                                                               // any tileset (once its data lives in features, id-aligned)
   }
+  // ── EDIT ⇄ VIEW SPLIT (8/28, owner: "I want editing and viewing-interaction to be separated…
+  //    pretty strictly"). Two independent switches at the very top of the sidebar:
+  //    · MODE — edit: ONE click makes any feature editable (owner picked "A" — the old two-stage
+  //      arm is gone; being in edit mode IS the safety). view: every editor click path stands
+  //      down and the ENGINE's own viewer interactions run (popups, panel, hover) — the map
+  //      behaves like the published copy because it literally runs the published code path.
+  //    · PANEL — whether a feature click opens a panel at all (edit mode: the feature panel;
+  //      view mode: the viewer's info panel). Popup bubbles keep their per-layer checkboxes.
+  //    Both persist per map. CLICK_MODES = false restores the old combined two-stage model,
+  //    no mode bar, in one word.
+  var CLICK_MODES = true;
+  var _msMode = 'edit', _msPanelOn = true;
+  function modeStoreKey(s) { return 'ms-' + s + '-' + (typeof projectId !== 'undefined' && projectId ? projectId : 'x'); }
+  function setEditorMode(mode) {
+    mode = mode === 'view' ? 'view' : 'edit';
+    if (_msMode === mode) return;
+    _msMode = mode;
+    try { localStorage.setItem(modeStoreKey('mode'), mode); } catch (e) {}
+    if (mode === 'view') flushEditsForView();
+    document.body.classList.toggle('ms-view-mode', mode === 'view');
+    refreshModeBar();
+    setStatus(mode === 'view' ? 'Viewing — the map behaves like the published version' : 'Editing — click any feature to edit it');
+  }
+  function setPanelOn(on) {
+    _msPanelOn = !!on;
+    try { localStorage.setItem(modeStoreKey('panel'), _msPanelOn ? '1' : '0'); } catch (e) {}
+    refreshModeBar();
+    if (!_msPanelOn) hideFeaturePanel();
+    else if (_editingDraw) showFeaturePanel(_editingDraw);   // a feature is mid-edit → its panel comes back
+  }
+  // Leaving edit mode must leave nothing half-edited on screen: the ONE draw deselect below both
+  // discards an unfinished shape and releases direct_select (so the deletes are safe — 1721's
+  // trap); every pulled feature then folds back exactly as its panel's "Done editing" button
+  // would (geometry already autosaved on each drag), and the editor's chrome (selection rings,
+  // panel, pills, working selection) clears. What remains is what the published copy renders.
+  function flushEditsForView() {
+    try { if (draw) draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {}
+    _editingDraw = null;
+    Object.keys(_engineEditNode).slice().forEach(function (dId) {   // slice(): finishEngineEdit mutates the map
+      var node = _engineEditNode[dId], fid = featureToDb[dId];
+      try { if (node && fid != null) finishEngineEdit(node, fid); } catch (e) { console.warn('editing: view-flush', e); }
+    });
+    try { clearArmedSet(); } catch (e) {}
+    try { hideFeaturePanel(); } catch (e) {}
+    try { closeClickPops(); closeHoverPops(); } catch (e) {}
+    try { clearAttrHighlight(); } catch (e) {}   // the working selection is editor chrome — view shows the published look
+  }
+  function refreshModeBar() {
+    var mt = document.getElementById('editor-mode-toggle'), pt = document.getElementById('editor-panel-toggle');
+    if (mt) {   // the label is the ACTION the click performs (owner's spec), the badge shows the state
+      mt.innerHTML = _msMode === 'edit' ? '&#128065; View' : '&#9998; Edit';
+      mt.title = _msMode === 'edit'
+        ? 'Switch to viewing: the map behaves like the published version (shortcut: E)'
+        : 'Switch to editing: one click makes any feature editable (shortcut: E)';
+      mt.classList.toggle('ms-to-edit', _msMode !== 'edit');
+    }
+    if (pt) {
+      pt.innerHTML = '&#9636; Panel';
+      pt.title = _msPanelOn ? 'Clicking a feature opens its panel — click to turn that off' : 'Feature clicks leave the panel closed — click to turn it back on';
+      pt.classList.toggle('ms-off', !_msPanelOn);
+      pt.setAttribute('aria-pressed', _msPanelOn ? 'true' : 'false');
+    }
+    var badge = document.getElementById('editor-mode-badge');
+    if (badge) {
+      badge.innerHTML = _msMode === 'edit' ? '&#9998; Editing mode' : '&#128065; Viewing mode';
+      badge.style.background = _msMode === 'edit' ? '#ce5c00' : '#46627f';
+      badge.title = (_msMode === 'edit' ? 'You are editing this map - changes autosave.' : 'Viewing - the map behaves like the published version.') + ' Click to switch.';
+    }
+  }
+  // ONE-CLICK EDIT (owner picked A): the single owner of "this feature is now editable" — every
+  // click path lands here under CLICK_MODES. Vertices are live immediately for lines/polygons
+  // (direct_select, which also moves the whole feature when dragged off-vertex); points
+  // select-move (direct_select rejects point features). The mode change is DEFERRED a tick
+  // because two callers run inside draw's own click pipeline, which overwrites a synchronous
+  // changeMode (the same reason deferDrawSel exists).
+  function enterDrawEditable(drawId, lngLat) {
+    _editingDraw = drawId; _armedSet = [];
+    setArmedHl(null);
+    multiPartForEdit(drawId, lngLat || _lastMapClickPt);   // a Multi swaps to just the CLICKED part (no-op once swapped)
+    setTimeout(function () {
+      try {
+        var f = draw.get(drawId), gt = f && f.geometry && f.geometry.type;
+        if (gt === 'Point' || gt === 'MultiPoint') draw.changeMode('simple_select', { featureIds: [drawId] });
+        else draw.changeMode('direct_select', { featureId: drawId });
+      } catch (e) { try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e2) {} }
+    }, 0);
+    if (_msPanelOn) showFeaturePanel(drawId); else hideFeaturePanel();
+    updateGroupHl(drawId);
+    syncAttrRowsFromMap([{ id: drawId }]);
+  }
+  if (CLICK_MODES) document.addEventListener('keydown', function (ev) {
+    if ((ev.key !== 'e' && ev.key !== 'E') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    var t = ev.target;
+    if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '') || t.isContentEditable)) return;
+    setEditorMode(_msMode === 'edit' ? 'view' : 'edit');
+  });
+  window.__msModeDebug = function () {   // read-only snapshot for the harness (same precedent as __msArmDebug)
+    var dm = null, dc = null, ds = null;
+    try { dm = draw.getMode(); dc = draw.getAll().features.length; ds = draw.getSelectedIds().length; } catch (e) {}
+    return { clickModes: CLICK_MODES, mode: _msMode, panel: _msPanelOn, editing: _editingDraw, drawMode: dm, drawCount: dc, drawSel: ds };
+  };
   function wireEngineEditClicks() {
     if (typeof layers === 'undefined' || !draw) return;
     if (!_panelClickPatched && typeof window.handlePanelClick === 'function') {   // editor: editable layers own their clicks (edit), so the engine's encyclopedia panel-click must not ALSO fire — the page shows via the feature panel instead
@@ -1310,6 +1411,8 @@
     _panelClickPatched = true; var _origHPC = window.handlePanelClick;
       window._msOrigHandlePanelClick = _origHPC;   // enterEngineEdit falls back to this for display-only features (their click must still open the viewer's panel)
       window.handlePanelClick = function (layer, event) {
+        // VIEW MODE: the viewer's own panel behavior runs, gated only by the sidebar Panel switch.
+        if (CLICK_MODES && _msMode !== 'edit') { if (!_msPanelOn) return; return _origHPC.apply(this, arguments); }
         // ALSO suppress for small drawn layers (their features live in MapboxDraw): if the engine copy is
         // ever visible/clickable (e.g. it rendered after hideDrawnEngineLayers ran), the engine's panel
         // toggle runs IN PARALLEL with the editor's — its second-click closePanelInfo slideUp collapses
@@ -1368,6 +1471,7 @@
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
         var map = pair[1], side = pair[0]; if (!map) return;
         map.on('click', function (e) {
+          if (CLICK_MODES && _msMode !== 'edit') return;   // view mode: the engine's own viewer handlers own map clicks
           // The swipe routes a click to ONE map, but the editable layer may render only on the OTHER side.
           // Both maps share the view, so e.point is valid on both — query both and edit whichever has the feature.
           var found = null;
@@ -1404,6 +1508,7 @@
     return hit;
   }
   function onEngineFeatureClick(node, e) {
+    if (CLICK_MODES && _msMode !== 'edit') return;   // view mode (belt): also covers the -edited- overlay re-click handlers
     if (!e.features || !e.features.length) return;
     // 9e (final model, 7/28): CTRL/⌘-click = pure select/deselect toggle — no editing, works with or
     // without a ▦ open. PLAIN click = the edit flow (arm + panel) AND the feature JOINS the selection
@@ -1454,6 +1559,7 @@
   // layer's encyclopedia/notes panel. The engine's own click handler is suppressed for engine-editable
   // layers (patched above), so call the ORIGINAL directly.
   function engineViewerPanel(node, e) {
+    if (CLICK_MODES && !_msPanelOn) return;   // the Panel switch governs every click-opened panel (edit mode included)
     try {
       if (node && node.panel && typeof window._msOrigHandlePanelClick === 'function' && e && e.features && e.features.length) {
         window._msOrigHandlePanelClick(node, e);
@@ -1621,6 +1727,7 @@
     attrStarFromMap(node, fid);
     var drawId = 'db-' + fid;
     if (draw && draw.get(drawId)) {   // already pulled into draw (re-click via the edited overlay) → stage 1 unless mid-geometry-edit
+      if (CLICK_MODES) { enterDrawEditable(drawId, clickEvt && clickEvt.lngLat); return; }   // one-click: re-clicks edit too
       if (_editingDraw !== drawId) { _editingDraw = null; _armedSet = [drawId]; try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {} updateArmedHl(); }
       showFeaturePanel(drawId); updateGroupHl(drawId); return;
     }
@@ -1635,6 +1742,7 @@
       if (!row || !row.geom) { engineViewerPanel(node, clickEvt); setStatus('This folded layer\'s archive is unavailable — try again.'); return; }
       drawId = 'db-' + row.feature_id;   // the DRAW copy tracks the DELTA row; the tile still hides by its own (artifact) id below
       if (draw && draw.get(drawId)) {   // delta already pulled this session — stage 1, same as the live re-click path
+        if (CLICK_MODES) { enterDrawEditable(drawId, clickEvt && clickEvt.lngLat); return; }   // one-click: re-clicks edit too
         if (_editingDraw !== drawId) { _editingDraw = null; _armedSet = [drawId]; try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {} updateArmedHl(); }
         showFeaturePanel(drawId); updateGroupHl(drawId); return;
       }
@@ -1666,7 +1774,12 @@
       var m = pair[1]; if (!m) return; var tgt = { source: node.id + '-' + pair[0], id: Number(fid) }; if (node['source-layer']) tgt.sourceLayer = node['source-layer'];
       try { m.setFeatureState(tgt, { hover: false }); } catch (e) {}
     });
-    // stage 1 (same as drawn features): highlight + panel; the pulled-in draw copy stays UNSELECTED so the
+    if (CLICK_MODES) {   // ONE-CLICK (owner 8/28, "A"): no arm stage — the pulled feature opens editable
+      enterDrawEditable(drawId, clickEvt && clickEvt.lngLat);
+      setStatus('Feature ' + fid + ' — editable (drag to move, drag a vertex to reshape)');
+      return;
+    }
+    // stage 1 (legacy, CLICK_MODES=false): highlight + panel; the pulled-in draw copy stays UNSELECTED so the
     // geometry is locked — a second click on it goes through draw's own pipeline → stage 2 (editable)
     _editingDraw = null; _armedSet = [drawId];
     try { draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {}
@@ -5232,6 +5345,18 @@
       '#editor-add-form{margin-top:6px;}' +
       '#editor-add-bar input,#editor-add-bar select{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +
       '#editor-save-status{font-size:11px;color:#888888;padding:2px 6px;min-height:13px;}' +
+      /* EDIT ⇄ VIEW mode bar (8/28): sticky at the very top of the sidebar (#studioMenu is the
+         scroll container). The mode button's label is the ACTION it performs — in edit mode it
+         offers "View", and back. Hiding the draw cluster + edit tools in view mode rides a body
+         class so controls that dock late obey it too. */
+      '#editor-mode-bar{position:sticky;top:0;z-index:60;display:flex;gap:6px;padding:8px 6px;background:#fff;border-bottom:1px solid #e3e0d8;box-shadow:0 2px 6px rgba(31,51,73,0.06);}' +
+      '#editor-mode-bar button{flex:1;padding:8px 0;border:1px solid #bbbbbb;border-radius:4px;cursor:pointer;font-size:13px;font-weight:700;font-family:Source Sans Pro,Arial,sans-serif;background:#fff;color:#222222;}' +
+      '#editor-mode-bar button:active{transform:translateY(1px);}' +
+      '#editor-mode-toggle.ms-to-edit{background:#ce5c00;border-color:#ce5c00;color:#fff;}' +
+      '#editor-panel-toggle{background:#23374d;border-color:#23374d;color:#fff;}' +
+      '#editor-panel-toggle.ms-off{background:#fff;border-color:#bbbbbb;color:#777777;}' +
+      'body.ms-view-mode #editor-draw-cluster,body.ms-view-mode #editor-map-tools,body.ms-view-mode #editor-measure-readout,' +
+      'body.ms-view-mode #editor-draw-hint,body.ms-view-mode #editor-search-hint{display:none !important;}' +   // the draw-onboarding pair points at tools view mode hides
       '.layer-list-row{position:relative;}' +
       '.editor-del{position:absolute;right:44px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#888888;font-size:15px;font-weight:bold;line-height:1;padding:0 3px;z-index:2;}' +
       '.layer-list-row:hover .editor-del{opacity:1;}' +
@@ -5332,6 +5457,22 @@
     var bar = document.createElement('div'); bar.id = 'editor-add-bar';
     panel.parentNode.insertBefore(status, panel.nextSibling);
     panel.parentNode.insertBefore(bar, status.nextSibling);
+    if (CLICK_MODES) {
+      // the two switches, at the very top of the sidebar (owner 8/28) — above LAYERS, sticky
+      var modeBar = document.createElement('div'); modeBar.id = 'editor-mode-bar';
+      modeBar.innerHTML = '<button id="editor-mode-toggle"></button><button id="editor-panel-toggle"></button>';
+      var sMenu = document.getElementById('studioMenu');
+      if (sMenu) sMenu.insertBefore(modeBar, sMenu.firstChild); else panel.parentNode.insertBefore(modeBar, panel);
+      modeBar.querySelector('#editor-mode-toggle').addEventListener('click', function () { setEditorMode(_msMode === 'edit' ? 'view' : 'edit'); });
+      modeBar.querySelector('#editor-panel-toggle').addEventListener('click', function () { setPanelOn(!_msPanelOn); });
+      var mBadge = document.getElementById('editor-mode-badge');   // the topbar badge mirrors the state and doubles as a toggle
+      if (mBadge) { mBadge.style.cursor = 'pointer'; mBadge.addEventListener('click', function () { setEditorMode(_msMode === 'edit' ? 'view' : 'edit'); }); }
+      try {   // last choice per map wins on the next open (nothing is armed yet at boot — no flush needed)
+        if (localStorage.getItem(modeStoreKey('panel')) === '0') _msPanelOn = false;
+        if (localStorage.getItem(modeStoreKey('mode')) === 'view') { _msMode = 'view'; document.body.classList.add('ms-view-mode'); }
+      } catch (e) {}
+      refreshModeBar();
+    }
     // editing tools float on the MAP, next to the draw toolbar — paired sub-boxes (undo/redo,
     // copy/paste, distance/area, merge/split), single-word tooltips
     var maptools = document.createElement('div'); maptools.id = 'editor-map-tools';
@@ -5759,7 +5900,7 @@
         // groups (NTAD had none → no cursor → "really hard to select"). Cheap: only queried when
         // draw + group hover both missed; only touches the cursor when it would actually change.
         try {
-          if (!isDrawArmed()) {
+          if (!isDrawArmed() && !(CLICK_MODES && _msMode !== 'edit')) {   // view mode: the engine owns the cursor
             var hitU = !!did || !!_lastGroupGv;
             if (!hitU) {
               var sdU = (m === beforeMap) ? 'left' : 'right', eLids = [];
@@ -5815,7 +5956,7 @@
         var rightOfSwipe = (function () {
           try { var el = document.querySelector('.mapboxgl-compare'); var cx = e.originalEvent && e.originalEvent.clientX; return !el || cx == null || cx >= el.getBoundingClientRect().left; } catch (err) { return true; }
         })();
-        if (m !== beforeMap && draw && rightOfSwipe) {
+        if (m !== beforeMap && draw && rightOfSwipe && !(CLICK_MODES && _msMode !== 'edit')) {
           if (did && did !== _editingDraw) {
             if (window._msModClick) {
               // ctrl = pure TOGGLE here too (7/28) — and one click mutates the selection ONCE: when an
@@ -5826,12 +5967,14 @@
                 var tfR = featureToDb[did] != null ? String(featureToDb[did]) : (did.indexOf('db-') === 0 ? did.slice(3) : null);
                 syncAttrRowsFromMap([{ id: did }], { remove: tfR != null && MSSel.has(tfR) });
               }
+            } else if (CLICK_MODES) {
+              enterDrawEditable(did, e.lngLat);   // one-click: same single owner as the left side (draw still lives on the left; the mirror shows it)
             } else {
-              if (_armedSet.indexOf(did) > -1) {   // stage 2: geometry editable (selection lives in draw on the left; the mirror shows it)
+              if (_armedSet.indexOf(did) > -1) {   // stage 2 (legacy): geometry editable (selection lives in draw on the left; the mirror shows it)
                 _editingDraw = did; _armedSet = []; setArmedHl(null);
                 multiPartForEdit(did, e.lngLat);   // a Multi swaps to just the CLICKED part for vertex editing
                 try { draw.changeMode('simple_select', { featureIds: [did] }); } catch (err) {}
-              } else {                              // stage 1: highlight + panel, geometry NOT editable
+              } else {                              // stage 1 (legacy): highlight + panel, geometry NOT editable
                 _editingDraw = null; _armedSet = [did];
                 try { draw.changeMode('simple_select', { featureIds: [] }); } catch (err) {}
                 updateArmedHl();
@@ -7029,11 +7172,16 @@
   function clearArmedSet() { _armedSet = []; setArmedHl(null); updateGroupHl(null); }
   function armedIdsToRows() { syncAttrRowsFromMap(_armedSet.map(function (i3) { return { id: i3 }; })); }
   function onSelectionChange(e) {
+    if (CLICK_MODES && _msMode !== 'edit') {   // view mode: draw never keeps a selection (a lingering just-drawn feature must not become editable)
+      if (e.features && e.features.length) deferDrawSel([]);
+      return;
+    }
     if (!e.features || !e.features.length) { _skipArmOnce = false; _editingDraw = null; _armedSet = []; setArmedHl(null); updateGroupHl(null); hideFeaturePanel(); return; }   // draw deselect ≠ clear the selection (empty-ground clicks clear via the map click handler)
     if (_skipArmOnce) {   // a JUST-DRAWN feature: skip stage 1 — it stays selected (stage 2) with the panel open
       var f0 = e.features[0];
       _skipArmOnce = false; _editingDraw = String(f0.id); _armedSet = []; setArmedHl(null);
-      showFeaturePanel(f0.id); syncAttrRowsFromMap(e.features);
+      if (_msPanelOn) showFeaturePanel(f0.id);   // Panel off = pure geometry work — rapid digitizing without the panel popping (name it later)
+      syncAttrRowsFromMap(e.features);
       return;
     }
     // the CLICKED feature: with something in edit the event may carry [editing, clicked] — take the other one
@@ -7050,7 +7198,8 @@
         updateArmedHl(); syncAttrRowsFromMap([{ id: id }], { remove: true });
         return;
       }
-      // stage 2: plain click on the already-highlighted feature → geometry becomes editable
+      if (CLICK_MODES) { enterDrawEditable(id, _lastMapClickPt); return; }   // one-click: armed only ever means "ctrl-gathered" now — a plain click edits
+      // stage 2 (legacy): plain click on the already-highlighted feature → geometry becomes editable
       _editingDraw = id; _armedSet = [];
       setArmedHl(null);
       multiPartForEdit(id, _lastMapClickPt);   // a Multi swaps to just the CLICKED part for vertex editing
@@ -7078,7 +7227,8 @@
       hideFeaturePanel();
       return;
     }
-    // stage 1: plain click → highlight + panel + editor open; geometry stays LOCKED (the deferred
+    if (CLICK_MODES) { enterDrawEditable(id, _lastMapClickPt); return; }   // ONE-CLICK (owner "A"): plain click = editable, no arm stage
+    // stage 1 (legacy): plain click → highlight + panel + editor open; geometry stays LOCKED (the deferred
     // deselect undoes draw's own selection after its click pipeline finishes, so nothing is draggable)
     _editingDraw = null; _armedSet = [id];
     deferDrawSel([]);
