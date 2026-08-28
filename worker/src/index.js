@@ -311,6 +311,13 @@ export default {
         iok = ier.ok && (await ier.json()) === true;
       } catch (e) { iok = false; }
       if (!iok) return new Response(JSON.stringify({ error: "that isn't a map you can edit" }), { status: 403, headers: cors({ "Content-Type": "application/json" }) });
+      /* Email burns sender reputation, not just compute — hold it far below the generic write
+         ceiling. 10/min is more shares than any human does and 60x below what a loop would want. */
+      var ihit = await rateCheckShared(env, req, 10) || rateCheck(iuser.id, 10);
+      if (ihit.over) {
+        if (ihit.first) await noteRateTrip(env, iuser, ihit, req, url);
+        return new Response(JSON.stringify({ error: "too many invitations in one minute — wait a moment" }), { status: 429, headers: cors({ "Retry-After": "60", "Content-Type": "application/json" }) });
+      }
       var ipr = await fetch(env.SUPABASE_URL + "/rest/v1/projects?id=eq." + ipid + "&select=name,raw_config", { headers: iAuth });
       var iprj = (ipr.ok ? await ipr.json() : [])[0];
       var iea = (iprj && iprj.raw_config && iprj.raw_config.editAccess) || {};
@@ -376,6 +383,14 @@ export default {
         okEdit = er.ok && (await er.json()) === true;
       } catch (e) { okEdit = false; }
       if (!okEdit) return new Response(JSON.stringify({ error: "that isn't a map you can edit" }), { status: 403, headers: cors({ "Content-Type": "application/json" }) });
+      // creating CMS articles is a write like any other — same shared ceiling (rate-guard G1)
+      if (req.method === "POST") {
+        var ahit = await rateCheckShared(env, req, WRITE_LIMIT_PER_MIN) || rateCheck(auser.id, WRITE_LIMIT_PER_MIN);
+        if (ahit.over) {
+          if (ahit.first) await noteRateTrip(env, auser, ahit, req, url);
+          return new Response(JSON.stringify({ error: "write rate limit — wait a minute" }), { status: 429, headers: cors({ "Retry-After": "60", "Content-Type": "application/json" }) });
+        }
+      }
 
       // The CMS this layer is connected to, read with the caller's token.
       var cmsBase = "";

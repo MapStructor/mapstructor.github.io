@@ -248,6 +248,13 @@
         var sNow = await db.auth.getSession();
         if (sNow.data && sNow.data.session) { userId = sNow.data.session.user.id; row.user_id = userId; }
       } catch (eS) {}
+      /* Still nobody? REFUSE (8/27). This used to fall through and insert user_id NULL — the row
+         passed the old permissive policy and became an ownerless husk that fails ms_layer_writable
+         forever, unusable and undeletable from every UI. Two of those appeared in ONE night of
+         automated testing, so it was only a matter of time on a real account. The policy now
+         refuses NULL server-side too; this refusal exists to say WHY in words instead of an RLS
+         error. */
+      if (!row.user_id) throw new Error('your sign-in could not be read, so the new layer was not created — reload the page and try again');
     }
     var res = await db.from(table).insert(row).select('id').single();
     if (res.error) throw new Error(table + ' insert: ' + res.error.message);
@@ -713,8 +720,14 @@
         if (e.target.closest('input,.layer-buttons-block,.editor-del,.editor-setzoom,.compress-expand-icon,.toggle')) return;
         if (e.target.closest('label')) e.preventDefault();
         // a second click on the selected layer DESELECTS it (8/27, owner) — a button you can press
-        // must un-press, and before this the only way out of a selection was selecting another layer
-        if (id === activeLayerId) { clearActiveLayer(); return; }
+        // must un-press, and before this the only way out of a selection was selecting another layer.
+        // ONLY when its panel is actually open: drawing/importing auto-activates a layer with the
+        // panel closed, and the person's next row-click means "open it" — the labels gate caught
+        // v1 deselecting there, which broke every panel flow that follows an import.
+        if (id === activeLayerId) {
+          var lpT = document.getElementById('editor-layer-panel');
+          if (lpT && lpT.style.display !== 'none') { clearActiveLayer(); return; }
+        }
         setActiveLayer(id);
       });
       var enNode = findNodeById(layers, id);
@@ -2042,8 +2055,14 @@
     try { var r = await db.rpc('mapstructor_layer_stat', { p_layer: lid }); if (!r.error && r.data) { _layerSizeCache[lid] = r.data; show(r.data); } } catch (e) {}
   }
   function markAddActive(type) {   // highlight which add-action's form is open (or none)
+    // `type != null` is load-bearing (8/27, owner: "two buttons are a different color than the
+    // third"): clearing with type=null used to mark every button WITHOUT a data-type as active —
+    // getAttribute returns null, and null === null — which permanently darkened both doors and the
+    // injected Table/Query buttons the moment any form closed. Pressed now means exactly one thing:
+    // a form-opener is dark while its form is open; a door is dark while it is open (door-open);
+    // window-openers (Merge/Table/Query) only flash on :active and never hold a state.
     var btns = document.querySelectorAll('#editor-add-buttons button');
-    Array.prototype.forEach.call(btns, function (b) { b.classList.toggle('active', b.getAttribute('data-type') === type); });
+    Array.prototype.forEach.call(btns, function (b) { b.classList.toggle('active', type != null && b.getAttribute('data-type') === type); });
   }
   function addFormEl() {   // the form area under the persistent buttons; falls back to the bar if chrome is old
     return document.getElementById('editor-add-form') || document.getElementById('editor-add-bar');
@@ -6421,12 +6440,28 @@
     var datedCounts = await Promise.all(gjList.map(function (gj2) {
       return db.from('features').select('feature_id', { count: 'exact', head: true }).eq('layer_id', gj2.did).or('start_date.not.is.null,end_date.not.is.null').then(function (cq) { return (cq && cq.count) || 0; }, function () { return 0; });
     }));
+    /* ═══ THE RENDERER COLLAPSE (8/27, owner's "nuclear" call after the Slater demo) ═══
+       Until today the editor drew a layer through one of TWO renderers depending on facts the
+       user never sees: small + dateless → MapboxDraw copies; large, dated or tiled → the engine.
+       Every styling control therefore had two implementations, every hover three owners, and the
+       week's bug list was the drift between them — a polygon solid while editing and hollow when
+       published, an outline slider dead on exactly one class of layer, an editor that could not
+       match its own published copy by construction.
+       Now EVERY layer renders through the engine — the same code the viewer and the published
+       copy run — and MapboxDraw's remaining jobs are the two it is actually for: drawing a NEW
+       shape, and holding the ONE feature being reshaped (the click-to-pull-in path, in production
+       since 7/21 for every dated and large layer, including Slater's own Locations).
+       `ENGINE_RENDER_ALL = false` restores the old classification in one word if this ever has
+       to come back out. */
+    var ENGINE_RENDER_ALL = true;
     counts.forEach(function (cn, gi) {
-      if (cn > 0 && cn <= MAX_DRAW && !datedCounts[gi]) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; return; }
+      if (!ENGINE_RENDER_ALL && cn > 0 && cn <= MAX_DRAW && !datedCounts[gi]) { smallIds.push(gjList[gi].did); _drawLayerSlugs[gjList[gi].slug] = true; return; }
       // The single most confusing silent limit in the editor: past MAX_DRAW (or the moment a layer
       // gains dates) the vertex handles stop appearing and clicking a shape no longer selects it.
       // The layer looks exactly the same, so it reads as "editing broke", not "this layer is big".
-      if (cn > MAX_DRAW && window.MSGuard) MSGuard.cliff('draw-cap:' + gjList[gi].slug, cn, MAX_DRAW,
+      // the MAX_DRAW cliff is RETIRED with the collapse — every layer is engine-drawn now, so
+      // there is no behaviour change to announce at 1500 features (kept commented for the revert path)
+      if (!ENGINE_RENDER_ALL && cn > MAX_DRAW && window.MSGuard) MSGuard.cliff('draw-cap:' + gjList[gi].slug, cn, MAX_DRAW,
         'this layer is now drawn by the map engine instead of the shape editor, so its points cannot be dragged directly');
     });
     // the map contains a big-table layer → warm the columnar engine at idle, so the first table
