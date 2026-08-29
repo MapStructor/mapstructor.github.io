@@ -1315,6 +1315,9 @@
   //    Both persist per map. CLICK_MODES = false restores the old combined two-stage model,
   //    no mode bar, in one word.
   var CLICK_MODES = true;
+  // 8/29 (owner): tells the shared engine files (eventsHandle/infoPanel) that lock-shape layers are
+  // mouse-inert on THIS page — editor only; the published viewer never sets it.
+  try { window.__msLockInert = true; } catch (eLkF) {}
   var _msMode = 'edit', _msPanelOn = true;
   function modeStoreKey(s) { return 'ms-' + s + '-' + (typeof projectId !== 'undefined' && projectId ? projectId : 'x'); }
   function setEditorMode(mode) {
@@ -1425,6 +1428,8 @@
         // Panel OFF governs EVERY click-opened panel, both modes (8/28 bug: display-only layers
         // leaked past the switch in edit mode because only the view branch was gated).
         if (CLICK_MODES && !_msPanelOn) return;
+        // 8/29 (owner): LOCKED layers are inert in the editor, BOTH modes — no panel, ever.
+        try { var nLk = findNodeById(layers, layer && layer.id); if (nLk && nLk.editable === false) return; } catch (eLk) {}
         // VIEW MODE: the viewer's own panel behavior runs.
         if (CLICK_MODES && _msMode !== 'edit') return _origHPC.apply(this, arguments);
         // ALSO suppress for small drawn layers (their features live in MapboxDraw): if the engine copy is
@@ -1515,7 +1520,8 @@
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
       if (hit) return; var mm = pr[1], sd = pr[0]; if (!mm) return;
       var lids = [];
-      (function walk(arr) { (arr || []).forEach(function (n) { try { if (mm.getLayer(n.id + '-' + sd)) lids.push(n.id + '-' + sd); if (mm.getLayer(n.id + '-edited-' + sd)) lids.push(n.id + '-edited-' + sd); } catch (e) {} if (n.children) walk(n.children); }); })(layers);
+      (function walk(arr) { (arr || []).forEach(function (n) { try { if (n.editable !== false) {   // 8/29: LOCKED layers count as basemap — clicking one IS an empty-ground click (owner: the yellow selection dot must clear)
+        if (mm.getLayer(n.id + '-' + sd)) lids.push(n.id + '-' + sd); if (mm.getLayer(n.id + '-edited-' + sd)) lids.push(n.id + '-edited-' + sd); } } catch (e) {} if (n.children) walk(n.children); }); })(layers);
       if (!lids.length) return;
       try { var fs = mm.queryRenderedFeatures([[pt.x - bx, pt.y - bx], [pt.x + bx, pt.y + bx]], { layers: lids }); if (fs && fs.length) hit = true; } catch (e) {}
     });
@@ -1523,6 +1529,7 @@
   }
   function onEngineFeatureClick(node, e) {
     if (CLICK_MODES && _msMode !== 'edit') return;   // view mode (belt): also covers the -edited- overlay re-click handlers
+    if (node && node.editable === false) return;     // 8/29: LOCKED = inert (no ctrl-select either) — a click here is a basemap click
     if (!e.features || !e.features.length) return;
     // 9e (final model, 7/28): CTRL/⌘-click = pure select/deselect toggle — no editing, works with or
     // without a ▦ open. PLAIN click = the edit flow (arm + panel) AND the feature JOINS the selection
@@ -1737,7 +1744,7 @@
     // LOCKED layer (8/28): the map-level handler already skips these when collecting, but the
     // -edited- overlay's re-click handler calls in directly — without this guard, a lock could be
     // bypassed through any feature that was edited before the lock went on.
-    if (node && node.editable === false) { engineViewerPanel(node, clickEvt); return; }
+    if (node && node.editable === false) return;   // 8/29 (owner): inert, not "viewer behavior" — same as clicking the basemap
     // cache the clicked geometry FIRST so the selection highlight the star-add triggers paints instantly
     try { var g0 = renderedGeomFor(node, fid) || (clickEvt && clickEvt.features && clickEvt.features[0] && clickEvt.features[0].geometry); if (g0) _selGeom[String(fid)] = g0; } catch (eG) {}
     // …and its days (skinny tiles + live sources both carry them), so the marker can follow the timeline
@@ -6036,6 +6043,10 @@
         if (window._msPanelDrag) return;   // dragging a panel edge over the map is not a feature hover
         var did = drawFeatureAt(e.point);
         var node = did ? drawNodeFor(did) : null;
+        // 8/29 (owner): a LOCKED layer's features are mouse-INERT in the editor — "the same as if you
+        // clicked the basemap, off a feature". Treat the hit as ground here and every branch below
+        // (cursor, glow, bubbles) follows for free.
+        if (node && node.editable === false) { did = null; node = null; }
         // the RIGHT map has no MapboxDraw (which handles the left cursor) — set the pointer here
         // (but never while a draw tool is armed: the draw-side guard owns the right cursor then = not-allowed)
         if (m !== beforeMap && !isDrawArmed()) { try { m.getCanvas().style.cursor = did ? 'pointer' : ''; } catch (x) {} }
@@ -6057,12 +6068,13 @@
             // level, so the one map-level owner decides. View uses a TIGHT hit box: the engine's
             // clicks are exact-hit, and a 10px halo would promise clicks that do nothing.
             var vwC = CLICK_MODES && _msMode !== 'edit';
-            var hitU = !vwC && (!!did || !!_lastGroupGv);
+            var hitU = !vwC && (!!did || !!_lastGroupGv);   // did already nulled above for locked layers
             if (!hitU) {
               var sdU = (m === beforeMap) ? 'left' : 'right', eLids = [];
               (function walkU(arr) { (arr || []).forEach(function (n) {
                 var viU = (typeof msHoverDoesSomething === 'function' ? msHoverDoesSomething(n) : !!(n.popupStyle || n.click)) || (!!n.panel && _msPanelOn);
-                var careU = vwC ? viU : (isEngineEditable(n) || viU);
+                // 8/29 (owner): LOCKED layers never earn the finger — their features count as basemap
+                var careU = (n.editable === false) ? false : (vwC ? viU : (isEngineEditable(n) || viU));
                 if (careU) [n.id + '-' + sdU, n.id + '-edited-' + sdU].forEach(function (L) { if (m.getLayer(L)) eLids.push(L); });
                 if (n.children) walkU(n.children); }); })(layers);
               if (eLids.length) {
@@ -6092,6 +6104,9 @@
       });
       m.on('click', function (e) {
         var did = drawFeatureAt(e.point);
+        // 8/29 (owner): LOCKED layers are inert — a click on their features IS a basemap click, so all
+        // the empty-ground clears below run and nothing selects/arms/bubbles.
+        if (did) { try { var nL = drawNodeFor(did); if (nL && nL.editable === false) did = null; } catch (eL) {} }
         // click empty ground → clear EVERYTHING ourselves (highlight, panel, bubbles, stage). In stage 1
         // draw's own selection is already EMPTY, so no selectionchange will ever fire to do this — relying
         // on draw's event was the "stuck panel/highlight" hole. When something IS selected (stage 2, left
@@ -7286,7 +7301,7 @@
     var did = drawFeatureAt(pt);
     if (did && featureLayer[did]) {
       var node1 = nodeByLayerDbId(featureLayer[did]) || _engineEditNode[did];
-      var key1 = node1 && node1.groupBy;
+      var key1 = node1 && node1.editable !== false && node1.groupBy;   // 8/29: locked = inert, no group hover
       if (key1) {
         var m1 = featureMeta[did] || {};
         var v1 = (key1 === 'label') ? (m1.label || '') : (m1.custom ? m1.custom[key1] : null);
@@ -7300,7 +7315,7 @@
         var fs = beforeMap.queryRenderedFeatures([[pt.x - bx, pt.y - bx], [pt.x + bx, pt.y + bx]], { layers: lids }) || [];
         fs = fs.filter(function (f) {
           var n2 = findNodeById(layers, String(f.layer.id).replace(/-(left|right)$/, ''));
-          if (!n2 || !n2.groupBy) return false;
+          if (!n2 || !n2.groupBy || n2.editable === false) return false;   // 8/29: locked = inert, no group hover
           var vv = (n2.groupBy === 'label') ? (f.properties || {}).label : (f.properties || {})[n2.groupBy];
           f._msNode = n2; f._msVal = vv;
           return !!gnorm(vv);
@@ -10171,7 +10186,7 @@
         // 8/28 (owner): per-layer geometry lock — "some layers are meant to not be changeable,
         // like city limits". Clicks on a locked layer behave like the published map (popups/panel
         // per the settings above); nothing gets pulled into editing and nothing can be drawn in.
-        '<label class="ms-check" style="margin-bottom:6px;" title="Features can\'t be moved or reshaped, and nothing can be drawn into this layer — clicks behave like the published map"><input id="elp-lockshape" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />&#128274; Lock shape editing</label>' +
+        '<label class="ms-check" style="margin-bottom:6px;" title="Features can\'t be moved, reshaped or drawn into — the mouse passes straight through them, as if they weren\'t there"><input id="elp-lockshape" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />&#128274; Lock shape editing</label>' +
         '<div id="elp-inert-note" class="ms-note" style="display:none;margin:0 0 6px;">All three off = the layer ignores the mouse completely: no glow, no pointer, nothing to click.</div>' +
         '<label class="ms-lbl">Label field (what the popup shows)</label>' +
         '<select id="elp-labelfield" class="ms-in"><option value="label">label (the feature\'s own Label)</option></select>' +

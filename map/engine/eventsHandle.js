@@ -35,6 +35,10 @@ try { window.msEventsOwnsHover = msEventsOwnsHover; } catch (e) {}
    `groupBy` stays interactive on purpose: a "treat as one" layer hovers as a group, and the group
    overlay — not this gate — owns that. */
 function msHoverDoesSomething(config) {
+  // 8/29 (owner): in the EDITOR (both its modes), a lock-shape layer's features are mouse-inert —
+  // "the same as if you clicked the basemap". editing.js sets __msLockInert; the published viewer
+  // never does, so this guard is a no-op there.
+  if (config && config.editable === false && typeof window !== "undefined" && window.__msLockInert) return false;
   return !!(config && (config.popupStyle || config.click || config.groupBy ||
     (config.highlight && config.hoverHighlight !== false)));
 }
@@ -152,6 +156,7 @@ function setupLayerEventForMap(map, config, side) {
     }
 
     function clickHandle(event) {
+      if (config.editable === false && typeof window !== "undefined" && window.__msLockInert) return;   // 8/29: locked = inert in the editor (see msHoverDoesSomething)
       if (!config.click) { closeInfo(); return; }   // #12: click-popup toggled off live
       const clickedId = event.features?.[0]?.id;
       if (clickedId == null) return;
