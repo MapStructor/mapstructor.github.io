@@ -1361,8 +1361,8 @@
         : 'Switch to editing: one click makes any feature editable (shortcut: E)';
       mt.classList.toggle('ms-to-edit', _msMode !== 'edit');
     }
-    if (pt) {   // same convention as the mode button: the label is the ACTION the click performs (owner 8/28)
-      pt.innerHTML = _msPanelOn ? '&#9636; Panel Off' : '&#9636; Open Panel';
+    if (pt) {   // same convention as the mode button: the label is the ACTION the click performs (owner 8/29 wording)
+      pt.innerHTML = _msPanelOn ? '&#9636; Close Panels' : '&#9636; Open Panels';
       pt.title = _msPanelOn ? 'Clicking a feature or layer opens its panel — click to turn that off' : 'Clicks leave every panel closed — click to turn panels back on';
       pt.classList.toggle('ms-off', !_msPanelOn);
       pt.setAttribute('aria-pressed', _msPanelOn ? 'true' : 'false');
@@ -1405,7 +1405,8 @@
     var dm = null, dc = null, ds = null;
     try { dm = draw.getMode(); dc = draw.getAll().features.length; ds = draw.getSelectedIds().length; } catch (e) {}
     return { clickModes: CLICK_MODES, mode: _msMode, panel: _msPanelOn, editing: _editingDraw, drawMode: dm, drawCount: dc, drawSel: ds,
-             dirty: Object.keys(_engineGeomDirty), edited: Object.keys(_engineEdited) };
+             dirty: Object.keys(_engineGeomDirty), edited: Object.keys(_engineEdited),
+             active: (typeof activeLayerId !== 'undefined' ? activeLayerId : null) };
   };
   function wireEngineEditClicks() {
     if (typeof layers === 'undefined' || !draw) return;
@@ -1884,6 +1885,66 @@
     try { if (typeof selectedDrawId !== 'undefined' && selectedDrawId === drawId) hideFeaturePanel(); } catch (e4) {}
     try { applyEngineEditFilter(node); } catch (e5) {}
   }
+  // ── EDITS LIVE IN THE ENGINE SOURCE (8/29, owner approved the architecture change) ────────────
+  // For a geojson-rendered layer the engine's own source is the ONE render truth: every mutation
+  // (geometry save, meta save, create, delete, undo/redo) writes the feature back INTO it — both
+  // sides, node.source.data (style switches re-add from it), and the label anchor sources, the
+  // exact idiom hydrateDeferredLayer established. The -edited- overlay now exists ONLY for
+  // vector-tile layers, whose tiles are immutable until a re-bake; that one change retires the
+  // overlay's copied paint (the invisible-transparent-fill class), the stale label base, the
+  // colorBy fallback on edited features, and the undo-needs-draw coupling in one move.
+  // change: { geom?, props?, propsPatch?, remove? } → false when the layer isn't geojson-sourced
+  // (callers fall back to the overlay path).
+  function engineSourcePatch(node, fid, change) {
+    if (!node || fid == null || !change) return false;
+    var s0 = null; try { s0 = (typeof beforeMap !== 'undefined') && beforeMap.getSource(node.id + '-left'); } catch (e) {}
+    if (!s0 || s0.type !== 'geojson') return false;
+    var fc = (node.source && node.source.data && node.source.data.features) ? node.source.data : null;
+    if (!fc) { try { var sd = (s0.serialize && s0.serialize().data) || s0._data; if (sd && sd.features) fc = sd; } catch (e2) {} }
+    if (!fc) fc = { type: 'FeatureCollection', features: [] };
+    var feats = fc.features, ix = -1;
+    for (var i = 0; i < feats.length; i++) { var f = feats[i]; if (String(f.id != null ? f.id : (f.properties || {}).feature_id) === String(fid)) { ix = i; break; } }
+    if (change.remove) { if (ix > -1) feats.splice(ix, 1); }
+    else if (ix > -1) {
+      if (change.geom) feats[ix] = { type: 'Feature', id: (feats[ix].id != null ? feats[ix].id : Number(fid)), geometry: change.geom, properties: change.props || feats[ix].properties || {} };
+      if (change.propsPatch) feats[ix].properties = Object.assign({}, feats[ix].properties || {}, change.propsPatch);
+      else if (change.props && !change.geom) feats[ix].properties = change.props;
+    } else if (change.geom) {
+      feats.push({ type: 'Feature', id: Number(fid), geometry: change.geom, properties: change.props || {} });
+    } else return false;   // patching a feature the source doesn't hold — nothing to do
+    if (node.source) node.source.data = fc;
+    [(typeof beforeMap !== 'undefined') ? beforeMap : null, (typeof afterMap !== 'undefined') ? afterMap : null].forEach(function (m) {
+      if (!m) return;
+      ['-left', '-right'].forEach(function (sfx) { try { var s = m.getSource(node.id + sfx); if (s && s.setData) s.setData(fc); } catch (e3) {} });
+      if (node.labels && node.labels.field && typeof msBuildLabelAnchors === 'function') {
+        ['-labels-left', '-labels-right'].forEach(function (sfx) { try { var s = m.getSource(node.id + sfx); if (s && s.setData) s.setData(msBuildLabelAnchors(fc.features, node.labels.field)); } catch (e4) {} });
+      }
+    });
+    return true;
+  }
+  // the engine's property contract for a features-table row — configLoader's ONE mapping, with an
+  // inline fallback carrying the same shape (trimmed-blank label → null, day fallbacks 0/99999999)
+  function engineFeatureProps(row) {
+    if (typeof window.msFeatureToGeo === 'function') return msFeatureToGeo(row).properties;
+    var p = { label: (row.label != null && String(row.label).trim() !== '') ? row.label : null,
+              description: row.description != null ? row.description : null,
+              content_id: row.content_id != null ? row.content_id : null,
+              image_url: row.image_url != null ? row.image_url : null,
+              DayStart: row.start_date ? +String(row.start_date).slice(0, 10).replace(/-/g, '') : 0,
+              DayEnd: row.end_date ? +String(row.end_date).slice(0, 10).replace(/-/g, '') : 99999999 };
+    if (row.custom_fields && typeof row.custom_fields === 'object') Object.keys(row.custom_fields).forEach(function (k) { if (!(k in p)) p[k] = row.custom_fields[k]; });
+    return p;
+  }
+  // featureMeta (the panel's shape) → the same property contract, as a PATCH (merges over the
+  // source feature's existing props, so colorBy columns and custom fields survive untouched)
+  function enginePropsFromMeta(meta) {
+    meta = meta || {};
+    return { label: (meta.label != null && String(meta.label).trim() !== '') ? meta.label : null,
+             description: (meta.notes != null && meta.notes !== '') ? meta.notes : null,
+             content_id: meta.pageid || null, image_url: meta.image_url || null,
+             DayStart: meta.start ? +String(meta.start).replace(/-/g, '') : 0,
+             DayEnd: meta.end ? +String(meta.end).replace(/-/g, '') : 99999999 };
+  }
   function applyEngineEditFilter(node) {
     var ids = (_engineEditIds[node.id] || []).map(Number);
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
@@ -2021,7 +2082,15 @@
     }
     try { var f = draw && draw.get(drawId); if (f) geom = f.geometry; } catch (e) {}
     if (!geom) geom = _geomSnap[drawId];
-    if (geom) geom = toDbGeom(drawId, geom);   // a Multi edited as ONE part folds back into its slot — the overlay must show the WHOLE feature, not the part
+    if (geom) geom = toDbGeom(drawId, geom);   // a Multi edited as ONE part folds back into its slot — the render must show the WHOLE feature, not the part
+    // CHANGED shape on a geojson-rendered layer → write it INTO the engine source and return the
+    // feature to its own render (8/29). The overlay below now serves vector-tile layers only.
+    if (geom && engineSourcePatch(node, fid, { geom: geom, propsPatch: enginePropsFromMeta(featureMeta[drawId]) })) {
+      returnEngineEditToTiles(drawId, node);
+      hideFeaturePanel();
+      setStatus('Done editing — saved');
+      return;
+    }
     if (geom) {
       (_engineEdited[node.id] = _engineEdited[node.id] || {})[fid] = geom;
       // carry the feature's days onto the overlay BEFORE featureMeta is dropped below — the
@@ -5412,9 +5481,11 @@
          which is exactly why both buttons rendered white in round 1. */
       '#editor-mode-bar #editor-mode-toggle{background:#46627f;border-color:#46627f;color:#fff;}' +
       '#editor-mode-bar #editor-mode-toggle.ms-to-edit{background:#ce5c00;border-color:#ce5c00;color:#fff;}' +
-      '#editor-mode-bar #editor-panel-toggle{background:#23374d;border-color:#23374d;color:#fff;}' +
-      /* off is still COLORED (owner 8/28) — a washed navy, clearly quieter than the on-state */
-      '#editor-mode-bar #editor-panel-toggle.ms-off{background:#8494a8;border-color:#8494a8;color:#fff;}' +
+      /* the Panel toggle gets its OWN hue (owner 8/29: two washed blues side by side read as one
+         control in two states). Green family, filled = on, hollow = off — the classic toggle idiom,
+         and the off state still carries color in its border and text. */
+      '#editor-mode-bar #editor-panel-toggle{background:#2d7a2d;border-color:#2d7a2d;color:#fff;}' +
+      '#editor-mode-bar #editor-panel-toggle.ms-off{background:#fff;border:1.5px solid #2d7a2d;color:#2d7a2d;}' +
       'body.ms-view-mode #editor-draw-cluster,body.ms-view-mode #editor-map-tools,body.ms-view-mode #editor-measure-readout,' +
       'body.ms-view-mode #editor-draw-hint,body.ms-view-mode #editor-search-hint{display:none !important;}' +   // the draw-onboarding pair points at tools view mode hides
       '.layer-list-row{position:relative;}' +
@@ -6117,11 +6188,16 @@
   // draw.delete handler doesn't double-act). draw.add does not fire draw.create, so no re-entrancy.
   async function removeDrawnFeature(drawId) {
     var fid = featureToDb[drawId];
+    var nRm = featureLayer[drawId] ? nodeByLayerDbId(featureLayer[drawId]) : null;   // BEFORE the maps are dropped
     _suppressFeatureDelete = true;
     try { if (draw && draw.get(drawId)) draw.delete(drawId); } catch (e) {}
     setTimeout(function () { _suppressFeatureDelete = false; }, 0);
     if (fid) await saveSoft(db.from('features').delete().eq('feature_id', fid), 'removing the feature');
+    if (fid && nRm) try { engineSourcePatch(nRm, fid, { remove: true });
+      var eLr = _engineEditIds[nRm.id] || []; var eIr = eLr.indexOf(fid); if (eIr < 0) eIr = eLr.indexOf(Number(fid)); if (eIr < 0) eIr = eLr.indexOf(String(fid)); if (eIr > -1) { eLr.splice(eIr, 1); applyEngineEditFilter(nRm); }
+    } catch (eSp) {}   // the source render + any edit bookkeeping go with the row (8/29)
     delete featureToDb[drawId]; delete featureMeta[drawId]; delete featureLayer[drawId]; delete _geomSnap[drawId];
+    delete _engineEditNode[drawId]; delete _engineGeomDirty[drawId]; delete _engineWasMulti[drawId]; delete _engineOrigMulti[drawId]; delete _engineMultiPartIx[drawId];
   }
   async function addDrawnFeature(drawId, geom, lyr, props) {
     // undo/paste path: if this insert is refused the shape is on the canvas with no database row
@@ -6129,19 +6205,44 @@
     var insR = await saveSoft(db.from('features').insert({ layer_id: lyr, geom: geom }).select('feature_id'), 'restoring the feature');
     var ins = { error: insR.error, data: Array.isArray(insR.data) ? insR.data[0] : insR.data };
     if (!ins.error && ins.data) { featureToDb[drawId] = ins.data.feature_id; featureMeta[drawId] = { label: '', notes: '', start: '', end: '' }; featureLayer[drawId] = lyr; }
-    try { if (draw && !draw.get(drawId)) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props || {} }); } catch (e) {}
+    // the ENGINE SOURCE renders it (8/29) — a draw copy only where the source isn't geojson-backed
+    // (a brand-new layer's first feature before its engine layer exists)
+    var nAd = nodeByLayerDbId(lyr), inSource = false;
+    if (!ins.error && ins.data && nAd) try { inSource = engineSourcePatch(nAd, ins.data.feature_id, { geom: geom, props: engineFeatureProps({ feature_id: ins.data.feature_id, geom: geom }) }); } catch (eSp2) {}
+    try { if (!inSource && draw && !draw.get(drawId)) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props || {} }); } catch (e) {}
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
   }
-  async function setDrawnGeom(drawId, geom) {
+  async function setDrawnGeom(drawId, geom, lyrHint) {
     var fid = featureToDb[drawId];
+    // a feature already RETURNED to the source has no live mappings (the return path drops them),
+    // but its canonical drawId carries the fid — undo after Done/flip must still work (the 8/28
+    // audit's #1 finding, and the gate's undo-in-view assert)
+    if (fid == null && /^db-\d+$/.test(String(drawId))) fid = String(drawId).slice(3);
+    var lyrUG = featureLayer[drawId] || lyrHint || null;
+    if (fid && !lyrUG) { try { var lr = await db.from('features').select('layer_id').eq('feature_id', fid).single(); if (lr.data) lyrUG = lr.data.layer_id; } catch (eLr) {} }
+    var nUG = lyrUG ? nodeByLayerDbId(lyrUG) : null;
+    // MULTI GUARD: after the return the was-a-Multi bookkeeping is gone, so an undo that would
+    // write a single part over a MultiPolygon row must refuse rather than corrupt the shape
+    if (fid && nUG && geom && geom.type === 'Polygon') {
+      try {
+        var fcMG = nUG.source && nUG.source.data && nUG.source.data.features || [];
+        var curMG = fcMG.filter(function (f2) { return String(f2.id != null ? f2.id : (f2.properties || {}).feature_id) === String(fid); })[0];
+        if (curMG && curMG.geometry && /^Multi/.test(curMG.geometry.type) && !_engineWasMulti[drawId]) { setStatus('This undo step is unavailable (multi-part shape)'); return; }
+      } catch (eMG) {}
+    }
     var EBg = _engineEditNode[drawId] ? getEditBackend(_engineEditNode[drawId]) : PLATFORM_FEATURES;   // Phase 2a
     if (fid) { var gpatch = {}; gpatch[EBg.geomCol] = toDbGeom(drawId, geom); await saveSoft(EBg.db.from(EBg.table).update(gpatch).eq(EBg.idCol, fid), 'saving the moved shape'); }
-    try { var f = draw && draw.get(drawId); var props = f ? f.properties : {}; _suppressFeatureDelete = true; if (f) draw.delete(drawId); if (draw) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props }); setTimeout(function () { _suppressFeatureDelete = false; }, 0); } catch (e) {}
+    // the ENGINE SOURCE is the render truth (8/29): undo/redo writes the geometry into it, which
+    // makes undo work from ANY mode — a feature not currently in draw simply updates in place.
+    if (fid && nUG) try { engineSourcePatch(nUG, fid, { geom: toDbGeom(drawId, geom) }); } catch (eSp) {}
+    // refresh only an EXISTING draw copy — re-adding one that isn't there painted a GHOST duplicate
+    // over the source render (the undo-in-view hole found in the 8/28 audit)
+    try { var f = draw && draw.get(drawId); if (f) { var props = f.properties; _suppressFeatureDelete = true; draw.delete(drawId); draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props }); setTimeout(function () { _suppressFeatureDelete = false; }, 0); } } catch (e) {}
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
     // labels anchor to the geometry via labelFeaturesFor's in-memory overlay (_geomSnap) — undo/redo
     // of a move must re-anchor exactly like the move itself did, or the label stays stranded at the
     // undone position until a refresh (owner 8/28: "the label does not come back with the dot")
-    var lnG = featureLayer[drawId] ? nodeByLayerDbId(featureLayer[drawId]) : null;
+    var lnG = nUG;
     if (lnG && lnG.labels) { clearTimeout(_lblLiveTimer); _lblLiveTimer = setTimeout(function () { try { applyLabelLayers(lnG); } catch (eLb) {} }, 400); }
   }
 
@@ -6164,6 +6265,7 @@
     // vanished from the screen and came back on reload.
     var delR = await saveSoft(db.from('features').delete().in('feature_id', fids), 'deleting the selected features');
     if (delR.error) { setStatus('Delete failed'); return 0; }
+    rows.forEach(function (r) { try { var nD = nodeByLayerDbId(r.layer_id); if (nD) engineSourcePatch(nD, r.feature_id, { remove: true }); } catch (eSp) {} });   // the source render goes with the rows (8/29)
     cap.forEach(function (c) { delete featureToDb[c.drawId]; delete featureMeta[c.drawId]; delete featureLayer[c.drawId]; delete _geomSnap[c.drawId]; });
     pushUndo(function () { return reinsertDrawn(cap); }, function () { return removeDrawnBatch(cap); }, label || ('delete ' + cap.length + ' feature' + (cap.length > 1 ? 's' : '')));
     return cap.length;
@@ -6177,7 +6279,11 @@
         if (!ins.error && ins.data) {
           featureToDb[c.drawId] = ins.data.feature_id; featureLayer[c.drawId] = c.lyr;
           featureMeta[c.drawId] = { label: c.label || '', notes: c.description || '', start: c.start_date ? String(c.start_date).slice(0, 10) : '', end: c.end_date ? String(c.end_date).slice(0, 10) : '' };
-          try { if (draw && !draw.get(c.drawId)) draw.add({ type: 'Feature', id: c.drawId, geometry: c.geom, properties: c.props || {} }); } catch (e) {}
+          // restore into the ENGINE SOURCE with the full row contract (8/29) — the draw copy is
+          // only the fallback for a layer whose geojson source doesn't exist
+          var nRe = nodeByLayerDbId(c.lyr), inSrcRe = false;
+          try { if (nRe) inSrcRe = engineSourcePatch(nRe, ins.data.feature_id, { geom: c.geom, props: engineFeatureProps({ feature_id: ins.data.feature_id, geom: c.geom, label: c.label, description: c.description, start_date: c.start_date, end_date: c.end_date, custom_fields: c.custom_fields }) }); } catch (eSp2) {}
+          try { if (!inSrcRe && draw && !draw.get(c.drawId)) draw.add({ type: 'Feature', id: c.drawId, geometry: c.geom, properties: c.props || {} }); } catch (e) {}
           _geomSnap[c.drawId] = JSON.parse(JSON.stringify(c.geom));
         }
       } catch (e) {}
@@ -6594,11 +6700,38 @@
       // that the layer is known, so the info-panel preview renders too (panel+editor, not editor-only)
       if (selectedDrawId === f.id) showFeaturePanel(f.id);
       try { if (draw) { var fp = featureProps(node); Object.keys(fp).forEach(function (k) { draw.setFeatureProperty(f.id, k, fp[k]); }); } } catch (e) {}  // stamp the layer's full style so the new feature matches
+      // ═══ THE NEW FEATURE JOINS THE ENGINE SOURCE AT ONCE (8/29) ═══
+      // From this moment it renders through the layer's own source like every saved feature —
+      // timeline, popups, stroke companion, labels, view mode — and the draw copy is re-keyed to
+      // the canonical 'db-<fid>' identity and registered as a normal pulled edit, so Done, the
+      // view flush, undo and re-clicks all run the ONE machinery. A layer whose geojson source
+      // doesn't exist yet (its very first feature this session) stays draw-resident as before.
+      var finalId = f.id;
+      try {
+        if (CLICK_MODES && engineSourcePatch(node, ins.data.feature_id, { geom: f.geometry, props: engineFeatureProps({ feature_id: ins.data.feature_id, geom: f.geometry }) })) {
+          var newId = 'db-' + ins.data.feature_id, dProps = {};
+          try { var dCopy = draw.get(f.id); dProps = (dCopy && dCopy.properties) || {}; } catch (eMg0) {}
+          featureToDb[newId] = ins.data.feature_id; delete featureToDb[f.id];
+          featureMeta[newId] = featureMeta[f.id]; delete featureMeta[f.id];
+          featureLayer[newId] = lid; delete featureLayer[f.id];
+          _geomSnap[newId] = _geomSnap[f.id]; delete _geomSnap[f.id];
+          _engineEditNode[newId] = node;
+          (_engineEditIds[node.id] = _engineEditIds[node.id] || []).push(ins.data.feature_id);
+          applyEngineEditFilter(node);   // hide the source copy while the draw copy stays in hand
+          _suppressFeatureDelete = true;
+          try { draw.delete(f.id); draw.add({ type: 'Feature', id: newId, geometry: f.geometry, properties: dProps }); } catch (eMg1) {}
+          setTimeout(function () { _suppressFeatureDelete = false; }, 0);
+          if (_editingDraw === f.id) _editingDraw = newId;
+          if (selectedDrawId === f.id) { selectedDrawId = newId; showFeaturePanel(newId); }
+          try { draw.changeMode('simple_select', { featureIds: [newId] }); } catch (eMg2) {}
+          finalId = newId;
+        }
+      } catch (eMg) { console.warn('editing: create migration', eMg); }
       (function (drawId, geom, lyr, col) {
         pushUndo(function () { return removeDrawnFeature(drawId); },
           function () { return addDrawnFeature(drawId, geom, lyr, col ? { color: col } : {}); },
           'draw ' + (TYPE_TO_GEOM[node.type] || 'feature'));
-      })(f.id, JSON.parse(JSON.stringify(f.geometry)), lid, node.iconColor);
+      })(finalId, JSON.parse(JSON.stringify(f.geometry)), lid, node.iconColor);
       setStatus('Saved');
     } catch (err) {
       if (featureToDb[f.id] == null) delete featureLayer[f.id];   // insert never landed — drop the optimistic mapping
@@ -6619,9 +6752,10 @@
       _geomSnap[f.id] = newGeom;
       var lnU = featureLayer[f.id] ? nodeByLayerDbId(featureLayer[f.id]) : null;   // map labels anchor to the geometry — re-anchor after a move (debounced)
       if (lnU && lnU.labels) { clearTimeout(_lblLiveTimer); _lblLiveTimer = setTimeout(function () { try { applyLabelLayers(lnU); } catch (err2) {} }, 400); }
-      if (oldGeom) (function (drawId, oldG, newG) {
-        pushUndo(function () { return setDrawnGeom(drawId, oldG); }, function () { return setDrawnGeom(drawId, newG); }, 'move feature');
-      })(f.id, oldGeom, newGeom);
+      if (oldGeom) (function (drawId, oldG, newG, lyrH) {
+        // lyrH rides along so undo still knows the layer AFTER the feature returns to the source
+        pushUndo(function () { return setDrawnGeom(drawId, oldG, lyrH); }, function () { return setDrawnGeom(drawId, newG, lyrH); }, 'move feature');
+      })(f.id, oldGeom, newGeom, featureLayer[f.id]);
     }
     setStatus('Saved');
   }
@@ -6634,6 +6768,12 @@
       // it used to come back on the next reload with nothing having said a word
       var dr = await saveSoft(db.from('features').delete().eq('feature_id', fid), 'deleting the feature');
       if (dr.error) continue;
+      // the source render + the edit bookkeeping go with the row (8/29): a pulled feature's tile
+      // exclusion is spliced out too, or the filter carries a dead id forever
+      try { var nDel = lyr ? nodeByLayerDbId(lyr) : null; if (nDel) { engineSourcePatch(nDel, fid, { remove: true });
+        var eL = _engineEditIds[nDel.id] || []; var eIx = eL.indexOf(fid); if (eIx < 0) eIx = eL.indexOf(Number(fid)); if (eIx < 0) eIx = eL.indexOf(String(fid)); if (eIx > -1) { eL.splice(eIx, 1); applyEngineEditFilter(nDel); }
+      } } catch (eDl) {}
+      delete _engineEditNode[f.id]; delete _engineGeomDirty[f.id]; delete _engineWasMulti[f.id]; delete _engineOrigMulti[f.id]; delete _engineMultiPartIx[f.id];
       delete featureToDb[f.id]; delete featureMeta[f.id]; delete featureLayer[f.id]; delete _geomSnap[f.id];
       (function (drawId, geom, lyr, props) {
         pushUndo(function () { return addDrawnFeature(drawId, geom, lyr, props); }, function () { return removeDrawnFeature(drawId); }, 'delete feature');
@@ -7737,7 +7877,10 @@
     var meta = featureMeta[drawId] || {};
     setStatus('Saving…');
     try { var r = await db.from('features').update({ label: meta.label || null, description: meta.notes || null, start_date: meta.start || null, end_date: meta.end || null, content_id: meta.pageid || null, image_url: meta.image_url || null }).eq('feature_id', fid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
-    catch (e) { console.warn('editing: feature meta save failed', e); setStatus('Save failed'); try { showToast('Save failed: ' + (e && e.message ? e.message : 'error')); } catch (x) {} }
+    catch (e) { console.warn('editing: feature meta save failed', e); setStatus('Save failed'); try { showToast('Save failed: ' + (e && e.message ? e.message : 'error')); } catch (x) {} return; }
+    // the ENGINE SOURCE carries the render props (8/29): label/dates/notes land in the source too,
+    // so popups, the timeline and the label anchors reflect the edit without any rebuild
+    try { var nMt = featureLayer[drawId] ? nodeByLayerDbId(featureLayer[drawId]) : null; if (nMt) engineSourcePatch(nMt, fid, { propsPatch: enginePropsFromMeta(meta) }); } catch (eMt) {}
   }
   function updateImagePreview(url) {   // small thumbnail under the URL field in the feature panel
     var img = document.getElementById('efp-image-preview'); if (!img) return;

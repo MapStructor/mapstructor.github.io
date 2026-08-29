@@ -65,6 +65,9 @@ var ConfigLoader = (function () {
     }
     return { type: "Feature", id: f.feature_id, geometry: f.geom, properties: props };
   }
+  // the editor writes edits INTO the engine sources (8/29) and must build features with THIS
+  // contract — exported so there is exactly one row→feature mapping on the whole platform
+  try { window.msFeatureToGeo = featureToGeo; } catch (e) {}
 
   // ── Adaptive row pager (8/13). Heavy-geometry layers break FIXED 1000-row pages: CShapes 2.0 is
   //    ~70KB of MultiPolygon per row, so one 1000-row page ≈ 70MB and Postgres cancels it
