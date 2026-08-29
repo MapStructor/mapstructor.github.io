@@ -21,14 +21,14 @@ const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE
 // TODO(user): create one Stripe price per paid step (20gb $1 · 50gb $2 · 100gb $4 · 250gb $8 ·
 // 500gb $15 · 1tb $25 · 2tb $45, all monthly) and paste the IDs below AND into pricing.js.
 const PRICE_TO_TIER: Record<string, string> = {
-  // TEST-mode storage prices (created 2026-07-29). Swap for the sk_live_ price IDs at launch.
-  "price_1TyfdDLiMJ4gksrjvk7Pq4H9": "20gb",
-  "price_1TyfcrLiMJ4gksrjTYBnOSmY": "50gb",
-  "price_1TyfcrLiMJ4gksrj7La8hSx5": "100gb",
-  "price_1TyfcsLiMJ4gksrjQ5dryqtl": "250gb",
-  "price_1TyfctLiMJ4gksrjUkNCEhz3": "500gb",
-  "price_1TyfcuLiMJ4gksrj1lisLpi3": "1tb",
-  "price_1TyfcuLiMJ4gksrjN2OMgPVH": "2tb",
+  // LIVE storage prices (created 2026-08-29).
+  "price_1U9vt8Lx8hmpYH5q3BhJnH1V": "20gb",
+  "price_1U9vt9Lx8hmpYH5q70HKvQnY": "50gb",
+  "price_1U9vtALx8hmpYH5qmEGsGDiu": "100gb",
+  "price_1U9vtBLx8hmpYH5qmqzra9nC": "250gb",
+  "price_1U9vtCLx8hmpYH5qoUk7SZUP": "500gb",
+  "price_1U9vtDLx8hmpYH5qxnAbMml2": "1tb",
+  "price_1U9vtDLx8hmpYH5qJs2aJVWO": "2tb",
   // retired named-tier prices (now archived in Stripe) — left resolving so any lingering test
   // subscription still lands on a step via pricing.js's legacy aliases:
   "price_1TluYTLiMJ4gksrj28JlFQU6": "plus",

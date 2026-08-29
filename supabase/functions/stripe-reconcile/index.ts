@@ -32,13 +32,13 @@ const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE
 // Price → step key. MUST stay identical to stripe-webhook's map (change both together).
 const PRICE_TO_TIER: Record<string, string> = {
   // TEST-mode storage prices (created 2026-07-29). Swap for the sk_live_ price IDs at launch.
-  "price_1TyfdDLiMJ4gksrjvk7Pq4H9": "20gb",
-  "price_1TyfcrLiMJ4gksrjTYBnOSmY": "50gb",
-  "price_1TyfcrLiMJ4gksrj7La8hSx5": "100gb",
-  "price_1TyfcsLiMJ4gksrjQ5dryqtl": "250gb",
-  "price_1TyfctLiMJ4gksrjUkNCEhz3": "500gb",
-  "price_1TyfcuLiMJ4gksrj1lisLpi3": "1tb",
-  "price_1TyfcuLiMJ4gksrjN2OMgPVH": "2tb",
+  "price_1U9vt8Lx8hmpYH5q3BhJnH1V": "20gb",
+  "price_1U9vt9Lx8hmpYH5q70HKvQnY": "50gb",
+  "price_1U9vtALx8hmpYH5qmEGsGDiu": "100gb",
+  "price_1U9vtBLx8hmpYH5qmqzra9nC": "250gb",
+  "price_1U9vtCLx8hmpYH5qoUk7SZUP": "500gb",
+  "price_1U9vtDLx8hmpYH5qxnAbMml2": "1tb",
+  "price_1U9vtDLx8hmpYH5qJs2aJVWO": "2tb",
   // retired named-tier prices (archived in Stripe) — still resolve via pricing.js legacy aliases
   "price_1TluYTLiMJ4gksrj28JlFQU6": "plus",
   "price_1TluYULiMJ4gksrju0vPRXHr": "pro",

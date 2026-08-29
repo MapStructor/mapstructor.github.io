@@ -36,13 +36,13 @@ const stripe = new Stripe(Deno.env.get("STRIPE_SECRET_KEY")!, {
 // stripe-webhook and the stripePriceId values in platform/pricing.js — three copies of one fact,
 // which is why `stripe-price-map-gate.mjs` compares all three rather than trusting this comment.
 const KNOWN_PRICES = new Set([
-  "price_1TyfdDLiMJ4gksrjvk7Pq4H9",  // 20gb
-  "price_1TyfcrLiMJ4gksrjTYBnOSmY",  // 50gb
-  "price_1TyfcrLiMJ4gksrj7La8hSx5",  // 100gb
-  "price_1TyfcsLiMJ4gksrjQ5dryqtl",  // 250gb
-  "price_1TyfctLiMJ4gksrjUkNCEhz3",  // 500gb
-  "price_1TyfcuLiMJ4gksrj1lisLpi3",  // 1tb
-  "price_1TyfcuLiMJ4gksrjN2OMgPVH",  // 2tb
+  "price_1U9vt8Lx8hmpYH5q3BhJnH1V",  // 20gb
+  "price_1U9vt9Lx8hmpYH5q70HKvQnY",  // 50gb
+  "price_1U9vtALx8hmpYH5qmEGsGDiu",  // 100gb
+  "price_1U9vtBLx8hmpYH5qmqzra9nC",  // 250gb
+  "price_1U9vtCLx8hmpYH5qoUk7SZUP",  // 500gb
+  "price_1U9vtDLx8hmpYH5qxnAbMml2",  // 1tb
+  "price_1U9vtDLx8hmpYH5qJs2aJVWO",  // 2tb
 ]);
 
 Deno.serve(async (req) => {

@@ -12,10 +12,10 @@
 (function () {
   var KB = 1024, MB = KB * 1024, GB = MB * 1024, TB = GB * 1024;
   var Pricing = {
-    // Stripe (TEST mode for now — swap publishableKey + the price IDs for live keys at launch).
+    // Stripe LIVE (swapped 2026-08-29; test values in git history).
     // Publishable key is meant to be client-side; the SECRET key only ever lives in Supabase.
     stripe: {
-      publishableKey: "pk_test_51TlkRALiMJ4gksrjjlaHC306lLrXPxCJ194wYZqPiCn8UAOjQHTgthmF5JMcoOIloUIMV6dkBq0S8VTCYpvfbJ3k00XyehhniJ",
+      publishableKey: "pk_live_51TlkR3Lx8hmpYH5q2DllHbpNTBPLiSXcV269pt5g9gOgQbWX12H3RNxRzQIZ8l0uSFOqbA5FCivce4TDKNA0yG0C001AbrK1MY",
       functionsBase: "https://eqpxlwbjqiwfjlsuapvu.supabase.co/functions/v1",   // Supabase Edge Functions (checkout / portal)
     },
     contactEmail: "hello@mapstructor.com",   // the over-2TB "contact us" door
@@ -24,13 +24,13 @@
     // IDs here AND in supabase/functions/stripe-webhook/index.ts (PRICE_TO_TIER).
     steps: [
       { key: "free",  label: "Free",   priceMonthly: 0,  quotaBytes: 1 * GB,   stripePriceId: null },
-      { key: "20gb",  label: "20 GB",  priceMonthly: 1,  quotaBytes: 20 * GB,  stripePriceId: "price_1TyfdDLiMJ4gksrjvk7Pq4H9" },  // TEST mode
-      { key: "50gb",  label: "50 GB",  priceMonthly: 2,  quotaBytes: 50 * GB,  stripePriceId: "price_1TyfcrLiMJ4gksrjTYBnOSmY" },  // TEST mode
-      { key: "100gb", label: "100 GB", priceMonthly: 4,  quotaBytes: 100 * GB, stripePriceId: "price_1TyfcrLiMJ4gksrj7La8hSx5" },  // TEST mode
-      { key: "250gb", label: "250 GB", priceMonthly: 8,  quotaBytes: 250 * GB, stripePriceId: "price_1TyfcsLiMJ4gksrjQ5dryqtl" },  // TEST mode
-      { key: "500gb", label: "500 GB", priceMonthly: 15, quotaBytes: 500 * GB, stripePriceId: "price_1TyfctLiMJ4gksrjUkNCEhz3" },  // TEST mode
-      { key: "1tb",   label: "1 TB",   priceMonthly: 25, quotaBytes: 1 * TB,   stripePriceId: "price_1TyfcuLiMJ4gksrj1lisLpi3" },  // TEST mode
-      { key: "2tb",   label: "2 TB",   priceMonthly: 45, quotaBytes: 2 * TB,   stripePriceId: "price_1TyfcuLiMJ4gksrjN2OMgPVH" },  // TEST mode
+      { key: "20gb",  label: "20 GB",  priceMonthly: 1,  quotaBytes: 20 * GB,  stripePriceId: "price_1U9vt8Lx8hmpYH5q3BhJnH1V" },  // LIVE
+      { key: "50gb",  label: "50 GB",  priceMonthly: 2,  quotaBytes: 50 * GB,  stripePriceId: "price_1U9vt9Lx8hmpYH5q70HKvQnY" },  // LIVE
+      { key: "100gb", label: "100 GB", priceMonthly: 4,  quotaBytes: 100 * GB, stripePriceId: "price_1U9vtALx8hmpYH5qmEGsGDiu" },  // LIVE
+      { key: "250gb", label: "250 GB", priceMonthly: 8,  quotaBytes: 250 * GB, stripePriceId: "price_1U9vtBLx8hmpYH5qmqzra9nC" },  // LIVE
+      { key: "500gb", label: "500 GB", priceMonthly: 15, quotaBytes: 500 * GB, stripePriceId: "price_1U9vtCLx8hmpYH5qoUk7SZUP" },  // LIVE
+      { key: "1tb",   label: "1 TB",   priceMonthly: 25, quotaBytes: 1 * TB,   stripePriceId: "price_1U9vtDLx8hmpYH5qxnAbMml2" },  // LIVE
+      { key: "2tb",   label: "2 TB",   priceMonthly: 45, quotaBytes: 2 * TB,   stripePriceId: "price_1U9vtDLx8hmpYH5qJs2aJVWO" },  // LIVE
     ],
     // Legacy named tiers (test-mode era, superseded 2026-07-27). Every alias resolves to a step
     // with MORE storage at a LOWER price, so a profile still carrying an old key only gains:
