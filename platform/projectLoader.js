@@ -32,7 +32,7 @@ window.msApplyHeaderFeature = function (visible, projectName) {
       "body.ms-no-header .map{top:40px;}" +                                                        // was 120 = 40 top bar + 80 header
       "body.ms-no-header #studioMenu{top:42px;height:calc(100% - 131px);max-height:calc(100% - 131px);}" +
       "body.ms-no-header #view-hide-layer-panel{top:48px;}" +
-      "body.ms-no-header #rightInfoBar{top:42px;max-height:calc(100% - 150px);}" +
+      "body.ms-no-header #rightInfoBar{top:42px;max-height:calc(100% - 208px);}" +
       // title + About, centered; darker/prominent divider above LAYERS. No logo here — the logo belongs to
       // the header only (maps with a header); the sidebar section is title + About.
       "#sidebar-brand{display:none;flex-direction:column;align-items:center;text-align:center;gap:5px;padding:12px 12px 15px;border-bottom:2px solid #23374d;margin-bottom:10px;}" +

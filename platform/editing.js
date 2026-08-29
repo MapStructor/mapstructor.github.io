@@ -7504,7 +7504,7 @@
     if (document.getElementById('editor-feature-panel')) return;
     var p = document.createElement('div');
     p.id = 'editor-feature-panel';
-    p.style.cssText = 'position:fixed;top:120px;right:12px;width:240px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // scroll + stay above the timeline
+    p.style.cssText = 'position:fixed;top:120px;right:12px;width:240px;max-height:calc(100vh - 288px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:6000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // 288 (owner 8/29): stop short of the date badge + zoom bar. z 6000 (owner: "float above everything — serious if someone can't edit"): above all floating UI (4000 tier), below only modal overlays (6500+)
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b>Feature</b><span id="efp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
       '<div id="efp-group-note" style="display:none;font-size:11px;color:#7a5cc9;background:#f4f1fb;border-radius:4px;padding:4px 6px;margin-bottom:6px;"></div>' +
@@ -10096,7 +10096,7 @@
     ensureEditorUiCss();
     var p = document.createElement('div');
     p.id = 'editor-layer-panel';
-    p.style.cssText = 'position:fixed;top:128px;left:349px;width:236px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background: #f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:rgb(0 0 0) 0px 0px 6px 2px;padding:0;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // top + shadow are the owner's values (8/29); left is DERIVED live at each open (showLayerPanel) — hardcoded lefts were wrong at some zoom ("the panel is way off")
+    p.style.cssText = 'position:fixed;top:128px;left:349px;width:236px;max-height:calc(100vh - 288px);overflow-y:auto;overflow-x:hidden;background: #f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:rgb(0 0 0) 0px 0px 6px 2px;padding:0;font-size:13px;z-index:6000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // top + shadow are the owner's values (8/29); left is DERIVED live at each open (showLayerPanel) — hardcoded lefts were wrong at some zoom ("the panel is way off"). z 6000 + 288 clearance (owner 8/29): closable panels ride above everything non-modal — "they can be closed, revealing anything else, unlike other things"
     var SEC = function (t) { return '<div class="ms-sec">' + t + '</div>'; };   // section heading (was inline; now .ms-sec)
     var SECTOP = 'ms-sectop';   // section-top spacing — now a CLASS name, used as class="…"
     var GRP = 'ms-grp';         // paired-control group divider — now a CLASS name

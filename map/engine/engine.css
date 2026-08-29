@@ -557,13 +557,13 @@ div.layer-list-row:hover {
   display: block;
   top: 122px;   /* +40px site top bar */
   right: 0;
-  max-height: calc(100% - 230px);
-  max-height: -o-calc(100% - 230px);
-  max-height: -moz-calc(100% - 230px);
-  max-height: -webkit-calc(100% - 230px);
+  max-height: calc(100% - 288px);      /* 288 (owner 8/29): stop short of the date badge + zoom bar */
+  max-height: -o-calc(100% - 288px);
+  max-height: -moz-calc(100% - 288px);
+  max-height: -webkit-calc(100% - 288px);
   overflow: auto;
   background-color: #fff !important;
-  z-index: 100;
+  z-index: 5990;   /* owner 8/29: "absolutely always above anything else" — above all floating UI (4000 tier), just under the feature EDIT panel (6000), below only modal overlays (6500+) */
 }
 
 .rightInfoBarBorder {
