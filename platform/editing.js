@@ -1324,6 +1324,9 @@
     try { localStorage.setItem(modeStoreKey('mode'), mode); } catch (e) {}
     if (mode === 'view') flushEditsForView();
     document.body.classList.toggle('ms-view-mode', mode === 'view');
+    // the draw-onboarding hints anchor to chrome that mode switches reflow, so they drift a few
+    // pixels per toggle (owner 8/29) — a person switching modes is past onboarding; retire them
+    try { if (window._msDismissDrawHint) _msDismissDrawHint(); if (window._msDismissSearchHint) _msDismissSearchHint(); } catch (eH) {}
     refreshModeBar();
     setStatus(mode === 'view' ? 'Viewing — the map behaves like the published version' : 'Editing — click any feature to edit it');
   }
@@ -1333,6 +1336,7 @@
     refreshModeBar();
     if (!_msPanelOn) { hideFeaturePanel(); try { hideLayerPanel(); } catch (e) {} }   // the style panel is click-opened chrome too
     else if (_editingDraw) showFeaturePanel(_editingDraw);   // a feature is mid-edit → its panel comes back
+    else if (typeof activeLayerId !== 'undefined' && activeLayerId) { try { showLayerPanel(activeLayerId); } catch (e2) {} }   // a layer is selected → its panel opens right away (owner 8/29: no second click)
   }
   // Leaving edit mode must leave nothing half-edited on screen: the ONE draw deselect below both
   // discards an unfinished shape and releases direct_select (so the deletes are safe — 1721's
@@ -5485,7 +5489,10 @@
          control in two states). Green family, filled = on, hollow = off — the classic toggle idiom,
          and the off state still carries color in its border and text. */
       '#editor-mode-bar #editor-panel-toggle{background:#2d7a2d;border-color:#2d7a2d;color:#fff;}' +
-      '#editor-mode-bar #editor-panel-toggle.ms-off{background:#fff;border:1.5px solid #2d7a2d;color:#2d7a2d;}' +
+      /* off is FILLED too (owner 8/29: "make Open Panels have a color") — a washed green, same
+         family as the on-state, the label carries the state */
+      '#editor-mode-bar #editor-panel-toggle.ms-off{background:#79a079;border-color:#79a079;color:#fff;}' +
+      '#ms-download-section{display:none;}' +   /* editor-only: the same dialog lives behind ＋ Add → Download (owner 8/29); the viewer keeps its sidebar button */
       'body.ms-view-mode #editor-draw-cluster,body.ms-view-mode #editor-map-tools,body.ms-view-mode #editor-measure-readout,' +
       'body.ms-view-mode #editor-draw-hint,body.ms-view-mode #editor-search-hint{display:none !important;}' +   // the draw-onboarding pair points at tools view mode hides
       '.layer-list-row{position:relative;}' +
@@ -5570,7 +5577,9 @@
       '#editor-map-tools button.active{background:#ce5c00;color:#fff;}' +
       '#editor-measure-readout{position:fixed;top:240px;left:374px;z-index:60;display:none;background:rgba(35,55,77,0.96);color:#fff;font-size:14px;font-weight:600;padding:7px 14px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;}' +
       // #1: prominent transient toast for draw rejections (the tiny save-status text was too easy to miss).
-      '#editor-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;display:none;background:rgba(206,92,0,0.97);color:#fff;font-size:15px;font-weight:600;padding:12px 20px;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;pointer-events:none;}' +
+      /* toast rides HIGH and small (owner 8/29: centered covered the very edit it announced and
+         read as an error) — under the tool dock, out of the working area */
+      '#editor-toast{position:fixed;top:15%;left:50%;transform:translateX(-50%);z-index:9999;display:none;background:rgba(206,92,0,0.97);color:#fff;font-size:13px;font-weight:600;padding:7px 14px;border-radius:7px;box-shadow:0 3px 10px rgba(0,0,0,0.35);font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;pointer-events:none;}' +
       // first-run nudge: a bobbing pill under the draw tools with a tail pointing up at them
       '#editor-draw-hint{position:fixed;z-index:70;display:flex;align-items:center;gap:8px;background:#2b6ce8;color:#fff;font-family:Source Sans Pro,Arial,sans-serif;font-size:12px;font-weight:600;padding:6px 9px 6px 11px;border-radius:8px;box-shadow:0 5px 14px rgba(43,108,232,0.45);animation:edHintBob 1.3s ease-in-out infinite;}' +
       '#editor-draw-hint::before{content:"";position:absolute;top:-7px;left:26px;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:7px solid #2b6ce8;}' +
@@ -6235,6 +6244,8 @@
     // the ENGINE SOURCE is the render truth (8/29): undo/redo writes the geometry into it, which
     // makes undo work from ANY mode — a feature not currently in draw simply updates in place.
     if (fid && nUG) try { engineSourcePatch(nUG, fid, { geom: toDbGeom(drawId, geom) }); } catch (eSp) {}
+    // the yellow selection marker follows undo/redo too (same staleness as the move itself)
+    try { if (fid != null && typeof MSSel !== 'undefined' && MSSel.has(String(fid))) { var gSel2 = JSON.parse(JSON.stringify(toDbGeom(drawId, geom))); gSel2.msWhole = true; _selGeom[String(fid)] = gSel2; var rSel2 = (typeof findAttrRow === 'function') ? findAttrRow(String(fid)) : null; if (rSel2 && rSel2.geom) rSel2.geom = gSel2; paintAttrHighlight(); } } catch (eHl2) {}
     // refresh only an EXISTING draw copy — re-adding one that isn't there painted a GHOST duplicate
     // over the source render (the undo-in-view hole found in the 8/28 audit)
     try { var f = draw && draw.get(drawId); if (f) { var props = f.properties; _suppressFeatureDelete = true; draw.delete(drawId); draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props }); setTimeout(function () { _suppressFeatureDelete = false; }, 0); } } catch (e) {}
@@ -6663,7 +6674,7 @@
       if (existing) {
         if (draw) draw.delete(f.id);
         // #1: prominent centered toast only — no duplicate in the sidebar save-status text.
-        showToast('Select or create a new layer');
+        showToast('Select a layer');
         return;
       }
       try { await addItem('layer', geomLayerName(f.geometry.type), null); } catch (e) { console.warn('auto-create layer failed', e); }   // addItem activates quietly — adding a FEATURE never pops the style panel
@@ -6744,6 +6755,9 @@
       if (_engineEditNode[f.id]) _engineGeomDirty[f.id] = true;   // set BEFORE the await — a mode flip mid-save must still see it
       var oldGeom = _geomSnap[f.id], newGeom = JSON.parse(JSON.stringify(f.geometry));
       var saveGeom = toDbGeom(f.id, f.geometry); if (_engineWasMulti[f.id]) _engineOrigMulti[f.id] = saveGeom;
+      // the yellow SELECTION marker anchors to click-time geometry (_selGeom) — a moved feature
+      // left its marker stranded at the old spot ("huge yellow dot", owner 8/29). Follow the shape.
+      try { if (typeof MSSel !== 'undefined' && MSSel.has(String(fid))) { var gSel = JSON.parse(JSON.stringify(saveGeom)); gSel.msWhole = true; _selGeom[String(fid)] = gSel; var rSel = (typeof findAttrRow === 'function') ? findAttrRow(String(fid)) : null; if (rSel && rSel.geom) rSel.geom = saveGeom; paintAttrHighlight(); } } catch (eHl) {}
       var EBu = _engineEditNode[f.id] ? getEditBackend(_engineEditNode[f.id]) : PLATFORM_FEATURES;   // Phase 2a: tileset edits → the layer's backend; drawn → platform features
       var upatch = {}; upatch[EBu.geomCol] = saveGeom;
       // moving a shape is the most tactile edit there is; if the database refuses, the shape stays
@@ -10058,7 +10072,7 @@
     ensureEditorUiCss();
     var p = document.createElement('div');
     p.id = 'editor-layer-panel';
-    p.style.cssText = 'position:fixed;top:120px;left:362px;width:236px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background: #f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:0 3px 14px rgba(0,0,0,0.2);padding:0;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // padding moved to the sticky header + scrolling body; scroll + stay above the timeline (#footer is 67px)
+    p.style.cssText = 'position:fixed;top:128px;left:270px;width:236px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background: #f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:rgb(0 0 0) 0px 0px 6px 2px;padding:0;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // 128/270 + the shadow are the owner's exact values (8/29) — sits INSIDE the sidebar instead of straddling its edge
     var SEC = function (t) { return '<div class="ms-sec">' + t + '</div>'; };   // section heading (was inline; now .ms-sec)
     var SECTOP = 'ms-sectop';   // section-top spacing — now a CLASS name, used as class="…"
     var GRP = 'ms-grp';         // paired-control group divider — now a CLASS name

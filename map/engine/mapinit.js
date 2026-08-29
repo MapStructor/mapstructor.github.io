@@ -26,6 +26,7 @@ function initMaps() {
 		zoom: mapConfig.zoom,
 		attributionControl: true,
 		projection: "mercator",
+		fadeDuration: 0,   // labels appear the moment they place (owner 8/29: "they kind of fade in") — instantaneous-everything
 	};
 
 	const afterMapConfig  = {
@@ -36,6 +37,7 @@ function initMaps() {
 		zoom: mapConfig.zoom,
 		attributionControl: true,
 		projection: "mercator",
+		fadeDuration: 0,
 	};
 	
 	//ADD MAP CONTAINER
@@ -55,6 +57,50 @@ function initMaps() {
 	beforeMap.addControl(nav_left, "bottom-right");
 	var nav_right = new mapboxgl.NavigationControl();
 	afterMap.addControl(nav_right, "bottom-right");
+
+	// ── SWIPE CLAMP (8/29, owner): the divider must never hide behind the sidebar — dragged under
+	// there it "closes" half the comparison and leaves no visible handle to find. Its minimum is
+	// the sidebar's right edge, enforced live while dragging (gl-compare only fires slideend),
+	// again on release, on window resize, on the sidebar collapse toggle, and once at boot (a
+	// saved position may already sit under the sidebar). Sidebar closed → the full range returns.
+	(function () {
+		function swipeMin() {
+			var sm = document.getElementById("studioMenu");
+			if (!sm) return 0;
+			var cs = window.getComputedStyle(sm);
+			if (cs.display === "none" || cs.visibility === "hidden") return 0;
+			var r = sm.getBoundingClientRect();
+			if (r.width === 0 || r.right <= 0) return 0;
+			var cont = document.getElementById("comparison-container");
+			var cl = cont ? cont.getBoundingClientRect().left : 0;
+			return Math.max(0, r.right - cl);
+		}
+		function swipeX() {
+			var el = document.querySelector(".mapboxgl-compare");
+			if (!el) return null;
+			var mM = /translate\(?(-?[\d.]+)px/.exec(el.style.transform || "");
+			return mM ? parseFloat(mM[1]) : null;
+		}
+		function clampSwipe() {
+			try {
+				var x = swipeX(); if (x == null) return;
+				var min = swipeMin();
+				if (x < min - 0.5) map.setSlider(min);
+			} catch (e) {}
+		}
+		try { map.on("slideend", clampSwipe); } catch (e) {}
+		var _swRaf = null;
+		function watch() { clampSwipe(); _swRaf = requestAnimationFrame(watch); }
+		document.addEventListener("pointerdown", function (ev) {
+			if (ev.target && ev.target.closest && ev.target.closest(".compare-swiper, .mapboxgl-compare")) { if (!_swRaf) watch(); }
+		}, true);
+		document.addEventListener("pointerup", function () { if (_swRaf) { cancelAnimationFrame(_swRaf); _swRaf = null; setTimeout(clampSwipe, 0); } }, true);
+		window.addEventListener("resize", function () { setTimeout(clampSwipe, 50); });
+		var vh = document.getElementById("view-hide-layer-panel");
+		if (vh) vh.addEventListener("click", function () { setTimeout(clampSwipe, 350); });   // after the collapse animation settles
+		setTimeout(clampSwipe, 800);
+		window.msClampSwipe = clampSwipe;   // chrome + harness can invoke it directly
+	})();
 
 	setupInfoPanels();
 	
