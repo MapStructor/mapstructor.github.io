@@ -1729,6 +1729,10 @@
     return pt;
   }
   async function enterEngineEdit(node, fid, clickEvt) {
+    // LOCKED layer (8/28): the map-level handler already skips these when collecting, but the
+    // -edited- overlay's re-click handler calls in directly — without this guard, a lock could be
+    // bypassed through any feature that was edited before the lock went on.
+    if (node && node.editable === false) { engineViewerPanel(node, clickEvt); return; }
     // cache the clicked geometry FIRST so the selection highlight the star-add triggers paints instantly
     try { var g0 = renderedGeomFor(node, fid) || (clickEvt && clickEvt.features && clickEvt.features[0] && clickEvt.features[0].geometry); if (g0) _selGeom[String(fid)] = g0; } catch (eG) {}
     // …and its days (skinny tiles + live sources both carry them), so the marker can follow the timeline
