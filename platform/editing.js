@@ -5762,7 +5762,16 @@
     })();
     setTimeout(checkStorage, 2500);   // storage-quota state (warn banner / hard-stop) once the session is ready   // cliff-ok: this path has its own retry
     makeHeaderTitleEditable();   // click the map title in the header to rename it
-    try { window.infoPanelDefaultHandle = function () {}; } catch (e) {}   // suspend "click map → toggle sidebar" (use the sidebar button instead)
+    // "click map → toggle sidebar" is the PUBLISHED map's behavior, so view mode keeps it
+    // (owner 8/29: "the sidebar is released and moves like normal, as the public would see").
+    // Edit mode keeps it suspended — the sidebar collapsing under every map click while editing
+    // would be maddening; the collapse button still works there.
+    try {
+      var _origIPDH = window.infoPanelDefaultHandle;
+      window.infoPanelDefaultHandle = function () {
+        if (CLICK_MODES && _msMode !== 'edit' && typeof _origIPDH === 'function') return _origIPDH.apply(this, arguments);
+      };
+    } catch (e) {}
     document.addEventListener('keydown', function (e) {   // Esc cancels measure/split; Ctrl+Z/Y, Ctrl+C/V
       if (e.key === 'Escape' && _measuring) { e.preventDefault(); cancelMeasure(); return; }
       if (e.key === 'Escape' && _splitMode) { e.preventDefault(); cancelSplit(); return; }
@@ -10072,7 +10081,7 @@
     ensureEditorUiCss();
     var p = document.createElement('div');
     p.id = 'editor-layer-panel';
-    p.style.cssText = 'position:fixed;top:128px;left:270px;width:236px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background: #f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:rgb(0 0 0) 0px 0px 6px 2px;padding:0;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // 128/270 + the shadow are the owner's exact values (8/29) — sits INSIDE the sidebar instead of straddling its edge
+    p.style.cssText = 'position:fixed;top:128px;left:349px;width:236px;max-height:calc(100vh - 230px);overflow-y:auto;overflow-x:hidden;background: #f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:rgb(0 0 0) 0px 0px 6px 2px;padding:0;font-size:13px;z-index:1000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // top + shadow are the owner's values (8/29); left is DERIVED live at each open (showLayerPanel) — hardcoded lefts were wrong at some zoom ("the panel is way off")
     var SEC = function (t) { return '<div class="ms-sec">' + t + '</div>'; };   // section heading (was inline; now .ms-sec)
     var SECTOP = 'ms-sectop';   // section-top spacing — now a CLASS name, used as class="…"
     var GRP = 'ms-grp';         // paired-control group divider — now a CLASS name
@@ -10574,6 +10583,9 @@
     var fillStroke = (isGeojson || isTilesetNode(node)) && node.type === 'fill';  // drawn AND tileset fills get the real line outline + its width/show toggles
     injectLayerPanel();
     var p = document.getElementById('editor-layer-panel'); if (!p) return;
+    // beside the sidebar, never over it, at ANY zoom or width (8/29 round 2: two hardcoded lefts
+    // were each wrong at somebody's zoom — DERIVE from the sidebar's live edge instead)
+    try { var smP = document.getElementById('studioMenu'); var smPR = smP ? smP.getBoundingClientRect() : null; p.style.left = ((smPR && smPR.right > 50) ? Math.round(smPR.right) + 8 : 12) + 'px'; } catch (ePos) {}
     // sections/dividers have no layer config — layerJson.js hides its "{ } JSON" chip off this stamp
     p.setAttribute('data-ms-kind', (node.type === 'section' || node.type === 'group') ? 'container' : 'layer');
     try { if (window._msLayerJsonSync) window._msLayerJsonSync(); } catch (e) {}
@@ -11836,12 +11848,34 @@
       } catch (e) {}
     });
   }
+  // The marker is PAIRED with its feature at PAINT TIME (owner 8/29: "fundamentally paired, at
+  // all times" — the previous fix patched a stored copy at each write site, which is exactly the
+  // duplicated-facts family, and re-clicking resurrected a stale snapshot). Resolution order:
+  // the live draw copy (mid-edit), then the engine source (current by construction since edits
+  // write into it). The stored click-time copies survive only as the fallback for vector-tile
+  // layers, whose features can't be looked up by id outside the viewport.
+  function liveGeomFor(fid) {
+    var did = 'db-' + fid;
+    try { var dfL = draw && draw.get ? draw.get(did) : null; if (dfL && dfL.geometry) return toDbGeom(did, dfL.geometry); } catch (eL) {}
+    var lyrL = featureLayer[did], nL = lyrL ? nodeByLayerDbId(lyrL) : null;
+    var scan = nL ? [nL] : [];
+    if (!scan.length && typeof flatLayers === 'function') { try { scan = flatLayers(layers).filter(function (n2) { return n2 && n2.source && n2.source.type === 'geojson' && n2.source.data && n2.source.data.features; }); } catch (eF) { scan = []; } }
+    for (var si = 0; si < scan.length; si++) {
+      var fcL = scan[si].source && scan[si].source.data; if (!fcL || !fcL.features) continue;
+      for (var fi = 0; fi < fcL.features.length; fi++) {
+        var fL = fcL.features[fi];
+        if (String(fL.id != null ? fL.id : (fL.properties || {}).feature_id) === String(fid)) return fL.geometry;
+      }
+    }
+    return null;
+  }
   // Paint the CURRENT selection from whatever geometry is on hand (fetched row geoms + clicked-tile
   // fragments). Reads live _attrSel, so a late repaint can never show a stale set.
   function paintAttrHighlight() {
     var ymdN = function (d, dflt) { return d ? +(String(d).slice(0, 10).replace(/-/g, '')) || dflt : dflt; };
     var feats = _attrSel.map(function (fid) {
-      var r = findAttrRow(fid); var g = (r && r.geom) || _selGeom[String(fid)]; if (!g) return null;
+      var gLive = liveGeomFor(fid);
+      var r = findAttrRow(fid); var g = gLive || (r && r.geom) || _selGeom[String(fid)]; if (!g) return null;
       // the marker carries its feature's days (8/8): a selected feature that the timeline
       // excludes must not leave a floating star behind — same contract as every other costume.
       // Best source wins: the table row (fresh), then the click-time tile props, then the armed
@@ -11856,7 +11890,7 @@
       // shape. So a fragment-sourced highlight paints FILL ONLY, and the outline appears when the
       // stored geometry replaces it (r.geom present → msFrag 0). Whole-shape immediately, edges
       // only where real edges are.
-      var frag = !(r && r.geom) && !!_selGeom[String(fid)] && !(_selGeom[String(fid)].msWhole);
+      var frag = !gLive && !(r && r.geom) && !!_selGeom[String(fid)] && !(_selGeom[String(fid)].msWhole);   // live geometry is always WHOLE
       return { type: 'Feature', geometry: g, properties: { DayStart: ds, DayEnd: de, msFrag: frag ? 1 : 0 } };
     }).filter(Boolean);
     attrMaps().forEach(function (m) { try { var src = m.getSource('editor-attr-hl-src'); if (src) src.setData({ type: 'FeatureCollection', features: feats }); } catch (e) {} });
