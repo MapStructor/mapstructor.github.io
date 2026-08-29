@@ -1361,9 +1361,9 @@
         : 'Switch to editing: one click makes any feature editable (shortcut: E)';
       mt.classList.toggle('ms-to-edit', _msMode !== 'edit');
     }
-    if (pt) {
-      pt.innerHTML = '&#9636; Panel';
-      pt.title = _msPanelOn ? 'Clicking a feature opens its panel — click to turn that off' : 'Feature clicks leave the panel closed — click to turn it back on';
+    if (pt) {   // same convention as the mode button: the label is the ACTION the click performs (owner 8/28)
+      pt.innerHTML = _msPanelOn ? '&#9636; Panel Off' : '&#9636; Open Panel';
+      pt.title = _msPanelOn ? 'Clicking a feature or layer opens its panel — click to turn that off' : 'Clicks leave every panel closed — click to turn panels back on';
       pt.classList.toggle('ms-off', !_msPanelOn);
       pt.setAttribute('aria-pressed', _msPanelOn ? 'true' : 'false');
     }
@@ -5409,7 +5409,8 @@
       '#editor-mode-bar #editor-mode-toggle{background:#46627f;border-color:#46627f;color:#fff;}' +
       '#editor-mode-bar #editor-mode-toggle.ms-to-edit{background:#ce5c00;border-color:#ce5c00;color:#fff;}' +
       '#editor-mode-bar #editor-panel-toggle{background:#23374d;border-color:#23374d;color:#fff;}' +
-      '#editor-mode-bar #editor-panel-toggle.ms-off{background:#fff;border-color:#bbbbbb;color:#777777;}' +
+      /* off is still COLORED (owner 8/28) — a washed navy, clearly quieter than the on-state */
+      '#editor-mode-bar #editor-panel-toggle.ms-off{background:#8494a8;border-color:#8494a8;color:#fff;}' +
       'body.ms-view-mode #editor-draw-cluster,body.ms-view-mode #editor-map-tools,body.ms-view-mode #editor-measure-readout,' +
       'body.ms-view-mode #editor-draw-hint,body.ms-view-mode #editor-search-hint{display:none !important;}' +   // the draw-onboarding pair points at tools view mode hides
       '.layer-list-row{position:relative;}' +
@@ -6133,6 +6134,11 @@
     if (fid) { var gpatch = {}; gpatch[EBg.geomCol] = toDbGeom(drawId, geom); await saveSoft(EBg.db.from(EBg.table).update(gpatch).eq(EBg.idCol, fid), 'saving the moved shape'); }
     try { var f = draw && draw.get(drawId); var props = f ? f.properties : {}; _suppressFeatureDelete = true; if (f) draw.delete(drawId); if (draw) draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: props }); setTimeout(function () { _suppressFeatureDelete = false; }, 0); } catch (e) {}
     _geomSnap[drawId] = JSON.parse(JSON.stringify(geom));
+    // labels anchor to the geometry via labelFeaturesFor's in-memory overlay (_geomSnap) — undo/redo
+    // of a move must re-anchor exactly like the move itself did, or the label stays stranded at the
+    // undone position until a refresh (owner 8/28: "the label does not come back with the dot")
+    var lnG = featureLayer[drawId] ? nodeByLayerDbId(featureLayer[drawId]) : null;
+    if (lnG && lnG.labels) { clearTimeout(_lblLiveTimer); _lblLiveTimer = setTimeout(function () { try { applyLabelLayers(lnG); } catch (eLb) {} }, 400); }
   }
 
   // Faithful per-feature delete (feature panel + attribute table). Captures each full DB row up front so
