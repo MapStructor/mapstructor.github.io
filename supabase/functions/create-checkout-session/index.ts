@@ -73,6 +73,26 @@ Deno.serve(async (req) => {
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const { data: profile } = await admin.from("profiles").select("stripe_customer_id").eq("id", user.id).maybeSingle();
     let customerId = profile?.stripe_customer_id as string | undefined;
+
+    // 2026-08-30 — THE TEST→LIVE ORPHAN. Customer ids do not cross modes. Every account that went
+    // through checkout while we were in test mode still had a `cus_…` that does not exist under the
+    // live key, so `checkout.sessions.create({ customer })` failed and THOSE ACCOUNTS COULD NOT BUY
+    // ANYTHING. Measured on 8/30: 2 of the 4 linked profiles were orphans, including the owner's own
+    // main account. A stale link must therefore be treated as no link — verify, then re-create.
+    if (customerId) {
+      try {
+        const existing = await stripe.customers.retrieve(customerId);
+        if ((existing as { deleted?: boolean })?.deleted) customerId = undefined;
+      } catch (e) {
+        const err = e as { code?: string; message?: string };
+        if (err?.code === "resource_missing" || /no such customer/i.test(err?.message ?? "")) {
+          customerId = undefined;   // orphan from the other mode — fall through and make a real one
+        } else {
+          throw e;
+        }
+      }
+    }
+
     if (!customerId) {
       const customer = await stripe.customers.create({ email: user.email ?? undefined, metadata: { user_id: user.id } });
       customerId = customer.id;

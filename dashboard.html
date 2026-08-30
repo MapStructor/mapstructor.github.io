@@ -98,6 +98,43 @@
       You're using a temporary anonymous session. <a href="index.html">Sign up</a> to keep these maps permanently — nothing you've made will be lost.
     </div>
 
+    <!-- Payment confirmation (8/30). Checkout used to return you to a page that looked exactly as
+         it did before you paid — no confirmation, no receipt, nothing. This banner is the first
+         thing you see on the way back, and it links straight to the receipt. -->
+    <div id="pay-banner" style="display:none;margin:0 0 18px;padding:12px 14px;border:1px solid #b7dfb7;background:#eefaee;border-radius:8px;font-size:14px;">
+      <b id="pay-banner-title">Payment received.</b> <span id="pay-banner-body"></span>
+    </div>
+
+    <!-- Your plan (8/30, owner): "we need it to be clear at the top of their user page their
+         subscription plan, and how much they're paying." Also the home for receipts and for the
+         plain-English answers to what cancelling does. -->
+    <section id="plan-section" style="margin-bottom:22px;">
+      <div class="card-box" id="plan-box">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:13px;color:#9a93ad;letter-spacing:.04em;text-transform:uppercase;">Your plan</div>
+            <div style="font-size:20px;font-weight:700;margin-top:2px;" id="plan-name">…</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:20px;font-weight:700;" id="plan-price">&nbsp;</div>
+            <div style="font-size:13px;color:#6b6680;" id="plan-when">&nbsp;</div>
+          </div>
+        </div>
+        <div id="plan-alert" style="display:none;margin-top:10px;font-size:13px;padding:8px 10px;border-radius:6px;"></div>
+        <div id="plan-actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"></div>
+        <div id="plan-receipts" style="margin-top:14px;font-size:13px;"></div>
+        <details style="margin-top:12px;font-size:13px;color:#6b6680;">
+          <summary style="cursor:pointer;">Billing questions — cancelling, renewal dates, and your data</summary>
+          <div style="margin-top:8px;line-height:1.65;">
+            <p style="margin:0 0 8px;"><b>If you cancel, when does it stop?</b> At the end of the period you have already paid for — not immediately. You keep everything your plan gives you until that date, and you are not charged again. You can undo a cancellation any time before it takes effect.</p>
+            <p style="margin:0 0 8px;"><b>What day am I billed?</b> The same day of the month you subscribed. If you subscribed on a day that a later month doesn't have — the 31st, say — you are billed on that month's last day instead, and never twice in one month.</p>
+            <p style="margin:0 0 8px;"><b>What happens to my data if I cancel or move down, and I'm over the new limit?</b> <b>Nothing is deleted.</b> Your maps and layers stay, stay visible, and stay yours to view, edit and download. While you are over the limit you cannot <i>add</i> new data until you free some space or move back up. We do not delete your work for non-payment.</p>
+            <p style="margin:0;"><b>Something looks wrong?</b> Email <a href="mailto:contact@mapstructor.com">contact@mapstructor.com</a> — a real person reads it. Include your account email and the date of the charge.</p>
+          </div>
+        </details>
+      </div>
+    </section>
+
     <!-- Bookmarks (8/6): starred maps as cards, in two rows — maps you starred in the Portal,
          and your own. The same ★ that appears on every map row/card feeds this. -->
     <section id="bm-section" style="margin-bottom:22px;">
@@ -753,7 +790,10 @@
         if (!step.stripePriceId) { alert('Checkout for ' + step.label + ' isn’t set up yet — check back soon.'); return; }
         if (btn) { btn.disabled = true; btn.textContent = 'Redirecting…'; }
         try {
-          var r = await db.functions.invoke('create-checkout-session', { body: { priceId: step.stripePriceId, tier: step.key, successUrl: location.href, cancelUrl: location.href } });
+          // come back to a page that KNOWS you just paid — the old success_url was the bare
+          // dashboard, so a successful purchase looked identical to not having bought anything
+          var back = location.origin + location.pathname;
+          var r = await db.functions.invoke('create-checkout-session', { body: { priceId: step.stripePriceId, tier: step.key, successUrl: back + '?checkout=success', cancelUrl: back } });
           if (r.data && r.data.url) { location.href = r.data.url; return; }
           alert('Could not start checkout: ' + ((r.error && r.error.message) || (r.data && r.data.error) || 'unknown'));
         } catch (e) { alert('Checkout error: ' + (e && e.message)); }
@@ -813,6 +853,131 @@
         } catch (e) {}
       }
       loadStorage();
+
+      // ---- Your plan: what you're on, what you pay, when it renews, and every receipt ----
+      // 8/30 (owner): "there is no confirmation and receipt for the purchase" and "we need it to be
+      // clear at the top of their user page their subscription plan, and how much they're paying."
+      // Money questions get answered from Stripe itself (billing-summary), never from a local
+      // mirror — a stale copy of what someone is paying is worse than no copy.
+      function fmtMoney(cents, cur) {
+        if (cents == null) return '';
+        try { return (cents / 100).toLocaleString(undefined, { style: 'currency', currency: (cur || 'usd').toUpperCase() }); }
+        catch (e) { return '$' + (cents / 100).toFixed(2); }
+      }
+      function fmtDay(unix) {
+        if (!unix) return '';
+        try { return new Date(unix * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }); }
+        catch (e) { return ''; }
+      }
+      function renderPlan(d) {
+        var P = window.MapStructorPricing;
+        var sub = d && d.subscription;
+        var tierKey = (sub && sub.tier) || (d && d.tier) || 'free';
+        var step = P ? P.stepFor(tierKey) : null;
+        var paying = !!(sub && sub.amount && ['active', 'trialing', 'past_due'].indexOf(sub.status) > -1);
+
+        document.getElementById('plan-name').textContent =
+          (step ? step.label : tierKey) + (paying ? '' : ' (free)');
+        document.getElementById('plan-price').textContent =
+          paying ? fmtMoney(sub.amount, sub.currency) + '/' + (sub.interval || 'month') : '$0/month';
+
+        var when = document.getElementById('plan-when'), alert = document.getElementById('plan-alert');
+        alert.style.display = 'none';
+        if (!paying) {
+          when.textContent = step ? (P.fmtBytes(step.quotaBytes) + ' included') : '';
+        } else if (sub.cancelAtPeriodEnd) {
+          when.textContent = 'Ends ' + fmtDay(sub.endsAt || sub.currentPeriodEnd);
+          alert.style.display = 'block';
+          alert.style.background = '#fff6e5'; alert.style.border = '1px solid #f0d9a8'; alert.style.color = '#7a5c1e';
+          alert.innerHTML = '<b>Cancelled — but still active.</b> You keep ' + (step ? step.label : 'this plan') +
+            ' until <b>' + fmtDay(sub.endsAt || sub.currentPeriodEnd) + '</b>, and you will not be charged again. ' +
+            'Nothing is deleted when it ends. Changed your mind? Reopen billing and resume.';
+        } else if (sub.status === 'past_due' || sub.status === 'unpaid') {
+          when.textContent = 'Payment problem';
+          alert.style.display = 'block';
+          alert.style.background = '#fdeceb'; alert.style.border = '1px solid #f0b8b2'; alert.style.color = '#8a2a20';
+          alert.innerHTML = '<b>Your last payment did not go through.</b> Stripe will retry for about two weeks — ' +
+            'you keep your storage in the meantime. Update your card under Manage billing to fix it now.';
+        } else {
+          when.textContent = 'Renews ' + fmtDay(sub.currentPeriodEnd);
+        }
+
+        // actions
+        var act = document.getElementById('plan-actions'); act.innerHTML = '';
+        function addBtn(label, fn) {
+          var b = document.createElement('button');
+          b.className = 'btn btn-light'; b.style.fontSize = '13px'; b.textContent = label;
+          b.onclick = function () { fn(b); }; act.appendChild(b);
+        }
+        if (d && (d.everPaid || sub)) addBtn('Manage billing', openPortal);
+        else addBtn('See plans', function () {
+          var s = document.getElementById('storage-section'); if (s) s.scrollIntoView({ behavior: 'smooth' });
+        });
+        var help = document.createElement('a');
+        help.href = 'mailto:contact@mapstructor.com?subject=' + encodeURIComponent('MapStructor billing question');
+        help.className = 'btn btn-light'; help.style.fontSize = '13px'; help.style.textDecoration = 'none';
+        help.textContent = 'Get help'; act.appendChild(help);
+
+        // receipts — the thing that was entirely missing
+        var rc = document.getElementById('plan-receipts');
+        var invs = (d && d.invoices) || [];
+        if (!invs.length) { rc.innerHTML = ''; return; }
+        var rows = invs.map(function (i) {
+          var link = i.hostedUrl || i.pdf;
+          return '<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid #eee;">' +
+            '<span>' + fmtDay(i.created) + '</span>' +
+            '<span style="color:#6b6680;">' + fmtMoney(i.total, i.currency) +
+              (i.paid ? '' : ' · ' + (i.status || '')) + '</span>' +
+            '<span>' + (link ? '<a href="' + link + '" target="_blank" rel="noopener" style="color:#7c5cbf;">Receipt</a>' : '—') +
+            (i.pdf ? ' · <a href="' + i.pdf + '" target="_blank" rel="noopener" style="color:#7c5cbf;">PDF</a>' : '') +
+            '</span></div>';
+        }).join('');
+        rc.innerHTML = '<div style="font-weight:600;margin-bottom:2px;">Receipts</div>' + rows;
+      }
+      async function loadPlan() {
+        try {
+          var r = await db.functions.invoke('billing-summary', { body: {} });
+          if (r && r.data && !r.data.error) { renderPlan(r.data); return r.data; }
+        } catch (e) {}
+        // Stripe unreachable → fall back to the tier we already know, so the card still says
+        // something true rather than sitting on "…" forever.
+        try { var mp = await db.rpc('ms_my_plan'); var m0 = mp && mp.data && (mp.data[0] || mp.data);
+          renderPlan({ tier: (m0 && m0.subscription_tier) || 'free', subscription: null, invoices: [] }); } catch (e2) {}
+        return null;
+      }
+      loadPlan();
+
+      // Back from Stripe Checkout. Poll briefly: the webhook that grants the tier and the redirect
+      // race each other, so the first read can still say "free" for a second or two.
+      (function checkoutReturn() {
+        var q = new URLSearchParams(location.search);
+        if (q.get('checkout') !== 'success') return;
+        var bn = document.getElementById('pay-banner'), body = document.getElementById('pay-banner-body');
+        bn.style.display = 'block';
+        body.textContent = 'Setting up your plan…';
+        q.delete('checkout');
+        history.replaceState({}, '', location.pathname + (q.toString() ? '?' + q : ''));
+        var tries = 0;
+        (function poll() {
+          tries++;
+          loadPlan().then(function (d) {
+            var sub = d && d.subscription, inv = (d && d.invoices && d.invoices[0]) || null;
+            if (sub && sub.amount) {
+              var P = window.MapStructorPricing, step = P ? P.stepFor(sub.tier) : null;
+              body.innerHTML = 'You\'re on <b>' + (step ? step.label : sub.tier) + '</b> at ' +
+                fmtMoney(sub.amount, sub.currency) + '/' + (sub.interval || 'month') + '. ' +
+                (inv && (inv.hostedUrl || inv.pdf)
+                  ? '<a href="' + (inv.hostedUrl || inv.pdf) + '" target="_blank" rel="noopener" style="color:#2d7a2d;font-weight:600;">View your receipt</a>.'
+                  : 'Your receipt is under Your plan below.');
+              loadStorage();
+              return;
+            }
+            if (tries < 6) return setTimeout(poll, 1500);
+            body.innerHTML = 'Your payment went through. The plan is taking a moment to appear — ' +
+              'reload in a minute, or email <a href="mailto:contact@mapstructor.com">contact@mapstructor.com</a> if it doesn\'t.';
+          });
+        })();
+      })();
 
       // ---- New map ----
       document.getElementById('btn-new-map').addEventListener('click', async function () {

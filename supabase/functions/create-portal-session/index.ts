@@ -38,11 +38,22 @@ Deno.serve(async (req) => {
     const { data: profile } = await admin.from("profiles").select("stripe_customer_id").eq("id", user.id).maybeSingle();
     if (!profile?.stripe_customer_id) return json({ error: "no subscription yet" }, 400);
 
-    const session = await stripe.billingPortal.sessions.create({
-      customer: profile.stripe_customer_id as string,
-      return_url: returnUrl || "https://mapstructor.com/dashboard.html",
-    });
-    return json({ url: session.url });
+    try {
+      const session = await stripe.billingPortal.sessions.create({
+        customer: profile.stripe_customer_id as string,
+        return_url: returnUrl || "https://mapstructor.com/dashboard.html",
+      });
+      return json({ url: session.url });
+    } catch (e) {
+      // 2026-08-30 — a customer id created in TEST mode does not exist under the live key (see the
+      // long note in create-checkout-session). Say the plain-English thing rather than leaking
+      // "No such customer: cus_…" at somebody who just wants to manage their billing.
+      const err = e as { code?: string; message?: string };
+      if (err?.code === "resource_missing" || /no such customer/i.test(err?.message ?? "")) {
+        return json({ error: "no subscription yet" }, 400);
+      }
+      throw e;
+    }
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 400);
   }
