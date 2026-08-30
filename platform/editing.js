@@ -1401,6 +1401,12 @@
       } catch (e) { try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e2) {} }
     }, 0);
     showFeaturePanel(drawId);   // the Info Panel has no off switch — the Layers switch never touches it
+    /* Focus the name field ONLY when this is a feature the person just drew. enterDrawEditable is
+       also the path for clicking an EXISTING feature, where grabbing the caret would be wrong — so
+       it is gated on the flag the draw sets, and the flag is consumed here. Which of the three
+       panel-opening paths runs depends on geometry, which is why the flag exists rather than a
+       call in one of them. */
+    if (_justDrewFeature) { _justDrewFeature = false; focusNewFeatureName(); }
     updateGroupHl(drawId);
     syncAttrRowsFromMap([{ id: drawId }]);
   }
@@ -5809,6 +5815,7 @@
 
   // ── Slice 4: drawing (mapbox-gl-draw → the `features` table) ─────────────────
   var draw = null;
+  var _justDrewFeature = false;   // set by onDrawCreate, consumed by whichever path opens the panel
   var activeLayerId = null;
   var MAX_DRAW = 1500;        // a geojson layer with more features than this renders via the ENGINE (like a tileset), not MapboxDraw
   var _drawLayerSlugs = {};   // slugs currently loaded into MapboxDraw (the small/editable layers) — drives hideDrawnEngineLayers
@@ -6668,6 +6675,7 @@
   async function onDrawCreate(e) {
     try { if (window._msDismissDrawHint) window._msDismissDrawHint(); if (window._msDismissSearchHint) window._msDismissSearchHint(); } catch (err) {}   // first feature drawn → retire the onboarding nudges
     _skipArmOnce = true;   // a freshly drawn feature stays selected/editable — arming is for CLICKS on existing features
+    _justDrewFeature = true;   // ...and its name field earns the caret, whichever path opens the panel
     var f = e.features && e.features[0]; if (!f) return;
     if (_splitMode) { doSplit(f); return; }   // the line just drawn is a split cut, not a feature
     if (_measuring) {   // a measuring line/polygon — report distance/area + keep the shape, don't persist it
@@ -6778,8 +6786,13 @@
       if (CLICK_MODES) {
         try {
           showFeaturePanel(finalId);
-          var lbNew = document.getElementById('efp-label');
-          if (lbNew) { lbNew.focus(); try { lbNew.select(); } catch (eSel) {} }
+          // 8/30: focus is RETRIED, not just deferred. Focusing inline worked for a point but not
+          // for a polygon: finishing one with a double-click hands focus back to the map canvas
+          // AFTER this runs, and after the next tick too, so the caret was stolen and you had to
+          // click the field before typing the name. Measured: activeElement was CANVAS with the
+          // field present. Two attempts (next tick, then ~150ms) cover the dblclick tail; each one
+          // checks first, so nothing is stolen from a person who has clicked elsewhere meanwhile.
+          focusNewFeatureName();
         } catch (ePan) {}
       }
       (function (drawId, geom, lyr, col) {
@@ -7451,6 +7464,27 @@
   //   click empty ground     → clear everything
   // The deselects/selects are DEFERRED one tick: mapbox-draw's click pipeline finishes after this
   // handler and re-applies its own selection — synchronous changes here get clobbered.
+  /* Put the caret in the name field of a feature that was JUST DRAWN (owner 8/29: "when I add a
+     feature, the info panel should pop up immediately for me to enter stuff in" — a panel you must
+     click before typing only half-honours that).
+     RETRIED, because finishing a polygon with a double-click hands focus back to the map canvas
+     after the panel opens, and after the next tick too: measured activeElement was CANVAS with the
+     field present and visible. Each attempt re-checks, so it never steals focus from someone who
+     has already clicked into another field. Called from BOTH just-drawn paths — onDrawCreate and
+     onSelectionChange's _skipArmOnce leg — because which one opens the panel depends on geometry. */
+  function focusNewFeatureName() {
+    [0, 150, 350, 650].forEach(function (ms) {
+      setTimeout(function () {
+        try {
+          var lb = document.getElementById('efp-label');
+          if (!lb || document.activeElement === lb) return;
+          var ae = document.activeElement;
+          if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName || '')) return;
+          lb.focus(); try { lb.select(); } catch (eS) {}
+        } catch (eF) {}
+      }, ms);
+    });
+  }
   function deferDrawSel(list) { setTimeout(function () { try { draw.changeMode('simple_select', { featureIds: list }); } catch (e2) {} }, 0); }
   function clearArmedSet() { _armedSet = []; setArmedHl(null); updateGroupHl(null); }
   function armedIdsToRows() { syncAttrRowsFromMap(_armedSet.map(function (i3) { return { id: i3 }; })); }
@@ -7463,7 +7497,7 @@
     if (_skipArmOnce) {   // a JUST-DRAWN feature: skip stage 1 — it stays selected (stage 2) with the panel open
       var f0 = e.features[0];
       _skipArmOnce = false; _editingDraw = String(f0.id); _armedSet = []; setArmedHl(null);
-      showFeaturePanel(f0.id);   // a JUST-DRAWN feature always gets its panel, switch or not (see onDrawCreate) — this leg fires first, so gating it here would flash the map empty for a beat
+      showFeaturePanel(f0.id); focusNewFeatureName();   // a JUST-DRAWN feature always gets its panel, caret ready, switch or not (see onDrawCreate) — this leg fires first, so gating it here would flash the map empty for a beat
       syncAttrRowsFromMap(e.features);
       return;
     }
