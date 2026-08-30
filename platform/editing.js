@@ -3921,9 +3921,11 @@
     if (msg === 'Saved') setTimeout(function () { if (el.textContent === 'Saved') el.textContent = ''; }, 1500);
   }
   var _toastTimer = null;
-  function showToast(msg, ms) {   // #1: prominent, auto-dismissing message (the save-status text is too subtle for rejections)
+  function showToast(msg, ms, opts) {   // #1: prominent, auto-dismissing message (the save-status text is too subtle for rejections)
     var el = document.getElementById('editor-toast'); if (!el) { setStatus(msg); return; }
-    el.textContent = msg; el.style.display = 'block';
+    el.textContent = msg;
+    el.classList.toggle('ms-toast-compact', !!(opts && opts.compact));   // undo/redo only — see the CSS note
+    el.style.display = 'block';
     clearTimeout(_toastTimer);
     _toastTimer = setTimeout(function () { el.style.display = 'none'; }, ms || 3200);
   }
@@ -5586,7 +5588,11 @@
       // #1: prominent transient toast for draw rejections (the tiny save-status text was too easy to miss).
       /* toast rides HIGH and small (owner 8/29: centered covered the very edit it announced and
          read as an error) — under the tool dock, out of the working area */
-      '#editor-toast{position:fixed;top:15%;left:50%;transform:translateX(-50%);z-index:9999;display:none;background:rgba(206,92,0,0.97);color:#fff;font-size:13px;font-weight:600;padding:7px 14px;border-radius:7px;box-shadow:0 3px 10px rgba(0,0,0,0.35);font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;pointer-events:none;}' +
+      '#editor-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;display:none;background:rgba(206,92,0,0.97);color:#fff;font-size:15px;font-weight:600;padding:12px 20px;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;white-space:nowrap;pointer-events:none;}' +
+      // 8/29 (owner): only the UNDO/REDO toast is small-and-high — it fires constantly and used to
+      // cover the edit you just made. A real notification ("Select a layer") stays centred and full
+      // size, which is what makes it read as an answer to what you just tried to do.
+      '#editor-toast.ms-toast-compact{top:15%;transform:translateX(-50%);font-size:13px;padding:7px 14px;border-radius:7px;box-shadow:0 3px 10px rgba(0,0,0,0.35);}' +
       // first-run nudge: a bobbing pill under the draw tools with a tail pointing up at them
       '#editor-draw-hint{position:fixed;z-index:70;display:flex;align-items:center;gap:8px;background:#2b6ce8;color:#fff;font-family:Source Sans Pro,Arial,sans-serif;font-size:12px;font-weight:600;padding:6px 9px 6px 11px;border-radius:8px;box-shadow:0 5px 14px rgba(43,108,232,0.45);animation:edHintBob 1.3s ease-in-out infinite;}' +
       '#editor-draw-hint::before{content:"";position:absolute;top:-7px;left:26px;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:7px solid #2b6ce8;}' +
@@ -6201,14 +6207,14 @@
   async function doUndo() {
     if (_undoing || !_undoStack.length) return;
     var op = _undoStack.pop(); _undoing = true; setStatus('Undoing…');
-    try { await op.undo(); _redoStack.push(op); setStatus('Undone' + (op.label ? ' — ' + op.label : '')); showToast('↩ Undone: ' + (op.label || 'map change')); }
+    try { await op.undo(); _redoStack.push(op); setStatus('Undone' + (op.label ? ' — ' + op.label : '')); showToast('↩ Undone: ' + (op.label || 'map change'), 0, { compact: true }); }
     catch (e) { console.warn('editing: undo failed', e); _undoStack.push(op); setStatus('Undo failed'); }
     _undoing = false; updateUndoButtons();
   }
   async function doRedo() {
     if (_undoing || !_redoStack.length) return;
     var op = _redoStack.pop(); _undoing = true; setStatus('Redoing…');
-    try { await op.redo(); _undoStack.push(op); setStatus('Redone' + (op.label ? ' — ' + op.label : '')); showToast('↪ Redone: ' + (op.label || 'map change')); }
+    try { await op.redo(); _undoStack.push(op); setStatus('Redone' + (op.label ? ' — ' + op.label : '')); showToast('↪ Redone: ' + (op.label || 'map change'), 0, { compact: true }); }
     catch (e) { console.warn('editing: redo failed', e); _redoStack.push(op); setStatus('Redo failed'); }
     _undoing = false; updateUndoButtons();
   }
@@ -6762,6 +6768,17 @@
           finalId = newId;
         }
       } catch (eMg) { console.warn('editing: create migration', eMg); }
+      // 8/29 (owner): "when I add a feature, the info panel should pop up immediately for me to
+      // enter stuff in." Drawing something and then having to click it again to name it was a
+      // wasted step. Gated on the Panel switch — with panels off, drawing twenty features must
+      // not throw twenty panels, which is the whole reason that switch exists.
+      if (CLICK_MODES && _msPanelOn) {
+        try {
+          showFeaturePanel(finalId);
+          var lbNew = document.getElementById('efp-label');
+          if (lbNew) { lbNew.focus(); try { lbNew.select(); } catch (eSel) {} }
+        } catch (ePan) {}
+      }
       (function (drawId, geom, lyr, col) {
         pushUndo(function () { return removeDrawnFeature(drawId); },
           function () { return addDrawnFeature(drawId, geom, lyr, col ? { color: col } : {}); },
