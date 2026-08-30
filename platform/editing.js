@@ -1337,8 +1337,10 @@
     _msPanelOn = !!on;
     try { localStorage.setItem(modeStoreKey('panel'), _msPanelOn ? '1' : '0'); } catch (e) {}
     refreshModeBar();
-    if (!_msPanelOn) { hideFeaturePanel(); try { hideLayerPanel(); } catch (e) {} }   // the style panel is click-opened chrome too
-    else if (_editingDraw) showFeaturePanel(_editingDraw);   // a feature is mid-edit → its panel comes back
+    // OWNER VOCABULARY (8/29, absolute): "Panel" = the LAYERS Panel — what opens when you click a
+    // LAYER. The feature panel is the "Info Panel", and this switch is "completely disconnected"
+    // from it. Never reach for hideFeaturePanel/showFeaturePanel from here again.
+    if (!_msPanelOn) { try { hideLayerPanel(); } catch (e) {} }
     else if (typeof activeLayerId !== 'undefined' && activeLayerId) { try { showLayerPanel(activeLayerId); } catch (e2) {} }   // a layer is selected → its panel opens right away (owner 8/29: no second click)
   }
   // Leaving edit mode must leave nothing half-edited on screen: the ONE draw deselect below both
@@ -1370,7 +1372,7 @@
     }
     if (pt) {   // same convention as the mode button: the label is the ACTION the click performs (owner 8/29 wording)
       pt.innerHTML = _msPanelOn ? '&#9636; Close Panels' : '&#9636; Open Panels';
-      pt.title = _msPanelOn ? 'Clicking a feature or layer opens its panel — click to turn that off' : 'Clicks leave every panel closed — click to turn panels back on';
+      pt.title = _msPanelOn ? 'Clicking any layer opens its panel — click to turn that off' : 'Clicking a layer leaves its panel closed — click to turn layer panels back on';
       pt.classList.toggle('ms-off', !_msPanelOn);
       pt.setAttribute('aria-pressed', _msPanelOn ? 'true' : 'false');
     }
@@ -1398,7 +1400,7 @@
         else draw.changeMode('direct_select', { featureId: drawId });
       } catch (e) { try { draw.changeMode('simple_select', { featureIds: [drawId] }); } catch (e2) {} }
     }, 0);
-    if (_msPanelOn) showFeaturePanel(drawId); else hideFeaturePanel();
+    showFeaturePanel(drawId);   // the Info Panel has no off switch — the Layers switch never touches it
     updateGroupHl(drawId);
     syncAttrRowsFromMap([{ id: drawId }]);
   }
@@ -1425,9 +1427,8 @@
     _panelClickPatched = true; var _origHPC = window.handlePanelClick;
       window._msOrigHandlePanelClick = _origHPC;   // enterEngineEdit falls back to this for display-only features (their click must still open the viewer's panel)
       window.handlePanelClick = function (layer, event) {
-        // Panel OFF governs EVERY click-opened panel, both modes (8/28 bug: display-only layers
-        // leaked past the switch in edit mode because only the view branch was gated).
-        if (CLICK_MODES && !_msPanelOn) return;
+        // NOT gated on _msPanelOn: this fires for a clicked FEATURE, i.e. the Info Panel, and the
+        // Layers switch is completely disconnected from it (owner 8/29).
         // 8/29 (owner): LOCKED layers are inert in the editor, BOTH modes — no panel, ever.
         try { var nLk = findNodeById(layers, layer && layer.id); if (nLk && nLk.editable === false) return; } catch (eLk) {}
         // VIEW MODE: the viewer's own panel behavior runs.
@@ -1580,7 +1581,7 @@
   // layer's encyclopedia/notes panel. The engine's own click handler is suppressed for engine-editable
   // layers (patched above), so call the ORIGINAL directly.
   function engineViewerPanel(node, e) {
-    if (CLICK_MODES && !_msPanelOn) return;   // the Panel switch governs every click-opened panel (edit mode included)
+    // the Layers switch does NOT reach the Info Panel (owner 8/29) — a clicked feature always talks
     try {
       if (node && node.panel && typeof window._msOrigHandlePanelClick === 'function' && e && e.features && e.features.length) {
         window._msOrigHandlePanelClick(node, e);
@@ -6078,7 +6079,7 @@
             if (!hitU) {
               var sdU = (m === beforeMap) ? 'left' : 'right', eLids = [];
               (function walkU(arr) { (arr || []).forEach(function (n) {
-                var viU = (typeof msHoverDoesSomething === 'function' ? msHoverDoesSomething(n) : !!(n.popupStyle || n.click)) || (!!n.panel && _msPanelOn);
+                var viU = (typeof msHoverDoesSomething === 'function' ? msHoverDoesSomething(n) : !!(n.popupStyle || n.click)) || !!n.panel;   // n.panel = the feature's Info Panel; the Layers switch never gates it
                 // 8/29 (owner): LOCKED layers never earn the finger — their features count as basemap
                 var careU = (n.editable === false) ? false : (vwC ? viU : (isEngineEditable(n) || viU));
                 if (careU) [n.id + '-' + sdU, n.id + '-edited-' + sdU].forEach(function (L) { if (m.getLayer(L)) eLids.push(L); });
