@@ -109,6 +109,21 @@ Deno.serve(async (req) => {
       }
     }
 
+    // 2026-08-30 — ONE CUSTOMER, ONE SUBSCRIPTION. Stripe is happy to give a customer several
+    // subscriptions, so the old "Upgrade" button (which came straight here) left people paying for
+    // both. Checkout is now only for customers who have no live subscription; everyone else goes
+    // through change-plan, which modifies the one they have. This is the backstop, not the UI:
+    // even a stale tab or a direct call cannot produce a double charge.
+    const live = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 20 });
+    const already = live.data.find((s) => ["active", "trialing", "past_due"].includes(s.status));
+    if (already) {
+      return json({
+        error: "You already have a subscription — change your plan instead of buying a second one.",
+        hasSubscription: true,
+        useChangePlan: true,
+      }, 409);
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: customerId,

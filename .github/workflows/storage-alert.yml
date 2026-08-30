@@ -110,3 +110,64 @@ jobs:
           else
             gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
           fi
+
+      # A29 (owner 8/30): "If this is ever the case even once, it should notify us, so we decide
+      # what to do from there." THE CASE: somebody stops paying (or never paid) while holding real
+      # data, so we carry their storage cost with no subscription against it. A departed 2 TB
+      # account costs ~$30/month on R2 Standard, forever — see planning/billing-scenarios.md.
+      #
+      # This step DECIDES NOTHING and deletes NOTHING. It exists so the first occurrence is a
+      # message rather than a line item we notice months later. The policy (delete at period end,
+      # or cold-archive at ~1/15th the cost) is deliberately not built until this fires.
+      - name: Non-paying accounts holding real data
+        env:
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$SB_KEY" ]; then echo "SUPABASE_SERVICE_KEY secret not set — skipping"; exit 0; fi
+          # 5 GB: comfortably above the 1 GB free limit, so this is "they left data behind",
+          # not "they are slightly over". The admin is exempt from quota by design (the portal
+          # is meant to be large) and is excluded here for the same reason.
+          THRESHOLD=$((5 * 1024 * 1024 * 1024))
+          # The admin account is quota-exempt BY DESIGN — the portal is meant to hold a lot, and
+          # its data has no subscription behind it on purpose (todo A30). Excluding it by id, not
+          # by email: profiles.email is a mirror that is NULL on many rows, which is the exact bug
+          # that once made enforce_storage_quota's exemption apply to nobody.
+          ADMIN_ID="9d2e01fa-85c2-490e-b878-543b08369b78"
+          ROWS=$(curl -s "https://eqpxlwbjqiwfjlsuapvu.supabase.co/rest/v1/profiles?select=id,username,subscription_tier,storage_used_bytes&subscription_tier=eq.free&storage_used_bytes=gt.$THRESHOLD&id=neq.$ADMIN_ID&order=storage_used_bytes.desc" \
+            -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY")
+          echo "$ROWS" | head -c 800
+          echo "$ROWS" | jq -e 'type == "array"' >/dev/null 2>&1 || { echo "unexpected response — skipping"; exit 0; }
+          N=$(echo "$ROWS" | jq 'length')
+          if [ "$N" -eq 0 ]; then echo "no non-paying account is holding >5 GB — nothing to decide"; exit 0; fi
+          TOTAL=$(echo "$ROWS" | jq '[.[].storage_used_bytes] | add')
+          TOTGB=$(( TOTAL / 1024 / 1024 / 1024 ))
+          # R2 Standard is $0.015/GB-month; integer cents to keep this shell-only
+          COST=$(( TOTGB * 15 / 10 ))
+          LIST=$(echo "$ROWS" | jq -r '.[] | "- `" + .id + "` (" + (.username // "no username") + ") — " + ((.storage_used_bytes / 1073741824 * 10 | floor / 10) | tostring) + " GB"')
+          TITLE="⚠ $N non-paying account(s) holding data — a decision is now due (A29)"
+          BODY="$N account(s) on the **free** tier are holding more than 5 GB each.
+
+          $LIST
+
+          **Total: ${TOTGB} GB**, costing roughly **\$${COST}/month** on R2 Standard, indefinitely.
+
+          This is the trigger for **todo A29** — the decision was deliberately deferred until it
+          actually happened. The options, costed:
+
+          - **Delete at the end of the period** (the stated preference) — cheapest, but the published
+            Terms promise \"not silently deleted… warned on a schedule… always a way to export
+            first\", so terms.html changes in the same sitting.
+          - **Cold archive** (Glacier Deep Archive, ~\$0.00099/GB-mo) — about 1/15th the cost, keeps
+            their work, ~12 h to restore, 180-day minimum billing.
+
+          Full costings and the staged path: \`planning/billing-scenarios.md\`.
+
+          (Automated daily check: .github/workflows/storage-alert.yml)"
+          EXISTING=$(gh issue list --repo "$GH_REPO" --state open --search "non-paying account in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            gh issue edit "$EXISTING" --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          else
+            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          fi

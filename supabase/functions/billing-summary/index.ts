@@ -107,7 +107,30 @@ Deno.serve(async (req) => {
         canceledAt: best.canceled_at ?? null,
         // when they cancel, service runs to here — the date the card promises them
         endsAt: best.cancel_at_period_end ? periodEnd : null,
+        pendingChange: null as null | Record<string, unknown>,
       };
+
+      // A DOWNGRADE is parked in a subscription schedule until the period ends (see change-plan).
+      // Without this the card would keep saying "Renews 30 Sep" at someone who has already asked to
+      // move down, which is the same class of silence as the missing receipt.
+      if (best.schedule) {
+        try {
+          const sid = typeof best.schedule === "string" ? best.schedule : best.schedule.id;
+          const sch = await stripe.subscriptionSchedules.retrieve(sid);
+          const next = sch.phases?.[1];
+          const nextPriceId = (next?.items?.[0] as { price?: string | { id: string } } | undefined)?.price;
+          const pid = typeof nextPriceId === "string" ? nextPriceId : nextPriceId?.id;
+          if (pid && pid !== price?.id) {
+            const np = await stripe.prices.retrieve(pid);
+            subscription.pendingChange = {
+              tier: PRICE_TO_TIER[pid] || null,
+              amount: np.unit_amount ?? null,
+              currency: np.currency ?? "usd",
+              startsAt: next?.start_date ?? periodEnd,
+            };
+          }
+        } catch (_e) { /* a released or finished schedule is not an error */ }
+      }
     }
 
     // Receipts. hosted_invoice_url is the page with the "Download receipt" button; invoice_pdf is

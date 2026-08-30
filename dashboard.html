@@ -770,16 +770,30 @@
         if (pct >= 100) note.innerHTML = '<b style="color:#b4453a;">You’re out of space.</b> ' + (next ? ('Upgrade to ' + next.label + ' ($' + next.priceMonthly + '/mo).') : 'Contact us about a larger plan.');
         else if (pct >= 80) note.innerHTML = 'You’re using ' + pct + '% of your storage.' + (next ? ' Consider upgrading to ' + next.label + '.' : '');
         else note.textContent = approx ? 'Estimated from your map data.' : '';
-        // upgrade buttons (every step above the current one) + manage-billing for paying users
+        // Step buttons. 8/30: these used to ALL call startCheckout, which opened a second
+        // subscription for anyone who already had one — $1 + $2 for one 50 GB account. Now a
+        // customer with a subscription changes it; only someone with none goes to Checkout.
         var actions = document.getElementById('storage-actions'); actions.innerHTML = '';
         P.upgradesFrom(step.key).forEach(function (t) {
           var btn = document.createElement('button');
           btn.className = 'btn btn-light'; btn.style.fontSize = '13px';
           btn.textContent = 'Upgrade to ' + t.label + ' — $' + t.priceMonthly + '/mo';
-          btn.onclick = function () { startCheckout(t.key, btn); };
+          btn.onclick = function () { pickStep(t.key, btn); };
           actions.appendChild(btn);
         });
+        // Downgrades: there was NO path down at all, so the only route was cancel-and-rejoin —
+        // which loses the price you signed up at (Terms: "as long as your subscription runs
+        // continuously"). Only offered for steps your current data actually fits in.
         if (step.priceMonthly > 0) {
+          P.steps.filter(function (t) {
+            return t.quotaBytes < step.quotaBytes && t.priceMonthly > 0 && (used == null || used <= t.quotaBytes);
+          }).forEach(function (t) {
+            var btn = document.createElement('button');
+            btn.className = 'btn btn-light'; btn.style.fontSize = '13px'; btn.style.opacity = '.85';
+            btn.textContent = 'Move down to ' + t.label + ' — $' + t.priceMonthly + '/mo';
+            btn.onclick = function () { pickStep(t.key, btn); };
+            actions.appendChild(btn);
+          });
           var mb = document.createElement('button'); mb.className = 'btn btn-light'; mb.style.fontSize = '13px';
           mb.textContent = 'Manage billing'; mb.onclick = function () { openPortal(mb); }; actions.appendChild(mb);
         }
@@ -798,6 +812,46 @@
           alert('Could not start checkout: ' + ((r.error && r.error.message) || (r.data && r.data.error) || 'unknown'));
         } catch (e) { alert('Checkout error: ' + (e && e.message)); }
         if (btn) { btn.disabled = false; }
+      }
+      // ONE customer, ONE subscription. change-plan modifies the existing one (upgrade now +
+      // prorated, downgrade at period end); it answers needsCheckout for anyone who hasn't got a
+      // subscription yet, and only then do we open Stripe Checkout.
+      async function pickStep(stepKey, btn) {
+        var P = window.MapStructorPricing, step = P.stepFor(stepKey);
+        if (!step.stripePriceId) { alert('That step isn’t set up for purchase yet.'); return; }
+        var label = btn && btn.textContent;
+        if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+        try {
+          var r = await db.functions.invoke('change-plan', { body: { action: 'change', priceId: step.stripePriceId } });
+          var d = (r && r.data) || {};
+          if (d.needsCheckout) { await startCheckout(stepKey, btn); return; }
+          if (d.ok) {
+            showPlanNote(d.message || 'Your plan has been updated.', d.kind === 'downgrade' ? 'warn' : 'good');
+            await loadPlan(); loadStorage();
+            return;
+          }
+          alert(d.error || (r.error && r.error.message) || 'Could not change your plan.');
+        } catch (e) { alert('Plan change error: ' + (e && e.message)); }
+        if (btn) { btn.disabled = false; if (label) btn.textContent = label; }
+      }
+      function showPlanNote(msg, kind) {
+        var bn = document.getElementById('pay-banner');
+        document.getElementById('pay-banner-title').textContent = kind === 'warn' ? 'Scheduled.' : 'Done.';
+        document.getElementById('pay-banner-body').textContent = msg;
+        bn.style.borderColor = kind === 'warn' ? '#f0d9a8' : '#b7dfb7';
+        bn.style.background = kind === 'warn' ? '#fff6e5' : '#eefaee';
+        bn.style.display = 'block';
+        try { bn.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
+      }
+      async function resumePlan(btn) {
+        if (btn) { btn.disabled = true; btn.textContent = 'Resuming…'; }
+        try {
+          var r = await db.functions.invoke('change-plan', { body: { action: 'resume' } });
+          var d = (r && r.data) || {};
+          if (d.ok) { showPlanNote('Your plan will keep running — the cancellation is off.', 'good'); await loadPlan(); return; }
+          alert(d.error || 'Could not resume the plan.');
+        } catch (e) { alert('Resume error: ' + (e && e.message)); }
+        if (btn) { btn.disabled = false; btn.textContent = 'Resume plan'; }
       }
       async function openPortal(btn) {
         if (btn) { btn.disabled = true; }
@@ -876,8 +930,12 @@
         var step = P ? P.stepFor(tierKey) : null;
         var paying = !!(sub && sub.amount && ['active', 'trialing', 'past_due'].indexOf(sub.status) > -1);
 
+        // "(free)" only earns its place when the plan LABEL doesn't already say so — otherwise the
+        // card reads "Free (free)". It marks the case where someone holds, say, a 50 GB tier that
+        // is no longer being paid for.
+        var freeish = !paying && tierKey !== 'free';
         document.getElementById('plan-name').textContent =
-          (step ? step.label : tierKey) + (paying ? '' : ' (free)');
+          (step ? step.label : tierKey) + (freeish ? ' — not active' : '');
         document.getElementById('plan-price').textContent =
           paying ? fmtMoney(sub.amount, sub.currency) + '/' + (sub.interval || 'month') : '$0/month';
 
@@ -892,6 +950,14 @@
           alert.innerHTML = '<b>Cancelled — but still active.</b> You keep ' + (step ? step.label : 'this plan') +
             ' until <b>' + fmtDay(sub.endsAt || sub.currentPeriodEnd) + '</b>, and you will not be charged again. ' +
             'Nothing is deleted when it ends. Changed your mind? Reopen billing and resume.';
+        } else if (sub.pendingChange) {
+          var pc = sub.pendingChange, pcStep = P ? P.stepFor(pc.tier) : null;
+          when.textContent = 'Renews ' + fmtDay(sub.currentPeriodEnd);
+          alert.style.display = 'block';
+          alert.style.background = '#fff6e5'; alert.style.border = '1px solid #f0d9a8'; alert.style.color = '#7a5c1e';
+          alert.innerHTML = '<b>Moving to ' + (pcStep ? pcStep.label : pc.tier) + ' on ' + fmtDay(pc.startsAt) + '.</b> ' +
+            'Until then you keep ' + (step ? step.label : 'your current plan') + ' — nothing changes today. ' +
+            'From then it\'s ' + fmtMoney(pc.amount, pc.currency) + '/month.';
         } else if (sub.status === 'past_due' || sub.status === 'unpaid') {
           when.textContent = 'Payment problem';
           alert.style.display = 'block';
@@ -909,6 +975,9 @@
           b.className = 'btn btn-light'; b.style.fontSize = '13px'; b.textContent = label;
           b.onclick = function () { fn(b); }; act.appendChild(b);
         }
+        // the undo for a pending cancellation existed only inside Stripe's portal, where nobody
+        // found it — it is the first button here whenever it applies
+        if (sub && sub.cancelAtPeriodEnd) addBtn('Resume plan', resumePlan);
         if (d && (d.everPaid || sub)) addBtn('Manage billing', openPortal);
         else addBtn('See plans', function () {
           var s = document.getElementById('storage-section'); if (s) s.scrollIntoView({ behavior: 'smooth' });
