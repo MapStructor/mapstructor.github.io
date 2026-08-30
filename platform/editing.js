@@ -6770,9 +6770,11 @@
       } catch (eMg) { console.warn('editing: create migration', eMg); }
       // 8/29 (owner): "when I add a feature, the info panel should pop up immediately for me to
       // enter stuff in." Drawing something and then having to click it again to name it was a
-      // wasted step. Gated on the Panel switch — with panels off, drawing twenty features must
-      // not throw twenty panels, which is the whole reason that switch exists.
-      if (CLICK_MODES && _msPanelOn) {
+      // wasted step. NOT gated on the Panel switch: that switch governs CLICK-opened panels
+      // ("clicking a feature or layer opens its panel"), and the owner's own screenshot of this
+      // ask was taken with panels off. Creating a feature is the one moment the name field is
+      // the point, so it opens either way.
+      if (CLICK_MODES) {
         try {
           showFeaturePanel(finalId);
           var lbNew = document.getElementById('efp-label');
@@ -7460,7 +7462,7 @@
     if (_skipArmOnce) {   // a JUST-DRAWN feature: skip stage 1 — it stays selected (stage 2) with the panel open
       var f0 = e.features[0];
       _skipArmOnce = false; _editingDraw = String(f0.id); _armedSet = []; setArmedHl(null);
-      if (_msPanelOn) showFeaturePanel(f0.id);   // Panel off = pure geometry work — rapid digitizing without the panel popping (name it later)
+      showFeaturePanel(f0.id);   // a JUST-DRAWN feature always gets its panel, switch or not (see onDrawCreate) — this leg fires first, so gating it here would flash the map empty for a beat
       syncAttrRowsFromMap(e.features);
       return;
     }
