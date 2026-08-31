@@ -91,11 +91,28 @@ window.msIsAdminEmail = function (email) {
       p.then(drop, drop);
       return p.then(function (r) { return r.clone(); });
     }
+    /* ── A19: the link IS the key ─────────────────────────────────────────────────────────
+       A link-visibility map is UNLISTED: RLS refuses its rows to any request that does not
+       present the map's own id (sql/setup/link-unlisted.sql). The browser's claim to be
+       "holding the link" is this header, taken from the page's ?id=. Injected here, on the
+       same wrapper as the dedupe, because seven modules build their own client — a header
+       added to six of seven is the drift this wrapper exists to prevent. Pages without an
+       ?id= (dashboard, front page) send nothing and see only public maps, which is the point. */
+    var mapClaim = (function () {
+      try {
+        var id = (new URLSearchParams(location.search).get('id') || '').trim();
+        return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id : null;
+      } catch (e) { return null; }
+    })();
     var orig = sb.createClient;
     sb.createClient = function (u, k, opts) {
       opts = opts || {};
       opts.global = opts.global || {};
       if (!opts.global.fetch) opts.global.fetch = dedupeFetch;
+      if (mapClaim) {
+        opts.global.headers = opts.global.headers || {};
+        if (!opts.global.headers['x-ms-map']) opts.global.headers['x-ms-map'] = mapClaim;
+      }
       return orig.call(this, u, k, opts);
     };
     sb.__msDedupeInstalled = true;
