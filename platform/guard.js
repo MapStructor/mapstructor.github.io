@@ -182,7 +182,7 @@
       frozen = true;
       try { localStorage.setItem(CACHE, JSON.stringify({ at: Date.now() })); } catch (e) {}
       var owner = false;
-      try { var u = await MapAuth.currentUser(); owner = !!(u && String(u.email || "").toLowerCase() === "nittyjee@gmail.com"); } catch (e) {}
+      try { var u = await MapAuth.currentUser(); owner = !!(window.msIsAdminEmail && window.msIsAdminEmail(u && u.email)); } catch (e) {}   // A30: one list, in auth.js
       showFreeze(row.reason, owner);
       setReason(row.reason);
       // a verdict that arrived after the map was built still has to stop the meter running on

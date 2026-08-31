@@ -42,7 +42,7 @@
     .muted { color:#9a93ad; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="platform/auth.js?v=4bc78a70"></script>
+  <script src="platform/auth.js?v=65777636"></script>
   <script src="platform/topbar.js?v=8154caa8"></script>
   <script src="platform/pricing.js?v=2609c548"></script>
 </head>
@@ -124,7 +124,7 @@
 
   <script>
     (function () {
-      var ADMIN_EMAILS = ['nittyjee@gmail.com'];
+      // A30: one admin list, in platform/auth.js. Real gate = ms_is_admin() in the database.
       function esc(s){ return String(s==null?'':s).replace(/[<>&]/g,function(c){return({'<':'&lt;','>':'&gt;','&':'&amp;'})[c];}); }
       function fmtDate(d){ try{ return d?new Date(d).toLocaleDateString([], {year:'numeric',month:'short',day:'numeric'}):''; }catch(e){ return ''; } }
       function nfmt(n){ try{ return Number(n).toLocaleString('en-US'); }catch(e){ return String(n); } }
@@ -330,7 +330,7 @@
         if (!window.MapAuth || !MapAuth.db) { location.replace('index.html'); return; }
         db = MapAuth.db; P = window.MapStructorPricing;
         var user = await MapAuth.currentUser();
-        if (!user || !user.email || ADMIN_EMAILS.indexOf(user.email) === -1) { document.getElementById('deny').style.display='block'; return; }
+        if (!window.msIsAdminEmail(user && user.email)) { document.getElementById('deny').style.display='block'; return; }
         myId = user.id;
         document.getElementById('main').style.display='block';
         document.getElementById('sub').textContent = 'Signed in as '+user.email+' (admin).';

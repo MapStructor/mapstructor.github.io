@@ -40,7 +40,9 @@
   // locked down; a stored token would be world-readable). It applies to mapboxgl.accessToken at load +
   // on save, and rides into downloads via the existing token capture (download.js).
   var MB_TOKEN_KEY = 'ms-mapbox-token';
-  var MS_ADMINS = ['nittyjee@gmail.com'];   // same client owner-gate as pageEditor / homeCards / admin.html
+  // A30: the admin list lives in platform/auth.js (window.MS_ADMIN_EMAILS); the real gate is
+  // ms_is_admin() in the database. Read at CALL time — load order across these files varies.
+  function msAdminEmail(e) { return !!(window.msIsAdminEmail && window.msIsAdminEmail(e)); }
   var _isAdmin = false;
   function getStoredMapboxToken() { try { return localStorage.getItem(MB_TOKEN_KEY) || ''; } catch (e) { return ''; } }
   function applyStoredMapboxToken() { var t = getStoredMapboxToken(); if (t && window.mapboxgl) { try { mapboxgl.accessToken = t; } catch (e) {} } }
@@ -53,7 +55,7 @@
       var _resolveAdmin = function () {
         try { MapAuth.currentUser().then(function (u) {
           var was = _isAdmin;
-          _isAdmin = !!(u && u.email && MS_ADMINS.indexOf(u.email) !== -1);
+          _isAdmin = msAdminEmail(u && u.email);
           if (_isAdmin !== was && document.getElementById('editor-add-bar')) showButtons();
         }).catch(function () {}); } catch (e) {}
       };
@@ -5295,7 +5297,7 @@
   //    EDITABLE by the platform owner: ✎ in the modal header → WYSIWYG in place → saves to the global
   //    site_content row (key 'editor-guide', same table/gate as pageEditor). The generated text below is
   //    the fallback whenever that row doesn't exist (standalone/file:// deploys keep a guide). ──
-  var GUIDE_KEY = 'editor-guide', GUIDE_ADMINS = ['nittyjee@gmail.com'];   // owner allow-list (client gate; RLS restricts writes at lockdown)
+  var GUIDE_KEY = 'editor-guide';   // A30: admin check via msAdminEmail (one list, in auth.js)
   var _guideFetched = false, _guideEditing = false, _guidePreEdit = null;
   function openGuidePanel() {
     injectGuidePanel();
@@ -5320,7 +5322,7 @@
     try {
       if (!window.MapAuth) return;
       var u = await MapAuth.currentUser();
-      if (!u || !u.email || GUIDE_ADMINS.indexOf(u.email) === -1) return;
+      if (!msAdminEmail(u && u.email)) return;
       var eb = document.getElementById('editor-guide-edit'); if (eb && !_guideEditing) eb.style.display = 'inline-block';
     } catch (e) {}
   }
@@ -6563,7 +6565,7 @@
       // state for ANY logged-in account, and the harness logs in as admin).
       var force = location.search.indexOf('storagefull=1') > -1;
       var uEmail = u.data.user.email || '';
-      if (!force && MS_ADMINS.indexOf(uEmail) > -1) { _storageOver = false; _storageInfo = null; _storageLast = Date.now(); updateStorageBanner(); return; }
+      if (!force && msAdminEmail(uEmail)) { _storageOver = false; _storageInfo = null; _storageLast = Date.now(); updateStorageBanner(); return; }
       var tierKey = 'free';
       try { var mp = await db.rpc('ms_my_plan'); var m0 = mp && mp.data && (mp.data[0] || mp.data);
         if (!mp.error && m0 && m0.subscription_tier) tierKey = m0.subscription_tier; } catch (e) {}

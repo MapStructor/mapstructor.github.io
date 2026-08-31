@@ -6,7 +6,7 @@
 // add / edit / hide / drag-reorder cards within a category, plus manage the categories themselves.
 // Cards are soft-HIDDEN, never deleted; empty categories are hidden from visitors, shown to the owner.
 (function () {
-  var ADMIN_EMAILS = ['nittyjee@gmail.com'];   // same owner gate as pageEditor (client seam; RLS at lockdown)
+  // A30: one admin list, in platform/auth.js. Real gate = ms_is_admin() in the database.
   var SB_URL = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co';
   var SB_KEY = 'sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD';
   var KEY = 'home-projects-json';
@@ -293,7 +293,7 @@
     try {
       var force = location.search.indexOf('peadmin=1') > -1;
       var u = window.MapAuth ? await MapAuth.currentUser() : null;
-      if (!force && (!u || !u.email || ADMIN_EMAILS.indexOf(u.email) === -1)) return;
+      if (!force && !(window.msIsAdminEmail && window.msIsAdminEmail(u && u.email))) return;
       if (document.getElementById('hc-edit-btn')) return;
       var host = toolbar() || document.querySelector('.row-label');
       if (!host || !container()) return;

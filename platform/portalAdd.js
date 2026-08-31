@@ -398,7 +398,7 @@
           try {
             var au = await db.auth.getUser();
             var ae = au && au.data && au.data.user && au.data.user.email;
-            amAdmin = !!ae && ['nittyjee@gmail.com'].indexOf(String(ae).toLowerCase()) > -1;
+            amAdmin = !!(window.msIsAdminEmail && window.msIsAdminEmail(ae));   // A30: one list, in auth.js
           } catch (eAdm) {}
           if (usedKnown && quota && used + est > quota && !amAdmin) {
             note('Not enough storage: the "All" choices copy ~' + Math.max(1, Math.round(est / 1048576)) + ' MB now, but only ' + Math.max(0, Math.round((quota - used) / 1048576)) + ' MB is free on your plan. Switch heavy layers to Linked (0 bytes) or upgrade.');

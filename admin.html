@@ -30,7 +30,7 @@
     .pub { color: #2d7a2d; } .priv { color: #9a93ad; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="platform/auth.js?v=4bc78a70"></script>
+  <script src="platform/auth.js?v=65777636"></script>
   <script src="platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
   <script src="platform/topbar.js?v=8154caa8"></script>
   <script src="platform/pricing.js?v=2609c548"></script>
@@ -139,15 +139,16 @@
 
   <script>
     (function () {
-      var ADMIN_EMAILS = ['nittyjee@gmail.com'];   // owner allow-list (client gate; real gate = RLS/Edge Function before launch)
-      var SHOW_PRIVATE_MAPS = true;                // #25 DEV ONLY — set to false at LAUNCH: private maps disappear from this page (names never listed; counts stay aggregate)
+      // A30: the admin list lives in platform/auth.js (window.MS_ADMIN_EMAILS). The REAL gate is
+      // profiles.is_admin / ms_is_admin() in the database — this only decides what is drawn.
+      var SHOW_PRIVATE_MAPS = false;               // #24, flipped 8/31. Private maps are not listed by NAME on this page; counts stay aggregate. Only the owner can open admin.html at all, so this is tidiness rather than an exposure fix — the point is that the admin view stops being a place where someone else's private map title can be read at a glance. Flip back to true for a debugging session, but flip it back.
       function fmtDate(d) { try { return d ? new Date(d).toLocaleString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; } catch (e) { return ''; } }
       function esc(s) { return String(s == null ? '' : s).replace(/[<>&]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]; }); }
 
       async function run() {
         if (!window.MapAuth || !MapAuth.db) { location.replace('index.html'); return; }
         var db = MapAuth.db, user = await MapAuth.currentUser();
-        if (!user || !user.email || ADMIN_EMAILS.indexOf(user.email) === -1) { document.getElementById('deny').style.display = 'block'; return; }
+        if (!window.msIsAdminEmail(user && user.email)) { document.getElementById('deny').style.display = 'block'; return; }
         document.getElementById('main').style.display = 'block';
         document.getElementById('sub').textContent = 'Signed in as ' + user.email;
 
@@ -447,9 +448,16 @@
           maps.sort(function (a, b) { var va = sortVal(a, _sortKey), vb = sortVal(b, _sortKey); return (va < vb ? -1 : va > vb ? 1 : 0) * _sortDir; });
           var sorted = SHOW_PRIVATE_MAPS ? maps : maps.filter(function (m) { return m.is_public; });
           var show = _showAllMaps ? sorted : sorted.slice(0, 10);
+          // SAY WHY THE LIST IS SHORT. With SHOW_PRIVATE_MAPS off, most maps vanish from this table
+          // and an empty-looking admin page is indistinguishable from a broken query. Name the
+          // number that is being withheld, and name the switch, so the next person to wonder can
+          // find it in one search instead of reading the fetch.
+          var hiddenCount = maps.length - sorted.length;
           document.getElementById('recent').innerHTML = show.map(function (m) {
             return '<tr><td>' + esc(m.name || 'Untitled Map') + '</td><td>' + esc(ownerName(m)) + '</td><td>' + esc(ownerEmail(m) || '—') + '</td><td class="' + (m.is_public ? 'pub">public' : 'priv">private') + '</td><td>' + fmtDate(m.created_at) + '</td><td>' + fmtDate(m.updated_at) + '</td></tr>';
-          }).join('') || '<tr><td colspan="6" style="color:#9a93ad;">No maps yet.</td></tr>';
+          }).join('')
+            + (hiddenCount > 0 ? '<tr><td colspan="6" style="color:#9a93ad;padding-top:10px;">' + hiddenCount + ' private map' + (hiddenCount === 1 ? '' : 's') + ' not listed here by name. Counts above still include them. (SHOW_PRIVATE_MAPS)</td></tr>' : '')
+            || '<tr><td colspan="6" style="color:#9a93ad;">No maps yet.</td></tr>';
           Array.prototype.forEach.call(document.querySelectorAll('thead th[data-sort]'), function (th) {   // ▲/▼ on the active column
             th.textContent = th.getAttribute('data-label') + (th.getAttribute('data-sort') === _sortKey ? (_sortDir > 0 ? ' ▲' : ' ▼') : '');
           });
@@ -474,6 +482,6 @@
       run();
     })();
   </script>
-  <script src="platform/pageEditor.js?v=f59c36c5"></script>
+  <script src="platform/pageEditor.js?v=292b11dd"></script>
 </body>
 </html>

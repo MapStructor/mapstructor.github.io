@@ -26,7 +26,6 @@
   var SUPABASE_KEY = 'sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD';
   var db = (window.MapAuth && MapAuth.db)
     || ((window.supabase && window.supabase.createClient) ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null);
-  var ADMINS = ['nittyjee@gmail.com'];
   var BUCKET = 'tiles';
   var JSZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
   var PAGE = 1000;
@@ -59,7 +58,7 @@
     if (text != null) n.textContent = text;   // never innerHTML for anything a user typed
     return n;
   }
-  function isAdminEmail(e) { return !!e && ADMINS.indexOf(String(e).toLowerCase()) > -1; }
+  function isAdminEmail(e) { return !!(window.msIsAdminEmail && window.msIsAdminEmail(e)); }   // A30: one list, in auth.js
   function currentUser() {
     if (!window.MapAuth || !MapAuth.currentUser) return Promise.resolve(null);
     return Promise.resolve(MapAuth.currentUser()).catch(function () { return null; });

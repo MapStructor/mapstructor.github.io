@@ -46,7 +46,7 @@
     footer a { color: #9490a8; text-decoration: none; font-size: 12.5px; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="platform/auth.js?v=4bc78a70"></script>
+  <script src="platform/auth.js?v=65777636"></script>
   <script src="platform/veil.js?v=35830abf"></script>
   <script src="platform/topbar.js?v=8154caa8"></script>
   <script src="platform/bookmarks.js?v=b8757559"></script>
@@ -234,7 +234,7 @@
         try {
           var uD = await db.auth.getUser();
           var em = uD && uD.data && uD.data.user && (uD.data.user.email || '').toLowerCase();
-          if (em === 'nittyjee@gmail.com') {
+          if (window.msIsAdminEmail(em)) {
             var pAbout = document.getElementById('p-about');
             // ── MSD designation (8/13, owner: "a special designation for certain datasets as
             //    MSD… promoted… for now it might be just a tag") — a boolean the admin toggles;

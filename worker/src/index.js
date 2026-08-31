@@ -31,6 +31,12 @@ var ALLOW_ORIGIN = "*";   // tighten to the site origins at custom-domain time
 // The one admin account. Non-tiles upload keys (site/, maps/, archives/ — the public web
 // surfaces) accept ONLY this user; without the gate any signed-up account could overwrite
 // the landing page or a showcase. Not a secret — it's an identity, verified via the token.
+//
+// A30 (8/31) DELIBERATELY LEFT AS A LITERAL, unlike the browser's list and the database's
+// profiles.is_admin. This runs in a Worker: it has no DOM to read window.MS_ADMIN_EMAILS from,
+// and reaching into Postgres for ms_is_admin() on every upload would put a database round-trip
+// (and a database outage) in front of writes to the public site. The trade is deliberate:
+// SECOND ADMIN? this line has to change too, and it is the ONE remaining place that is true of.
 var ADMIN_EMAIL = "nittyjee@gmail.com";
 
 function cors(extra) {

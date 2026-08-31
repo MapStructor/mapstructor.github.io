@@ -3,6 +3,27 @@
    signing up UPGRADES that anonymous user in place (auth.updateUser) so their work — same
    user_id, same rows — is never lost. A fresh visitor with no session just signs up normally.
    Exposes window.MapAuth (+ MapAuth.db = the single Supabase client for the page). */
+/* ── WHO IS AN ADMIN, IN ONE PLACE (A30, 8/31) ────────────────────────────────────────────────
+   This is the CLIENT-SIDE convenience gate only — it decides whether an admin control is drawn,
+   never whether an action is allowed. The real gate is the database: `profiles.is_admin` and
+   `public.ms_is_admin()`, which every admin RPC and RLS policy now calls (mapstructor_docs/sql/setup/admin-flag.sql).
+   Losing an argument with this list gets you a hidden button; losing one with RLS gets you nothing.
+
+   It used to be copied into 12 files, so adding a second admin meant 12 edits and forgetting one
+   produced a half-admin who could see a page but not use it. Now: add the address here.
+
+   READ IT AT CALL TIME, never into a module-level constant. Scripts on these pages load in
+   varying orders, and a constant captured at parse time would be empty on any page where a module
+   ran before auth.js. `msIsAdminEmail` is therefore a function, and it fails CLOSED — if auth.js
+   somehow has not run, the answer is "not an admin", which hides a control rather than offering
+   one that the server will refuse anyway. */
+window.MS_ADMIN_EMAILS = ['nittyjee@gmail.com'];
+window.msIsAdminEmail = function (email) {
+  if (!email) return false;
+  var list = window.MS_ADMIN_EMAILS || [];
+  return list.indexOf(String(email).trim().toLowerCase()) > -1;
+};
+
 (function () {
   var SUPABASE_URL = 'https://eqpxlwbjqiwfjlsuapvu.supabase.co';
   var SUPABASE_KEY = 'sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD';
@@ -337,7 +358,6 @@
   // The email arm is .github/workflows/storage-alert.yml (daily check → GitHub issue → email).
   // Lives in auth.js because every page loads it — the alert follows the admin anywhere on the site.
   (function () {
-    var ADMIN_EMAILS = ['nittyjee@gmail.com'];   // same client owner-gate as admin.html / editing.js
     var PLAN_DB_BYTES = 8 * 1024 * 1024 * 1024, ALERT_AT = 0.50, LOCKDOWN_AT = 0.80, ACK_KEY = 'ms-infra-alert-ack';
     window.MSStorageGuard = { planBytes: PLAN_DB_BYTES, alertAt: ALERT_AT, lockdownAt: LOCKDOWN_AT, frac: null, ready: null };
     function fmtGB(b) { return (b / (1024 * 1024 * 1024)).toFixed(2) + ' GB'; }
@@ -353,7 +373,7 @@
         if (frac >= LOCKDOWN_AT) window.__msStorageLockdown = { frac: frac, used: r.data, plan: PLAN_DB_BYTES };
         // the on-open alert stays admin-only
         var u = await currentUser();
-        if (!u || !u.email || ADMIN_EMAILS.indexOf(u.email) === -1) return;
+        if (!window.msIsAdminEmail(u && u.email)) return;   // one admin list, top of this file
         if (frac < ALERT_AT) return;
         var band = Math.floor(frac * 10) * 10;   // 50, 60, 70, … — each new band re-alerts
         var hard = frac >= LOCKDOWN_AT;

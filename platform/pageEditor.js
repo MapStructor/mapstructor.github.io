@@ -4,7 +4,7 @@
 // type (WYSIWYG), with a </> HTML toggle for raw editing. Works on modal content too (any [data-edit] in
 // the DOM, including hidden modals — open the modal while editing). New page = include this + add data-edit.
 (function () {
-  var ADMIN_EMAILS = ["nittyjee@gmail.com"];   // owner allow-list (client gate; RLS restricts writes at lockdown)
+  // A30: one admin list, in platform/auth.js. Real gate = ms_is_admin() in the database.
   var SB_URL = "https://eqpxlwbjqiwfjlsuapvu.supabase.co";
   var SB_KEY = "sb_publishable_ijLmSmMUeNBrgMGL8Aol4g_S5-xwUzD";
 
@@ -29,7 +29,7 @@
     try {
       var force = location.search.indexOf("peadmin=1") > -1;   // preview/test seam (the real WRITE gate is RLS at lockdown)
       var u = window.MapAuth ? await MapAuth.currentUser() : null;
-      if (!force && (!u || !u.email || ADMIN_EMAILS.indexOf(u.email) === -1)) return;
+      if (!force && !(window.msIsAdminEmail && window.msIsAdminEmail(u && u.email))) return;
       if (!regions().length) return;
       injectEditButton();
     } catch (e) {}
