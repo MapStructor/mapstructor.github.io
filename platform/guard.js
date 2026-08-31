@@ -183,6 +183,11 @@
       try { localStorage.setItem(CACHE, JSON.stringify({ at: Date.now() })); } catch (e) {}
       var owner = false;
       try { var u = await MapAuth.currentUser(); owner = !!(window.msIsAdminEmail && window.msIsAdminEmail(u && u.email)); } catch (e) {}   // A30: one list, in auth.js
+      // BREAK-IN MODE (A27): no Thaw button for ANYONE — including the admin, because during a
+      // break-in "the admin's session" may be exactly what was stolen, and the off switch must
+      // not obey the person we are locking out. Thaw runs from the owner's machine only
+      // (ms_breakin_thaw is service_role-only; see scripts/breakin.mjs and process/break-in.md).
+      if (row.breakin) owner = false;
       showFreeze(row.reason, owner);
       setReason(row.reason);
       // a verdict that arrived after the map was built still has to stop the meter running on
