@@ -21,7 +21,8 @@ const cors = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 
-const ADMIN_EMAILS = ["nittyjee@gmail.com"];
+// A30 (8/31): admin identity is DATA now — `profiles.is_admin`, checked below via the
+// service-role client. No email literal, so adding a second admin is one UPDATE.
 
 const stripe = new Stripe(Deno.env.get("STRIPE_SECRET_KEY")!, {
   apiVersion: "2024-06-20",
@@ -56,11 +57,18 @@ const RANK: Record<string, number> = {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
-    // admin gate — the platform JWT gets us past the gateway; only the admin gets past this
+    // admin gate — the platform JWT gets us past the gateway; only the admin gets past this.
+    // Reads profiles.is_admin (A30) rather than comparing an email literal. One extra round-trip,
+    // on a button a human presses by hand — not a hot path, so the cost is irrelevant and the
+    // brittleness it removes is not. FAILS CLOSED: no token, no user, no row, or a read error all
+    // land on 403, because the only safe default for an admin gate is "no".
     const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
     const { data: caller } = await admin.auth.getUser(token);
-    const email = (caller?.user?.email ?? "").toLowerCase();
-    if (!ADMIN_EMAILS.includes(email)) return json({ error: "not authorized" }, 403);
+    const callerId = caller?.user?.id ?? null;
+    if (!callerId) return json({ error: "not authorized" }, 403);
+    const { data: me, error: meErr } = await admin.from("profiles")
+      .select("is_admin").eq("id", callerId).maybeSingle();
+    if (meErr || !me?.is_admin) return json({ error: "not authorized" }, 403);
 
     const { data: profiles, error } = await admin.from("profiles")
       .select("id,email,subscription_tier,stripe_customer_id")
