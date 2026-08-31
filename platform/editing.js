@@ -5828,6 +5828,7 @@
   var _hydratedLayers = {};   // layer db id → true once its feature rows have been fetched this session
   var _hydrateOne = null;     // set by loadFeatures (closes over its row-mapper): fetch ONE layer's rows now + add to draw if its checkbox is on
   var _suppressFeatureDelete = false;  // set during a hide-toggle so onDrawDelete skips the DB
+  var _suppressDeselOnce = false;      // one repaint's deselect must not close the Info Panel (see onFeatureColor)
   var selectedDrawId = null;
   var _featTimer = null, _lblLiveTimer = null;
   var GEOM_TO_TYPE = { Point: 'circle', LineString: 'line', Polygon: 'fill' };
@@ -7495,7 +7496,15 @@
       if (e.features && e.features.length) deferDrawSel([]);
       return;
     }
-    if (!e.features || !e.features.length) { _skipArmOnce = false; _editingDraw = null; _armedSet = []; setArmedHl(null); updateGroupHl(null); hideFeaturePanel(); return; }   // draw deselect ≠ clear the selection (empty-ground clicks clear via the map click handler)
+    if (!e.features || !e.features.length) {
+      // onFeatureColor's delete/add repaint DESELECTS the feature it is recolouring, and this
+      // branch then closed the Info Panel and nulled _editingDraw — so picking a colour made the
+      // panel vanish, and Reset (which needs selectedDrawId) became a silent no-op that left the
+      // override folded into the persisted paint forever. One event's amnesty; the repaint
+      // re-selects on the next tick. Found by feature-color-gate F3b on 8/31.
+      if (_suppressDeselOnce) { _suppressDeselOnce = false; return; }
+      _skipArmOnce = false; _editingDraw = null; _armedSet = []; setArmedHl(null); updateGroupHl(null); hideFeaturePanel(); return;   // draw deselect ≠ clear the selection (empty-ground clicks clear via the map click handler)
+    }
     if (_skipArmOnce) {   // a JUST-DRAWN feature: skip stage 1 — it stays selected (stage 2) with the panel open
       var f0 = e.features[0];
       _skipArmOnce = false; _editingDraw = String(f0.id); _armedSet = []; setArmedHl(null);
@@ -7780,8 +7789,24 @@
            silently swallowed: the feature vanishes from the map and stays in the database. Lower it
            in a finally, and keep the deferred lower as well (the delete event arrives async). */
         _suppressFeatureDelete = true;
+        /* The delete/add also DESELECTS — and that deselect reached onSelectionChange as an empty
+           selection, which closed the panel and cleared _editingDraw. So the panel vanished the
+           moment a colour was picked, and Reset (which reads selectedDrawId) silently did nothing,
+           leaving the override folded into the persisted paint with no way back from the UI.
+           _suppressDeselOnce grants that ONE event amnesty; the timed lower keeps it from becoming
+           a stuck latch if the event never arrives (the unguarded-latch rule). Then re-select in
+           the same shape enterDrawEditable uses, a tick later so it lands after the deselect. */
+        _suppressDeselOnce = true;
         try { draw.delete(did); draw.add(f); }
         finally { setTimeout(function () { _suppressFeatureDelete = false; }, 0); }
+        setTimeout(function () { _suppressDeselOnce = false; }, 600);
+        setTimeout(function () {
+          try {
+            var gt2 = f.geometry && f.geometry.type;
+            if (gt2 === 'Point' || gt2 === 'MultiPoint') draw.changeMode('simple_select', { featureIds: [did] });
+            else draw.changeMode('direct_select', { featureId: did });
+          } catch (eRe) { try { draw.changeMode('simple_select', { featureIds: [did] }); } catch (e2) {} }
+        }, 0);
       }
     } catch (e) {}
     if (_featColorT) clearTimeout(_featColorT);
