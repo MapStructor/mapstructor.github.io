@@ -5795,6 +5795,7 @@
       };
     } catch (e) {}
     document.addEventListener('keydown', function (e) {   // Esc cancels measure/split; Ctrl+Z/Y, Ctrl+C/V
+      if (e._msForwarded) return;   // a right-side keypress reaches here twice (original + the clone forwarded to draw) — act on the original only
       if (e.key === 'Escape' && _measuring) { e.preventDefault(); cancelMeasure(); return; }
       if (e.key === 'Escape' && _splitMode) { e.preventDefault(); cancelSplit(); return; }
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -5924,7 +5925,9 @@
     injectFeaturePanel();
     loadFeatures();
     wireDrawPopups();
-    wireRightSideDrawGuard();
+    wireBothSidesForwarding();
+    // a basemap switch wipes afterMap's custom sources — rebuild the draw mirror once the new style settles
+    try { afterMap.on('style.load', function () { setTimeout(syncMirrorRight, 600); }); } catch (eSL) {}
   }
   // ── #14: hover/click popups for MapboxDraw-rendered (edit-mode) features ─────
   // The engine's popup handlers listen on the slug-left/right layers, which are HIDDEN in the editor for
@@ -5932,40 +5935,161 @@
   // never showed while editing. These handlers read the LIVE toggles (#12), and clicking still selects the
   // feature for editing (editor = viewer + tools; neither suppresses the other).
   var _drawHoverPop = null, _drawClickPop = null, _drawClickPopId = null, _hoverHlId = null, _refreshOpenPill = null;
-  // ── draw-side guard: drawing only works on the LEFT map; while a draw tool is armed, hovering the RIGHT
-  //    map shows a not-allowed cursor + a pill "Draw on the left side ←" that follows the cursor. ──
-  var _rightHintEl = null;
   function isDrawArmed() {   // read the live mode (programmatic changeMode doesn't reliably fire draw.modechange in v1.4.3)
     try { return /^draw_/.test(draw && draw.getMode ? draw.getMode() : ''); } catch (e) { return false; }
   }
-  function ensureRightHint() {
-    if (_rightHintEl) return _rightHintEl;
-    var el = document.createElement('div');
-    el.id = 'editor-right-draw-hint';
-    el.innerHTML = '&#9940; Draw on the left side &larr;';   // ⛔ + arrow pointing back to the drawable side
-    el.style.cssText = 'position:fixed;z-index:2500;display:none;pointer-events:none;background:rgba(30,27,46,0.92);color:#fff;font:600 12px "Source Sans Pro",Arial,sans-serif;padding:5px 10px;border-radius:7px;box-shadow:0 2px 9px rgba(0,0,0,0.32);white-space:nowrap;transform:translate(16px,16px);';
-    document.body.appendChild(el);
-    _rightHintEl = el; return el;
+  // ── BOTH-SIDES INPUT FORWARDING (8/31, swipe plan option B — replaces the old "Draw on the left
+  //    side ←" guard: drawing now simply works on the right). While MapboxDraw owns the mouse,
+  //    pointer events over the RIGHT swipe map are cloned onto the LEFT map's canvas and the
+  //    originals stopped before afterMap's handlers see them, so each gesture has exactly one
+  //    owner. The two map containers are congruent and camera-synced, so client coordinates
+  //    transfer verbatim — the right side becomes a picture of the editor that accepts input for
+  //    it. In every other state events flow to afterMap's own handlers untouched, which is what
+  //    keeps per-side hit-testing (the sides can show different dates) true.
+  //      Draw owns the mouse in: any draw_* tool (incl. measure/split, which ride draw_line_string),
+  //    direct_select (vertex editing), and simple_select only for a press that lands ON the
+  //    selected shape or its handles (drag-to-move / click-to-vertex-edit). Everything else in
+  //    simple_select — other features, empty ground, hover — stays native so the right side's own
+  //    click model and popups keep working.
+  //      A drag may cross the divider mid-gesture: left of it the events reach beforeMap natively
+  //    (the compare clip makes each container mouse-transparent on its hidden side), right of it
+  //    they are forwarded — either way beforeMap sees one continuous stream. GL v3 fires map
+  //    'mousemove' only from its own element's listeners (window moves feed drag handlers alone,
+  //    verified in the 3.1.2 bundle), which is why the clones are dispatched rather than relying
+  //    on GL's document-level capture. ──
+  var _fwdGesture = false;    // a press was forwarded — the whole gesture forwards (moves, release), wherever the mode goes meanwhile
+  var _fwdTrailUntil = 0;     // the browser's own click/dblclick arrive AFTER mouseup — forward those stragglers too
+  var _fwdCursorOn = false;
+  function fwdMode() {   // '' = draw does not own the mouse right now
+    var md = '';
+    try { md = draw && draw.getMode ? draw.getMode() : ''; } catch (e) { return ''; }
+    if (/^draw_/.test(md) || md === 'direct_select') return md;
+    if (md === 'simple_select') { try { if (draw.getSelectedIds().length) return md; } catch (e2) {} }
+    return '';
   }
-  function hideRightDrawHint() {
-    if (_rightHintEl) _rightHintEl.style.display = 'none';
-    try { if (typeof afterMap !== 'undefined' && afterMap) afterMap.getCanvas().style.cursor = ''; } catch (e) {}
+  function fwdHitsSelected(pt) {   // does this press land on the selected shape (or its handles)?
+    try {
+      var sel = draw.getSelectedIds(); if (!sel.length) return false;
+      var r = beforeMap.getCanvas().getBoundingClientRect();
+      var x = (pt.clientX || 0) - r.left, y = (pt.clientY || 0) - r.top, bx = 10;
+      var fs = beforeMap.queryRenderedFeatures([[x - bx, y - bx], [x + bx, y + bx]]);
+      for (var i = 0; i < fs.length; i++) {
+        var f = fs[i], p = f.properties || {};
+        if (!f.layer || String(f.layer.id).indexOf('gl-draw') !== 0) continue;
+        if (p.meta === 'vertex' || p.meta === 'midpoint') return true;
+        if (sel.indexOf(p.id) > -1 || sel.indexOf(p.parent) > -1) return true;
+      }
+    } catch (e) {}
+    return false;
   }
-  function wireRightSideDrawGuard() {
-    if (typeof beforeMap === 'undefined' || !beforeMap) return;
-    beforeMap.on('draw.modechange', function () { if (!isDrawArmed()) hideRightDrawHint(); });   // returning to simple_select clears a stuck pill/cursor
-    if (typeof afterMap !== 'undefined' && afterMap) {
-      afterMap.on('mousemove', function (e) {
-        if (!isDrawArmed()) { hideRightDrawHint(); return; }
-        try { afterMap.getCanvas().style.cursor = 'not-allowed'; } catch (x) {}
-        var el = ensureRightHint(), oe = e.originalEvent;
-        el.style.left = ((oe ? oe.clientX : 0)) + 'px';
-        el.style.top = ((oe ? oe.clientY : 0)) + 'px';
-        el.style.display = 'block';
-      });
-      afterMap.on('mouseout', hideRightDrawHint);
+  function fwdCursorSync() {   // the left canvas cursor (draw's crosshair/move/grab) shows on the right too
+    try {
+      var cur = getComputedStyle(beforeMap.getCanvas()).cursor || '';
+      var ac = afterMap.getCanvas();
+      if (ac.style.cursor !== cur) ac.style.cursor = cur;
+      _fwdCursorOn = true;
+    } catch (e) {}
+  }
+  function fwdClearCursor() {
+    if (!_fwdCursorOn) return; _fwdCursorOn = false;
+    try { afterMap.getCanvas().style.cursor = ''; } catch (e) {}
+  }
+  function fwdClone(ev) {
+    var e2 = null;
+    try { e2 = new ev.constructor(ev.type, ev); } catch (e) { try { e2 = new MouseEvent(ev.type, ev); } catch (e3) { return; } }
+    try { Object.defineProperty(e2, '_msForwarded', { value: true }); } catch (e4) {}
+    try { beforeMap.getCanvas().dispatchEvent(e2); } catch (e5) {}
+  }
+  function fwdBuildTouch(ev) {   // null = this browser can't construct Touch events (the caller then leaves the original alone, so touch degrades to native pan rather than going dead)
+    try {
+      var cv = beforeMap.getCanvas();
+      var mk = function (tl) {
+        var out = [];
+        for (var i = 0; i < tl.length; i++) { var t = tl[i]; out.push(new Touch({ identifier: t.identifier, target: cv, clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY, pageX: t.pageX, pageY: t.pageY, radiusX: t.radiusX, radiusY: t.radiusY, rotationAngle: t.rotationAngle, force: t.force })); }
+        return out;
+      };
+      var e2 = new TouchEvent(ev.type, { bubbles: true, cancelable: true, view: window, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey, metaKey: ev.metaKey,
+        touches: mk(ev.touches), targetTouches: mk(ev.targetTouches), changedTouches: mk(ev.changedTouches) });
+      try { Object.defineProperty(e2, '_msForwarded', { value: true }); } catch (eD) {}
+      return e2;
+    } catch (e) { return null; }
+  }
+  function fwdPointerEvent(ev) {
+    if (ev._msForwarded || !draw || typeof beforeMap === 'undefined' || !beforeMap) return;
+    var t = ev.target;
+    if (!(t && t.classList && t.classList.contains('mapboxgl-canvas'))) return;   // popups/controls inside the right container stay native
+    var isTouch = ev.type.indexOf('touch') === 0;
+    var isDown = ev.type === 'mousedown' || ev.type === 'touchstart';
+    var isUp = ev.type === 'mouseup' || ev.type === 'touchend' || ev.type === 'touchcancel';
+    var isTrail = ev.type === 'click' || ev.type === 'dblclick';
+    var go = false, mode = fwdMode();
+    if (_fwdGesture) go = true;                                     // gesture atomicity: whatever began forwarded ends forwarded
+    else if (isTrail && Date.now() < _fwdTrailUntil) go = true;     // the browser's own click after a forwarded down+up
+    else if (mode) {
+      if (mode === 'simple_select') go = isDown && fwdHitsSelected(isTouch ? ((ev.changedTouches && ev.changedTouches[0]) || {}) : ev);
+      else go = true;                                               // draw_* and direct_select: draw owns the mouse wholly
     }
-    beforeMap.on('mousemove', function () { if (!isDrawArmed() && _rightHintEl && _rightHintEl.style.display !== 'none') hideRightDrawHint(); });   // disarmed + moved onto the left map → clear any lingering pill
+    if (!go) { if (!mode) fwdClearCursor(); return; }
+    var touchClone = null;
+    if (isTouch) { touchClone = fwdBuildTouch(ev); if (!touchClone) return; }   // can't clone → stay native (never stop an event we can't deliver)
+    if (isDown) _fwdGesture = true;
+    if (isUp) { _fwdGesture = false; _fwdTrailUntil = Date.now() + 700; }
+    ev.stopPropagation();                                           // afterMap's map handlers never see it — exactly one owner per event
+    if (isTouch) {
+      try { ev.preventDefault(); } catch (eP) {}                     // afterMap's GL isn't seeing this, so stop the browser's own scroll/zoom itself
+      try { beforeMap.getCanvas().dispatchEvent(touchClone); } catch (eT) {}
+    } else fwdClone(ev);
+    fwdCursorSync();
+  }
+  function fwdKeyEvent(ev) {   // Esc cancels, Enter finishes, Del/Backspace trashes — draw's keys, from the right canvas
+    if (ev._msForwarded || !draw || typeof beforeMap === 'undefined' || !beforeMap) return;
+    var t = ev.target;
+    if (!(t && t.classList && t.classList.contains('mapboxgl-canvas'))) return;
+    var k = ev.keyCode;
+    if (k !== 27 && k !== 13 && k !== 8 && k !== 46) return;
+    if (!fwdMode() && !_fwdGesture) return;
+    // the ORIGINAL is not stopped: document-level handlers (measure/split Esc at their own guard)
+    // act on it exactly as they would for a left-side keypress — the clone carries _msForwarded so
+    // they can skip the duplicate. Draw's own handler checks keyCode, which a constructed
+    // KeyboardEvent reports as 0, hence the defineProperty.
+    var e2 = null;
+    try { e2 = new KeyboardEvent(ev.type, ev); } catch (e) { return; }
+    try { Object.defineProperty(e2, 'keyCode', { get: function () { return k; } }); } catch (e3) {}
+    try { Object.defineProperty(e2, '_msForwarded', { value: true }); } catch (e4) {}
+    try { beforeMap.getCanvas().dispatchEvent(e2); } catch (e5) {}
+  }
+  function wireBothSidesForwarding() {
+    if (typeof afterMap === 'undefined' || !afterMap || typeof beforeMap === 'undefined' || !beforeMap) return;
+    var host = afterMap.getContainer();
+    // capture on the container (a PARENT of GL's canvasContainer listeners) so stopPropagation
+    // runs before afterMap's own handlers — listeners on the same node cannot pre-empt each other
+    ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(function (tp) {
+      host.addEventListener(tp, fwdPointerEvent, { capture: true, passive: false });
+    });
+    ['keydown', 'keyup'].forEach(function (tp) { host.addEventListener(tp, fwdKeyEvent, true); });
+    // a drag crossing the divider LEFT→RIGHT physically leaves beforeMap's canvas, and draw
+    // treats leaving the canvas as "commit the drag now" (its onMouseOut fires draw.update
+    // mid-gesture — verified in the 1.4.3 bundle). The pointer is still on the map pair, so
+    // that safety commit must not fire for a divider crossing; suppressed only while draw owns
+    // the mouse, so ordinary hover mouseouts (popup cleanup etc.) keep flowing. The crossing
+    // lands on either the right map OR the compare slider bar itself (it sits exactly on the
+    // divider — a slow crossing touches it first), so both count as "still on the map".
+    beforeMap.getContainer().addEventListener('mouseout', function (ev) {
+      try {
+        if (!_fwdGesture && !fwdMode()) return;
+        var rt = ev.relatedTarget;
+        if (!rt) return;
+        var stillOnMap = afterMap.getContainer().contains(rt) ||
+          (rt.closest && !!rt.closest('.mapboxgl-compare'));
+        if (stillOnMap) ev.stopPropagation();
+      } catch (e) {}
+    }, true);
+    // a gesture that drifts LEFT across the divider finishes on beforeMap natively — this
+    // controller never sees that release, so the sticky flag lets go at the document instead
+    document.addEventListener('mouseup', function (ev) { if (!ev._msForwarded) _fwdGesture = false; }, false);
+    window.addEventListener('blur', function () { _fwdGesture = false; });
+    beforeMap.on('draw.modechange', function () { if (!fwdMode()) fwdClearCursor(); });
+    beforeMap.on('draw.selectionchange', function () { if (!fwdMode()) fwdClearCursor(); });
   }
   function drawNodeFor(did) { var lid = featureLayer[did]; return lid ? nodeByLayerDbId(lid) : null; }
   // Hover-highlight for MapboxDraw features: a dedicated overlay source/layers on BOTH maps, fed the hovered
@@ -6065,7 +6189,7 @@
         // (cursor, glow, bubbles) follows for free.
         if (node && node.editable === false) { did = null; node = null; }
         // the RIGHT map has no MapboxDraw (which handles the left cursor) — set the pointer here
-        // (but never while a draw tool is armed: the draw-side guard owns the right cursor then = not-allowed)
+        // (but never while a draw tool is armed: the forwarding layer mirrors the left cursor then)
         if (m !== beforeMap && !isDrawArmed()) { try { m.getCanvas().style.cursor = did ? 'pointer' : ''; } catch (x) {} }
         // hover-HIGHLIGHT (independent of the popup toggle; default on, gated by the layer's elp-hl
         // setting; grouped layers never emphasize a single piece — the group overlay owns hover)
@@ -7134,41 +7258,57 @@
     })(layers);
   }
 
-  // ── Both-sides display: everything being edited lives in the LEFT MapboxDraw (drawn features AND a
-  //    clicked building pulled into edit), so the engine shows it on the left only. Mirror the whole
-  //    MapboxDraw contents onto a RIGHT-side overlay (afterMap), styled to match DRAW_STYLES' inactive
-  //    paint via the same per-feature props — so saved draws/edits and in-edit buildings show on the right
-  //    too. It tracks draw.getAll(), so the right always matches the left by construction. ──
-  var MIRROR_SRC = 'editor-draw-mirror-right';
+  // ── Both-sides display (8/31, swipe plan option B): everything being edited lives in the LEFT
+  //    MapboxDraw, so the engine shows it on the left only. Mirror MapboxDraw's OWN render sources
+  //    (mapbox-gl-draw-cold / -hot on beforeMap) onto afterMap, drawn through the same DRAW_STYLES
+  //    layer set — so the right side shows exactly what the left editor renders: features, active
+  //    highlights, in-progress shapes, vertex and midpoint handles alike. It is the same data draw
+  //    paints from, not a re-implementation, so the right can never drift from the left. The twin
+  //    sources reuse draw's names (afterMap hosts no MapboxDraw, so they are free there), and the
+  //    layers go in cold-then-hot — the exact order draw v1.4.3 adds its own (verified in the
+  //    bundle: styles = addSources(styles,'cold').concat(addSources(styles,'hot'))). ──
+  var MIRROR_SOURCES = ['mapbox-gl-draw-cold', 'mapbox-gl-draw-hot'];
   function ensureMirrorRight() {
     if (typeof afterMap === 'undefined' || !afterMap) return false;
     try {
-      if (afterMap.getSource(MIRROR_SRC)) return true;
+      if (afterMap.getSource('mapbox-gl-draw-cold')) return true;
       if (afterMap.isStyleLoaded && !afterMap.isStyleLoaded()) return false;   // retry on the next draw.render
-      var C  = ['coalesce', ['get', 'color'], '#3bb2d0'];                       // mirrors DRAW_STYLES COLOR (user_* → plain props)
-      var OF = ['coalesce', ['get', 'outline'], C];                            // OUTLINE_FILL: polygon outline → fill colour
-      var OP = ['coalesce', ['get', 'opacity'], 1];                            // STROKE_OPACITY: line/point opacity, default 1
-      var SW = ['coalesce', ['get', 'strokewidth'], 2];                        // STROKE_WIDTH (lines)
-      var PSW = ['coalesce', ['get', 'strokewidth'], 0.5];                     // POLY_STROKE_WIDTH (polygon outlines — 0.5 default)
-      afterMap.addSource(MIRROR_SRC, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-      afterMap.addLayer({ id: MIRROR_SRC + '-fill', type: 'fill', source: MIRROR_SRC, filter: ['==', '$type', 'Polygon'],
-        paint: { 'fill-color': C, 'fill-outline-color': OF, 'fill-opacity': ['coalesce', ['get', 'opacity'], 0.35] } });
-      afterMap.addLayer({ id: MIRROR_SRC + '-poly-stroke', type: 'line', source: MIRROR_SRC, filter: ['==', '$type', 'Polygon'],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': OF, 'line-width': PSW, 'line-opacity': ['coalesce', ['get', 'strokeopacity'], 1] } });
-      afterMap.addLayer({ id: MIRROR_SRC + '-line', type: 'line', source: MIRROR_SRC, filter: ['==', '$type', 'LineString'],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': C, 'line-width': SW, 'line-opacity': OP } });
-      afterMap.addLayer({ id: MIRROR_SRC + '-point', type: 'circle', source: MIRROR_SRC, filter: ['==', '$type', 'Point'],
-        paint: (function () { var R = ['coalesce', ['get', 'radius'], 6]; return { 'circle-color': C, 'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, ['max', 2, ['*', 0.35, R]], 11, ['*', 0.65, R], 16, R], 'circle-stroke-width': ['coalesce', ['get', 'strokewidth'], 1.5], 'circle-stroke-color': ['coalesce', ['get', 'outline'], '#ffffff'], 'circle-opacity': OP }; })() });
+      MIRROR_SOURCES.forEach(function (s) { afterMap.addSource(s, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }); });
+      MIRROR_SOURCES.forEach(function (s) {
+        var bucket = s === 'mapbox-gl-draw-hot' ? 'hot' : 'cold';
+        DRAW_STYLES.forEach(function (st) {
+          var cfg = { id: st.id + '.' + bucket, type: st.type, source: s, filter: st.filter, paint: st.paint };
+          if (st.layout) cfg.layout = st.layout;
+          afterMap.addLayer(cfg);
+        });
+      });
+      try { if (typeof msRaiseLabelLayers === 'function') msRaiseLabelLayers(afterMap, layers); } catch (eR) {}   // labels ride above the mirror, like on the left
       return true;
     } catch (e) { return false; }
   }
+  function mirrorSourceData(name) {   // draw feeds its sources via setData; GL v3 keeps the live object on _data
+    try { var bs = beforeMap.getSource(name); if (!bs) return null; return bs._data || (bs.serialize && bs.serialize().data) || null; } catch (e) { return null; }
+  }
   function syncMirrorRight() {
-    try { if (!draw || !ensureMirrorRight()) return; var src = afterMap.getSource(MIRROR_SRC); if (src) src.setData(draw.getAll()); } catch (e) {}
+    try {
+      if (!draw || !ensureMirrorRight()) return;
+      MIRROR_SOURCES.forEach(function (name) {
+        var d = mirrorSourceData(name); if (!d) return;
+        var ts = afterMap.getSource(name); if (ts) ts.setData(d);
+      });
+    } catch (e) {}
   }
   var _mirrorTimer = null;
-  function scheduleMirrorSync() {   // coalesce the many draw.render ticks during a drag into one setData
+  function scheduleMirrorSync() {
+    // HOT carries the live gesture (a vertex mid-drag, the rubber-band of a shape being drawn) —
+    // copy it on EVERY render tick so the right side moves with the hand. COLD holds everything
+    // else and changes rarely, so it keeps the old coalesced cadence.
+    try {
+      if (draw && typeof afterMap !== 'undefined' && afterMap && afterMap.getSource('mapbox-gl-draw-hot')) {
+        var hd = mirrorSourceData('mapbox-gl-draw-hot');
+        if (hd) afterMap.getSource('mapbox-gl-draw-hot').setData(hd);
+      }
+    } catch (e) {}
     if (_mirrorTimer) return;
     _mirrorTimer = setTimeout(function () { _mirrorTimer = null; syncMirrorRight(); }, 120);
   }
