@@ -30,7 +30,7 @@
     .pub { color: #2d7a2d; } .priv { color: #9a93ad; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="platform/auth.js?v=65777636"></script>
+  <script src="platform/auth.js?v=8f41f13d"></script>
   <script src="platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
   <script src="platform/topbar.js?v=8154caa8"></script>
   <script src="platform/pricing.js?v=2609c548"></script>
@@ -196,6 +196,17 @@
         var rows = (prof.data) || [];
         rows.forEach(function (r) { profById[r.id] = r; });
         document.getElementById('s-users').textContent = rows.length;
+
+        /* PAINT THE MAPS TABLE NOW (8/31). Measured: it used to appear ~30 SECONDS after the page
+           opened, because its render sat below a run of admin stats RPCs that statement-timeout on
+           this database (A5). Everything it needs — `maps` and `profById` — is already here, so
+           there is nothing below worth waiting for. The later render call still runs and simply
+           repaints with the same data.
+           `renderMapsTable`, `sortVal`, `ownerName` and `ownerEmail` are function DECLARATIONS in
+           this same scope, so they are hoisted and callable here; the sort state they read is
+           initialised on the line above for exactly that reason. */
+        var _showAllMaps = false, _sortKey = 'updated_at', _sortDir = -1;
+        renderMapsTable();
         if (hasTier) {
           // count by RESOLVED step (stepFor folds legacy plus/pro/institutional keys in)
           rows.forEach(function (r) { var k = P.stepFor(r.subscription_tier).key; tierCounts[k] = (tierCounts[k] || 0) + 1; });
@@ -434,7 +445,7 @@
         // maps table (#25 private filter · #27 owner · email · #28 created · #29 see-all · sortable headers)
         function ownerName(m) { var p = profById[m.user_id]; if (p && p.username) return '@' + p.username; if (p && p.display_name) return p.display_name; return 'anonymous'; }
         function ownerEmail(m) { var p = profById[m.user_id]; return (p && p.email) || ''; }
-        var _showAllMaps = false, _sortKey = 'updated_at', _sortDir = -1;
+        // sort state is declared, and the table first painted, right after the profiles load above.
         function sortVal(m, k) {
           if (k === 'owner') return ownerName(m).toLowerCase();
           if (k === 'email') return ownerEmail(m).toLowerCase();
