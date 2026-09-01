@@ -45,7 +45,14 @@ Deno.serve(async (req) => {
     }
     const monthly = recurring === true;
     const prod = await productId(monthly ? "MapStructor Monthly Support" : "MapStructor Donation");
-    const session = await stripe.checkout.sessions.create({
+    // Payment methods are EXPLICIT (owner 9/1: "There should be no 'Pay Later' option haha").
+    // Automatic methods surfaced Link, whose wallet offers 0%-interest installment plans on
+    // one-time payments — donations on an installment plan is absurd. Listing types ourselves
+    // keeps card + Cash App (+ Amazon Pay one-time, + Link on monthly, where subscriptions
+    // cannot be financed) and drops every BNPL. A type not enabled on the account fails session
+    // creation, so fall back to plain card rather than failing the donor.
+    const wanted = monthly ? ["card", "cashapp", "link"] : ["card", "cashapp"];
+    const base = {
       mode: monthly ? "subscription" : "payment",
       line_items: [{
         quantity: 1,
@@ -60,8 +67,15 @@ Deno.serve(async (req) => {
       metadata: { donation: "1" },
       success_url: successUrl || "https://mapstructor.com/services.html?donated=1",
       cancel_url: cancelUrl || "https://mapstructor.com/services.html",
-    });
-    return json({ url: session.url });
+    } as Stripe.Checkout.SessionCreateParams;
+    let session: Stripe.Checkout.Session; let branch = "wanted"; let err0 = "";
+    try {
+      session = await stripe.checkout.sessions.create({ ...base, payment_method_types: wanted as Stripe.Checkout.SessionCreateParams.PaymentMethodType[] });
+    } catch (e0) {
+      branch = "card-only"; err0 = String((e0 as Error)?.message ?? e0).slice(0, 200);
+      session = await stripe.checkout.sessions.create({ ...base, payment_method_types: ["card"] });
+    }
+    return json({ url: session.url, v: 5, branch, err0, pm: session.payment_method_types });
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 400);
   }

@@ -28,7 +28,7 @@
 <body>
   <nav>
     <a class="brand" href="index.html">MapStructor</a>
-    <div class="nav-right"><a href="about.html">About</a><a href="index.html">Home</a></div>
+    <div class="nav-right"><a href="portal.html">Map Portal</a><a href="about.html">About</a><a href="index.html">Home</a></div>
   </nav>
   <main>
     <h1 data-edit="services-title">Map Services</h1>
@@ -37,70 +37,14 @@
       <p>Get in touch: <a href="mailto:hello@mapstructor.com">hello@mapstructor.com</a> or <a href="https://github.com/MapStructor" target="_blank" rel="noopener">github.com/MapStructor</a>.</p>
     </div>
 
-    <!-- Donate (9/1). STATIC — deliberately outside the two data-edit regions so the page editor
-         can never absorb it into site_content. Amount buttons call the public `donate` edge
-         function (Stripe Checkout: one-time = payment/donate, monthly = subscription). -->
-    <section id="ms-donate" style="margin:26px 0 10px;padding:20px 22px;border:1px solid #e3ddf2;border-radius:12px;background:#fff;">
-      <div style="font-weight:800;font-size:19px;margin-bottom:4px;">Donate</div>
-      <div id="msdn-note" style="font-size:13px;color:#6b6580;margin-bottom:12px;">Secure checkout by Stripe.</div>
-      <div style="font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#9a93ad;margin-bottom:6px;">One-time</div>
-      <div class="msdn-row" data-recurring="false" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;">
-        <button class="msdn-amt" data-cents="500">$5</button>
-        <button class="msdn-amt" data-cents="1000">$10</button>
-        <button class="msdn-amt" data-cents="2500">$25</button>
-        <button class="msdn-amt" data-cents="5000">$50</button>
-        <button class="msdn-amt" data-cents="10000">$100</button>
-        <span class="msdn-custom"><input type="number" min="1" max="9999" placeholder="Other $" class="msdn-in" /><button class="msdn-go">Give</button></span>
-      </div>
-      <div style="font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#9a93ad;margin-bottom:6px;">Monthly</div>
-      <div class="msdn-row" data-recurring="true" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
-        <button class="msdn-amt" data-cents="200">$2</button>
-        <button class="msdn-amt" data-cents="500">$5</button>
-        <button class="msdn-amt" data-cents="1000">$10</button>
-        <button class="msdn-amt" data-cents="1500">$15</button>
-        <button class="msdn-amt" data-cents="2500">$25</button>
-        <span class="msdn-custom"><input type="number" min="1" max="9999" placeholder="Other $/mo" class="msdn-in" /><button class="msdn-go">Give monthly</button></span>
-      </div>
-      <div style="font-size:14px;color:#3a3550;">Want to be a supporting partner? <a href="mailto:info@mapstructor.com">info@mapstructor.com</a></div>
-    </section>
-    <style>
-      #ms-donate .msdn-amt, #ms-donate .msdn-go { border: 1px solid #cdc6e0; border-radius: 8px; background: #f4f1fa; color: #4a3f66; font-weight: 700; font-size: 14px; padding: 8px 14px; cursor: pointer; }
-      #ms-donate .msdn-amt:hover, #ms-donate .msdn-go:hover { background: #7c5cbf; border-color: #7c5cbf; color: #fff; }
-      #ms-donate .msdn-custom { display: inline-flex; gap: 6px; align-items: stretch; }
-      #ms-donate .msdn-in { width: 92px; border: 1px solid #cdc6e0; border-radius: 8px; padding: 8px 10px; font-size: 14px; }
-      #ms-donate button[disabled] { opacity: .55; cursor: default; }
-    </style>
-    <script>
-      (function () {
-        var FN = "https://eqpxlwbjqiwfjlsuapvu.supabase.co/functions/v1/donate";
-        function go(cents, recurring, btn) {
-          if (!Number.isInteger(cents) || cents < 100 || cents > 999900) { note("Enter an amount from $1 to $9,999", true); return; }
-          var old = btn.textContent; btn.disabled = true; btn.textContent = "Opening…";
-          fetch(FN, { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ amount_cents: cents, recurring: recurring,
-              successUrl: location.origin + "/services.html?donated=1", cancelUrl: location.href }) })
-            .then(function (r) { return r.json(); })
-            .then(function (d) { if (d && d.url) location.href = d.url; else { note((d && d.error) || "Something went wrong — nothing was charged.", true); btn.disabled = false; btn.textContent = old; } })
-            .catch(function () { note("Could not reach checkout — nothing was charged.", true); btn.disabled = false; btn.textContent = old; });
-        }
-        function note(t, warn) { var n = document.getElementById("msdn-note"); if (n) { n.textContent = t; n.style.color = warn ? "#b4453a" : "#6b6580"; } }
-        document.querySelectorAll("#ms-donate .msdn-row").forEach(function (row) {
-          var rec = row.getAttribute("data-recurring") === "true";
-          row.querySelectorAll(".msdn-amt").forEach(function (b) { b.addEventListener("click", function () { go(+b.getAttribute("data-cents"), rec, b); }); });
-          var inp = row.querySelector(".msdn-in"), goBtn = row.querySelector(".msdn-go");
-          goBtn.addEventListener("click", function () { go(Math.round(parseFloat(inp.value || "0") * 100), rec, goBtn); });
-          inp.addEventListener("keydown", function (e) { if (e.key === "Enter") goBtn.click(); });
-        });
-        if (new URLSearchParams(location.search).get("donated") === "1") {
-          note("Thank you! Your donation went through. 💛", false);
-          document.getElementById("ms-donate").scrollIntoView({ block: "center" });
-        }
-      })();
-    </script>
+    <!-- Donate (9/1) — shared widget, deliberately outside the two data-edit regions so the page
+         editor can never absorb it into site_content. All markup + wiring: platform/donate.js. -->
+    <section id="ms-donate"></section>
 
     <div class="content" data-edit="services-body2"></div>
   </main>
   <script src="platform/pageEditor.js?v=09011724"></script>
+  <script src="platform/donate.js?v=09011820"></script>
   <style>footer{padding:24px clamp(20px,5vw,64px);border-top:1px solid #ece9f5;font-size:11px;color:#b8b0d4;}footer a{color:#b8b0d4;text-decoration:none;margin-right:14px;}footer a:hover{color:#7c5cbf;}</style>
   <footer><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="report.html">Report a map</a><a href="https://github.com/MapStructor" target="_blank">github.com/MapStructor</a></footer>
 </body>

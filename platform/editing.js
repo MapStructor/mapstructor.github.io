@@ -1655,7 +1655,14 @@
           [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pr) {
             if (found) return; var mm = pr[1], sd = pr[0]; if (!mm) return;
             var lids = [];
-            (function walk(arr) { (arr || []).forEach(function (n) { if (isEngineEditable(n) && mm.getLayer(n.id + '-' + sd)) lids.push(n.id + '-' + sd); if (n.children) walk(n.children); }); })(layers);
+            /* 9/1: SMALL drawn layers join the walk. Since the engine twin (popups-by-default),
+               a session-drawn feature returns to ENGINE render when its edit is flushed (Done /
+               empty-ground click / undo churn) — and this walk was the only door back into edit.
+               Excluding _drawLayerSlugs was right when such layers were 100% draw-resident; now a
+               flushed feature was click-armable (yellow) but never PULLED, so no vertices showed.
+               While a feature IS draw-resident its engine copy is filter-hidden, so this can never
+               double-handle a click. */
+            (function walk(arr) { (arr || []).forEach(function (n) { if ((isEngineEditable(n) || (_drawLayerSlugs[n.id] && n.editable !== false)) && mm.getLayer(n.id + '-' + sd)) lids.push(n.id + '-' + sd); if (n.children) walk(n.children); }); })(layers);
             if (!lids.length) return;
             // 10px grab corridor (user 7/16 + widened 7/17: thin lines are brutal to click exactly) —
             // the box returns candidates ordered by render order; nearest-enough beats pixel-perfect
@@ -2320,11 +2327,13 @@
        container keeps #editor-operate-buttons with its first .erow, because tables.js and
        queryWindow.js inject their buttons there. */
     bar.innerHTML = '<div id="editor-add-buttons">' +
-      '<div class="erow" style="margin-bottom:4px;"><button id="editor-add-toggle" class="editor-door">＋ Add</button></div>' +
-      '<div class="erow" style="margin-bottom:6px;"><button id="editor-operate-toggle" class="editor-door" title="Everything besides adding — queries, data tables, merging, exports">⋯ More</button></div>' +
+      // side by side (owner 9/1): Add gets 2/3, More 1/3, no "⋯"
+      '<div class="erow" style="margin-bottom:6px;"><button id="editor-add-toggle" class="editor-door" style="flex:2;">＋ Add</button>' +
+      '<button id="editor-operate-toggle" class="editor-door" style="flex:1;" title="Everything besides adding — queries, data tables, merging, exports">More</button></div>' +
       '<div id="editor-add-menu" style="display:none;">' +
         '<div class="esec"><div class="esec-h">Create</div>' +
-          '<div class="erow" style="margin-bottom:4px;"><button data-type="layer" style="font-weight:700;" title="A new empty layer to draw features into">Layer</button></div>' +
+          // LAYER is the button a first-timer is looking for (owner 9/1): big, centered, unmistakable
+          '<div class="erow" style="margin-bottom:6px;justify-content:center;"><button data-type="layer" style="flex:0 0 68%;font-weight:800;font-size:15px;padding:10px 0;background:#2b7de0;color:#ffffff;border:1px solid #2b7de0;border-radius:6px;" title="A new empty layer to draw features into">＋ Layer</button></div>' +
           '<div class="erow">' +
           '<button data-type="group">Group</button>' +
           '<button data-type="section">Section</button>' +
