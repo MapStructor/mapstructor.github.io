@@ -126,7 +126,7 @@
     var s = document.createElement("style");
     s.id = "mst-css";
     s.textContent =
-      "#mst-modal{position:fixed;left:70px;top:70px;z-index:5000;width:460px;max-width:94vw;background:#f8f8f8;border:1px solid #d7d3e4;border-radius:10px;box-shadow:0 10px 34px rgba(40,32,80,.25);font:14px 'Source Sans Pro',Arial,sans-serif;color:#333;display:none;}" +
+      "#mst-modal{position:fixed;left:70px;top:70px;z-index:4530;width:460px;max-width:94vw;background:#f8f8f8;border:1px solid #d7d3e4;border-radius:10px;box-shadow:0 10px 34px rgba(40,32,80,.25);font:14px 'Source Sans Pro',Arial,sans-serif;color:#333;display:none;}" +
       "#mst-head{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#fff;border-bottom:1px solid #e4e0ef;border-radius:10px 10px 0 0;cursor:move;font-weight:700;}" +
       "#mst-x{cursor:pointer;font-size:20px;color:#8b86a3;padding:0 6px;border-radius:6px;}#mst-x:hover{background:#f1eef9;color:#4c4374;}" +
       "#mst-body{padding:12px 14px;max-height:70vh;overflow:auto;}" +

@@ -175,6 +175,11 @@ label#close:active { background-color: #ccc; }
 .mapboxgl-popup {
   max-width: 400px;
   font: 12px/20px 'Helvetica Neue', Arial, Helvetica, sans-serif;
+  /* INFO TIER, topmost slot (owner 9/1): information popups sit above every editing panel —
+     editing panels only ever needed to beat the fixed chrome (timeline/date), not the info.
+     Above the info panel (6320) and table (6300); below lock/system overlays (6400+). The map
+     containers create no stacking context (no z/transform), so this competes globally. */
+  z-index: 6360;
 }
 .mapboxgl-popup-content {
   padding: 0;
@@ -563,7 +568,7 @@ div.layer-list-row:hover {
   max-height: -webkit-calc(100% - 288px);
   overflow: auto;
   background-color: #fff !important;
-  z-index: 5990;   /* owner 8/29: "absolutely always above anything else" — above all floating UI (4000 tier), just under the feature EDIT panel (6000), below only modal overlays (6500+) */
+  z-index: 6320;   /* owner 9/1 (supersedes 8/29): INFO TIER — info popups/panels/table always ABOVE editing panels (4400–4990 band), below only hover bubbles (6360) and lock/system overlays (6400+) */
 }
 
 .rightInfoBarBorder {

@@ -158,8 +158,14 @@ function mapstructorZoomButton(idx) {
 if (typeof platformProjectId === 'undefined' || !platformProjectId) generateBaseMapsPanel();
 
 // A basemap entry may carry `styleUrl` — a full style: an https URL or an inline style object
-// (free basemaps: Esri satellite / OpenFreeMap). Entries without one keep the classic
-// mapbox://styles/<user>/<id> construction (Mapbox basemaps, token required).
+// (free basemaps: Esri satellite / OpenFreeMap). Entries without one resolve from their id —
+// widened 9/1 (owner: "It should allow things more widely"), so a map's basemap needs no Mapbox
+// account at all:
+//   https://…/style.json          → used directly (OpenFreeMap, MapTiler, any hosted style)
+//   https://…/{z}/{x}/{y}.png     → wrapped as a raster style, WITH the free glyph server injected
+//                                    so map labels render on it (labels are never tied to a basemap)
+//   mapbox://styles/user/id       → used directly (token required)
+//   anything else                 → classic mapbox://styles/<site user>/<id> (token required)
 function basemapStyle(id) {
   try {
     var maps = (typeof baseMaps !== "undefined" && baseMaps) ? baseMaps : [];
@@ -167,6 +173,19 @@ function basemapStyle(id) {
       if (maps[i].id === id && maps[i].styleUrl) return maps[i].styleUrl;
     }
   } catch (e) {}
+  if (/^https?:\/\//i.test(id)) {
+    if (id.indexOf("{z}") !== -1) {
+      return {
+        version: 8,
+        name: "Custom tiles",
+        glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+        sources: { custom: { type: "raster", tileSize: 256, tiles: [id] } },
+        layers: [{ id: "custom-raster", type: "raster", source: "custom" }]
+      };
+    }
+    return id;
+  }
+  if (id.indexOf("mapbox://") === 0) return id;
   return "mapbox://styles/" + siteConfig.mapboxUsername + "/" + id;
 }
 

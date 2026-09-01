@@ -229,6 +229,22 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     // (Esri satellite / OpenFreeMap streets — no token, no billing) instead of the static Mapbox pair
     if (raw.baseMaps) replaceArray(baseMaps, raw.baseMaps);
     else if (window.ConfigLoader && ConfigLoader.freeBasemapDefaults) replaceArray(baseMaps, ConfigLoader.freeBasemapDefaults());
+    // HEAL saved Carto entries (9/1): Carto started baking an "API KEY REQUIRED" watermark into
+    // keyless tiles — HTTP 200, so only human eyes ever saw it. Maps that customized their basemap
+    // list carry the old entry INSIDE raw_config.baseMaps; swap any cartocdn-tiled entry's style
+    // for the current free-clean default (Esri light gray) at load, keeping the entry's own
+    // name/checks/section. Read-only maps heal too — nothing is written back; the next editor
+    // save persists it.
+    try {
+      if (window.ConfigLoader && ConfigLoader.freeBasemapDefaults) {
+        var _cleanFb = ConfigLoader.freeBasemapDefaults().filter(function (b) { return b.id === "free-clean"; })[0];
+        if (_cleanFb) baseMaps.forEach(function (b) {
+          try {
+            if (b && b.styleUrl && JSON.stringify(b.styleUrl).indexOf("basemaps.cartocdn.com") !== -1) b.styleUrl = _cleanFb.styleUrl;
+          } catch (e2) {}
+        });
+      }
+    } catch (e) {}
     // new FREE basemaps become available on EXISTING maps too (unchecked, never overriding a saved
     // set's selections) — e.g. "Clean (no labels)" so data reads with nothing competing
     try {

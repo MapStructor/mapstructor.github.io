@@ -74,12 +74,71 @@
         x.onclick = function () { doCmd(spec[1]); };
         bar.appendChild(x);
       });
-    var save = document.createElement("button"); save.textContent = "Save";
+    // 9/1 (owner lost a page of writing to a back-navigation): the editor AUTOSAVES as you type —
+    // the chip says Saving…/Saved live; Done just closes; Revert restores what was loaded AND
+    // saves that restoration (autosave already persisted the typing, so a visual-only revert
+    // would lie).
+    var chip = document.createElement("span"); chip.id = "pe-status"; chip.textContent = "Autosaves as you type";
+    chip.style.cssText = "margin-left:8px;font-size:12px;color:#888;min-width:64px;text-align:center;";
+    var save = document.createElement("button"); save.textContent = "Done";
     save.style.cssText = "margin-left:6px;height:28px;border:none;border-radius:6px;background:#2d7a2d;color:#fff;font-weight:700;padding:0 12px;cursor:pointer;"; save.onclick = saveAll;
-    var cancel = document.createElement("button"); cancel.textContent = "Cancel";
+    var cancel = document.createElement("button"); cancel.textContent = "Revert";
+    cancel.title = "Put back what the page had when you opened the editor (and save that)";
     cancel.style.cssText = "height:28px;border:1px solid #ddd;border-radius:6px;background:#fff;padding:0 10px;cursor:pointer;"; cancel.onclick = cancelEdit;
-    bar.appendChild(save); bar.appendChild(cancel);
+    bar.appendChild(chip); bar.appendChild(save); bar.appendChild(cancel);
     document.body.appendChild(bar);
+    wireAutosave();
+  }
+  // ---- autosave: every keystroke marks its region dirty; a debounced flush upserts just those ----
+  var _dirty = {}, _flushTimer = null, _retryTimer = null;
+  function peChip(txt, color) { var c = document.getElementById("pe-status"); if (c) { c.textContent = txt; c.style.color = color || "#888"; } }
+  function regionHtml(el) {
+    if (el.dataset.peHtml === "1") { var ta = el.querySelector("textarea.pe-html"); return ta ? ta.value : el.innerHTML; }
+    return el.innerHTML;
+  }
+  function markDirty(el) {
+    var k = el.getAttribute("data-edit"); if (!k) return;
+    _dirty[k] = el;
+    peChip("Saving…", "#b07d00");
+    clearTimeout(_flushTimer); _flushTimer = setTimeout(flushDirty, 800);
+  }
+  async function flushDirty() {
+    var keys = Object.keys(_dirty); if (!keys.length) return;
+    var rows = keys.map(function (k) { return { key: k, html: regionHtml(_dirty[k]) }; });
+    var d = db(); if (!d) return;
+    try {
+      var r = await d.from("site_content").upsert(rows);
+      if (r.error) throw new Error(r.error.message);
+      keys.forEach(function (k) { delete _dirty[k]; });
+      if (!Object.keys(_dirty).length) peChip("Saved ✓", "#2d7a2d");
+    } catch (e) {
+      peChip("Not saved — retrying…", "#b4453a");
+      clearTimeout(_retryTimer); _retryTimer = setTimeout(flushDirty, 4000);
+    }
+  }
+  function wireAutosave() {
+    if (wireAutosave._done) return; wireAutosave._done = true;
+    document.addEventListener("input", function (e) {
+      var t = e.target; if (!t || !t.closest) return;
+      var el = t.closest("[data-edit]"); if (!el) return;
+      if (el.getAttribute("contenteditable") === "true" || el.dataset.peHtml === "1") markDirty(el);
+    }, true);
+    // leaving the page mid-typing: best-effort flush that survives navigation (keepalive fetch
+    // straight to PostgREST — supabase-js requests are dropped on unload). The token is read
+    // synchronously from the client's own storage; beforeunload cannot await anything.
+    window.addEventListener("beforeunload", function () {
+      var keys = Object.keys(_dirty); if (!keys.length) return;
+      try {
+        var rows = keys.map(function (k) { return { key: k, html: regionHtml(_dirty[k]) }; });
+        var tok = null;
+        try { tok = (JSON.parse(localStorage.getItem("sb-" + SB_URL.split("//")[1].split(".")[0] + "-auth-token") || "null") || {}).access_token || null; } catch (e0) {}
+        fetch(SB_URL + "/rest/v1/site_content?on_conflict=key", {
+          method: "POST", keepalive: true,
+          headers: { apikey: SB_KEY, Authorization: "Bearer " + (tok || SB_KEY), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+          body: JSON.stringify(rows),
+        });
+      } catch (e) {}
+    });
   }
   function doCmd(cmd) {
     if (cmd === "__link") { var url = window.prompt("Link URL:"); if (url) document.execCommand("createLink", false, url); return; }
@@ -113,7 +172,14 @@
       exitEdit();
     } catch (e) { window.alert("Save error: " + (e && e.message)); }
   }
-  function cancelEdit() { regions().forEach(function (el) { if (el.dataset.peOrig != null) el.innerHTML = el.dataset.peOrig; }); exitEdit(); }
+  function cancelEdit() {
+    regions().forEach(function (el) { if (el.dataset.peOrig != null) el.innerHTML = el.dataset.peOrig; });
+    // autosave already persisted the typing — reverting the SCREEN alone would lie. Save the restoration too.
+    var d = db();
+    if (d) { var rows = regions().map(function (el) { return { key: el.getAttribute("data-edit"), html: el.innerHTML }; }); d.from("site_content").upsert(rows).then(function () { peChip("Reverted ✓", "#2d7a2d"); }); }
+    _dirty = {};
+    exitEdit();
+  }
   function exitEdit() {
     regions().forEach(function (el) {
       el.removeAttribute("contenteditable"); el.style.outline = ""; el.style.outlineOffset = ""; el.dataset.peHtml = "";

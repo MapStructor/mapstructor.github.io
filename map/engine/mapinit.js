@@ -241,6 +241,18 @@ function layerExtent(node) {
     if (feats && feats.length) feats.forEach(f => coords(f.geometry, (lng, lat) => grow(lng, lat, lng, lat)));
     else if (n.source && n.source.bounds) { const b = n.source.bounds; grow(b[0], b[1], b[2], b[3]); }
     else {
+      // editor sessions: features drawn THIS session live in MapboxDraw (and the live engine
+      // source), not in the boot config — without this branch, the ⊕ on a just-made layer found
+      // nothing, retried out, and quietly went nowhere (owner 9/1: "Zoom button should go to
+      // features extent by default"). The editor provides the per-layer feature scan.
+      try {
+        if (window._msDrawnFeaturesFor) {
+          (window._msDrawnFeaturesFor(n.id) || []).forEach(f => coords(f.geometry, (lng, lat) => grow(lng, lat, lng, lat)));
+        }
+        const live = (typeof beforeMap !== "undefined" && beforeMap && beforeMap.getSource) ? beforeMap.getSource(n.id + "-left") : null;
+        if (live && live._data && live._data.features) live._data.features.forEach(f => coords(f.geometry, (lng, lat) => grow(lng, lat, lng, lat)));
+      } catch (e) {}
+      if (isFinite(x0)) return;   // in-session features found — skip the tileset fallbacks
       // tilesets: the config has no bounds, but the LIVE map source carries them once its tilejson loads
       try {
         const s = (typeof beforeMap !== "undefined" && beforeMap && beforeMap.getSource) ? beforeMap.getSource(n.id + "-left") : null;

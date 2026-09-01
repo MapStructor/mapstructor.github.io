@@ -364,7 +364,11 @@
     // brand-new layer show no info-panel preview until the next full reload re-synthesizes the config
     var pnl = { mode: 'notes', color: col };
     try { if (window.renderRegistry && window.renderRegistry._notes) pnl.render = window.renderRegistry._notes; } catch (e) {}
-    return { id: id, label: name, containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: 'square', iconColor: col, isSolid: true, checked: true, source_type: 'geojson-supabase', panel: pnl };
+    // 9/1 (owner, visitor test): popups ON by default — hover bubble + click bubble, showing the
+    // feature's Label. leafRow persists these (popup_style/popup_prop/click), so a brand-new drawn
+    // layer behaves like one whose boxes were ticked by hand. Highlight-on-hover already defaults on.
+    return { id: id, label: name, containerId: 'cont-' + id, className: id, topLayerClass: id, iconType: 'square', iconColor: col, isSolid: true, checked: true, source_type: 'geojson-supabase', panel: pnl,
+      popupStyle: 'infoLayerGreenPopUp', click: true, prop: 'label' };
   }
   // A tileset layer is an engine-shaped leaf backed by a hosted vector source (NOT geojson-supabase,
   // so MapboxDraw never touches it and leafRow derives source_type 'mapbox-tileset' from source.url).
@@ -694,6 +698,45 @@
       setStatus('Zoom target set — its ◎ now flies here');
     } catch (e) { setStatus('Save failed'); }
   }
+  /* EDIT-PANEL RAISE (owner 9/1, tiers): every editing panel lives in the 4400–4990 band, and the
+     one you TOUCH — or the one that just OPENED from a click (the {}JSON window used to open
+     UNDER the layer panel) — comes to the band's front. Info-tier windows (popups, info panel,
+     table, features list, explainers 6290+) are never part of this: they always sit above the
+     whole band. */
+  var MS_EDIT_PANELS = ['editor-layer-panel', 'editor-feature-panel', 'editor-settings-panel',
+    'editor-maps-panel', 'editor-zbtn-panel', 'msj-modal', 'mst-modal', 'msq-modal'];
+  var _msEditZ = 4550;
+  function msRaisePanel(el) {
+    if (!el) return;
+    if (_msEditZ >= 4980) {   // band full after ~430 raises — re-pack instead of leaking upward
+      _msEditZ = 4550;
+      MS_EDIT_PANELS.forEach(function (id) { var e = document.getElementById(id); if (e && +e.style.zIndex > 4550) e.style.zIndex = '4550'; });
+    }
+    el.style.zIndex = String(++_msEditZ);
+  }
+  if (!window.__msPanelRaiseWired) {
+    window.__msPanelRaiseWired = true;
+    document.addEventListener('mousedown', function (e) {
+      var t = e.target;
+      if (t && t.closest) for (var i = 0; i < MS_EDIT_PANELS.length; i++) {
+        var el = t.closest('#' + MS_EDIT_PANELS[i]);
+        if (el) { msRaisePanel(el); break; }
+      }
+      // whatever this click OPENS should land on top too — compare visibility after its handlers run
+      var before = {};
+      MS_EDIT_PANELS.forEach(function (id) {
+        var el2 = document.getElementById(id);
+        before[id] = !!(el2 && getComputedStyle(el2).display !== 'none');
+      });
+      setTimeout(function () {
+        MS_EDIT_PANELS.forEach(function (id) {
+          var el2 = document.getElementById(id);
+          if (el2 && getComputedStyle(el2).display !== 'none' && !before[id]) msRaisePanel(el2);
+        });
+      }, 0);
+    }, true);
+  }
+
   window.__msEditorAttr = true;   // generateLayers renders the per-row ▦ attribute-table icon when set
   if (!window.__msAttrBtnWired) {
     window.__msAttrBtnWired = true;
@@ -1258,6 +1301,37 @@
         try { addMapLayer(map, hc, date); } catch (e) {}
       }
     });
+  }
+
+  // A drawn layer's ENGINE twin from birth (9/1). Popups are now ON by default, and the engine's
+  // hover/click events only fire on engine layers — but a layer created THIS session had no engine
+  // source until the next reload, so engineSourcePatch declined every feature and the whole layer
+  // stayed draw-resident: ticked boxes, dead mouse, "works after refresh". Same addMapLayer the
+  // boot pass and tilesets use; the source starts EMPTY and engineSourcePatch feeds it as features
+  // save (each one then runs the ONE re-key/pulled-edit machinery instead of the draw-resident
+  // fallback). Idempotent per side.
+  function ensureDrawnEngineLayer(node) {
+    if (!node || !node.type || isTilesetNode(node) || node.source_type !== 'geojson-supabase') return;
+    if (typeof addMapLayer !== 'function') return;
+    if (!node.source) node.source = { type: 'geojson', data: { type: 'FeatureCollection', features: [] } };
+    ensureNodeHighlight(node);
+    var date = editorCurrentDate();
+    [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var side = pair[0], map = pair[1]; if (!map) return;
+      var id = node.id + '-' + side;
+      try {
+        if (!map.getLayer(id)) {
+          var paint = node.paint || tilesetDefaultPaint(node.type, node.iconColor || '#3bb2d0');
+          if (node.type === 'fill') paint = fillEffectivePaint(paint);
+          addMapLayer(map, Object.assign({}, node, { id: id, source: node.source, paint: paint }), date);
+        }
+        if (node.highlight && node.highlight !== true && !map.getLayer(node.id + '-highlighted-' + side)) {
+          var hp = (typeof highlightSelectablePaint === 'function') ? highlightSelectablePaint(node.highlight) : node.highlight;
+          addMapLayer(map, { id: node.id + '-highlighted-' + side, type: node.type, source: id, paint: hp }, date);
+        }
+      } catch (e) { console.warn('editing: drawn engine twin failed', e); }
+    });
+    try { if (typeof window.wireLayerInteraction === 'function') window.wireLayerInteraction(node); } catch (e) {}
   }
 
   // ── tileset / large-layer editing: pull ONE engine-rendered feature into MapboxDraw, hide the read-only
@@ -2239,12 +2313,19 @@
        tables.js and queryWindow.js target #editor-operate-buttons). Opening one door closes the
        other; the door stays open while a form is filled in, so the #2 rule ("the add buttons never
        disappear mid-action") still holds — it just holds inside the open door. */
-    bar.innerHTML = '<div id="editor-add-buttons"><div class="erow" style="margin-bottom:6px;">' +
-      '<button id="editor-add-toggle" class="editor-door">＋ Add</button>' +
-      '<button id="editor-operate-toggle" class="editor-door" title="Work on what\'s already here — queries, data tables, merging layers">⚙ Operate</button></div>' +
+    /* 9/1 (owner, visitor test): ADD on top, full-width — adding is what nearly everyone came to
+       do. Inside it, LAYER is the prominent first line ("Most people will be adding additional
+       drawing layers"). Everything that is NOT adding — Operate and Send out — moves behind one
+       "More" button beneath. The toggle keeps its old id (editor-operate-toggle) and the operate
+       container keeps #editor-operate-buttons with its first .erow, because tables.js and
+       queryWindow.js inject their buttons there. */
+    bar.innerHTML = '<div id="editor-add-buttons">' +
+      '<div class="erow" style="margin-bottom:4px;"><button id="editor-add-toggle" class="editor-door">＋ Add</button></div>' +
+      '<div class="erow" style="margin-bottom:6px;"><button id="editor-operate-toggle" class="editor-door" title="Everything besides adding — queries, data tables, merging, exports">⋯ More</button></div>' +
       '<div id="editor-add-menu" style="display:none;">' +
-        '<div class="esec"><div class="esec-h">Create</div><div class="erow">' +
-          '<button data-type="layer" title="A new empty layer to draw features into">Layer</button>' +
+        '<div class="esec"><div class="esec-h">Create</div>' +
+          '<div class="erow" style="margin-bottom:4px;"><button data-type="layer" style="font-weight:700;" title="A new empty layer to draw features into">Layer</button></div>' +
+          '<div class="erow">' +
           '<button data-type="group">Group</button>' +
           '<button data-type="section">Section</button>' +
           '<button data-type="divider" title="A plain text line you can drag between items (e.g. to delineate Raw Layers)">Divider</button></div></div>' +
@@ -2253,11 +2334,10 @@
           '<button data-type="tileset" title="PMTiles / XYZ vector tiles by URL">Tileset</button></div></div>' +
         '<div class="esec"><div class="esec-h">From another map</div><div class="erow">' +
           '<button data-type="portal" title="Add a bookmarked map into this one (All / Linked / Instance per layer)">⊞ Portal</button></div></div>' +
-        '<div class="esec"><div class="esec-h">Send out</div><div class="erow">' +
-          '<button data-type="export" title="Export layers as files">Export</button>' +
-          '<button data-type="download" title="A self-contained static copy of this whole map">⬇ Whole project</button></div></div>' +
       '</div>' +
-      '<div id="editor-operate-buttons" style="display:none;">' +
+      '<div id="editor-more-menu" style="display:none;">' +
+      '<div class="esec"><div class="esec-h">Operate</div>' +
+      '<div id="editor-operate-buttons">' +
         '<div class="erow">' +
         '<button data-type="merge" title="Combine two or more layers into one dataset. Nothing is overwritten — the originals stay as they are">⛙ Merge</button></div>' +
         // admin-only: Mapbox needs a token, so it's gated to the owner on the hosted site (the multi-library
@@ -2265,13 +2345,17 @@
         (_isAdmin ? '<div class="erow" id="editor-admin-add" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">' +
           '<button data-type="mbtoken" title="Enter your Mapbox access token (admin only, stored in this browser)">🔑 Mapbox token</button>' +
           '<button data-type="mbtileset" title="Add a Mapbox tileset (admin only — uses your token)">+ Mapbox tileset</button></div>' : '') +
+      '</div></div>' +
+        '<div class="esec"><div class="esec-h">Send out</div><div class="erow">' +
+          '<button data-type="export" title="Export layers as files">Layer</button>' +
+          '<button data-type="download" title="A self-contained static copy of this whole map">⬇ Whole project</button></div></div>' +
       '</div>' +
       '</div>' +
       '<div id="editor-add-form"></div>' +
       // map data footprint — exact stored bytes, filled in the background after boot (user 7/23)
       '<div id="ms-map-size" title="Exact stored size of this map’s data — click to refresh" style="margin-top:6px;padding-top:5px;border-top:1px dashed #ddd;font-size:11px;color:#6b6580;cursor:pointer;">' + (_mapSizeText || 'Map data: measuring…') + '</div>';
-    function setDoor(which) {   // 'add' | 'operate' | null — one door open at a time
-      var add = document.getElementById('editor-add-menu'), op = document.getElementById('editor-operate-buttons');
+    function setDoor(which) {   // 'add' | 'operate' | null — one door open at a time ('operate' = the More door)
+      var add = document.getElementById('editor-add-menu'), op = document.getElementById('editor-more-menu');
       var addB = document.getElementById('editor-add-toggle'), opB = document.getElementById('editor-operate-toggle');
       if (add) add.style.display = which === 'add' ? 'block' : 'none';
       if (op) op.style.display = which === 'operate' ? 'block' : 'none';
@@ -2283,7 +2367,7 @@
       setDoor(document.getElementById('editor-add-menu').style.display === 'none' ? 'add' : null);
     });
     document.getElementById('editor-operate-toggle').addEventListener('click', function () {
-      setDoor(document.getElementById('editor-operate-buttons').style.display === 'none' ? 'operate' : null);
+      setDoor(document.getElementById('editor-more-menu').style.display === 'none' ? 'operate' : null);
     });
     bar.querySelectorAll('#editor-add-buttons button[data-type]').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'portal') { if (window.MSPortalAdd) MSPortalAdd.open(); return; }
       if (t === 'merge') { if (window.MSMerge) MSMerge.open(); return; }
@@ -4241,7 +4325,7 @@
     var p = document.createElement('div');
     p.id = 'editor-settings-panel';
     // container matches the layer panel: light shell, sticky white header, scrolling card body
-    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;max-height:calc(100vh - 240px);overflow-y:auto;overflow-x:hidden;background:#f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:0 3px 14px rgba(0,0,0,0.2);padding:0;font-size:13px;z-index:1001;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;max-height:calc(100vh - 240px);overflow-y:auto;overflow-x:hidden;background:#f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:0 3px 14px rgba(0,0,0,0.2);padding:0;font-size:13px;z-index:4470;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
     var MSEC = function (t) { return '<div class="mss-sec">' + t + '</div>'; };
     p.innerHTML =
       '<div style="position:sticky;top:0;z-index:5;padding:10px 12px;background:#ffffff;border-bottom:1px solid #e2e0ea;border-radius:8px 8px 0 0;">' +
@@ -4256,7 +4340,7 @@
       // 📸 portal thumbnail (8/13, owner picked option 1: capture the CURRENT view on demand —
       // no auto-capture at publish). Stored in tiles/thumbs/<project>.jpg; the portal card
       // shows it through portal_entries.thumb.
-      '<button id="esp-thumb" class="mss-btn">📸 Set current view as portal thumbnail</button>' +
+      '<button id="esp-thumb" class="mss-btn">📸 Set current view as map thumbnail</button>' +
       '<div id="esp-thumb-note" class="mss-note"></div>' +
       // ── TIMELINE ──
       '<div class="mss-sectop">' +
@@ -5152,14 +5236,15 @@
   function injectMapsPanel() {
     if (document.getElementById('editor-maps-panel')) return;
     var p = document.createElement('div'); p.id = 'editor-maps-panel';
-    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1001;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:4460;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b style="font-size:13px;">Edit map</b><span id="emp-x" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Name</label>' +
       '<input id="emp-name" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;margin-bottom:8px;" />' +
-      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Mapbox style</label>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Basemap style</label>' +
       '<input id="emp-style" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
-      '<div style="font-size:10px;color:#888888;margin-top:3px;">The style id under your Mapbox account (e.g. <code>satellite-v9</code>).</div>' +
+      '<div style="font-size:10px;color:#888888;margin-top:3px;">A full style URL (e.g. <code>https://tiles.openfreemap.org/styles/liberty</code> — free, no account), a tile template (<code>https://&hellip;/{z}/{x}/{y}.png</code>), or a Mapbox style id (<code>satellite-v9</code>, token required). ' +
+        '<a href="https://openfreemap.org/quick_start/" target="_blank" rel="noopener" style="color:#5b458f;">Free styles&nbsp;&#8599;</a></div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin:8px 0 2px;">Section</label>' +
       '<select id="emp-section" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;"></select>' +
       '<div style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;">' +
@@ -5236,7 +5321,7 @@
   function injectButtonPanel() {
     if (document.getElementById('editor-zbtn-panel')) return;
     var p = document.createElement('div'); p.id = 'editor-zbtn-panel';
-    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:1001;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
+    p.style.cssText = 'position:fixed;top:130px;left:534px;width:262px;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:4460;display:none;font-family:Source Sans Pro,Arial,sans-serif;';
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b>Edit button</b><span id="ezb-x" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
       '<label style="display:block;font-size:11px;color:#555555;margin-bottom:2px;">Label</label>' +
@@ -5428,7 +5513,7 @@
     if (document.getElementById('editor-guide-overlay')) return;
     var css = document.createElement('style');
     css.textContent =
-      '#editor-guide-overlay{position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:4000;display:none;}' +
+      '#editor-guide-overlay{position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:6340;display:none;}' +
       '#editor-guide-panel{position:absolute;top:5vh;left:50%;transform:translateX(-50%);width:700px;max-width:93vw;max-height:88vh;display:flex;flex-direction:column;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;color:#2a2a33;overflow:hidden;}' +
       '#editor-guide-head{display:flex;justify-content:space-between;align-items:center;padding:16px 24px 13px;border-bottom:1px solid #ece9f4;background:linear-gradient(180deg,#faf9fd,#fff);}' +
       '#editor-guide-head b{font-size:17px;letter-spacing:.01em;color:#1e1b2e;}' +
@@ -5559,9 +5644,9 @@
       '#editor-add-bar .editor-door{padding:8px 0;font-size:13px;background:#efeae2;border:1px solid #d8d2c6;}' +
       '#editor-add-bar .editor-door:hover{background:#e6e0d4;}' +
       '#editor-add-bar .editor-door.door-open{background:#23374d;color:#fff;border-color:#23374d;}' +
-      '#editor-add-menu .esec{margin-top:7px;padding-top:6px;border-top:1px dashed #ddd;}' +
-      '#editor-add-menu .esec:first-child{margin-top:2px;padding-top:0;border-top:none;}' +
-      '#editor-add-menu .esec-h{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9a93ad;margin:0 0 4px 2px;}' +
+      '#editor-add-menu .esec,#editor-more-menu .esec{margin-top:7px;padding-top:6px;border-top:1px dashed #ddd;}' +
+      '#editor-add-menu .esec:first-child,#editor-more-menu .esec:first-child{margin-top:2px;padding-top:0;border-top:none;}' +
+      '#editor-add-menu .esec-h,#editor-more-menu .esec-h{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9a93ad;margin:0 0 4px 2px;}' +
       '#editor-operate-buttons{margin-top:2px;}' +
       '#editor-operate-buttons .erow{flex-wrap:wrap;}' +
       '#editor-operate-buttons .erow button{min-width:31%;}' +
@@ -5779,10 +5864,56 @@
               tr.addEventListener('click', function (e) {
                 var hasDraw = false;
                 try { hasDraw = draw && draw.getSelectedIds && draw.getSelectedIds().length > 0; } catch (e2) {}
-                if (hasDraw || !window.MSSel || !MSSel.count()) return;
+                if (hasDraw) {
+                  /* direct_select with NO vertex picked (9/1, owner: "Not able to delete this."):
+                     MapboxDraw's trash deletes selected VERTICES in that mode, and a plain click
+                     on a shape lands exactly there — so the button was a silent no-op on the very
+                     feature the person had just selected. Route it to FEATURE deletion through
+                     draw's own simple_select trash (fires draw.delete → the one persistence+undo
+                     path). A picked vertex keeps native behavior: trash removes the vertex. */
+                  var mode0 = '', vtx = 0;
+                  try { mode0 = draw.getMode(); vtx = (draw.getSelectedPoints().features || []).length; } catch (e3) {}
+                  if (mode0 === 'direct_select' && !vtx) {
+                    e.preventDefault(); e.stopImmediatePropagation();
+                    try {
+                      /* NOT changeMode+trash: leaving direct_select with the feature still
+                         selected fires a draw.update, whose save then RACES the delete — the
+                         style-upsert trigger hits a row that's already gone and the person sees
+                         an RLS toast while deleting (measured in visitor-delete-probe 9/1).
+                         API-delete silently, then run the ONE persistence+undo path directly. */
+                      var ids0 = draw.getSelectedIds();
+                      var feats0 = ids0.map(function (i2) { try { return draw.get(i2); } catch (e6) { return null; } }).filter(Boolean);
+                      draw.changeMode('simple_select');
+                      draw.delete(ids0);
+                      if (feats0.length) onDrawDelete({ features: feats0 });
+                    } catch (e4) {}
+                  }
+                  return;
+                }
+                if (!window.MSSel || !MSSel.count()) return;
                 e.preventDefault(); e.stopImmediatePropagation();
                 deleteAttrSelected();
               }, true);
+              /* Same dead state, keyboard door: Delete/Backspace in direct_select with no vertex
+                 picked was the same silent no-op. Typing fields are exempt. */
+              if (!window.__msTrashKeyWired) {
+                window.__msTrashKeyWired = true;
+                document.addEventListener('keydown', function (e) {
+                  if (e.keyCode !== 8 && e.keyCode !== 46) return;
+                  var t0 = e.target;
+                  if (t0 && (/^(input|textarea|select)$/i.test(t0.tagName || '') || t0.isContentEditable)) return;
+                  try {
+                    if (!draw || draw.getMode() !== 'direct_select') return;
+                    if ((draw.getSelectedPoints().features || []).length) return;
+                    var ids1 = draw.getSelectedIds(); if (!ids1.length) return;
+                    e.preventDefault(); e.stopImmediatePropagation();
+                    var feats1 = ids1.map(function (i3) { try { return draw.get(i3); } catch (e7) { return null; } }).filter(Boolean);
+                    draw.changeMode('simple_select');
+                    draw.delete(ids1);
+                    if (feats1.length) onDrawDelete({ features: feats1 });
+                  } catch (e5) {}
+                }, true);
+              }
             }
           } else if (isGeo) {
             var gb = el.querySelector('.mapboxgl-ctrl-geolocate'); if (gb) gb.title = 'Locate';
@@ -5984,6 +6115,18 @@
     }
     draw = new MapboxDraw({ displayControlsDefault: false, userProperties: true, controls: { point: true, line_string: true, polygon: true, trash: true }, styles: DRAW_STYLES });
     window._msDraw = draw;   // engine helpers (Zoom to Layers bounds) read the live drawn features here — guarded there, so its absence never breaks the engine
+    // per-layer draw-resident features, for the engine's layerExtent (⊕ zoom-to-features on a
+    // layer whose features were drawn this session and so aren't in the boot config)
+    window._msDrawnFeaturesFor = function (slug) {
+      var out = [];
+      try {
+        var lid = slugToLayerDbId[slug]; if (!lid || !draw) return out;
+        (draw.getAll().features || []).forEach(function (f) {
+          if (String(featureLayer[f.id]) === String(lid) && f.geometry) out.push(f);
+        });
+      } catch (e) {}
+      return out;
+    };
     // mousedown precedes draw's mouseup-driven selectionchange, so the stage-2 promotion always
     // knows WHERE the click landed (multiPartForEdit picks the clicked part of a Multi by it)
     [beforeMap, (typeof afterMap !== 'undefined' ? afterMap : null)].forEach(function (mDn) {
@@ -6942,6 +7085,9 @@
       await saveSoft(db.from('layers').update({ type: mapType }).eq('id', lid), 'set layer type', { rows: 'some' });
       rerender();
     }
+    // the engine twin must exist BEFORE the insert below, so engineSourcePatch finds a live source
+    // and even the layer's very first feature runs the one re-key machinery (popups from feature #1)
+    try { ensureDrawnEngineLayer(node); } catch (eTw) {}
 
     setStatus('Saving…');
     featureLayer[f.id] = lid;   // OPTIMISTIC: a restyle during the save round-trip repaints this feature too (confirmed below, removed in catch)
@@ -7016,6 +7162,12 @@
   async function onDrawUpdate(e) {
     for (var i = 0; i < (e.features || []).length; i++) {
       var f = e.features[i], fid = featureToDb[f.id]; if (!fid) continue;
+      // UNCHANGED geometry = no save (9/1). Leaving direct_select fires a change_coordinates
+      // update even when nothing moved, so mode churn was writing no-op rows — and racing real
+      // deletes (the trash press saved "the moved shape" for a feature it was deleting, and the
+      // person saw an RLS refusal toast mid-delete). Equality against the snapshot kills the
+      // whole class; a real move always differs from its snapshot.
+      if (_geomSnap[f.id] && JSON.stringify(_geomSnap[f.id]) === JSON.stringify(f.geometry)) continue;
       if (_engineEditNode[f.id]) _engineGeomDirty[f.id] = true;   // set BEFORE the await — a mode flip mid-save must still see it
       var oldGeom = _geomSnap[f.id], newGeom = JSON.parse(JSON.stringify(f.geometry));
       var saveGeom = toDbGeom(f.id, f.geometry); if (_engineWasMulti[f.id]) _engineOrigMulti[f.id] = saveGeom;
@@ -7789,7 +7941,7 @@
     if (document.getElementById('editor-feature-panel')) return;
     var p = document.createElement('div');
     p.id = 'editor-feature-panel';
-    p.style.cssText = 'position:fixed;top:120px;right:12px;width:240px;max-height:calc(100vh - 288px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:6000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // 288 (owner 8/29): stop short of the date badge + zoom bar. z 6000 (owner: "float above everything — serious if someone can't edit"): above all floating UI (4000 tier), below only modal overlays (6500+)
+    p.style.cssText = 'position:fixed;top:120px;right:12px;width:240px;max-height:calc(100vh - 288px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #bbbbbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.18);padding:10px;font-size:13px;z-index:4520;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // 288 (owner 8/29): stop short of the date badge + zoom bar. z 4520 (owner 9/1 tiers): EDIT band 4400–4990 — above all fixed chrome, BELOW the info tier (info panel/table/popups 6290+); msRaisePanels brings whichever edit panel was touched to the band's front
     p.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b>Feature</b><span id="efp-close" style="cursor:pointer;color:#888888;font-size:16px;">&times;</span></div>' +
       '<div id="efp-group-note" style="display:none;font-size:11px;color:#7a5cc9;background:#f4f1fb;border-radius:4px;padding:4px 6px;margin-bottom:6px;"></div>' +
@@ -9241,7 +9393,7 @@
     if (!ov) {
       var css = document.createElement('style');
       css.textContent =
-        '#elp-lblhelp-overlay{position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:4000;display:none;}' +
+        '#elp-lblhelp-overlay{position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:6340;display:none;}' +
         '#elp-lblhelp-panel{position:absolute;top:8vh;left:50%;transform:translateX(-50%);width:520px;max-width:93vw;max-height:80vh;display:flex;flex-direction:column;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;color:#2a2a33;overflow:hidden;}' +
         '#elp-lblhelp-head{display:flex;justify-content:space-between;align-items:center;padding:14px 22px 11px;border-bottom:1px solid #ece9f4;background:linear-gradient(180deg,#faf9fd,#fff);}' +
         '#elp-lblhelp-head b{font-size:16px;color:#1e1b2e;}' +
@@ -9298,7 +9450,7 @@
     if (!ov) {
       var css = document.createElement('style');
       css.textContent =
-        '#elp-fasthelp-overlay{position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:4000;display:none;}' +
+        '#elp-fasthelp-overlay{position:fixed;inset:0;background:rgba(20,18,30,0.5);z-index:6340;display:none;}' +
         '#elp-fasthelp-panel{position:absolute;top:7vh;left:50%;transform:translateX(-50%);width:560px;max-width:93vw;max-height:82vh;display:flex;flex-direction:column;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.4);font-family:Source Sans Pro,Arial,sans-serif;color:#2a2a33;overflow:hidden;}' +
         '#elp-fasthelp-head{display:flex;justify-content:space-between;align-items:center;padding:14px 22px 11px;border-bottom:1px solid #ece9f4;background:linear-gradient(180deg,#faf9fd,#fff);}' +
         '#elp-fasthelp-head b{font-size:16px;color:#1e1b2e;}' +
@@ -10397,7 +10549,7 @@
     ensureEditorUiCss();
     var p = document.createElement('div');
     p.id = 'editor-layer-panel';
-    p.style.cssText = 'position:fixed;top:128px;left:349px;width:236px;max-height:calc(100vh - 288px);overflow-y:auto;overflow-x:hidden;background: #f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:rgb(0 0 0) 0px 0px 6px 2px;padding:0;font-size:13px;z-index:6000;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // top + shadow are the owner's values (8/29); left is DERIVED live at each open (showLayerPanel) — hardcoded lefts were wrong at some zoom ("the panel is way off"). z 6000 + 288 clearance (owner 8/29): closable panels ride above everything non-modal — "they can be closed, revealing anything else, unlike other things"
+    p.style.cssText = 'position:fixed;top:128px;left:349px;width:236px;max-height:calc(100vh - 288px);overflow-y:auto;overflow-x:hidden;background: #f8f8f8;border:1px solid #bbbbbb;border-radius:8px;box-shadow:rgb(0 0 0) 0px 0px 6px 2px;padding:0;font-size:13px;z-index:4500;display:none;font-family:Source Sans Pro,Arial,sans-serif;';  // top + shadow are the owner's values (8/29); left is DERIVED live at each open (showLayerPanel) — hardcoded lefts were wrong at some zoom ("the panel is way off"). z 4500 (owner 9/1 tiers, supersedes 8/29): EDIT band 4400–4990, beneath the info tier — "Info popups always on top, editing panels beneath, and always above anything that can't be moved or closed"
     var SEC = function (t) { return '<div class="ms-sec">' + t + '</div>'; };   // section heading (was inline; now .ms-sec)
     var SECTOP = 'ms-sectop';   // section-top spacing — now a CLASS name, used as class="…"
     var GRP = 'ms-grp';         // paired-control group divider — now a CLASS name
@@ -11180,7 +11332,7 @@
     var st = document.createElement('style');
     st.textContent =
       // wrapper is a non-blocking layer (pointer-events:none) so the MAP behind stays pannable; only the panel itself catches events
-      '#editor-attr-modal{position:fixed;inset:0;z-index:4000;display:none;pointer-events:none;font-family:"Source Sans Pro",Arial,sans-serif;}' +
+      '#editor-attr-modal{position:fixed;inset:0;z-index:6300;display:none;pointer-events:none;font-family:"Source Sans Pro",Arial,sans-serif;}' +   // INFO tier (owner 9/1: "Info popups always on top (including table)")
       '#editor-attr-panel{pointer-events:auto;position:absolute;left:540px;top:134px;width:min(820px,70vw);height:60vh;min-width:340px;min-height:180px;max-width:96vw;max-height:84vh;background:#fff;border:2px solid #666666;border-radius:2px;box-shadow:0px 0px 5px 3px rgb(0 0 0);display:flex;flex-direction:column;overflow:hidden;}' +   // top:134 clears the map-tools bar (top 92–127) so undo/redo stay reachable
       // custom resize: right edge, bottom edge, and a PROMINENT bottom-right grip
       '#attr-rz-r{position:absolute;top:0;right:0;width:7px;height:100%;cursor:ew-resize;z-index:6;}' +
@@ -12628,7 +12780,7 @@
     if (document.getElementById('editor-flist')) return;
     var st = document.createElement('style');
     st.textContent =
-      '#editor-flist{position:fixed;z-index:3990;width:300px;background:#fff;border:1px solid #c9bfe8;border-radius:6px;box-shadow:0 3px 16px rgba(0,0,0,0.18);display:none;flex-direction:column;overflow:hidden;font-family:"Source Sans Pro",Arial,sans-serif;}' +
+      '#editor-flist{position:fixed;z-index:6290;width:300px;background:#fff;border:1px solid #c9bfe8;border-radius:6px;box-shadow:0 3px 16px rgba(0,0,0,0.18);display:none;flex-direction:column;overflow:hidden;font-family:"Source Sans Pro",Arial,sans-serif;}' +
       '#flist-head{display:flex;align-items:center;gap:6px;padding:9px 10px;border-bottom:1px solid #ececec;}' +
       '#flist-title{font-weight:700;color:#2b3a4a;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;}' +
       '.flist-hbtn{font-size:12px;padding:3px 9px;border:1px solid #bbbbbb;border-radius:4px;background:#f2f2f2;cursor:pointer;white-space:nowrap;}' +

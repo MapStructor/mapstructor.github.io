@@ -621,21 +621,21 @@ var ConfigLoader = (function () {
       },
       { id: "free-streets", name: "Streets", lChecked: true, rChecked: false,
         styleUrl: "https://tiles.openfreemap.org/styles/liberty" },
-      // label-free canvas: the user's DATA (and its labels) reads clearly with nothing competing
+      // label-free canvas: the user's DATA (and its labels) reads clearly with nothing competing.
+      // 9/1: WAS Carto light_nolabels — Carto began serving keyless tiles with an "API KEY
+      // REQUIRED" watermark baked into the image (HTTP 200, so no code path ever saw a failure;
+      // the owner's eyes did). Esri's light-gray canvas is keyless like the satellite entry above.
+      // projectLoader heals maps that saved the Carto entry into raw_config.baseMaps.
       {
         id: "free-clean", name: "Clean (no labels)", lChecked: false, rChecked: false,
         styleUrl: {
           version: 8,
-          name: "Clean (Carto light, no labels)",
+          name: "Clean (Esri light gray, no labels)",
           glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
-          sources: { carto: { type: "raster", tileSize: 256, maxzoom: 20,
-            tiles: [
-              "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
-              "https://b.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
-              "https://c.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png"
-            ],
-            attribution: "© OpenStreetMap contributors © CARTO" } },
-          layers: [{ id: "carto-clean", type: "raster", source: "carto" }]
+          sources: { esrigray: { type: "raster", tileSize: 256, maxzoom: 16,
+            tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}"],
+            attribution: "Esri, HERE, Garmin, © OpenStreetMap contributors, and the GIS User Community" } },
+          layers: [{ id: "esri-clean", type: "raster", source: "esrigray" }]
         }
       },
       // TERRAIN (7/21, user ask): OpenTopoMap — hillshade relief, contour lines, and land cover
