@@ -1332,8 +1332,10 @@
   function msViewLike() { return _msLockBlocked || (CLICK_MODES && _msMode !== 'edit'); }
   function msLockEsc(s) { return String(s == null ? '' : s).replace(/[<>&]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]; }); }
   // The pop-up shown the moment the stand-down engages (owner, 8/31: the corner pill was not a
-  // "tell", it was a whisper). Says the RULE in words, names the person, promises the re-arm.
-  // Slides away after a while (the top banner stays) or on OK; the release removes it too.
+  // "tell", it was a whisper). Says the RULE in words, names the person — with MAY, because an
+  // activity-based hold only proves they were editing recently — and offers the take-over right
+  // there. Slides away after a while (the top banner keeps the button) or on dismiss; the
+  // release removes it too.
   function msLockNote(who) {
     try {
       var el = document.getElementById('ms-lock-note');
@@ -1341,15 +1343,19 @@
         el = document.createElement('div');
         el.id = 'ms-lock-note';
         el.style.cssText = 'position:fixed;left:50%;top:36%;transform:translate(-50%,-50%);z-index:9600;background:#fff;' +
-          'border:2px solid #ce5c00;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,0.35);padding:20px 26px;max-width:440px;' +
+          'border:2px solid #ce5c00;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,0.35);padding:20px 26px;max-width:460px;' +
           'font-family:Source Sans Pro,Arial,sans-serif;color:#1e1b2e;text-align:center;';
         document.body.appendChild(el);
       }
       el.innerHTML = '<div style="font-size:32px;line-height:1;margin-bottom:8px;">&#128101;</div>' +
         '<div style="font-weight:700;font-size:17px;margin-bottom:6px;">One editor at a time</div>' +
-        '<div style="font-size:14px;line-height:1.5;margin-bottom:14px;"><b>' + msLockEsc(who) + '</b> is editing this map right now, ' +
-        'so editing here is paused &mdash; you can still look around. The tools come back by themselves the moment they finish or close the map.</div>' +
-        '<button id="ms-lock-note-ok" style="background:#ce5c00;color:#fff;border:none;border-radius:8px;padding:7px 22px;font:600 14px Source Sans Pro,Arial,sans-serif;cursor:pointer;">OK</button>';
+        '<div style="font-size:14px;line-height:1.5;margin-bottom:14px;"><b>' + msLockEsc(who) + '</b> may be editing this map right now, ' +
+        'so editing here is paused &mdash; you can still look around. If they&rsquo;ve stepped away (or you need the map now), take over &mdash; ' +
+        'their window will show this same notice. Otherwise the tools come back by themselves the moment they finish.</div>' +
+        '<button id="ms-lock-note-take" style="background:#ce5c00;color:#fff;border:none;border-radius:8px;padding:7px 20px;margin-right:8px;font:600 14px Source Sans Pro,Arial,sans-serif;cursor:pointer;">Take over editing</button>' +
+        '<button id="ms-lock-note-ok" style="background:#fff;color:#7a4a12;border:1px solid #d9b98a;border-radius:8px;padding:7px 18px;font:600 14px Source Sans Pro,Arial,sans-serif;cursor:pointer;">Stay view-only</button>';
+      var tk = el.querySelector('#ms-lock-note-take');
+      if (tk) tk.addEventListener('click', function () { try { MSEditLock.takeOver(); } catch (e1) {} });
       var ok = el.querySelector('#ms-lock-note-ok');
       if (ok) ok.addEventListener('click', function () { try { el.remove(); } catch (e2) {} });
       clearTimeout(el._msHide);
@@ -1357,7 +1363,7 @@
       (window.__msLockNoteLog = window.__msLockNoteLog || []).push(el.textContent);   // timing-proof witness for the gate
     } catch (e) {}
   }
-  function msSetLockBlocked(on) {
+  function msSetLockBlocked(on, opts) {
     on = !!on;
     if (on === _msLockBlocked) return;
     _msLockBlocked = on;
@@ -1370,10 +1376,10 @@
       try { hideFeaturePanel(); } catch (e) {}
       try { hideLayerPanel(); } catch (e) {}
       msLockNote(window._msLockWho || 'Another editor');
-      try { setStatus('View only — another editor is editing'); } catch (e) {}
+      try { setStatus('View only — another editor may be editing'); } catch (e) {}
     } else {
       try { var n = document.getElementById('ms-lock-note'); if (n) n.remove(); } catch (e) {}
-      try { showToast('You can edit now — the other editor finished.', 4500); } catch (e) {}
+      if (!(opts && opts.quiet)) { try { showToast('You can edit now — the other editor finished.', 4500); } catch (e) {} }
       try { setStatus('Editing available again'); } catch (e) {}
     }
   }
@@ -13552,13 +13558,21 @@
         return v;
       } catch (e) { return Math.random().toString(36).slice(2, 10); }   // private mode → previous behaviour
     })(),
-    held: false, _iv: null,
+    held: false, _iv: null, _pid: null, _lastAct: 0, _idleParked: false,
+    IDLE_MS: 5 * 60 * 1000,   // the lock follows your hands, not your tabs (owner, 8/31): idle this long → stop renewing, the 90s TTL frees the map
     async boot(pid) {
       if (!pid || !db) return;
       var sess = null; try { sess = (await db.auth.getSession()).data.session; } catch (e0) {}
       if (!sess) return;                                   // no session → viewer posture, no lock
       var self = this;
+      self._pid = pid;
       async function tick() {
+        // A forgotten tab used to hold a map for as long as it stayed open — heartbeats were a
+        // timer, not a person. Now: while WE hold the lock and the person has been idle past
+        // IDLE_MS, skip the renewal. The row goes stale in 90s, anyone else's next tick takes
+        // over, and the activity listener below re-ticks the INSTANT this person returns — so
+        // they either resume seamlessly or get the may-be-editing notice themselves.
+        if (self.held && Date.now() - (self._lastAct || 0) > self.IDLE_MS) { self._idleParked = true; return; }
         var r = null;
         try { r = await db.rpc('ms_acquire_edit_lock', { p_project: pid, p_sid: self.sid }); } catch (e1) { r = { error: e1 }; }
         if (r.error) { self.stop(); return; }              // fn missing or not an editor — fail open, stop nagging
@@ -13572,11 +13586,43 @@
         self.banner(d.ok ? null : d);
         if (d.ok && d.took_over) setStatus('Edit lock taken over (previous editor idle)');
       }
+      self._tick = tick;
+      // activity = pointer, keys, wheel or touch anywhere on the page — capture phase so nothing
+      // that stops propagation can starve it; passive so it can never slow a gesture down
+      if (!self._actWired) {
+        self._actWired = true;
+        self._lastAct = Date.now();
+        var act = function () {
+          self._lastAct = Date.now();
+          if (self._idleParked) { self._idleParked = false; try { tick(); } catch (eA) {} }   // back from idle → learn the truth NOW, not in 30s
+        };
+        ['pointerdown', 'keydown', 'wheel', 'touchstart', 'mousemove'].forEach(function (t) {
+          try { document.addEventListener(t, act, { capture: true, passive: true }); } catch (eL) {}
+        });
+      }
       await tick();
       if (this._iv == null) this._iv = setInterval(tick, 30000);
       window.addEventListener('pagehide', function () {
         try { db.rpc('ms_release_edit_lock', { p_project: pid, p_sid: self.sid }); } catch (e2) {}
       });   // fire-and-forget; the 90s TTL is the real cleanup for abandoned locks
+    },
+    // B: deliberate handover. Anyone allowed to edit may take a LIVE hold — the previous holder's
+    // window learns on its next tick (≤30s) and shows the very same may-be-editing notice, so the
+    // transition is loud on both screens and fully symmetric (they can take it back the same way).
+    async takeOver() {
+      var self = this;
+      if (!self._pid || !db) return;
+      var r = null;
+      try { r = await db.rpc('ms_take_over_edit_lock', { p_project: self._pid, p_sid: self.sid }); } catch (e1) { r = { error: e1 }; }
+      if (r && !r.error && r.data && r.data.ok) {
+        self.held = true; self._lastAct = Date.now(); self._idleParked = false;
+        window._msLockWho = null;
+        try { msSetLockBlocked(false, { quiet: true }); } catch (e2) {}
+        self.banner(null);
+        showToast('You’re editing now — the other window has been switched to view only.', 5000);
+      } else {
+        showToast('Could not take over: ' + ((r && r.error && r.error.message) || 'try again'), 5000);
+      }
     },
     stop() { if (this._iv != null) { clearInterval(this._iv); this._iv = null; } try { msSetLockBlocked(false); } catch (e) {} this.banner(null); },
     // A small chip in the bottom-left corner, above the timeline. It sat inside the sidebar for
@@ -13602,19 +13648,24 @@
         el.title = 'This map is open in another window of yours. Edits save from both and the last write wins — close one to avoid conflicting changes.';
       } else {
         // the BLOCKING case is loud: an orange strip top-centre over the map, not a corner whisper
-        // (owner, 8/31: the old pill was no "tell" at all)
+        // (owner, 8/31: the old pill was no "tell" at all) — and it CARRIES the take-over button,
+        // so the affordance survives after the pop-up slides away
         var mt = 280;
         try { var rc = document.getElementById('comparison-container').getBoundingClientRect(); mt = Math.max(60, rc.top + 12); } catch (eR) {}
         el.style.cssText = 'position:fixed;left:50%;top:' + mt + 'px;transform:translateX(-50%);z-index:6400;background:#ce5c00;color:#fff;' +
-          'border-radius:999px;box-shadow:0 3px 14px rgba(0,0,0,0.3);padding:7px 18px;pointer-events:none;' +
+          'border-radius:999px;box-shadow:0 3px 14px rgba(0,0,0,0.3);padding:6px 8px 6px 18px;pointer-events:auto;display:flex;align-items:center;gap:12px;' +
           'font-family:Source Sans Pro,Arial,sans-serif;font-size:13.5px;font-weight:600;line-height:1.3;white-space:nowrap;';
         var who = d.username || 'Another editor';
-        el.textContent = '🔒 ' + who + ' is editing — view only until they finish';
-        el.title = who + ' holds the edit lock, so the editor is read-only here for now. ' +
-          'It frees by itself once they finish or close the map (checked every 30 seconds).';
+        el.innerHTML = '<span>🔒 ' + msLockEsc(who) + ' may be editing — view only</span>' +
+          '<button id="ms-editlock-take" style="background:#fff;color:#ce5c00;border:none;border-radius:999px;padding:4px 13px;font:700 12.5px Source Sans Pro,Arial,sans-serif;cursor:pointer;">Take over</button>';
+        el.title = who + ' holds the map (one editor at a time), so the editor is read-only here. ' +
+          'It frees by itself when they finish or go idle — or take over now; their window will show this same notice.';
+        var tb = el.querySelector('#ms-editlock-take');
+        if (tb) tb.addEventListener('click', function () { try { MSEditLock.takeOver(); } catch (eT) {} });
       }
     }
   };
+  window.__msEditLock = MSEditLock;   // harness handle (same precedent as _msDraw): the idle-release gate must reach _lastAct/_idleParked/held
 
   (async function bootGate() {
     var locked = false;
