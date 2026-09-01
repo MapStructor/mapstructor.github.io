@@ -1330,6 +1330,33 @@
   //    (ms_edit_lock_free: holder is distinct from auth.uid()) — that case keeps its banner only.
   var _msLockBlocked = false;
   function msViewLike() { return _msLockBlocked || (CLICK_MODES && _msMode !== 'edit'); }
+  function msLockEsc(s) { return String(s == null ? '' : s).replace(/[<>&]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]; }); }
+  // The pop-up shown the moment the stand-down engages (owner, 8/31: the corner pill was not a
+  // "tell", it was a whisper). Says the RULE in words, names the person, promises the re-arm.
+  // Slides away after a while (the top banner stays) or on OK; the release removes it too.
+  function msLockNote(who) {
+    try {
+      var el = document.getElementById('ms-lock-note');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'ms-lock-note';
+        el.style.cssText = 'position:fixed;left:50%;top:36%;transform:translate(-50%,-50%);z-index:9600;background:#fff;' +
+          'border:2px solid #ce5c00;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,0.35);padding:20px 26px;max-width:440px;' +
+          'font-family:Source Sans Pro,Arial,sans-serif;color:#1e1b2e;text-align:center;';
+        document.body.appendChild(el);
+      }
+      el.innerHTML = '<div style="font-size:32px;line-height:1;margin-bottom:8px;">&#128101;</div>' +
+        '<div style="font-weight:700;font-size:17px;margin-bottom:6px;">One editor at a time</div>' +
+        '<div style="font-size:14px;line-height:1.5;margin-bottom:14px;"><b>' + msLockEsc(who) + '</b> is editing this map right now, ' +
+        'so editing here is paused &mdash; you can still look around. The tools come back by themselves the moment they finish or close the map.</div>' +
+        '<button id="ms-lock-note-ok" style="background:#ce5c00;color:#fff;border:none;border-radius:8px;padding:7px 22px;font:600 14px Source Sans Pro,Arial,sans-serif;cursor:pointer;">OK</button>';
+      var ok = el.querySelector('#ms-lock-note-ok');
+      if (ok) ok.addEventListener('click', function () { try { el.remove(); } catch (e2) {} });
+      clearTimeout(el._msHide);
+      el._msHide = setTimeout(function () { try { el.remove(); } catch (e3) {} }, 20000);
+      (window.__msLockNoteLog = window.__msLockNoteLog || []).push(el.textContent);   // timing-proof witness for the gate
+    } catch (e) {}
+  }
   function msSetLockBlocked(on) {
     on = !!on;
     if (on === _msLockBlocked) return;
@@ -1342,10 +1369,26 @@
       try { setArmedHl(null); } catch (e) {}
       try { hideFeaturePanel(); } catch (e) {}
       try { hideLayerPanel(); } catch (e) {}
+      msLockNote(window._msLockWho || 'Another editor');
       try { setStatus('View only — another editor is editing'); } catch (e) {}
     } else {
+      try { var n = document.getElementById('ms-lock-note'); if (n) n.remove(); } catch (e) {}
+      try { showToast('You can edit now — the other editor finished.', 4500); } catch (e) {}
       try { setStatus('Editing available again'); } catch (e) {}
     }
+  }
+  // The human sentence, never the database one (owner, 8/31: "Your error was meaningless"). For a
+  // signed-in editor a rights refusal means exactly one of two things — someone else holds the
+  // one-editor-at-a-time lock, or this account may not edit this map. Say WHICH, in words; the raw
+  // policy text goes to the console where it belongs.
+  function msHumanSaveError(rawMsg, label) {
+    var raw = String(rawMsg || '');
+    if (!/row[- ]level security|permission denied|42501/i.test(raw)) return null;   // not a rights refusal → the caller keeps its own message
+    try { console.warn('[MapStructor] refused write (' + (label || 'save') + '): ' + raw); } catch (e) {}
+    if (_msLockBlocked || window._msLockWho) {
+      return 'Not saved — ' + (window._msLockWho || 'another editor') + ' is editing this map right now (one editor at a time). Editing unlocks the moment they finish.';
+    }
+    return 'Not saved — this account doesn’t have permission to change this map.';
   }
   function modeStoreKey(s) { return 'ms-' + s + '-' + (typeof projectId !== 'undefined' && projectId ? projectId : 'x'); }
   function setEditorMode(mode) {
@@ -3997,14 +4040,14 @@
     var G = (typeof window !== 'undefined' && window.MSGuard) || null;
     if (G) {
       var res = await G.save(label, (typeof op === 'function' ? op() : op), { rows: opts && opts.rows });
-      if (!res.ok) { setStatus('Save failed'); showToast(label + ': ' + ((res.error && res.error.message) || 'error')); throw new Error((res.error && res.error.message) || 'write failed'); }
+      if (!res.ok) { var mG = (res.error && res.error.message) || 'error'; setStatus('Save failed'); showToast(msHumanSaveError(mG, label) || (label + ': ' + mG), 6500); throw new Error(mG); }
       if (okMsg) setStatus(okMsg);
       return { data: res.data, error: null };
     }
     var r;
     try { r = await (typeof op === 'function' ? op() : op); }
-    catch (e) { setStatus('Save failed'); showToast(label + ': ' + (e && e.message ? e.message : 'error')); throw e; }
-    if (r && r.error) { setStatus('Save failed'); showToast(label + ': ' + (r.error.message || 'error')); throw new Error(r.error.message || 'write failed'); }
+    catch (e) { var mE = (e && e.message) || 'error'; setStatus('Save failed'); showToast(msHumanSaveError(mE, label) || (label + ': ' + mE), 6500); throw e; }
+    if (r && r.error) { var mR = r.error.message || 'error'; setStatus('Save failed'); showToast(msHumanSaveError(mR, label) || (label + ': ' + mR), 6500); throw new Error(mR); }
     if (okMsg) setStatus(okMsg);
     return r;
   }
@@ -4019,7 +4062,10 @@
       catch (e0) { console.error('[MapStructor] save failed: ' + label + ' — ' + ((e0 && e0.message) || e0)); return { data: null, error: e0 }; }
     }
     var res = await G.save(label, (typeof op === 'function' ? op() : op), { rows: opts && opts.rows });
-    if (!res.ok) showToast('Not saved — ' + label + ': ' + ((res.error && res.error.message) || 'error'), 5000);
+    if (!res.ok) {
+      var mS = (res.error && res.error.message) || 'error';
+      showToast(msHumanSaveError(mS, label) || ('Not saved — ' + label + ': ' + mS), 6500);
+    }
     return { data: res.data, error: res.ok ? null : res.error };
   }
   // ── Map settings: rename the map + save the current view as its default (per-project `projects` row) ──
@@ -13521,6 +13567,7 @@
         // a DIFFERENT user's live lock = the server refuses every write → the editor stands down
         // (view posture) instead of letting doomed work happen. Same-user other-tab keeps its
         // banner but stays armed — the server does not block that case either.
+        window._msLockWho = (!d.ok && !d.same_user) ? (d.username || 'Another editor') : null;   // who to NAME in the pop-up and any refused-write message
         try { msSetLockBlocked(!d.ok && !d.same_user); } catch (eB) {}
         self.banner(d.ok ? null : d);
         if (d.ok && d.took_over) setStatus('Edit lock taken over (previous editor idle)');
@@ -13541,18 +13588,26 @@
       if (!el) {
         el = document.createElement('div');
         el.id = 'ms-editlock-bar';
-        el.style.cssText = 'position:fixed;left:12px;bottom:96px;z-index:6400;background:#fff8ec;border:1px solid #e3c07a;' +
-          'border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.12);padding:4px 11px;max-width:280px;pointer-events:none;' +
-          'font-family:Source Sans Pro,Arial,sans-serif;font-size:11.5px;line-height:1.35;color:#7a6320;white-space:nowrap;' +
-          'overflow:hidden;text-overflow:ellipsis;opacity:.92;';
         document.body.appendChild(el);
       }
       if (d.same_user) {
         // the server does NOT refuse a same-user tab's writes — the old "changes won't save"
-        // wording here was simply false, and false warnings teach people to ignore true ones
+        // wording here was simply false, and false warnings teach people to ignore true ones.
+        // This case keeps the quiet corner chip; it is a caution, not a blockage.
+        el.style.cssText = 'position:fixed;left:12px;bottom:96px;z-index:6400;background:#fff8ec;border:1px solid #e3c07a;' +
+          'border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.12);padding:4px 11px;max-width:280px;pointer-events:none;' +
+          'font-family:Source Sans Pro,Arial,sans-serif;font-size:11.5px;line-height:1.35;color:#7a6320;white-space:nowrap;' +
+          'overflow:hidden;text-overflow:ellipsis;opacity:.92;';
         el.textContent = '🔒 Your other window also has this map open';
         el.title = 'This map is open in another window of yours. Edits save from both and the last write wins — close one to avoid conflicting changes.';
       } else {
+        // the BLOCKING case is loud: an orange strip top-centre over the map, not a corner whisper
+        // (owner, 8/31: the old pill was no "tell" at all)
+        var mt = 280;
+        try { var rc = document.getElementById('comparison-container').getBoundingClientRect(); mt = Math.max(60, rc.top + 12); } catch (eR) {}
+        el.style.cssText = 'position:fixed;left:50%;top:' + mt + 'px;transform:translateX(-50%);z-index:6400;background:#ce5c00;color:#fff;' +
+          'border-radius:999px;box-shadow:0 3px 14px rgba(0,0,0,0.3);padding:7px 18px;pointer-events:none;' +
+          'font-family:Source Sans Pro,Arial,sans-serif;font-size:13.5px;font-weight:600;line-height:1.3;white-space:nowrap;';
         var who = d.username || 'Another editor';
         el.textContent = '🔒 ' + who + ' is editing — view only until they finish';
         el.title = who + ' holds the edit lock, so the editor is read-only here for now. ' +
