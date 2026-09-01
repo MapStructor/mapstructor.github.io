@@ -719,7 +719,7 @@
       // In EDIT mode ONLY the checkbox toggles visibility — a label click must not ALSO flip the
       // checkbox (it used to do both at once), so cancel the label's native for= activation.
       row.addEventListener('click', function (e) {
-        if (CLICK_MODES && _msMode !== 'edit') return;   // view mode: rows behave like the published sidebar (label click = show/hide)
+        if (msViewLike()) return;   // view mode: rows behave like the published sidebar (label click = show/hide)
         if (e.target.closest('input,.layer-buttons-block,.editor-del,.editor-setzoom,.compress-expand-icon,.toggle')) return;
         if (e.target.closest('label')) e.preventDefault();
         // a second click on the selected layer DESELECTS it (8/27, owner) — a button you can press
@@ -1321,6 +1321,32 @@
   // mouse-inert on THIS page — editor only; the published viewer never sets it.
   try { window.__msLockInert = true; } catch (eLkF) {}
   var _msMode = 'edit', _msPanelOn = true;
+  // ── the edit lock stands the editor DOWN, not just a toast (owner, twice burned: 8/31 both
+  //    times every symptom — "undo broke", "nothing echoes", RLS toasts — was doomed work the
+  //    armed tools let happen while a DIFFERENT user's live lock had the server refusing every
+  //    write). msViewLike() is the one guard every view-mode checkpoint already consults, so
+  //    lock-blocked = the exact viewer posture: clicks read, nothing arms, nothing half-edits.
+  //    Same-user other-tab is NOT blocked here because the server does not block it either
+  //    (ms_edit_lock_free: holder is distinct from auth.uid()) — that case keeps its banner only.
+  var _msLockBlocked = false;
+  function msViewLike() { return _msLockBlocked || (CLICK_MODES && _msMode !== 'edit'); }
+  function msSetLockBlocked(on) {
+    on = !!on;
+    if (on === _msLockBlocked) return;
+    _msLockBlocked = on;
+    try { document.body.classList.toggle('ms-lock-blocked', on); } catch (e) {}
+    if (on) {
+      // stand down cleanly: nothing stays armed, selected, or half-edited while writes are refused
+      try { if (draw) draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {}
+      _editingDraw = null; _armedSet = [];
+      try { setArmedHl(null); } catch (e) {}
+      try { hideFeaturePanel(); } catch (e) {}
+      try { hideLayerPanel(); } catch (e) {}
+      try { setStatus('View only — another editor is editing'); } catch (e) {}
+    } else {
+      try { setStatus('Editing available again'); } catch (e) {}
+    }
+  }
   function modeStoreKey(s) { return 'ms-' + s + '-' + (typeof projectId !== 'undefined' && projectId ? projectId : 'x'); }
   function setEditorMode(mode) {
     mode = mode === 'view' ? 'view' : 'edit';
@@ -1421,7 +1447,7 @@
   window.__msModeDebug = function () {   // read-only snapshot for the harness (same precedent as __msArmDebug)
     var dm = null, dc = null, ds = null;
     try { dm = draw.getMode(); dc = draw.getAll().features.length; ds = draw.getSelectedIds().length; } catch (e) {}
-    return { clickModes: CLICK_MODES, mode: _msMode, panel: _msPanelOn, editing: _editingDraw, drawMode: dm, drawCount: dc, drawSel: ds,
+    return { clickModes: CLICK_MODES, mode: _msMode, panel: _msPanelOn, editing: _editingDraw, drawMode: dm, drawCount: dc, drawSel: ds, lockBlocked: _msLockBlocked,
              dirty: Object.keys(_engineGeomDirty), edited: Object.keys(_engineEdited),
              active: (typeof activeLayerId !== 'undefined' ? activeLayerId : null) };
   };
@@ -1440,7 +1466,7 @@
         // 8/29 (owner): LOCKED layers are inert in the editor, BOTH modes — no panel, ever.
         try { var nLk = findNodeById(layers, layer && layer.id); if (nLk && nLk.editable === false) return; } catch (eLk) {}
         // VIEW MODE: the viewer's own panel behavior runs.
-        if (CLICK_MODES && _msMode !== 'edit') return _origHPC.apply(this, arguments);
+        if (msViewLike()) return _origHPC.apply(this, arguments);
         // ALSO suppress for small drawn layers (their features live in MapboxDraw): if the engine copy is
         // ever visible/clickable (e.g. it rendered after hideDrawnEngineLayers ran), the engine's panel
         // toggle runs IN PARALLEL with the editor's — its second-click closePanelInfo slideUp collapses
@@ -1499,7 +1525,7 @@
       [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
         var map = pair[1], side = pair[0]; if (!map) return;
         map.on('click', function (e) {
-          if (CLICK_MODES && _msMode !== 'edit') return;   // view mode: the engine's own viewer handlers own map clicks
+          if (msViewLike()) return;   // view mode: the engine's own viewer handlers own map clicks
           // The swipe routes a click to ONE map, but the editable layer may render only on the OTHER side.
           // Both maps share the view, so e.point is valid on both — query both and edit whichever has the feature.
           var found = null;
@@ -1537,7 +1563,7 @@
     return hit;
   }
   function onEngineFeatureClick(node, e) {
-    if (CLICK_MODES && _msMode !== 'edit') return;   // view mode (belt): also covers the -edited- overlay re-click handlers
+    if (msViewLike()) return;   // view mode (belt): also covers the -edited- overlay re-click handlers
     if (node && node.editable === false) return;     // 8/29: LOCKED = inert (no ctrl-select either) — a click here is a basemap click
     if (!e.features || !e.features.length) return;
     // 9e (final model, 7/28): CTRL/⌘-click = pure select/deselect toggle — no editing, works with or
@@ -5512,7 +5538,9 @@
       '#editor-mode-bar #editor-panel-toggle.ms-off{background:#79a079;border-color:#79a079;color:#fff;}' +
       '#ms-download-section{display:none;}' +   /* editor-only: the same dialog lives behind ＋ Add → Download (owner 8/29); the viewer keeps its sidebar button */
       'body.ms-view-mode #editor-draw-cluster,body.ms-view-mode #editor-map-tools,body.ms-view-mode #editor-measure-readout,' +
-      'body.ms-view-mode #editor-draw-hint,body.ms-view-mode #editor-search-hint{display:none !important;}' +   // the draw-onboarding pair points at tools view mode hides
+      'body.ms-view-mode #editor-draw-hint,body.ms-view-mode #editor-search-hint,' +   // the draw-onboarding pair points at tools view mode hides
+      'body.ms-lock-blocked #editor-draw-cluster,body.ms-lock-blocked #editor-map-tools,body.ms-lock-blocked #editor-measure-readout,' +
+      'body.ms-lock-blocked #editor-draw-hint,body.ms-lock-blocked #editor-search-hint{display:none !important;}' +   // lock-blocked = the same stood-down chrome as view mode
       '.layer-list-row{position:relative;}' +
       '.editor-del{position:absolute;right:44px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#888888;font-size:15px;font-weight:bold;line-height:1;padding:0 3px;z-index:2;}' +
       '.layer-list-row:hover .editor-del{opacity:1;}' +
@@ -5791,7 +5819,7 @@
     try {
       var _origIPDH = window.infoPanelDefaultHandle;
       window.infoPanelDefaultHandle = function () {
-        if (CLICK_MODES && _msMode !== 'edit' && typeof _origIPDH === 'function') return _origIPDH.apply(this, arguments);
+        if (msViewLike() && typeof _origIPDH === 'function') return _origIPDH.apply(this, arguments);
       };
     } catch (e) {}
     document.addEventListener('keydown', function (e) {   // Esc cancels measure/split; Ctrl+Z/Y, Ctrl+C/V
@@ -6208,7 +6236,7 @@
             // the engine's own layer-scoped cursor writes lose to whatever moves last at map
             // level, so the one map-level owner decides. View uses a TIGHT hit box: the engine's
             // clicks are exact-hit, and a 10px halo would promise clicks that do nothing.
-            var vwC = CLICK_MODES && _msMode !== 'edit';
+            var vwC = msViewLike();
             var hitU = !vwC && (!!did || !!_lastGroupGv);   // did already nulled above for locked layers
             if (!hitU) {
               var sdU = (m === beforeMap) ? 'left' : 'right', eLids = [];
@@ -6272,7 +6300,7 @@
         var rightOfSwipe = (function () {
           try { var el = document.querySelector('.mapboxgl-compare'); var cx = e.originalEvent && e.originalEvent.clientX; return !el || cx == null || cx >= el.getBoundingClientRect().left; } catch (err) { return true; }
         })();
-        if (m !== beforeMap && draw && rightOfSwipe && !(CLICK_MODES && _msMode !== 'edit')) {
+        if (m !== beforeMap && draw && rightOfSwipe && !(msViewLike())) {
           if (did && did !== _editingDraw) {
             if (window._msModClick) {
               // ctrl = pure TOGGLE here too (7/28) — and one click mutates the selection ONCE: when an
@@ -7632,7 +7660,7 @@
   function clearArmedSet() { _armedSet = []; setArmedHl(null); updateGroupHl(null); }
   function armedIdsToRows() { syncAttrRowsFromMap(_armedSet.map(function (i3) { return { id: i3 }; })); }
   function onSelectionChange(e) {
-    if (CLICK_MODES && _msMode !== 'edit') {   // view mode: draw never keeps a selection (a lingering just-drawn feature must not become editable)
+    if (msViewLike()) {   // view mode: draw never keeps a selection (a lingering just-drawn feature must not become editable)
       if (e.features && e.features.length) deferDrawSel([]);
       return;
     }
@@ -13490,6 +13518,10 @@
         if (r.error) { self.stop(); return; }              // fn missing or not an editor — fail open, stop nagging
         var d = r.data || {};
         self.held = !!d.ok;
+        // a DIFFERENT user's live lock = the server refuses every write → the editor stands down
+        // (view posture) instead of letting doomed work happen. Same-user other-tab keeps its
+        // banner but stays armed — the server does not block that case either.
+        try { msSetLockBlocked(!d.ok && !d.same_user); } catch (eB) {}
         self.banner(d.ok ? null : d);
         if (d.ok && d.took_over) setStatus('Edit lock taken over (previous editor idle)');
       }
@@ -13499,7 +13531,7 @@
         try { db.rpc('ms_release_edit_lock', { p_project: pid, p_sid: self.sid }); } catch (e2) {}
       });   // fire-and-forget; the 90s TTL is the real cleanup for abandoned locks
     },
-    stop() { if (this._iv != null) { clearInterval(this._iv); this._iv = null; } this.banner(null); },
+    stop() { if (this._iv != null) { clearInterval(this._iv); this._iv = null; } try { msSetLockBlocked(false); } catch (e) {} this.banner(null); },
     // A small chip in the bottom-left corner, above the timeline. It sat inside the sidebar for
     // one revision and rendered as a full-width header — reverted 8/6 at the owner's word.
     // pointer-events:none means it can never intercept a click; detail lives in the tooltip.
@@ -13515,10 +13547,17 @@
           'overflow:hidden;text-overflow:ellipsis;opacity:.92;';
         document.body.appendChild(el);
       }
-      var who = d.same_user ? 'Your other window' : (d.username || 'Another editor');
-      el.textContent = '🔒 ' + who + ' is editing — changes won\'t save';
-      el.title = who + ' holds the edit lock on this map, so anything you change here will not be saved. ' +
-        'It clears by itself once they finish or close the map (checked every 30 seconds).';
+      if (d.same_user) {
+        // the server does NOT refuse a same-user tab's writes — the old "changes won't save"
+        // wording here was simply false, and false warnings teach people to ignore true ones
+        el.textContent = '🔒 Your other window also has this map open';
+        el.title = 'This map is open in another window of yours. Edits save from both and the last write wins — close one to avoid conflicting changes.';
+      } else {
+        var who = d.username || 'Another editor';
+        el.textContent = '🔒 ' + who + ' is editing — view only until they finish';
+        el.title = who + ' holds the edit lock, so the editor is read-only here for now. ' +
+          'It frees by itself once they finish or close the map (checked every 30 seconds).';
+      }
     }
   };
 
