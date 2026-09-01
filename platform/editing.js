@@ -13565,14 +13565,16 @@
       var sess = null; try { sess = (await db.auth.getSession()).data.session; } catch (e0) {}
       if (!sess) return;                                   // no session → viewer posture, no lock
       var self = this;
-      self._pid = pid;
+      self._pid = pid; self._stopped = false;
       async function tick() {
-        // A forgotten tab used to hold a map for as long as it stayed open — heartbeats were a
-        // timer, not a person. Now: while WE hold the lock and the person has been idle past
-        // IDLE_MS, skip the renewal. The row goes stale in 90s, anyone else's next tick takes
-        // over, and the activity listener below re-ticks the INSTANT this person returns — so
-        // they either resume seamlessly or get the may-be-editing notice themselves.
-        if (self.held && Date.now() - (self._lastAct || 0) > self.IDLE_MS) { self._idleParked = true; return; }
+        // THE STRUCTURAL RULE (owner, 9/1: "structured more deeply so that this could never
+        // possibly happen"). A hold may only be RENEWED by a window that is IN FRONT of someone
+        // (visible) who has touched it (deliberate input) within IDLE_MS. A background window is
+        // nobody's hands — it parks the moment its tick runs, regardless of what events graze
+        // it, and the 90-second TTL is its only grace. So a ghost window can never block anyone
+        // for more than ~90 seconds, by construction. A forgotten tab, a woken laptop, a window
+        // buried behind others — all the same rule: not in front → not holding.
+        if (self.held && (document.hidden || Date.now() - (self._lastAct || 0) > self.IDLE_MS)) { self._idleParked = true; self._loop(); return; }
         var r = null;
         try { r = await db.rpc('ms_acquire_edit_lock', { p_project: pid, p_sid: self.sid }); } catch (e1) { r = { error: e1 }; }
         if (r.error) { self.stop(); return; }              // fn missing or not an editor — fail open, stop nagging
@@ -13585,10 +13587,29 @@
         try { msSetLockBlocked(!d.ok && !d.same_user); } catch (eB) {}
         self.banner(d.ok ? null : d);
         if (d.ok && d.took_over) setStatus('Edit lock taken over (previous editor idle)');
+        self._loop();
       }
       self._tick = tick;
-      // activity = pointer, keys, wheel or touch anywhere on the page — capture phase so nothing
-      // that stops propagation can starve it; passive so it can never slow a gesture down
+      // cadence: a HOLDER renews every 30s; a BLOCKED editor re-checks every 10s, so a freed map
+      // arms in seconds, not half a minute — waiting must feel like waiting for a person, never
+      // for a timer. (A parked holder also re-schedules; parking is a skip, not a stop.)
+      self._loop = function () {
+        if (self._stopped) return;
+        clearTimeout(self._to);
+        self._to = setTimeout(function () { tick(); }, self.held ? 30000 : 10000);
+      };
+      // a window coming back to the FRONT re-checks immediately — resuming its hold seamlessly
+      // or learning it was taken and standing down, with no blind window either way
+      if (!self._visWired) {
+        self._visWired = true;
+        try { document.addEventListener('visibilitychange', function () { if (!document.hidden) { self._idleParked = false; try { tick(); } catch (eV) {} } }); } catch (eVW) {}
+      }
+      // activity = DELIBERATE input only: click, key, scroll-wheel, touch. NOT mousemove — on
+      // 9/1 the owner woke their computer after hours and a stray cursor pass over the old
+      // window's page counted as "editing", re-grabbing the hold and making the other window
+      // wait ~7 minutes for the auto-free. A cursor transit is not a hand on the map.
+      // Capture phase so nothing that stops propagation can starve it; passive so it can never
+      // slow a gesture down.
       if (!self._actWired) {
         self._actWired = true;
         self._lastAct = Date.now();
@@ -13596,12 +13617,11 @@
           self._lastAct = Date.now();
           if (self._idleParked) { self._idleParked = false; try { tick(); } catch (eA) {} }   // back from idle → learn the truth NOW, not in 30s
         };
-        ['pointerdown', 'keydown', 'wheel', 'touchstart', 'mousemove'].forEach(function (t) {
+        ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function (t) {
           try { document.addEventListener(t, act, { capture: true, passive: true }); } catch (eL) {}
         });
       }
-      await tick();
-      if (this._iv == null) this._iv = setInterval(tick, 30000);
+      await tick();   // tick schedules its own successor via _loop — cadence follows the state
       window.addEventListener('pagehide', function () {
         try { db.rpc('ms_release_edit_lock', { p_project: pid, p_sid: self.sid }); } catch (e2) {}
       });   // fire-and-forget; the 90s TTL is the real cleanup for abandoned locks
@@ -13624,7 +13644,7 @@
         showToast('Could not take over: ' + ((r && r.error && r.error.message) || 'try again'), 5000);
       }
     },
-    stop() { if (this._iv != null) { clearInterval(this._iv); this._iv = null; } try { msSetLockBlocked(false); } catch (e) {} this.banner(null); },
+    stop() { this._stopped = true; clearTimeout(this._to); try { msSetLockBlocked(false); } catch (e) {} this.banner(null); },
     // A small chip in the bottom-left corner, above the timeline. It sat inside the sidebar for
     // one revision and rendered as a full-width header — reverted 8/6 at the owner's word.
     // pointer-events:none means it can never intercept a click; detail lives in the tooltip.
