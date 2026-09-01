@@ -169,6 +169,20 @@ function initMaps() {
 			try { if (!healthy()) { add(); if (++heals < 3) map.once("idle", heal); } } catch (e) {}
 		}
 		map.once("idle", heal);
+		// 9/1: the idle heal alone let a slow basemap hold the user's LAYERS hostage — OpenTopoMap
+		// rate-limits tiles, 'idle' stayed hours away, and an object→object basemap switch (e.g.
+		// satellite → terrain) left the map empty: the t0 add() had landed in the dying style and
+		// the only retry was waiting on those tiles. Data layers must re-appear on WALL CLOCK,
+		// never on the basemap's tile server's mood. addMapLayer is idempotent; healthy() gates.
+		var gen = (map.__msReaddGen = (map.__msReaddGen || 0) + 1);
+		var tries = 0;
+		(function timedHeal() {
+			if (map.__msReaddGen !== gen || tries++ >= 12) return;   // a newer style.load owns the map now
+			setTimeout(function () {
+				try { if (map.__msReaddGen === gen && !healthy()) add(); } catch (e) {}
+				timedHeal();
+			}, 750);
+		})();
 	}
 	beforeMap.on("style.load", function() {
 		readdSide(beforeMap, "left");

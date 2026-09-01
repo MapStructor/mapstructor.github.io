@@ -85,6 +85,14 @@ Deno.serve(async (req) => {
     switch (event.type) {
       case "checkout.session.completed": {
         const s = event.data.object as Stripe.Checkout.Session;
+        // 2026-09-01 — DONATIONS ARE NOT PLANS. The donate function stamps every donation session
+        // metadata.donation="1". Without this exit, a donation's ad-hoc price maps to no step and
+        // the throw below would 500 → Stripe retries the event forever. A donation grants nothing
+        // and touches no profile — say thanks in the logs and stop.
+        if (s.metadata?.donation === "1") {
+          console.log(`donation received: session ${s.id}, ${s.amount_total} ${s.currency}`);
+          break;
+        }
         const userId = (s.client_reference_id as string) || (s.metadata?.user_id as string) || undefined;
         // 2026-08-22 — SECURITY. This used to read `metadata.tier` FIRST and only fall back to the
         // line item. `metadata.tier` is whatever the browser sent to create-checkout-session, and
@@ -113,6 +121,7 @@ Deno.serve(async (req) => {
       }
       case "customer.subscription.updated": {
         const sub = event.data.object as Stripe.Subscription;
+        if (sub.metadata?.donation === "1") break;   // monthly donation — no step to keep or drop
         const priceId = sub.items?.data?.[0]?.price?.id ?? "";
         // Honor Stripe's dunning window: a failed renewal goes `past_due` while Stripe retries
         // (~2 weeks by default) — the user KEEPS their storage during that grace. Only drop to
@@ -138,6 +147,7 @@ Deno.serve(async (req) => {
       }
       case "customer.subscription.deleted": {
         const sub = event.data.object as Stripe.Subscription;
+        if (sub.metadata?.donation === "1") break;   // a lapsed monthly donation downgrades nobody
         const cid = sub.customer as string;
         await setTier("free", { userId: await userIdForCustomer(cid), customerId: cid });
         break;
