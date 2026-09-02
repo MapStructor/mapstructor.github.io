@@ -16,6 +16,19 @@
   var SEED_CATEGORY = 'More maps';             // where the config.js seed + un-categorized cards land
 
   function db() { return (window.MapAuth && MapAuth.db) || (window.supabase && supabase.createClient(SB_URL, SB_KEY)) || null; }
+  // Portal entries for the "Add from the Map Portal" picker (9/1 — owner: "add the ability to
+  // add a portal map to the main page"). Fetched once per page view.
+  var _portalCache = null;
+  function portalEntries() {
+    if (_portalCache) return _portalCache;
+    var d = db(); if (!d) return Promise.resolve([]);
+    _portalCache = d.from('portal_entries')
+      .select('project_id, thumb, featured, sort_order, projects!inner(name, is_public, deleted_at)')
+      .eq('projects.is_public', true).is('projects.deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .then(function (r) { return r.error ? [] : (r.data || []); });
+    return _portalCache;
+  }
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]; }); }
   // only http(s)/relative URLs survive into cards (no javascript: etc.)
   function safeUrl(u) { u = String(u == null ? '' : u).trim(); if (!u) return ''; return /^\s*(javascript|data|vbscript):/i.test(u) ? '' : u; }
@@ -65,7 +78,10 @@
       '#hc-form input[type=text],#hc-form select{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cdc6e0;border-radius:8px;font-size:14px;background:#fff;}' +
       '#hc-form .hc-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;}' +
       '#hc-form .hc-actions button{height:30px;border-radius:6px;cursor:pointer;padding:0 14px;border:1px solid #ddd;background:#fff;}' +
-      '#hc-form .hc-ok{border:none;background:#7c5cbf;color:#fff;font-weight:700;}' +
+      /* owner 9/1: "The Save button is not visible" — `#hc-form .hc-actions button` (1,1,1) out-
+         ranked `#hc-form .hc-ok` (1,1,0), so its background:#fff beat the purple while .hc-ok's
+         color:#fff still applied: white text on white. The selector must include the element. */
+      '#hc-form .hc-actions button.hc-ok{border:none;background:#7c5cbf;color:#fff;font-weight:700;}' +
       '#hc-upload-status{font-size:12px;color:#6b6680;margin-left:8px;}';
     document.head.appendChild(s);
   }
@@ -236,6 +252,7 @@
     var ov = document.createElement('div'); ov.id = 'hc-overlay';
     var catOpts = catNames().map(function (c) { return '<option value="' + esc(c) + '"' + (c === p.category ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
     ov.innerHTML = '<div id="hc-form"><h3>' + (idx == null ? 'Add map' : 'Edit map') + '</h3>'
+      + '<label>Add from the Map Portal (fills the fields below)</label><select id="hcf-portal"><option value="">— pick a portal map —</option></select>'
       + '<label>Title</label><input type="text" id="hcf-title">'
       + '<label>Category</label><select id="hcf-category">' + catOpts + '</select>'
       + '<label>Thumbnail (image URL)</label><input type="text" id="hcf-thumb" placeholder="https://… or images/…">'
@@ -254,6 +271,21 @@
     g('hcf-title').value = p.title || ''; g('hcf-thumb').value = p.thumb || '';
     g('hcf-github').value = p.github || ''; g('hcf-live').value = p.live || ''; g('hcf-badge').value = p.badge || '';
     g('hcf-open').value = p.open || '';
+    portalEntries().then(function (list) {
+      var sel = g('hcf-portal'); if (!sel || !list.length) return;
+      list.forEach(function (e, li) {
+        var o = document.createElement('option'); o.value = String(li);
+        o.textContent = (e.projects && e.projects.name) || 'Untitled Map';
+        sel.appendChild(o);
+      });
+      sel.addEventListener('change', function () {
+        var e = list[+sel.value]; if (!e) return;
+        g('hcf-title').value = (e.projects && e.projects.name) || '';
+        g('hcf-live').value = 'map/index.html?id=' + e.project_id;
+        if (e.thumb) g('hcf-thumb').value = e.thumb;
+        g('hcf-open').value = 'live';   // a portal map's card opens the map — changeable below
+      });
+    });
     function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
     ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
     g('hcf-cancel').addEventListener('click', close);

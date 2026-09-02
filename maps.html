@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>All Maps — MapStructor</title>
+  <title>More Maps — MapStructor</title>
   <link rel="icon" href="images/logo-transparent.png">
   <style>
-    /* All Maps (9/1, owner: portal gets an "other maps" link → featured on top, every other
-       public map beneath — "just lists for now, like we did with the datasets pages").
-       Row look is datasets.html's ds-row, so the two catalogues read as one family. */
+    /* More Maps (9/1, owner refinement: "More maps is only for the portal, not all public
+       maps" — this page lists the PORTAL entries the owner has NOT marked featured; featured
+       ones live on portal.html itself). Row look is datasets.html's ds-row. */
     * { box-sizing: border-box; margin: 0; padding: 0; }
     :root { --p: #7c5cbf; --p-dark: #6246a8; }
     body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #f0eaff; color: #1e1b2e; min-height: 100vh; }
@@ -47,15 +47,12 @@
   </nav>
 
   <div class="head">
-    <h1>All Maps</h1>
-    <p>Every public map on MapStructor — featured picks first, then everything else.</p>
+    <h1>More Maps</h1>
+    <p>Every map contributed to the Map Portal beyond the featured picks.</p>
   </div>
 
   <main>
     <input class="ds-search" id="q" type="search" placeholder="Search maps by name…" autocomplete="off">
-    <div class="ds-group" id="feat-head" style="display:none;">Featured</div>
-    <div class="ds-list" id="feat-list"></div>
-    <div class="ds-group" id="all-head" style="display:none;">All public maps</div>
     <div class="ds-list" id="all-list"></div>
     <div class="note" id="note">Loading…</div>
   </main>
@@ -85,35 +82,18 @@
         if (!(window.MapAuth && MapAuth.db)) return setTimeout(load, 150);
         var note = document.getElementById('note');
         try {
-          // Featured = the portal's own list, same join and order as portal.html.
-          var feat = await MapAuth.db.from('portal_entries')
-            .select('project_id, blurb, sort_order, created_at, projects!inner(name, is_public, deleted_at)')
+          // The portal's own list, minus the featured picks (those live on portal.html).
+          var r = await MapAuth.db.from('portal_entries')
+            .select('project_id, blurb, featured, sort_order, created_at, projects!inner(name, is_public, deleted_at)')
             .eq('projects.is_public', true).is('projects.deleted_at', null)
             .order('sort_order', { ascending: true }).order('created_at', { ascending: false });
-          if (feat.error) throw new Error(feat.error.message);
-          var featured = feat.data || [];
-          var featIds = {};
-          var fl = document.getElementById('feat-list');
-          featured.forEach(function (e) {
-            featIds[e.project_id] = true;
-            fl.appendChild(row(e.project_id, e.projects && e.projects.name, e.blurb || ''));
-          });
-          if (featured.length) document.getElementById('feat-head').style.display = '';
-
-          // Everything else that is PUBLIC. Link-shared maps are unlisted by design (A19) and
-          // never appear in a bulk select — only truly public rows come back.
-          var all = await MapAuth.db.from('projects')
-            .select('id, name').eq('is_public', true).is('deleted_at', null)
-            .order('name', { ascending: true }).limit(500);
-          if (all.error) throw new Error(all.error.message);
-          var rest = (all.data || []).filter(function (p) { return !featIds[p.id]; });
+          if (r.error) throw new Error(r.error.message);
+          var rest = (r.data || []).filter(function (e) { return !e.featured; });
           var al = document.getElementById('all-list');
-          rest.forEach(function (p) { al.appendChild(row(p.id, p.name, '')); });
-          if (rest.length) document.getElementById('all-head').style.display = '';
-
-          note.textContent = (featured.length + rest.length)
-            ? (featured.length + rest.length) + ' public maps'
-            : 'No public maps yet.';
+          rest.forEach(function (e) { al.appendChild(row(e.project_id, e.projects && e.projects.name, e.blurb || '')); });
+          note.textContent = rest.length
+            ? rest.length + ' more map' + (rest.length === 1 ? '' : 's')
+            : 'Nothing here yet — every portal map is currently featured.';
         } catch (e) {
           note.textContent = 'The list could not load — please try again in a moment.';
         }

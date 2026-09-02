@@ -31,17 +31,31 @@ Deno.serve(async (req) => {
     const { data: prof } = await admin.from("profiles").select("is_admin").eq("id", user.id).maybeSingle();
     if (!prof?.is_admin) return json({ error: "admin only" }, 403);
 
-    const { order } = await req.json();
-    if (!Array.isArray(order) || order.length === 0 || order.length > 200 ||
-        order.some((v) => typeof v !== "string" || !/^[0-9a-f-]{36}$/i.test(v))) {
+    // { order: [project_id,…], featured: {project_id: bool} } — both optional, both curation
+    // columns the client cannot touch (sort_order AND featured are granted to nobody).
+    // featured=true → the portal's main page; featured=false → the More Maps page.
+    const { order, featured } = await req.json();
+    const isId = (v: unknown) => typeof v === "string" && /^[0-9a-f-]{36}$/i.test(v);
+    if (order !== undefined && (!Array.isArray(order) || order.length > 200 || order.some((v) => !isId(v)))) {
       return json({ error: "order must be an array of project ids" }, 400);
     }
+    if (featured !== undefined && (typeof featured !== "object" || featured === null || Array.isArray(featured) ||
+        Object.keys(featured).length > 200 || Object.keys(featured).some((k) => !isId(k) || typeof featured[k] !== "boolean"))) {
+      return json({ error: "featured must be {project_id: boolean}" }, 400);
+    }
+    if (!order && !featured) return json({ error: "nothing to change" }, 400);
 
     let updated = 0;
-    for (let i = 0; i < order.length; i++) {
+    for (let i = 0; i < (order?.length ?? 0); i++) {
       const { data, error } = await admin.from("portal_entries")
         .update({ sort_order: i }).eq("project_id", order[i]).select("project_id");
       if (error) return json({ error: `row ${i}: ${error.message}` }, 500);
+      updated += data?.length ?? 0;
+    }
+    for (const [pid, flag] of Object.entries(featured ?? {})) {
+      const { data, error } = await admin.from("portal_entries")
+        .update({ featured: flag }).eq("project_id", pid).select("project_id");
+      if (error) return json({ error: `featured ${pid}: ${error.message}` }, 500);
       updated += data?.length ?? 0;
     }
     return json({ ok: true, updated });

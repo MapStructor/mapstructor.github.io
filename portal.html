@@ -48,6 +48,11 @@
     .card.mg { cursor: grab; }
     .card.mg:active { cursor: grabbing; }
     .card.drop { outline: 3px dashed var(--p); outline-offset: 2px; }
+    .po-feat { position: absolute; top: 8px; left: 8px; z-index: 3; border: 0; border-radius: 14px; padding: 5px 11px;
+               font-size: 12px; font-weight: 700; cursor: pointer; background: rgba(255,255,255,.95); color: #6e6585;
+               box-shadow: 0 1px 5px rgba(0,0,0,.25); }
+    .po-feat.on { background: var(--p); color: #fff; }
+    .card { position: relative; }
     #po-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; background: #1e1b2e;
               color: #fff; border-radius: 10px; padding: 10px 14px; display: flex; gap: 10px; align-items: center;
               box-shadow: 0 8px 24px rgba(30,27,46,.35); font-size: 13px; }
@@ -85,7 +90,7 @@
     <!-- DATASETS moved to their own page (8/11): they are numerous and mean little without
          context, so the catalogue lives at datasets.html — reached from this one link. -->
     <div style="text-align:center;margin-top:clamp(36px,5vw,56px);display:flex;justify-content:center;gap:28px;flex-wrap:wrap;">
-      <a href="maps.html" style="color:#6e6585;text-decoration:none;font-size:14.5px;font-weight:600;border-bottom:1px solid rgba(124,92,191,.35);padding-bottom:2px;">Other Maps →</a>
+      <a href="maps.html" style="color:#6e6585;text-decoration:none;font-size:14.5px;font-weight:600;border-bottom:1px solid rgba(124,92,191,.35);padding-bottom:2px;">More Maps →</a>
       <a href="datasets.html" style="color:#6e6585;text-decoration:none;font-size:14.5px;font-weight:600;border-bottom:1px solid rgba(124,92,191,.35);padding-bottom:2px;">Search All Datasets →</a>
     </div>
   </main>
@@ -99,9 +104,12 @@
       // blurbs and names are USER text — cards are built with textContent, never innerHTML,
       // and thumbs must look like an image (data:image/, images/, or http(s) URL) to render
       var THUMB_OK = /^(data:image\/|images\/|https?:\/\/)/;
-      var entries = [];                 // current on-screen order
-      var savedOrder = null;            // snapshot for Cancel
+      // ALL portal entries in sort order. Visitors see only featured=true here (the rest live on
+      // maps.html — "More Maps"); manage mode shows everything so the owner can flip ★/☆ and drag.
+      var entries = [];
+      var savedOrder = null;            // deep snapshot for Cancel
       var managing = false, dragIdx = null;
+      function view() { return managing ? entries : entries.filter(function (e) { return e.featured; }); }
 
       function card(e, idx) {
         var name = (e.projects && e.projects.name) || 'Untitled Map';
@@ -136,25 +144,37 @@
             var moved = entries.splice(dragIdx, 1)[0];
             entries.splice(idx, 0, moved); dragIdx = null; render();
           });
+          // ★ = on the portal's main page; ☆ = on the More Maps page. Curation, saved via the fn.
+          var fb = document.createElement('button');
+          fb.className = 'po-feat' + (e.featured ? ' on' : '');
+          fb.textContent = e.featured ? '★ Featured' : '☆ More Maps';
+          fb.title = 'Featured maps show here; the rest live on the More Maps page';
+          fb.addEventListener('click', function (ev) {
+            ev.preventDefault(); ev.stopPropagation();
+            e.featured = !e.featured; render();
+          }, true);
+          c.appendChild(fb);
+          if (!e.featured) c.style.opacity = '.55';
         }
         return c;
       }
       function render() {
         var grid = document.getElementById('portal-grid');
         grid.innerHTML = '';
-        entries.forEach(function (e, i) { grid.appendChild(card(e, i)); });
+        var list = view();
+        list.forEach(function (e) { grid.appendChild(card(e, entries.indexOf(e))); });
       }
       async function load() {
         if (!(window.MapAuth && MapAuth.db)) return setTimeout(load, 150);
         var note = document.getElementById('portal-note');
         try {
           var r = await MapAuth.db.from('portal_entries')
-            .select('project_id, blurb, thumb, sort_order, created_at, projects!inner(name, is_public, deleted_at)')
+            .select('project_id, blurb, thumb, sort_order, featured, created_at, projects!inner(name, is_public, deleted_at)')
             .eq('projects.is_public', true).is('projects.deleted_at', null)
             .order('sort_order', { ascending: true }).order('created_at', { ascending: false });
           if (r.error) throw new Error(r.error.message);
           entries = r.data || []; render();
-          note.textContent = entries.length
+          note.textContent = view().length
             ? 'More maps appear here as their makers contribute them.'
             : 'No maps yet — open your map → Share → Add to Portal to be the first.';
         } catch (e) {
@@ -176,10 +196,12 @@
       }
       function enterManage() {
         if (managing || !entries.length) return;
-        managing = true; savedOrder = entries.slice(); render();
+        managing = true;
+        savedOrder = JSON.parse(JSON.stringify(entries));   // deep — Cancel must undo ★ flips too
+        render();
         document.getElementById('po-reorder').style.display = 'none';
         var bar = document.createElement('div'); bar.id = 'po-bar';
-        var hint = document.createElement('span'); hint.textContent = 'Drag cards into the order you want'; bar.appendChild(hint);
+        var hint = document.createElement('span'); hint.textContent = 'Drag to reorder · ★/☆ = main page or More Maps'; bar.appendChild(hint);
         var save = document.createElement('button'); save.className = 'po-save'; save.textContent = 'Save order'; bar.appendChild(save);
         var cancel = document.createElement('button'); cancel.className = 'po-cancel'; cancel.textContent = 'Cancel'; bar.appendChild(cancel);
         save.addEventListener('click', saveOrder);
@@ -194,8 +216,10 @@
       async function saveOrder() {
         var note = document.getElementById('portal-note');
         try {
+          var featured = {};
+          entries.forEach(function (e) { featured[e.project_id] = !!e.featured; });
           var r = await MapAuth.db.functions.invoke('portal-order', {
-            body: { order: entries.map(function (e) { return e.project_id; }) }
+            body: { order: entries.map(function (e) { return e.project_id; }), featured: featured }
           });
           if (r.error) throw new Error(r.error.message || 'save failed');
           if (r.data && r.data.error) throw new Error(r.data.error);
