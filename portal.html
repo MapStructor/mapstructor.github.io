@@ -134,7 +134,13 @@
 
         if (managing) {                 // drag-to-reorder, same gesture as the main page's cards
           c.classList.add('mg'); c.draggable = true;
-          c.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); }, true);
+          // capture-phase blocker so View/star links are inert while managing — but an ANCESTOR's
+          // capture listener runs before a child's, so it must step aside for the ★/☆ toggle
+          // (owner 9/1: "Can't seem to be able to move from featured" — this ate the click)
+          c.addEventListener('click', function (ev) {
+            if (ev.target && ev.target.closest && ev.target.closest('.po-feat')) return;
+            ev.preventDefault(); ev.stopPropagation();
+          }, true);
           c.addEventListener('dragstart', function () { dragIdx = idx; });
           c.addEventListener('dragover', function (ev) { if (dragIdx == null || dragIdx === idx) return; ev.preventDefault(); c.classList.add('drop'); });
           c.addEventListener('dragleave', function () { c.classList.remove('drop'); });
@@ -152,7 +158,7 @@
           fb.addEventListener('click', function (ev) {
             ev.preventDefault(); ev.stopPropagation();
             e.featured = !e.featured; render();
-          }, true);
+          });
           c.appendChild(fb);
           if (!e.featured) c.style.opacity = '.55';
         }
