@@ -20,7 +20,10 @@
   // only http(s)/relative URLs survive into cards (no javascript: etc.)
   function safeUrl(u) { u = String(u == null ? '' : u).trim(); if (!u) return ''; return /^\s*(javascript|data|vbscript):/i.test(u) ? '' : u; }
 
-  var state = null;          // { categories:[name,…], cards:[{title,thumb,github,live,badge,hidden,category}] }
+  // v3 (9/1): categories are objects so a whole SECTION can be hidden from visitors, and each
+  // card can say what a click does — '' = details popup (default), 'live'/'github' = that link
+  // in a new tab. normalize() migrates v1/v2 saves (category name strings, no `open`) in place.
+  var state = null;          // { categories:[{name,hidden}…], cards:[{title,thumb,github,live,badge,hidden,open,category}] }
   var savedSnapshot = null;  // for Cancel
   var managing = false;
   var dragIdx = null;        // index into state.cards being dragged
@@ -44,6 +47,9 @@
       '.hc-ctl button{border:none;border-radius:6px;background:rgba(255,255,255,.95);box-shadow:0 1px 4px rgba(0,0,0,.25);width:26px;height:24px;cursor:pointer;font-size:12px;line-height:1;}' +
       '.hc-card-wrap{position:relative;}' +
       '.hc-card-wrap.hc-drop{outline:2px dashed #7c5cbf;outline-offset:2px;border-radius:12px;}' +
+      '.hc-notvis{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:2;}' +
+      '.hc-notvis span{background:rgba(180,69,58,.92);color:#fff;font:800 15px/1 "Source Sans Pro",Arial,sans-serif;letter-spacing:.06em;padding:9px 18px;border-radius:8px;transform:rotate(-8deg);box-shadow:0 2px 10px rgba(0,0,0,.3);}' +
+      '.hc-notvis-pill{background:#b4453a;color:#fff;font:800 10.5px/1 "Source Sans Pro",Arial,sans-serif;letter-spacing:.08em;padding:5px 10px;border-radius:14px;margin-left:4px;}' +
       '.hc-add{display:flex;align-items:center;justify-content:center;min-height:160px;border:2px dashed #cdc6e0;border-radius:12px;color:#7c5cbf;font:600 15px "Source Sans Pro",Arial,sans-serif;cursor:pointer;background:#faf9fd;}' +
       '.hc-add:hover{background:#f3effc;}' +
       '.hc-cat-empty{color:#b8b0d4;font:italic 13px "Source Sans Pro",Arial,sans-serif;padding:6px 2px;}' +
@@ -68,18 +74,26 @@
   function seedFromConfig() {
     var list = (typeof PROJECTS !== 'undefined' && PROJECTS) ? PROJECTS : [];
     return {
-      categories: DEFAULT_CATEGORIES.slice(),
-      cards: list.map(function (p) { return { title: p.title || '', thumb: p.thumb || '', github: p.github || '', live: p.live || '', badge: p.badge || '', hidden: !!p.hidden, category: SEED_CATEGORY }; })
+      categories: DEFAULT_CATEGORIES.map(function (n) { return { name: n, hidden: false }; }),
+      cards: list.map(function (p) { return { title: p.title || '', thumb: p.thumb || '', github: p.github || '', live: p.live || '', badge: p.badge || '', hidden: !!p.hidden, open: '', category: SEED_CATEGORY }; })
     };
   }
-  // accept v1 ({cards:[…]} with no categories) and v2 ({categories, cards}); guarantee a valid shape
+  function catNames() { return state.categories.map(function (c) { return c.name; }); }
+  // accept v1 ({cards} with no categories), v2 (category NAME strings) and v3 ({name,hidden}
+  // objects + per-card `open`); guarantee a valid shape either way
   function normalize(raw) {
-    var cats = (raw && Object.prototype.toString.call(raw.categories) === '[object Array]' && raw.categories.length) ? raw.categories.slice() : DEFAULT_CATEGORIES.slice();
+    var rawCats = (raw && Object.prototype.toString.call(raw.categories) === '[object Array]' && raw.categories.length) ? raw.categories : DEFAULT_CATEGORIES;
+    var cats = rawCats.map(function (c) {
+      return typeof c === 'string' ? { name: c, hidden: false } : { name: String((c && c.name) || ''), hidden: !!(c && c.hidden) };
+    }).filter(function (c) { return c.name; });
+    if (!cats.length) cats = DEFAULT_CATEGORIES.map(function (n) { return { name: n, hidden: false }; });
+    var names = cats.map(function (c) { return c.name; });
     var cards = (raw && Object.prototype.toString.call(raw.cards) === '[object Array]') ? raw.cards.slice() : [];
     cards = cards.map(function (c) {
       c = c || {};
-      var cat = c.category && cats.indexOf(c.category) > -1 ? c.category : (cats.indexOf(SEED_CATEGORY) > -1 ? SEED_CATEGORY : cats[cats.length - 1]);
-      return { title: c.title || '', thumb: c.thumb || '', github: c.github || '', live: c.live || '', badge: c.badge || '', hidden: !!c.hidden, category: cat };
+      var cat = c.category && names.indexOf(c.category) > -1 ? c.category : (names.indexOf(SEED_CATEGORY) > -1 ? SEED_CATEGORY : names[names.length - 1]);
+      var open = (c.open === 'live' || c.open === 'github') ? c.open : '';
+      return { title: c.title || '', thumb: c.thumb || '', github: c.github || '', live: c.live || '', badge: c.badge || '', hidden: !!c.hidden, open: open, category: cat };
     });
     return { categories: cats, cards: cards };
   }
@@ -88,23 +102,30 @@
   function render() {
     var c = container(); if (!c || !state) return;
     c.innerHTML = '';
-    state.categories.forEach(function (catName, catPos) {
+    state.categories.forEach(function (cat, catPos) {
+      var catName = cat.name;
       var inCat = [];
       state.cards.forEach(function (p, i) { if (p.category === catName) inCat.push({ p: p, i: i }); });
       var visibleCount = inCat.filter(function (x) { return !x.p.hidden; }).length;
-      if (!managing && visibleCount === 0) return;   // visitors don't see empty categories
+      if (!managing && (cat.hidden || visibleCount === 0)) return;   // visitors: no hidden or empty categories
 
       var row = document.createElement('div'); row.className = 'row';
-      // header — plain label for visitors; editable name + reorder/delete for the owner
+      // header — plain label for visitors; editable name + hide/reorder/delete for the owner
       if (managing) {
         var head = document.createElement('div'); head.className = 'hc-cathead';
         var nameIn = document.createElement('input'); nameIn.className = 'hc-catname'; nameIn.value = catName; nameIn.title = 'Rename this category';
-        nameIn.addEventListener('change', function () { renameCategory(catName, nameIn.value); });
+        nameIn.addEventListener('change', function () { renameCategory(cat, nameIn.value); });
+        var eye = ctlBtn(cat.hidden ? '🙈' : '👁', cat.hidden ? 'Hidden — visitors never see this whole section' : 'Shown — click to hide the whole section', function () { cat.hidden = !cat.hidden; render(); });
         var up = ctlBtn('↑', 'Move category up', function () { moveCategory(catPos, -1); });
         var down = ctlBtn('↓', 'Move category down', function () { moveCategory(catPos, 1); });
-        var del = ctlBtn('🗑', 'Delete category (its maps move to the first category)', function () { deleteCategory(catName); });
+        var del = ctlBtn('🗑', 'Delete category (its maps move to the first category)', function () { deleteCategory(cat); });
         del.className = 'hc-catdel';
-        head.appendChild(nameIn); head.appendChild(up); head.appendChild(down); head.appendChild(del);
+        head.appendChild(nameIn); head.appendChild(eye); head.appendChild(up); head.appendChild(down); head.appendChild(del);
+        if (cat.hidden) {
+          var hb = document.createElement('span'); hb.className = 'hc-notvis-pill'; hb.textContent = 'NOT VISIBLE';
+          head.appendChild(hb);
+          row.classList.add('hc-dim');
+        }
         row.appendChild(head);
       } else {
         var label = document.createElement('div'); label.className = 'row-label'; label.textContent = catName;
@@ -143,8 +164,19 @@
     card.innerHTML = '<div class="card-thumb"><img src="' + esc(thumbSrc) + '" alt="' + esc(p.title) + '"' + imgStyle + '>'
       + (p.badge ? '<span class="card-badge">' + esc(p.badge) + '</span>' : '') + '</div>'
       + '<div class="card-info"><div class="card-title">' + esc(p.title) + '</div></div>';
-    if (!managing) card.addEventListener('click', function () { if (window.openProjectModal) window.openProjectModal(p); });
+    if (!managing) card.addEventListener('click', function () {
+      // per-card click behavior: '' = details popup; 'live'/'github' = that link in a new tab.
+      // A card set to open a link it doesn't have falls back to the popup rather than doing nothing.
+      var url = p.open === 'live' ? safeUrl(p.live) : p.open === 'github' ? safeUrl(p.github) : '';
+      if (p.open && url) { window.open(url, '_blank', 'noopener'); return; }
+      if (window.openProjectModal) window.openProjectModal(p);
+    });
     wrap.appendChild(card);
+    if (managing && p.hidden) {
+      var nv = document.createElement('div'); nv.className = 'hc-notvis';
+      var nvs = document.createElement('span'); nvs.textContent = 'NOT VISIBLE'; nv.appendChild(nvs);
+      wrap.appendChild(nv);
+    }
     if (managing) {
       var ctl = document.createElement('div'); ctl.className = 'hc-ctl';
       [['✎', 'Edit this card', function () { openForm(i); }],
@@ -171,10 +203,10 @@
   }
 
   // ---- category management ----
-  function renameCategory(oldName, newNameRaw) {
-    var newName = (newNameRaw || '').trim(); if (!newName || newName === oldName) { render(); return; }
-    if (state.categories.indexOf(newName) > -1) { window.alert('A category named “' + newName + '” already exists.'); render(); return; }
-    var pos = state.categories.indexOf(oldName); if (pos > -1) state.categories[pos] = newName;
+  function renameCategory(cat, newNameRaw) {
+    var newName = (newNameRaw || '').trim(); if (!newName || newName === cat.name) { render(); return; }
+    if (catNames().indexOf(newName) > -1) { window.alert('A category named “' + newName + '” already exists.'); render(); return; }
+    var oldName = cat.name; cat.name = newName;
     state.cards.forEach(function (c) { if (c.category === oldName) c.category = newName; });
     render();
   }
@@ -182,26 +214,27 @@
     var to = pos + dir; if (to < 0 || to >= state.categories.length) return;
     var m = state.categories.splice(pos, 1)[0]; state.categories.splice(to, 0, m); render();
   }
-  function deleteCategory(name) {
+  function deleteCategory(cat) {
     if (state.categories.length <= 1) { window.alert('Keep at least one category.'); return; }
+    var name = cat.name;
     var inCat = state.cards.filter(function (c) { return c.category === name; }).length;
     if (inCat && !window.confirm('Delete “' + name + '”? Its ' + inCat + ' map(s) move to the first category.')) return;
-    var pos = state.categories.indexOf(name); state.categories.splice(pos, 1);
-    var fallback = state.categories[0];
+    var pos = state.categories.indexOf(cat); state.categories.splice(pos, 1);
+    var fallback = state.categories[0].name;
     state.cards.forEach(function (c) { if (c.category === name) c.category = fallback; });
     render();
   }
   function addCategory() {
     var name = (window.prompt('New category name:') || '').trim(); if (!name) return;
-    if (state.categories.indexOf(name) > -1) { window.alert('That category already exists.'); return; }
-    state.categories.push(name); render();
+    if (catNames().indexOf(name) > -1) { window.alert('That category already exists.'); return; }
+    state.categories.push({ name: name, hidden: false }); render();
   }
 
   // ---- add/edit card form ----
   function openForm(idx, presetCategory) {
-    var p = idx == null ? { title: '', thumb: '', github: '', live: '', badge: '', category: presetCategory || state.categories[0] } : state.cards[idx];
+    var p = idx == null ? { title: '', thumb: '', github: '', live: '', badge: '', open: '', category: presetCategory || state.categories[0].name } : state.cards[idx];
     var ov = document.createElement('div'); ov.id = 'hc-overlay';
-    var catOpts = state.categories.map(function (c) { return '<option value="' + esc(c) + '"' + (c === p.category ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+    var catOpts = catNames().map(function (c) { return '<option value="' + esc(c) + '"' + (c === p.category ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
     ov.innerHTML = '<div id="hc-form"><h3>' + (idx == null ? 'Add map' : 'Edit map') + '</h3>'
       + '<label>Title</label><input type="text" id="hcf-title">'
       + '<label>Category</label><select id="hcf-category">' + catOpts + '</select>'
@@ -209,12 +242,18 @@
       + '<div style="margin-top:6px;"><button type="button" id="hcf-upload">Upload image…</button><input type="file" id="hcf-file" accept="image/*" style="display:none;"><span id="hc-upload-status"></span></div>'
       + '<label>GitHub link</label><input type="text" id="hcf-github" placeholder="https://github.com/…">'
       + '<label>Live map link</label><input type="text" id="hcf-live" placeholder="https://…">'
+      + '<label>When the card is clicked</label><select id="hcf-open">'
+      +   '<option value="">Open the details popup (default)</option>'
+      +   '<option value="live">Open the live-map link in a new tab</option>'
+      +   '<option value="github">Open the GitHub link in a new tab</option>'
+      + '</select>'
       + '<label>Badge (optional, e.g. an account name)</label><input type="text" id="hcf-badge">'
       + '<div class="hc-actions"><button type="button" id="hcf-cancel">Cancel</button><button type="button" class="hc-ok" id="hcf-ok">' + (idx == null ? 'Add' : 'Apply') + '</button></div></div>';
     document.body.appendChild(ov);
     function g(id) { return document.getElementById(id); }
     g('hcf-title').value = p.title || ''; g('hcf-thumb').value = p.thumb || '';
     g('hcf-github').value = p.github || ''; g('hcf-live').value = p.live || ''; g('hcf-badge').value = p.badge || '';
+    g('hcf-open').value = p.open || '';
     function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
     ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
     g('hcf-cancel').addEventListener('click', close);
@@ -236,7 +275,7 @@
     g('hcf-ok').addEventListener('click', function () {
       var title = (g('hcf-title').value || '').trim();
       if (!title) { g('hcf-title').style.borderColor = '#b4453a'; g('hcf-title').focus(); return; }
-      var next = { title: title, thumb: safeUrl(g('hcf-thumb').value), github: safeUrl(g('hcf-github').value), live: safeUrl(g('hcf-live').value), badge: (g('hcf-badge').value || '').trim(), category: g('hcf-category').value, hidden: idx == null ? false : !!state.cards[idx].hidden };
+      var next = { title: title, thumb: safeUrl(g('hcf-thumb').value), github: safeUrl(g('hcf-github').value), live: safeUrl(g('hcf-live').value), badge: (g('hcf-badge').value || '').trim(), open: g('hcf-open').value || '', category: g('hcf-category').value, hidden: idx == null ? false : !!state.cards[idx].hidden };
       if (idx == null) state.cards.push(next); else state.cards[idx] = next;
       close(); render();
     });
@@ -259,7 +298,7 @@
   function showBar() {
     if (document.getElementById('hc-bar')) return;
     var bar = document.createElement('div'); bar.id = 'hc-bar';
-    bar.innerHTML = '<span class="hc-hint">Drag cards to reorder · ✎ edit · 👁 hide · rename/reorder categories above</span>';
+    bar.innerHTML = '<span class="hc-hint">Drag cards to reorder · ✎ edit · 👁 hide cards or whole categories · rename/reorder categories above</span>';
     var addcat = document.createElement('button'); addcat.className = 'hc-addcat'; addcat.textContent = '+ Add category';
     var save = document.createElement('button'); save.className = 'hc-save'; save.textContent = 'Save maps';
     var cancel = document.createElement('button'); cancel.textContent = 'Cancel';
@@ -272,7 +311,7 @@
   async function saveAll() {
     var d = db(); if (!d) { window.alert('No database connection.'); return; }
     try {
-      var r = await d.from('site_content').upsert({ key: KEY, html: JSON.stringify({ v: 2, categories: state.categories, cards: state.cards }) });
+      var r = await d.from('site_content').upsert({ key: KEY, html: JSON.stringify({ v: 3, categories: state.categories, cards: state.cards }) });
       if (r.error) { window.alert('Save failed: ' + r.error.message + (/relation|does not exist|schema cache/i.test(r.error.message) ? '\n\n(The site_content table isn’t created yet — run mapstructor_docs/sql/setup/site-content-setup.sql.)' : '')); return; }
       exitManage();
     } catch (e) { window.alert('Save error: ' + (e && e.message)); }
