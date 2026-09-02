@@ -1,0 +1,47 @@
+#!/bin/sh
+# Pre-push gate: the edit-button bug (9/2) must never ship again.
+#
+# When a push touches permission-critical files, the edit-access gate runs against the
+# LOCAL working tree (the probe defaults to C:/repos/mapstructor.github.io) and the push
+# is blocked while it is red. It builds a real published collaborator map and fails
+# unless the Edit button actually appears — the exact round-2 trap.
+#
+# Emergencies only (gate broken by outage, not by the code):  MS_SKIP_GATES=1 git push
+# Machine-specific: needs c:/repos/mapstructor_docs (harness). On a machine without it,
+# core.hooksPath is simply not set and this file is inert.
+
+if [ -n "$MS_SKIP_GATES" ]; then
+  echo ">> MS_SKIP_GATES set — edit-access gate SKIPPED for this push." >&2
+  exit 0
+fi
+
+CRITICAL='platform/projectLoader\.js|platform/editing\.js|platform/share\.js|^sql/'
+PROBE="c:/repos/mapstructor_docs/testing/harness/edit-access-probe.mjs"
+NEED=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "$local_sha" ] && continue
+  # branch deletion: nothing to gate
+  case "$local_sha" in 0000000000000000000000000000000000000000) continue;; esac
+  if printf '%s' "$remote_sha" | grep -q '^0*$'; then
+    base=$(git merge-base origin/main "$local_sha" 2>/dev/null) || base=""
+  else
+    base="$remote_sha"
+  fi
+  if [ -z "$base" ]; then
+    NEED=1
+  elif git diff --name-only "$base" "$local_sha" | grep -Eq "$CRITICAL"; then
+    NEED=1
+  fi
+done
+
+[ "$NEED" -eq 0 ] && exit 0
+
+echo ">> Permission-critical files in this push — running the edit-access gate (~2 min)..." >&2
+if node "$PROBE"; then
+  echo ">> edit-access gate GREEN — push allowed." >&2
+  exit 0
+else
+  echo ">> edit-access gate RED — PUSH BLOCKED. Fix it, or MS_SKIP_GATES=1 for a deliberate override." >&2
+  exit 1
+fi

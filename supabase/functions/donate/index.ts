@@ -45,13 +45,14 @@ Deno.serve(async (req) => {
     }
     const monthly = recurring === true;
     const prod = await productId(monthly ? "MapStructor Monthly Support" : "MapStructor Donation");
-    // Payment methods are EXPLICIT (owner 9/1: "There should be no 'Pay Later' option haha").
-    // Automatic methods surfaced Link, whose wallet offers 0%-interest installment plans on
-    // one-time payments — donations on an installment plan is absurd. Listing types ourselves
-    // keeps card + Cash App (+ Amazon Pay one-time, + Link on monthly, where subscriptions
-    // cannot be financed) and drops every BNPL. A type not enabled on the account fails session
-    // creation, so fall back to plain card rather than failing the donor.
-    const wanted = monthly ? ["card", "cashapp", "link"] : ["card", "cashapp"];
+    // Payment methods are PINNED to a payment-method configuration (owner 9/1: "There should
+    // be no 'Pay Later' option"). Explicit payment_method_types was not enough: Link's wallet
+    // layer re-painted Klarna ("Klarna — Powered by Link") and Bank onto the page on top of
+    // whatever types we listed. The pinned config turns Link itself off, so nothing can be
+    // smuggled in, and Stripe's future "recommended method" auto-enables can't touch it.
+    // pmc_1UBNuiLx8hmpYH5qv2KNaF0B = "donations": card + Cash App + Apple/Google Pay, all
+    // BNPL/bank/Link off (created 9/2 with a one-time key permission, since revoked).
+    const DONATIONS_PMC = "pmc_1UBNuiLx8hmpYH5qv2KNaF0B";
     const base = {
       mode: monthly ? "subscription" : "payment",
       line_items: [{
@@ -68,14 +69,14 @@ Deno.serve(async (req) => {
       success_url: successUrl || "https://mapstructor.com/services.html?donated=1",
       cancel_url: cancelUrl || "https://mapstructor.com/services.html",
     } as Stripe.Checkout.SessionCreateParams;
-    let session: Stripe.Checkout.Session; let branch = "wanted"; let err0 = "";
+    let session: Stripe.Checkout.Session;
     try {
-      session = await stripe.checkout.sessions.create({ ...base, payment_method_types: wanted as Stripe.Checkout.SessionCreateParams.PaymentMethodType[] });
-    } catch (e0) {
-      branch = "card-only"; err0 = String((e0 as Error)?.message ?? e0).slice(0, 200);
+      session = await stripe.checkout.sessions.create({ ...base, payment_method_configuration: DONATIONS_PMC });
+    } catch (_e0) {
+      // If the pinned config is ever deleted/invalid, a donor must still be able to give.
       session = await stripe.checkout.sessions.create({ ...base, payment_method_types: ["card"] });
     }
-    return json({ url: session.url, v: 5, branch, err0, pm: session.payment_method_types });
+    return json({ url: session.url });
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 400);
   }
