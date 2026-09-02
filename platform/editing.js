@@ -5254,6 +5254,8 @@
       '<input id="emp-style" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;" />' +
       '<div style="font-size:10px;color:#888888;margin-top:3px;">A full style URL (e.g. <code>https://tiles.openfreemap.org/styles/liberty</code> — free, no account), a tile template (<code>https://&hellip;/{z}/{x}/{y}.png</code>), or a Mapbox style id (<code>satellite-v9</code>, token required). ' +
         '<a href="https://openfreemap.org/quick_start/" target="_blank" rel="noopener" style="color:#5b458f;">Free styles&nbsp;&#8599;</a></div>' +
+      '<label style="display:block;font-size:11px;color:#555555;margin:8px 0 2px;">Info — what the &#9432; on this map\'s row shows (include sources)</label>' +
+      '<textarea id="emp-info" rows="4" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;resize:vertical;font-family:inherit;"></textarea>' +
       '<label style="display:block;font-size:11px;color:#555555;margin:8px 0 2px;">Section</label>' +
       '<select id="emp-section" style="width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:13px;"></select>' +
       '<div style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:8px;">' +
@@ -5268,6 +5270,7 @@
     document.getElementById('emp-x').addEventListener('click', function () { p.style.display = 'none'; });
     document.getElementById('emp-name').addEventListener('change', onMapEditSave);
     document.getElementById('emp-style').addEventListener('change', onMapEditSave);
+    document.getElementById('emp-info').addEventListener('change', onMapEditSave);
     document.getElementById('emp-section').addEventListener('change', onMapEditSave);
     document.getElementById('emp-def-left').addEventListener('change', function () { onMapDefaultSide('left', this.checked); });
     document.getElementById('emp-def-right').addEventListener('change', function () { onMapDefaultSide('right', this.checked); });
@@ -5278,6 +5281,9 @@
     var m = (bmaps() || [])[idx]; if (!m) return;
     document.getElementById('emp-name').value = m.name || '';
     document.getElementById('emp-style').value = m.id || '';
+    // no info of its own → prefill the engine's default write-up (the 4 free basemaps), so the
+    // owner sees exactly what the ℹ shows and edits from there; saving persists it per-map
+    document.getElementById('emp-info').value = m.info || (window.MS_BASEMAP_INFO && window.MS_BASEMAP_INFO[m.id]) || '';
     document.getElementById('emp-def-left').checked = !!m.lChecked;
     document.getElementById('emp-def-right').checked = !!m.rChecked;
     var sel = document.getElementById('emp-section');
@@ -5288,6 +5294,7 @@
     var m = (bmaps() || [])[_mapEditIdx]; if (!m) return;
     m.name = document.getElementById('emp-name').value;
     m.id = document.getElementById('emp-style').value;
+    var iv = document.getElementById('emp-info').value.trim(); if (iv) m.info = iv; else delete m.info;
     var sv = document.getElementById('emp-section').value; if (sv) m.section = sv; else delete m.section;
     await saveBaseMaps(); rerenderMaps();
   }

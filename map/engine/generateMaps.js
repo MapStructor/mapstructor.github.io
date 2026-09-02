@@ -9,6 +9,7 @@ function generateMapHTML(map, idx) {
         <div class="layer-buttons-list">
           ${map.zoomFunction ? `<i class="fa fa-crosshairs zoom-to-layer" onclick="${map.zoomFunction}" title="Zoom to Layer"></i>` : ''}
           ${map.infoId ? `<i class="fa fa-info-circle layer-info trigger-popup" id="${map.infoId}" title="Layer Info"></i>` : ''}
+          ${msBasemapInfoFor(map) ? `<i class="fa fa-info-circle layer-info map-info-btn" data-mapinfo-idx="${idx}" title="About this basemap" style="cursor:pointer;"></i>` : ''}
         </div>
       </div>
     </div>
@@ -39,6 +40,73 @@ function generateZoomButtonHTML(btn, idx) {
     '&nbsp; &nbsp; <i class="fa ' + (btn.icon || '') + '"></i> &nbsp; <b>' + (btn.label == null ? '' : btn.label) + '</b> &nbsp; &nbsp; &nbsp;' +
     '</button></center></div>';
 }
+
+// ── Basemap info (9/1, owner: "Add info buttons, with sources.") ──
+// Every basemap row can carry an ℹ. Its text comes from the entry's own `info` (edited in the
+// editor's Edit-map panel, saved into raw_config.baseMaps) or, for the four free defaults, from
+// this built-in table — so every existing map shows sourced write-ups with no config surgery.
+// ENGINE-level deliberately: editor, viewer and exported copies render the same ℹ from one place.
+var MS_BASEMAP_INFO = {
+  "free-satellite": "Esri World Imagery — satellite and aerial photography assembled from many providers (Maxar, Earthstar Geographics, USDA, USGS and others). No labels; imagery dates vary by area.\nSource: Esri ArcGIS Online (World_Imagery) — arcgis.com",
+  "free-streets": "OpenFreeMap “Liberty” — a full street map rendered from OpenStreetMap, the collaborative world map maintained by millions of contributors.\nSources: openfreemap.org · openstreetmap.org — © OpenStreetMap contributors",
+  "free-clean": "Esri Light Gray Canvas — a quiet, label-free base designed to put your own data in front. Detail fades past zoom 16.\nSources: Esri ArcGIS Online (World_Light_Gray_Base), with OpenStreetMap and other community data — arcgis.com",
+  "free-terrain": "OpenTopoMap — a topographic map with contour lines and hillshading, rendered from OpenStreetMap data and SRTM elevation.\nSources: opentopomap.org · openstreetmap.org — © OpenStreetMap contributors; elevation: SRTM"
+};
+try { window.MS_BASEMAP_INFO = MS_BASEMAP_INFO; } catch (e) {}
+
+function msBasemapInfoFor(m) { return (m && (m.info || MS_BASEMAP_INFO[m.id])) || ""; }
+
+function msShowBasemapInfo(idx, anchor) {
+  var m = (typeof baseMaps !== "undefined" && baseMaps) ? baseMaps[idx] : null;
+  var text = msBasemapInfoFor(m); if (!text) return;
+  var old = document.getElementById("ms-basemap-info"); if (old) old.remove();
+  var pop = document.createElement("div");
+  pop.id = "ms-basemap-info";   // z 6340 = the info tier's overlay band (info always over edit chrome)
+  pop.style.cssText = "position:fixed;z-index:6340;max-width:320px;background:#ffffff;border:1px solid #bbbbbb;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.25);padding:12px 14px;font:13px/1.5 'Source Sans Pro',Arial,sans-serif;color:#333333;";
+  var head = document.createElement("div");
+  head.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;";
+  var ttl = document.createElement("b"); ttl.textContent = (m.name || m.id || "Basemap"); head.appendChild(ttl);
+  var x = document.createElement("span"); x.textContent = "×";
+  x.style.cssText = "cursor:pointer;color:#888888;font-size:16px;line-height:1;";
+  x.addEventListener("click", function () { pop.remove(); });
+  head.appendChild(x); pop.appendChild(head);
+  // info is USER text (per-map, editable) — built with textContent only; bare domains/URLs
+  // become safe links so the sources are one click away
+  String(text).split(/\n/).forEach(function (line) {
+    var p = document.createElement("div");
+    if (line === "") { p.style.height = "6px"; pop.appendChild(p); return; }
+    line.split(/(\bhttps?:\/\/[^\s]+|\b[a-z0-9][a-z0-9-]*\.(?:org|com|net)\b[^\s,)]*)/i).forEach(function (part, i) {
+      if (!part) return;
+      if (i % 2) {
+        var a = document.createElement("a");
+        a.href = /^https?:/i.test(part) ? part : "https://" + part;
+        a.target = "_blank"; a.rel = "noopener"; a.textContent = part; a.style.color = "#5b458f";
+        p.appendChild(a);
+      } else p.appendChild(document.createTextNode(part));
+    });
+    pop.appendChild(p);
+  });
+  document.body.appendChild(pop);
+  var r = anchor.getBoundingClientRect();
+  var top = Math.min(r.top, window.innerHeight - pop.offsetHeight - 12);
+  var left = Math.min(r.right + 8, window.innerWidth - pop.offsetWidth - 12);
+  pop.style.top = Math.max(8, top) + "px"; pop.style.left = Math.max(8, left) + "px";
+}
+// One delegated listener (capture, so the editor's row-click can't swallow the ℹ), wired once —
+// generateBaseMapsPanel rebuilds the rows' innerHTML freely without re-wiring anything.
+(function msWireBasemapInfo() {
+  if (window.__msBasemapInfoWired) return; window.__msBasemapInfoWired = true;
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest(".map-info-btn") : null;
+    if (btn) {
+      ev.stopPropagation(); ev.preventDefault();
+      msShowBasemapInfo(+btn.getAttribute("data-mapinfo-idx"), btn);
+      return;
+    }
+    var pop = document.getElementById("ms-basemap-info");
+    if (pop && !pop.contains(ev.target)) pop.remove();
+  }, true);
+})();
 
 // ── Custom map buttons (8/27, owner: "I need to add a button for the encyclopedia that opens in a
 // separate tab"). mapConfig.customButtons = [{label, url}] renders as pill buttons in the map's
