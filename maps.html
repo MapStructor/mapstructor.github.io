@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>All Maps — MapStructor</title>
+  <link rel="icon" href="images/logo-transparent.png">
+  <style>
+    /* All Maps (9/1, owner: portal gets an "other maps" link → featured on top, every other
+       public map beneath — "just lists for now, like we did with the datasets pages").
+       Row look is datasets.html's ds-row, so the two catalogues read as one family. */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --p: #7c5cbf; --p-dark: #6246a8; }
+    body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #f0eaff; color: #1e1b2e; min-height: 100vh; }
+    nav { position: fixed; top: 0; right: 0; display: flex; align-items: center; gap: 4px; padding: 16px clamp(16px, 4vw, 40px); z-index: 20; }
+    nav a { color: #6e6585; text-decoration: none; font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 6px; white-space: nowrap; }
+    .head { text-align: center; padding: clamp(56px, 9vw, 96px) 20px clamp(24px, 4vw, 36px); }
+    .head h1 { font-size: clamp(30px, 5vw, 48px); font-weight: 800; letter-spacing: -0.03em; }
+    .head p { margin-top: 10px; color: #9490a8; font-size: clamp(14px, 1.8vw, 16px); }
+    main { max-width: 760px; margin: 0 auto; padding: 0 clamp(20px, 5vw, 64px) clamp(56px, 8vw, 88px); }
+    .ds-search { width: 100%; padding: 12px 15px; border: 1px solid rgba(124,92,191,0.28); border-radius: 10px; font-size: 15px; background: #fff; }
+    .ds-search:focus { outline: 2px solid #b9a9ee; border-color: #b9a9ee; }
+    .ds-list { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .ds-row { display: block; text-decoration: none; color: inherit; background: #fff; border: 1px solid rgba(124,92,191,0.18);
+              border-radius: 10px; padding: 13px 16px; transition: transform .1s, box-shadow .1s; }
+    .ds-row:hover { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(30,27,46,0.09); }
+    .ds-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .ds-name { font-weight: 700; font-size: 15.5px; }
+    .ds-star { font-size: 18px; line-height: 1; flex: none; text-decoration: none; }
+    .ds-meta { margin-top: 4px; color: #6e6585; font-size: 13px; }
+    .ds-group { margin-top: 22px; font-size: 12.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #9490a8; }
+    .note { margin-top: 20px; text-align: center; color: #9490a8; font-size: 13.5px; }
+    footer { display: flex; justify-content: center; gap: 18px; padding: 24px; }
+    footer a { color: #9490a8; text-decoration: none; font-size: 12.5px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="platform/auth.js?v=3a0ce355"></script>
+  <script src="platform/veil.js?v=35830abf"></script>
+  <script src="platform/topbar.js?v=8154caa8"></script>
+  <script src="platform/bookmarks.js?v=b8757559"></script>
+</head>
+<body>
+
+  <nav>
+    <a href="portal.html">Map Portal</a>
+    <a href="index.html">Home</a>
+  </nav>
+
+  <div class="head">
+    <h1>All Maps</h1>
+    <p>Every public map on MapStructor — featured picks first, then everything else.</p>
+  </div>
+
+  <main>
+    <input class="ds-search" id="q" type="search" placeholder="Search maps by name…" autocomplete="off">
+    <div class="ds-group" id="feat-head" style="display:none;">Featured</div>
+    <div class="ds-list" id="feat-list"></div>
+    <div class="ds-group" id="all-head" style="display:none;">All public maps</div>
+    <div class="ds-list" id="all-list"></div>
+    <div class="note" id="note">Loading…</div>
+  </main>
+
+  <footer>
+    <a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="report.html">Report a map</a>
+  </footer>
+
+  <script>
+    (function () {
+      // Names and blurbs are USER text — rows are built with textContent, never innerHTML.
+      var rows = [];   // { el, name } for the search filter
+      function row(id, name, meta) {
+        var a = document.createElement('a');
+        a.className = 'ds-row';
+        a.href = 'map/index.html?id=' + encodeURIComponent(id);
+        var top = document.createElement('div'); top.className = 'ds-top';
+        var nm = document.createElement('span'); nm.className = 'ds-name'; nm.textContent = name || 'Untitled Map'; top.appendChild(nm);
+        var star = document.createElement('a'); star.className = 'ds-star'; star.href = '#'; star.textContent = '☆'; top.appendChild(star);
+        a.appendChild(top);
+        if (meta) { var m = document.createElement('div'); m.className = 'ds-meta'; m.textContent = meta; a.appendChild(m); }
+        (function wireStar() { if (window.MSBookmarks) MSBookmarks.star(star, id); else setTimeout(wireStar, 150); })();
+        rows.push({ el: a, name: (name || '').toLowerCase() });
+        return a;
+      }
+      async function load() {
+        if (!(window.MapAuth && MapAuth.db)) return setTimeout(load, 150);
+        var note = document.getElementById('note');
+        try {
+          // Featured = the portal's own list, same join and order as portal.html.
+          var feat = await MapAuth.db.from('portal_entries')
+            .select('project_id, blurb, sort_order, created_at, projects!inner(name, is_public, deleted_at)')
+            .eq('projects.is_public', true).is('projects.deleted_at', null)
+            .order('sort_order', { ascending: true }).order('created_at', { ascending: false });
+          if (feat.error) throw new Error(feat.error.message);
+          var featured = feat.data || [];
+          var featIds = {};
+          var fl = document.getElementById('feat-list');
+          featured.forEach(function (e) {
+            featIds[e.project_id] = true;
+            fl.appendChild(row(e.project_id, e.projects && e.projects.name, e.blurb || ''));
+          });
+          if (featured.length) document.getElementById('feat-head').style.display = '';
+
+          // Everything else that is PUBLIC. Link-shared maps are unlisted by design (A19) and
+          // never appear in a bulk select — only truly public rows come back.
+          var all = await MapAuth.db.from('projects')
+            .select('id, name').eq('is_public', true).is('deleted_at', null)
+            .order('name', { ascending: true }).limit(500);
+          if (all.error) throw new Error(all.error.message);
+          var rest = (all.data || []).filter(function (p) { return !featIds[p.id]; });
+          var al = document.getElementById('all-list');
+          rest.forEach(function (p) { al.appendChild(row(p.id, p.name, '')); });
+          if (rest.length) document.getElementById('all-head').style.display = '';
+
+          note.textContent = (featured.length + rest.length)
+            ? (featured.length + rest.length) + ' public maps'
+            : 'No public maps yet.';
+        } catch (e) {
+          note.textContent = 'The list could not load — please try again in a moment.';
+        }
+      }
+      load();
+
+      document.getElementById('q').addEventListener('input', function () {
+        var q = this.value.trim().toLowerCase();
+        rows.forEach(function (r) { r.el.style.display = (!q || r.name.indexOf(q) !== -1) ? '' : 'none'; });
+      });
+    })();
+  </script>
+</body>
+</html>

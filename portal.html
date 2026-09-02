@@ -41,6 +41,19 @@
     .contrib-hint { margin-top: 8px; color: #9490a8; font-size: 12.5px; }
     footer { display: flex; justify-content: center; gap: 18px; padding: 24px; }
     footer a { color: #9490a8; text-decoration: none; font-size: 12.5px; }
+
+    /* admin reorder mode (9/1) — sort_order is service-only, saved through the portal-order fn */
+    #po-reorder { display: none; margin-top: 14px; background: none; border: 1px solid rgba(124,92,191,.4);
+                  color: #6e6585; font-size: 12.5px; font-weight: 600; padding: 6px 14px; border-radius: 6px; cursor: pointer; }
+    .card.mg { cursor: grab; }
+    .card.mg:active { cursor: grabbing; }
+    .card.drop { outline: 3px dashed var(--p); outline-offset: 2px; }
+    #po-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; background: #1e1b2e;
+              color: #fff; border-radius: 10px; padding: 10px 14px; display: flex; gap: 10px; align-items: center;
+              box-shadow: 0 8px 24px rgba(30,27,46,.35); font-size: 13px; }
+    #po-bar button { border: 0; border-radius: 7px; padding: 8px 16px; font-weight: 700; font-size: 13px; cursor: pointer; }
+    #po-bar .po-save { background: var(--p); color: #fff; }
+    #po-bar .po-cancel { background: #3a3550; color: #fff; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="platform/auth.js?v=3a0ce355"></script>
@@ -60,6 +73,7 @@
     <p>Curated maps to explore — and to add straight into your own maps.</p>
     <a class="btn-contrib" href="#" id="btn-contrib" title="Start a new map to contribute">＋ Contribute a map</a>
     <div class="contrib-hint">Starts a fresh map — build it, then <b>Share</b> → <b>Add to Portal</b>. Already have one? <a href="dashboard.html" style="color:inherit;">Open it from your maps</a>.</div>
+    <button type="button" id="po-reorder" title="Drag the featured cards into a new order">✎ Reorder featured</button>
   </div>
 
   <main>
@@ -70,7 +84,8 @@
 
     <!-- DATASETS moved to their own page (8/11): they are numerous and mean little without
          context, so the catalogue lives at datasets.html — reached from this one link. -->
-    <div style="text-align:center;margin-top:clamp(36px,5vw,56px);">
+    <div style="text-align:center;margin-top:clamp(36px,5vw,56px);display:flex;justify-content:center;gap:28px;flex-wrap:wrap;">
+      <a href="maps.html" style="color:#6e6585;text-decoration:none;font-size:14.5px;font-weight:600;border-bottom:1px solid rgba(124,92,191,.35);padding-bottom:2px;">Other Maps →</a>
       <a href="datasets.html" style="color:#6e6585;text-decoration:none;font-size:14.5px;font-weight:600;border-bottom:1px solid rgba(124,92,191,.35);padding-bottom:2px;">Search All Datasets →</a>
     </div>
   </main>
@@ -84,7 +99,11 @@
       // blurbs and names are USER text — cards are built with textContent, never innerHTML,
       // and thumbs must look like an image (data:image/, images/, or http(s) URL) to render
       var THUMB_OK = /^(data:image\/|images\/|https?:\/\/)/;
-      function card(e) {
+      var entries = [];                 // current on-screen order
+      var savedOrder = null;            // snapshot for Cancel
+      var managing = false, dragIdx = null;
+
+      function card(e, idx) {
         var name = (e.projects && e.projects.name) || 'Untitled Map';
         var c = document.createElement('div'); c.className = 'card';
         var t;
@@ -104,26 +123,88 @@
         var h = document.createElement('span'); h.className = 'hint'; h.textContent = '★ saves it to your Portal Bookmarks'; act.appendChild(h);
         body.appendChild(act); c.appendChild(body);
         (function wireStar() { if (window.MSBookmarks) MSBookmarks.star(star, e.project_id); else setTimeout(wireStar, 150); })();
+
+        if (managing) {                 // drag-to-reorder, same gesture as the main page's cards
+          c.classList.add('mg'); c.draggable = true;
+          c.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); }, true);
+          c.addEventListener('dragstart', function () { dragIdx = idx; });
+          c.addEventListener('dragover', function (ev) { if (dragIdx == null || dragIdx === idx) return; ev.preventDefault(); c.classList.add('drop'); });
+          c.addEventListener('dragleave', function () { c.classList.remove('drop'); });
+          c.addEventListener('drop', function (ev) {
+            ev.preventDefault(); c.classList.remove('drop');
+            if (dragIdx == null || dragIdx === idx) return;
+            var moved = entries.splice(dragIdx, 1)[0];
+            entries.splice(idx, 0, moved); dragIdx = null; render();
+          });
+        }
         return c;
+      }
+      function render() {
+        var grid = document.getElementById('portal-grid');
+        grid.innerHTML = '';
+        entries.forEach(function (e, i) { grid.appendChild(card(e, i)); });
       }
       async function load() {
         if (!(window.MapAuth && MapAuth.db)) return setTimeout(load, 150);
-        var grid = document.getElementById('portal-grid'), note = document.getElementById('portal-note');
+        var note = document.getElementById('portal-note');
         try {
           var r = await MapAuth.db.from('portal_entries')
             .select('project_id, blurb, thumb, sort_order, created_at, projects!inner(name, is_public, deleted_at)')
             .eq('projects.is_public', true).is('projects.deleted_at', null)
             .order('sort_order', { ascending: true }).order('created_at', { ascending: false });
           if (r.error) throw new Error(r.error.message);
-          (r.data || []).forEach(function (e) { grid.appendChild(card(e)); });
-          note.textContent = (r.data && r.data.length)
+          entries = r.data || []; render();
+          note.textContent = entries.length
             ? 'More maps appear here as their makers contribute them.'
             : 'No maps yet — open your map → Share → Add to Portal to be the first.';
         } catch (e) {
           note.textContent = 'The portal list could not load — please try again in a moment.';
         }
+        maybeShowReorder();
       }
       load();
+
+      // ---- admin-only reorder (sort_order is service-only; portal-order fn does the write) ----
+      async function maybeShowReorder() {
+        try {
+          var u = window.MapAuth ? await MapAuth.currentUser() : null;
+          if (!(window.msIsAdminEmail && window.msIsAdminEmail(u && u.email))) return;
+          var b = document.getElementById('po-reorder');
+          b.style.display = 'inline-block';
+          if (!b.__wired) { b.__wired = true; b.addEventListener('click', enterManage); }
+        } catch (e) {}
+      }
+      function enterManage() {
+        if (managing || !entries.length) return;
+        managing = true; savedOrder = entries.slice(); render();
+        document.getElementById('po-reorder').style.display = 'none';
+        var bar = document.createElement('div'); bar.id = 'po-bar';
+        var hint = document.createElement('span'); hint.textContent = 'Drag cards into the order you want'; bar.appendChild(hint);
+        var save = document.createElement('button'); save.className = 'po-save'; save.textContent = 'Save order'; bar.appendChild(save);
+        var cancel = document.createElement('button'); cancel.className = 'po-cancel'; cancel.textContent = 'Cancel'; bar.appendChild(cancel);
+        save.addEventListener('click', saveOrder);
+        cancel.addEventListener('click', function () { entries = savedOrder; exitManage(); });
+        document.body.appendChild(bar);
+      }
+      function exitManage() {
+        managing = false; dragIdx = null; render();
+        var bar = document.getElementById('po-bar'); if (bar) bar.parentNode.removeChild(bar);
+        document.getElementById('po-reorder').style.display = 'inline-block';
+      }
+      async function saveOrder() {
+        var note = document.getElementById('portal-note');
+        try {
+          var r = await MapAuth.db.functions.invoke('portal-order', {
+            body: { order: entries.map(function (e) { return e.project_id; }) }
+          });
+          if (r.error) throw new Error(r.error.message || 'save failed');
+          if (r.data && r.data.error) throw new Error(r.data.error);
+          exitManage();
+          note.textContent = 'Order saved ✓';
+        } catch (e) {
+          window.alert('Could not save the order: ' + ((e && e.message) || e));
+        }
+      }
 
       // "Contribute a map" starts a FRESH map, exactly like the front page's Create a Map
       // (owner request 8/6) — same insert, same anonymous-signin fallback, same landing.
