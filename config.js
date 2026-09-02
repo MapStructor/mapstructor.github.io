@@ -24,7 +24,7 @@ var PROJECTS = [
   {
     title:  'Temporolocal',
     thumb:  'images/nittygrittymapping_thumbnails/globalhistorymap.png',
-    live:   'https://www.thenittygritty.org/mapstorylocal/v1.2',
+    live:   'https://www.thenittygritty.org/temporolocal/v1.2',
   },
   {
     title:  'Rewilding Map',
