@@ -48,7 +48,7 @@ var PROJECTS = [
     title:  'Electorates',
     thumb:  'images/nittygrittymapping_thumbnails/electorates.png',
     github: 'https://github.com/MapStructor/electorates',
-    live:   'https://www.thenittygritty.org/mapstory_electorates',
+    live:   'https://www.thenittygritty.org/electorates',
   },
   {
     title:  'Corona State',
