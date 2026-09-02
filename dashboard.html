@@ -157,6 +157,15 @@
       <p class="sub" id="bm-empty" style="margin:0;">Nothing starred yet — tap ☆ on any map here or in the <a href="portal.html">Map Portal</a>.</p>
     </section>
 
+    <!-- Shared with you (9/2, owner: "A user should be able to see the maps they have access to
+         or have been shared directly with"). EXPLICIT grants only, from ms_maps_shared_with_me()
+         — link-editable maps stay unlisted, the way link visibility always has. -->
+    <section id="shared-section" style="display:none;margin-bottom:18px;">
+      <h2 style="margin:0 0 2px;">Shared with you</h2>
+      <p class="sub" style="margin:0 0 8px;">Maps other people gave you edit access to.</p>
+      <div id="shared-list"></div>
+    </section>
+
     <h2 style="margin:0 0 8px;">All Your Maps</h2>
     <div id="maps-list"><p class="sub">Loading your maps…</p></div>
     <div id="trash-section" style="margin-top:16px;"></div>
@@ -430,6 +439,44 @@
         } catch (e) {}
         try { await statsP; } catch (e) {}
         render(res.data || []);
+        loadShared();
+      }
+      // Maps somebody else owns and gave this account edit access to. Its own list, above your
+      // own maps, so "shared with me" is never mistaken for "mine" — deleting/trashing isn't
+      // offered here because those are the owner's to do.
+      async function loadShared() {
+        var sec = document.getElementById('shared-section'), box = document.getElementById('shared-list');
+        if (!sec || !box) return;
+        var rows = [];
+        try {
+          var r = await db.rpc('ms_maps_shared_with_me');
+          if (!r.error) rows = r.data || [];
+        } catch (e) { return; }
+        if (!rows.length) { sec.style.display = 'none'; return; }
+        box.innerHTML = '';
+        rows.forEach(function (m) {
+          var row = document.createElement('div');
+          row.className = 'map-row';
+          row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid #e6e1f5;border-radius:9px;background:#fff;margin-bottom:7px;';
+          var nm = document.createElement('a');
+          nm.href = 'map/editor.html?id=' + encodeURIComponent(m.id);
+          nm.textContent = m.name || 'Untitled Map';
+          nm.style.cssText = 'font-weight:700;color:#1e1b2e;text-decoration:none;flex:1;';
+          row.appendChild(nm);
+          if (m.owner_email) {
+            var who = document.createElement('span');
+            who.className = 'sub'; who.style.cssText = 'font-size:12px;color:#9490a8;';
+            who.textContent = 'shared by ' + m.owner_email;
+            row.appendChild(who);
+          }
+          var view = document.createElement('a');
+          view.href = 'map/index.html?id=' + encodeURIComponent(m.id);
+          view.textContent = 'View';
+          view.style.cssText = 'font-size:12.5px;color:#7c5cbf;text-decoration:none;font-weight:600;';
+          row.appendChild(view);
+          box.appendChild(row);
+        });
+        sec.style.display = '';
       }
       // multi-select (8/13): tick maps → one "Move N to Trash" action. LOCKED maps are
       // SKIPPED, by the owner's rule (8/13): a locked map can't be trashed — unlocking

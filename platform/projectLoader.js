@@ -155,6 +155,26 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     try { if (window.MapAuth && MapAuth.onChange) MapAuth.onChange(async function () { var u = await MapAuth.currentUser(); if (u && (!ownerId || u.id === ownerId)) location.reload(); }); } catch (e) {}
   }
 
+  // ── WHO MAY EDIT THIS MAP — ONE implementation, client-side (9/2) ──────────────────────────
+  // Mirrors the database's ms_project_editor(): the owner, anyone with the link when the map says
+  // so, or a signed-in user whose email is on the list. Lives here because projectLoader is the
+  // one file BOTH map pages load; share.js delegates to it so the rule can never drift into two
+  // answers. This is presentation only — the real gate is RLS (proven 9/2: an anonymous session
+  // cannot write to someone else's map, every attempt refused). What it fixes is the editor
+  // showing full editing chrome to people whose saves the server was always going to refuse,
+  // and the viewer hiding the Edit link from collaborators who genuinely have access.
+  window.MSPerm = window.MSPerm || {
+    canEdit: function (row, user) {
+      if (!row || !user || !user.id) return false;
+      if (row.user_id && user.id === row.user_id) return true;               // owner
+      var ea = (row.raw_config && row.raw_config.editAccess) || {};
+      if (ea.anyoneWithLink) return true;
+      var em = String(user.email || "").toLowerCase().trim();
+      if (!em) return false;                                                  // anonymous: no email, no list match
+      return (ea.emails || []).some(function (e) { return String(e).toLowerCase().trim() === em; });
+    }
+  };
+
   try {
     var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
     // ── visibility gate (viewer only — the editor page has its own ownership story) ──
@@ -189,6 +209,42 @@ window.msApplyHeaderFeature = function (visible, projectName) {
           }
         }
       } catch (eGate) {}
+    } else {
+      // ── EDITOR: the ownership story that comment above used to promise (owner, 9/2: "an
+      //    anonymous user can edit a private map, and with editing-with-link turned off!!").
+      //    The server always refused those writes, but the page dressed a stranger in full
+      //    editing chrome. Resolve permission here and hand it to editing.js, which stands the
+      //    editor down into the viewer posture it already has for the edit lock.
+      try {
+        var er = await db.from("projects").select("user_id, raw_config").eq("id", platformProjectId).maybeSingle();
+        var erow = er && er.data;
+        if (!erow) {
+          try {
+            var eById = await db.rpc("ms_project_by_id", { p_id: platformProjectId });
+            if (!eById.error && eById.data && eById.data.length) erow = eById.data[0];
+          } catch (eE) {}
+        }
+        if (erow) {
+          var eu = null; try { eu = window.MapAuth ? await MapAuth.currentUser() : null; } catch (eU) {}
+          window.MS_PROJECT_ROW = erow;
+          window.MS_EDIT_ALLOWED = window.MSPerm.canEdit(erow, eu);
+          // editing.js may load either side of this; call it if it's ready, and it re-reads the
+          // flag at its own boot, so neither order can miss.
+          try { if (typeof window.msApplyEditPermission === "function") window.msApplyEditPermission(window.MS_EDIT_ALLOWED, erow); } catch (eA) {}
+          // logging in (or out) mid-session changes the answer — re-resolve, never cache a stale yes
+          try {
+            if (window.MapAuth && MapAuth.onChange) MapAuth.onChange(async function () {
+              var u2 = null; try { u2 = await MapAuth.currentUser(); } catch (e2) {}
+              var ok2 = window.MSPerm.canEdit(erow, u2);
+              if (ok2 !== window.MS_EDIT_ALLOWED) {
+                window.MS_EDIT_ALLOWED = ok2;
+                if (ok2) location.reload();   // gained access: boot the editor properly
+                else try { window.msApplyEditPermission(false, erow); } catch (e3) {}
+              }
+            });
+          } catch (eC) {}
+        }
+      } catch (eEd) {}
     }
     // The public viewer shows the PUBLISHED snapshot (project_snapshots, label='published') ONLY; the editor and
     // ?preview always load the LIVE working state. If nothing has been published yet, the viewer must NOT leak
@@ -334,15 +390,20 @@ window.msApplyHeaderFeature = function (visible, projectName) {
         var hv = document.getElementById("header-text-value"); if (hv && project.name) hv.textContent = project.name;
         var li = document.getElementById("logo-img-wide"); if (li && raw.headerLogo) li.src = raw.headerLogo;
         var ll = document.getElementById("logo-link"); if (ll && raw.headerLink != null) ll.setAttribute("href", raw.headerLink);
-        // #16/#17: the VIEWER adds an owner-only "✎ Edit" link to the site-wide top bar; the generic
-        // username chip comes from topbar.js itself. Public / logged-out visitors just see the bar.
+        // #16/#17: the VIEWER adds an "✎ Edit" link to the site-wide top bar for anyone who may
+        // actually edit this map; the generic username chip comes from topbar.js itself. Public /
+        // logged-out visitors just see the bar.
+        // 9/2 — this used to test ownership ONLY, so a collaborator who had been given edit access
+        // by email opened the map and found no way in (owner: "There is no edit button that comes
+        // up when someone logs into a map that they have access to!"). It asks MSPerm now, the
+        // same predicate the editor gate and share.js use.
         if (window.MapAuth && !document.getElementById("editor-publish-btn")) {
           var wireEdit = function () {
             var right = document.getElementById("ms-topbar-right");
             if (!right) return false;
             var refresh = async function () {
               var u = await MapAuth.currentUser();
-              var own = MapAuth.isReal(u) && project && project.user_id && u.id === project.user_id;
+              var own = MapAuth.isReal(u) && window.MSPerm.canEdit(project, u);
               var l = document.getElementById("viewer-edit-link");
               if (own && !l) {
                 l = document.createElement("a");

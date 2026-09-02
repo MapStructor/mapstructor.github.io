@@ -1403,7 +1403,14 @@
   //    Same-user other-tab is NOT blocked here because the server does not block it either
   //    (ms_edit_lock_free: holder is distinct from auth.uid()) — that case keeps its banner only.
   var _msLockBlocked = false;
-  function msViewLike() { return _msLockBlocked || (CLICK_MODES && _msMode !== 'edit'); }
+  // ── NO EDIT ACCESS (9/2) ────────────────────────────────────────────────────────────────────
+  // Separate from the lock: the lock is temporary and hands the tools back, this is "this map
+  // isn't yours to edit" and never lifts in this session. Same posture though — msViewLike() is
+  // the single guard every checkpoint already consults, so ORing it in stands the whole editor
+  // down with no new code paths. The server ALWAYS refused these writes (RLS, verified); what
+  // this stops is the page inviting a stranger to do work that can never save.
+  var _msNoAccess = false;
+  function msViewLike() { return _msNoAccess || _msLockBlocked || (CLICK_MODES && _msMode !== 'edit'); }
   function msLockEsc(s) { return String(s == null ? '' : s).replace(/[<>&]/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]; }); }
   // The pop-up shown the moment the stand-down engages (owner, 8/31: the corner pill was not a
   // "tell", it was a whisper). Says the RULE in words, names the person — with MAY, because an
@@ -1437,6 +1444,65 @@
       (window.__msLockNoteLog = window.__msLockNoteLog || []).push(el.textContent);   // timing-proof witness for the gate
     } catch (e) {}
   }
+  // Engage the read-only posture for someone who may not edit this map, and take the editing
+  // chrome off the page entirely — Publish/Settings/Share are meaningless without write rights,
+  // and leaving them there is what made this read like a security hole. "Copy" stays: making
+  // your own copy of a map you can open is a legitimate thing to offer, and it writes only to
+  // the copier's account. The View link stays so there is somewhere sensible to go.
+  function msApplyEditPermission(allowed, row) {
+    if (allowed !== false || _msNoAccess) return;
+    _msNoAccess = true;
+    try { document.body.classList.add('ms-lock-blocked'); } catch (e) {}
+    try { if (draw) draw.changeMode('simple_select', { featureIds: [] }); } catch (e) {}
+    _editingDraw = null; _armedSet = [];
+    try { setArmedHl(null); } catch (e) {}
+    try { hideFeaturePanel(); } catch (e) {}
+    try { hideLayerPanel(); } catch (e) {}
+    // A CLASS, not inline styles: the action buttons are created and MOVED into the site-wide top
+    // bar after boot, so anything set on the elements now would be undone a moment later. The rule
+    // ships WITH the class instead of waiting for ensureEditorUiCss — that runs later in boot, and
+    // the gap was long enough to show a stranger a working-looking Publish button first.
+    try { document.body.classList.add('ms-no-edit-access'); } catch (e) {}
+    try {
+      if (!document.getElementById('ms-no-edit-access-css')) {
+        var nas = document.createElement('style');
+        nas.id = 'ms-no-edit-access-css';
+        nas.textContent = 'body.ms-no-edit-access #editor-publish-btn,body.ms-no-edit-access #editor-share-btn,' +
+          'body.ms-no-edit-access #editor-settings,body.ms-no-edit-access #editor-mode-badge,' +
+          'body.ms-no-edit-access #editor-add-toggle,body.ms-no-edit-access #editor-operate-toggle,' +
+          'body.ms-no-edit-access #editor-maps-add-bar,body.ms-no-edit-access #editor-add-menu,' +
+          'body.ms-no-edit-access #editor-more-menu,body.ms-no-edit-access #editor-draw-cluster,' +
+          'body.ms-no-edit-access #editor-map-tools{display:none !important;}';
+        (document.head || document.documentElement).appendChild(nas);
+      }
+    } catch (e) {}
+    try {
+      var note = document.getElementById('ms-noaccess-note');
+      if (!note) {
+        note = document.createElement('div');
+        note.id = 'ms-noaccess-note';
+        note.style.cssText = 'position:fixed;left:50%;top:36%;transform:translate(-50%,-50%);z-index:9600;background:#fff;' +
+          'border:2px solid #5b458f;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,0.35);padding:20px 26px;max-width:460px;' +
+          'font-family:Source Sans Pro,Arial,sans-serif;color:#1e1b2e;text-align:center;';
+        document.body.appendChild(note);
+      }
+      var mine = !!(row && row.raw_config && row.raw_config.editAccess);
+      note.innerHTML = '<div style="font-size:32px;line-height:1;margin-bottom:8px;">&#128065;</div>' +
+        '<div style="font-weight:700;font-size:17px;margin-bottom:6px;">You’re viewing this map</div>' +
+        '<div style="font-size:14px;line-height:1.5;margin-bottom:14px;">This map belongs to someone else and you don’t have edit access, ' +
+        'so the editing tools are off. You can look around freely' + (mine ? ', and ask its owner to add you as an editor' : '') + '. ' +
+        'Signed in with a different account? Log in with the one that was given access.</div>' +
+        '<button id="ms-noaccess-ok" style="background:#5b458f;color:#fff;border:none;border-radius:8px;padding:7px 20px;font:600 14px Source Sans Pro,Arial,sans-serif;cursor:pointer;">Got it</button>';
+      var ok = note.querySelector('#ms-noaccess-ok');
+      if (ok) ok.addEventListener('click', function () { try { note.remove(); } catch (e2) {} });
+      (window.__msNoAccessLog = window.__msNoAccessLog || []).push(note.textContent);   // gate witness
+    } catch (e) {}
+    try { setStatus('View only — you don’t have edit access to this map'); } catch (e) {}
+  }
+  try { window.msApplyEditPermission = msApplyEditPermission; } catch (e) {}
+  // projectLoader may have resolved permission before this file ran — neither order can miss.
+  try { if (window.MS_EDIT_ALLOWED === false) msApplyEditPermission(false, window.MS_PROJECT_ROW); } catch (e) {}
+
   function msSetLockBlocked(on, opts) {
     on = !!on;
     if (on === _msLockBlocked) return;
@@ -5694,6 +5760,13 @@
       'body.ms-view-mode #editor-draw-hint,body.ms-view-mode #editor-search-hint,' +   // the draw-onboarding pair points at tools view mode hides
       'body.ms-lock-blocked #editor-draw-cluster,body.ms-lock-blocked #editor-map-tools,body.ms-lock-blocked #editor-measure-readout,' +
       'body.ms-lock-blocked #editor-draw-hint,body.ms-lock-blocked #editor-search-hint{display:none !important;}' +   // lock-blocked = the same stood-down chrome as view mode
+      // no edit access (9/2): the lock's stood-down chrome PLUS the actions that only mean
+      // something to someone who can write. Copy + View stay — both are fair to offer a visitor.
+      'body.ms-no-edit-access #editor-publish-btn,body.ms-no-edit-access #editor-share-btn,' +
+      'body.ms-no-edit-access #editor-settings,body.ms-no-edit-access #editor-mode-badge,' +
+      'body.ms-no-edit-access #editor-add-toggle,body.ms-no-edit-access #editor-operate-toggle,' +
+      'body.ms-no-edit-access #editor-maps-add-bar,body.ms-no-edit-access #editor-add-menu,' +
+      'body.ms-no-edit-access #editor-more-menu{display:none !important;}' +
       '.layer-list-row{position:relative;}' +
       '.editor-del{position:absolute;right:44px;top:50%;transform:translateY(-50%);opacity:0;cursor:pointer;color:#888888;font-size:15px;font-weight:bold;line-height:1;padding:0 3px;z-index:2;}' +
       '.layer-list-row:hover .editor-del{opacity:1;}' +
