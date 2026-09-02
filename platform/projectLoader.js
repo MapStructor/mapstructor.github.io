@@ -165,10 +165,12 @@ window.msApplyHeaderFeature = function (visible, projectName) {
   // and the viewer hiding the Edit link from collaborators who genuinely have access.
   window.MSPerm = window.MSPerm || {
     canEdit: function (row, user) {
-      if (!row || !user || !user.id) return false;
-      if (row.user_id && user.id === row.user_id) return true;               // owner
+      if (!row) return false;
       var ea = (row.raw_config && row.raw_config.editAccess) || {};
-      if (ea.anyoneWithLink) return true;
+      if (ea.anyoneWithLink) return true;      // before the user check: holding the link IS the grant
+                                               // (the session gets minted on first write, as always)
+      if (!user || !user.id) return false;
+      if (row.user_id && user.id === row.user_id) return true;               // owner
       var em = String(user.email || "").toLowerCase().trim();
       if (!em) return false;                                                  // anonymous: no email, no list match
       return (ea.emails || []).some(function (e) { return String(e).toLowerCase().trim() === em; });
@@ -227,7 +229,17 @@ window.msApplyHeaderFeature = function (visible, projectName) {
         if (erow) {
           var eu = null; try { eu = window.MapAuth ? await MapAuth.currentUser() : null; } catch (eU) {}
           window.MS_PROJECT_ROW = erow;
-          window.MS_EDIT_ALLOWED = window.MSPerm.canEdit(erow, eu);
+          // With a session (real OR anonymous), the DATABASE's predicate is the answer — it is the
+          // thing that will accept or refuse the writes. MSPerm covers the session-less case
+          // (anyone-with-link visitors get the editor; their session is minted on first write).
+          var eAllowed;
+          try {
+            if (eu) {
+              var ePe = await db.rpc("ms_project_editor", { pid: platformProjectId });
+              eAllowed = ePe.error ? window.MSPerm.canEdit(erow, eu) : (ePe.data === true);
+            } else eAllowed = window.MSPerm.canEdit(erow, eu);
+          } catch (ePe2) { eAllowed = window.MSPerm.canEdit(erow, eu); }
+          window.MS_EDIT_ALLOWED = eAllowed;
           // editing.js may load either side of this; call it if it's ready, and it re-reads the
           // flag at its own boot, so neither order can miss.
           try { if (typeof window.msApplyEditPermission === "function") window.msApplyEditPermission(window.MS_EDIT_ALLOWED, erow); } catch (eA) {}
@@ -235,7 +247,13 @@ window.msApplyHeaderFeature = function (visible, projectName) {
           try {
             if (window.MapAuth && MapAuth.onChange) MapAuth.onChange(async function () {
               var u2 = null; try { u2 = await MapAuth.currentUser(); } catch (e2) {}
-              var ok2 = window.MSPerm.canEdit(erow, u2);
+              var ok2;
+              try {
+                if (u2) {
+                  var pe2 = await db.rpc("ms_project_editor", { pid: platformProjectId });
+                  ok2 = pe2.error ? window.MSPerm.canEdit(erow, u2) : (pe2.data === true);
+                } else ok2 = window.MSPerm.canEdit(erow, u2);
+              } catch (e4) { ok2 = window.MSPerm.canEdit(erow, u2); }
               if (ok2 !== window.MS_EDIT_ALLOWED) {
                 window.MS_EDIT_ALLOWED = ok2;
                 if (ok2) location.reload();   // gained access: boot the editor properly
@@ -403,7 +421,20 @@ window.msApplyHeaderFeature = function (visible, projectName) {
             if (!right) return false;
             var refresh = async function () {
               var u = await MapAuth.currentUser();
-              var own = MapAuth.isReal(u) && window.MSPerm.canEdit(project, u);
+              // 9/2 round 2 — MSPerm against the local `project` FAILED here for published maps:
+              // the viewer's project comes from the PUBLISHED SNAPSHOT, and publish strips
+              // editAccess from it on purpose (collaborator emails must not ride in the public
+              // bundle). So the check starved and the collaborator STILL saw no button. Ask the
+              // DATABASE's own predicate instead — ms_project_editor is the rule, granted to
+              // signed-in callers; MSPerm remains only as the fallback if the RPC can't answer.
+              var own = false;
+              if (MapAuth.isReal(u)) {
+                try {
+                  var pe = await db.rpc("ms_project_editor", { pid: platformProjectId });
+                  if (!pe.error) own = pe.data === true;
+                  else own = window.MSPerm.canEdit(project, u);
+                } catch (ePe) { own = window.MSPerm.canEdit(project, u); }
+              }
               var l = document.getElementById("viewer-edit-link");
               if (own && !l) {
                 l = document.createElement("a");
