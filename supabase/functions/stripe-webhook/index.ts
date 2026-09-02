@@ -152,6 +152,33 @@ Deno.serve(async (req) => {
         await setTier("free", { userId: await userIdForCustomer(cid), customerId: cid });
         break;
       }
+      case "charge.refunded": {
+        // 2026-09-01 — the owner's rule: A REFUND IS A CANCELLATION. They refunded a plan's $1
+        // charge from the Stripe Dashboard and the plan lived on — Stripe returns the money but
+        // never touches the subscription, and nothing here listened for refunds. Now: a FULLY
+        // refunded charge that paid a subscription invoice cancels that subscription immediately;
+        // the customer.subscription.deleted event that follows walks the one existing downgrade
+        // path (no second tier-writer). Partial refunds change nothing — `refunded` is only true
+        // once every cent went back. A charge with no invoice is a one-time payment (donations),
+        // which granted nothing and so has nothing to revoke.
+        const ch = event.data.object as Stripe.Charge;
+        if (!ch.refunded) break;
+        const invId = typeof ch.invoice === "string" ? ch.invoice : ch.invoice?.id ?? "";
+        if (!invId) break;
+        const inv = await stripe.invoices.retrieve(invId);
+        const subId = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? "";
+        if (!subId) break;
+        let sub: Stripe.Subscription;
+        try { sub = await stripe.subscriptions.retrieve(subId); }
+        catch { break; }                       // subscription already deleted — nothing to cancel
+        if (sub.status === "canceled") break;  // already canceled — the deleted event owns the tier
+        // Monthly donations cancel too (a refunded donor must not be charged again) — their
+        // deleted event early-exits above, so tiers stay untouched either way.
+        await stripe.subscriptions.cancel(subId);
+        console.log(`charge ${ch.id} fully refunded -> subscription ${subId} canceled` +
+          (sub.metadata?.donation === "1" ? " (donation)" : ""));
+        break;
+      }
     }
   } catch (e) {
     return new Response("handler error: " + String((e as Error)?.message ?? e), { status: 500 });
