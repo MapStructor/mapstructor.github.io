@@ -113,7 +113,7 @@
       if (!Object.keys(_dirty).length) peChip("Saved ✓", "#2d7a2d");
     } catch (e) {
       peChip("Not saved — retrying…", "#b4453a");
-      clearTimeout(_retryTimer); _retryTimer = setTimeout(flushDirty, 4000);
+      clearTimeout(_retryTimer); _retryTimer = setTimeout(flushDirty, 4000);   // cliff-ok: retry cadence behind a visible "Not saved — retrying…" chip — the failure is announced
     }
   }
   function wireAutosave() {

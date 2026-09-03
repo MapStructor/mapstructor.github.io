@@ -50,7 +50,7 @@
     }
     function note(t, warn) { var n = host.querySelector(".msdn-note"); if (n) { n.textContent = t; n.style.color = warn ? "#b4453a" : "#6b6580"; } }
     function go(cents, recurring, btn) {
-      if (!Number.isInteger(cents) || cents < 100 || cents > 999900) { note("Enter an amount from $1 to $9,999", true); return; }
+      if (!Number.isInteger(cents) || cents < 100 || cents > 999900) { note("Enter an amount from $1 to $9,999", true); return; }   // cliff-ok: the note() IS the announcement, in the user's own terms
       var old = btn.textContent; btn.disabled = true; btn.textContent = "Opening…";
       fetch(FN, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ amount_cents: cents, recurring: recurring,

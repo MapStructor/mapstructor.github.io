@@ -708,9 +708,9 @@
   var _msEditZ = 4550;
   function msRaisePanel(el) {
     if (!el) return;
-    if (_msEditZ >= 4980) {   // band full after ~430 raises — re-pack instead of leaking upward
+    if (_msEditZ >= 4980) {   // cliff-ok: band full after ~430 raises — re-packs and continues, nothing is dropped or hidden
       _msEditZ = 4550;
-      MS_EDIT_PANELS.forEach(function (id) { var e = document.getElementById(id); if (e && +e.style.zIndex > 4550) e.style.zIndex = '4550'; });
+      MS_EDIT_PANELS.forEach(function (id) { var e = document.getElementById(id); if (e && +e.style.zIndex > 4550) e.style.zIndex = '4550'; });   // cliff-ok: the re-pack itself
     }
     el.style.zIndex = String(++_msEditZ);
   }
@@ -1440,7 +1440,7 @@
       var ok = el.querySelector('#ms-lock-note-ok');
       if (ok) ok.addEventListener('click', function () { try { el.remove(); } catch (e2) {} });
       clearTimeout(el._msHide);
-      el._msHide = setTimeout(function () { try { el.remove(); } catch (e3) {} }, 20000);
+      el._msHide = setTimeout(function () { try { el.remove(); } catch (e3) {} }, 20000);   // cliff-ok: a notice's on-screen lifetime, not a wait for work — nothing depends on it
       (window.__msLockNoteLog = window.__msLockNoteLog || []).push(el.textContent);   // timing-proof witness for the gate
     } catch (e) {}
   }
@@ -13841,7 +13841,7 @@
       };
       // a window coming back to the FRONT re-checks immediately — resuming its hold seamlessly
       // or learning it was taken and standing down, with no blind window either way
-      if (!self._visWired) {
+      if (!self._visWired) {   // boot-ok: idempotence guard on a document-level listener for THE singleton lock object — no late-created instances exist to miss
         self._visWired = true;
         try { document.addEventListener('visibilitychange', function () { if (!document.hidden) { self._idleParked = false; try { tick(); } catch (eV) {} } }); } catch (eVW) {}
       }
@@ -13851,7 +13851,7 @@
       // wait ~7 minutes for the auto-free. A cursor transit is not a hand on the map.
       // Capture phase so nothing that stops propagation can starve it; passive so it can never
       // slow a gesture down.
-      if (!self._actWired) {
+      if (!self._actWired) {   // boot-ok: same idempotence guard, same singleton — see _visWired above
         self._actWired = true;
         self._lastAct = Date.now();
         var act = function () {

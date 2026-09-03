@@ -46,8 +46,12 @@ const PRICE_TO_TIER: Record<string, string> = {
   "price_1U9vtDLx8hmpYH5qJs2aJVWO": "2tb",
 };
 
-// active first, then the states that still mean "they have a plan", then anything else. A user with
-// an old canceled subscription and a current one must not be shown the canceled one.
+// active first, then the states that still mean "they have a plan". A status NOT in this table
+// (canceled, incomplete, incomplete_expired) means they do NOT have a plan — those subs are
+// filtered out entirely, not merely ranked last. 9/2: a refunded-and-canceled $1 sub was the only
+// sub on an account whose profile had correctly dropped to free, and the card read
+// "20 GB — not active / $0/month / 20 GB included" off the corpse. History belongs to the
+// receipts list; the plan card answers only "what am I on NOW" (the profile tier when no live sub).
 const RANK: Record<string, number> = { active: 0, trialing: 1, past_due: 2, unpaid: 3, paused: 4 };
 
 Deno.serve(async (req) => {
@@ -85,8 +89,8 @@ Deno.serve(async (req) => {
     }
 
     const subs = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 10 });
-    const best = subs.data.slice().sort((a, b) =>
-      (RANK[a.status] ?? 9) - (RANK[b.status] ?? 9) || (b.created - a.created))[0];
+    const best = subs.data.filter((s) => RANK[s.status] != null).sort((a, b) =>
+      RANK[a.status] - RANK[b.status] || (b.created - a.created))[0];
 
     let subscription: Record<string, unknown> | null = null;
     if (best) {
