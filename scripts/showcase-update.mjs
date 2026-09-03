@@ -68,7 +68,12 @@ function signed(method, key, query, body, extraHeaders) {
 }
 async function s3(method, key, { query, body, headers } = {}) {
   const { url, headers: h } = signed(method, key, query, body, headers);
-  const r = await fetch(url, { method, headers: h, body: body || undefined, signal: AbortSignal.timeout(60000) });
+  /* The timeout has to scale with the payload. A flat 60 s is fine for a 40 KB page and
+     impossible for a tile archive: railways ships a 146 MB .pmtiles, which needs ~19 Mbps
+     sustained just to beat the old ceiling — on any ordinary uplink the upload was killed
+     mid-flight and reported as a failed publish. Budget ~100 KB/s, floor 60 s. */
+  const ms = body && body.length ? Math.max(60000, Math.ceil(body.length / (100 * 1024)) * 1000) : 60000;
+  const r = await fetch(url, { method, headers: h, body: body || undefined, signal: AbortSignal.timeout(ms) });
   if (!r.ok && r.status !== 404) throw new Error(`${method} ${key}: HTTP ${r.status} ${(await r.text()).slice(0, 160)}`);
   return r;
 }
