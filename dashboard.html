@@ -77,6 +77,8 @@
   <script src="platform/bookmarks.js?v=b8757559"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
   <script src="platform/pricing.js?v=2609c548"></script>
   <script src="platform/sanitize.js?v=5854cd2d"></script>
+  <script src="platform/dialog.js?v=a697b9cc"></script>   <!-- MSDialog.ask/say/prompt — the product's own dialog, never the browser's -->
+
   <script src="platform/datasets.js?v=fc4d2d21"></script>   <!-- datasets & provenance: layers as the atoms -->
   <!-- guards.js = absence is an error at the boundary + hard limits announce themselves.
        Every call site checks window.MSGuard, so this degrades cleanly to silence if removed. -->
@@ -488,6 +490,15 @@
         bar.style.display = 'flex';
         bar.querySelector('#maps-bulk-n').textContent = ticked.length + ' selected';
       }
+      /* Run `fn` over `items` a few at a time. 60 maps done one-after-another is 60 round trips
+         (~30 s) during which the page looks untouched — the 9/2 "it did nothing" report. Six at
+         a time finishes in seconds; the cap keeps it polite to the database. */
+      async function runPool(items, limit, fn) {
+        var next = 0;
+        async function worker() { while (next < items.length) { var i = next++; await fn(items[i], i); } }
+        var lanes = []; for (var k = 0; k < Math.min(limit, items.length); k++) lanes.push(worker());
+        await Promise.all(lanes);
+      }
       async function bulkTrashMaps() {
         var all = Array.prototype.slice.call(listEl.querySelectorAll('.ms-selmap:checked'));
         if (!all.length) return;
@@ -495,21 +506,54 @@
                              .map(function (cb) { return cb.getAttribute('data-name') || 'Untitled Map'; });
         var ticked = all.filter(function (cb) { return cb.getAttribute('data-locked') !== '1'; });
         if (!ticked.length) {
-          alert('🔒 ' + lockedNames.join(', ') + (lockedNames.length === 1 ? ' is' : ' are') + ' locked. Open the map and unlock it in Settings before deleting.');
+          await MSDialog.say({
+            title: lockedNames.length === 1 ? 'That map is locked' : 'Those maps are locked',
+            body: 'Locking is undone inside the map itself — open it, go to Settings, and unlock it there. Then it can be moved to Trash.',
+            items: lockedNames.map(function (n) { return '🔒 ' + n; })
+          });
           return;
         }
         var names = ticked.map(function (cb) { return cb.getAttribute('data-name') || 'Untitled Map'; });
-        var msg = 'Move ' + ticked.length + ' map' + (ticked.length === 1 ? '' : 's') + ' to Trash?\n\n• ' + names.join('\n• ')
-          + (lockedNames.length ? '\n\n🔒 Skipped (locked — unlock inside the map first): ' + lockedNames.join(', ') : '')
-          + '\n\nYou can restore them — or delete permanently from Trash.';
-        if (!confirm(msg)) return;
-        for (var i = 0; i < ticked.length; i++) {
-          var id = ticked[i].getAttribute('data-id');
-          var r = await trashProject(id);
-          if (r.error) { alert('Could not move "' + (ticked[i].getAttribute('data-name') || id) + '" to Trash: ' + r.error.message); continue; }
-          removeR2Snapshot(id);
+        var ok = await MSDialog.ask({
+          title: 'Move ' + ticked.length + ' map' + (ticked.length === 1 ? '' : 's') + ' to Trash?',
+          body: 'Nothing is deleted — everything here can be restored from Trash, or deleted permanently later.',
+          items: names,
+          note: lockedNames.length ? '🔒 Skipping ' + lockedNames.length + ' locked map' + (lockedNames.length === 1 ? '' : 's') +
+            ' — unlock inside the map first: ' + lockedNames.join(', ') : '',
+          confirmLabel: 'Move to Trash', danger: true
+        });
+        if (!ok) return;
+        /* The rows leave NOW. Trash is reversible, so there is nothing to be careful about, and
+           the alternative — a list sitting there unchanged while dozens of round trips run — is
+           indistinguishable from a broken button (owner, 9/2: "it did nothing and I had to
+           refresh"). A row that fails to move comes back, and says why. */
+        var jobs = ticked.map(function (cb) {
+          var row = cb.closest ? cb.closest('.map-row') : null;
+          if (row) row.style.display = 'none';
+          cb.checked = false;
+          return { id: cb.getAttribute('data-id'), name: cb.getAttribute('data-name') || 'Untitled Map', row: row };
+        });
+        var btn = document.getElementById('maps-bulk-trash'), nEl = document.getElementById('maps-bulk-n');
+        if (btn) btn.disabled = true;
+        var done = 0, errs = [];
+        if (nEl) nEl.textContent = 'Moving to Trash… 0 of ' + jobs.length;
+        await runPool(jobs, 6, async function (j) {
+          var r = await trashProject(j.id);
+          if (r && r.error) { errs.push(j.name + ' — ' + r.error.message); if (j.row) j.row.style.display = ''; }
+          else removeR2Snapshot(j.id);
+          done++;
+          if (nEl) nEl.textContent = 'Moving to Trash… ' + done + ' of ' + jobs.length;
+        });
+        if (btn) btn.disabled = false;
+        await loadMaps();        // re-read, so what is on screen is what the database holds
+        loadTrash();
+        if (errs.length) {
+          MSDialog.say({
+            title: errs.length + ' map' + (errs.length === 1 ? '' : 's') + ' stayed put',
+            body: 'Everything else moved to Trash. These did not:',
+            items: errs, danger: true
+          });
         }
-        loadMaps(); loadTrash();
       }
       function render(maps) {
         if (!maps.length) { listEl.innerHTML = '<p class="sub">No maps yet — create your first one below.</p>'; return; }
@@ -553,19 +597,32 @@
             if (window.MapShare) MapShare.open({ db: db, projectId: m.id, viewUrl: new URL('map/index.html?id=' + m.id, location.href).href, onChange: loadMaps });
           };
           row.querySelector('[data-act=rename]').onclick = async function () {
-            if (locked) { alert('"' + (m.name || 'Untitled Map') + '" is locked — unlock it in the map’s Settings to rename.'); return; }
-            var name = prompt('Rename map:', m.name || 'Untitled Map'); if (name == null) return;
-            var r = await db.from('projects').update({ name: name }).eq('id', m.id);
-            if (!r.error) loadMaps();
+            if (locked) { MSDialog.say({ title: 'That map is locked', body: '“' + (m.name || 'Untitled Map') + '” can be renamed once you unlock it in the map’s Settings.' }); return; }
+            var name = await MSDialog.prompt({ title: 'Rename map', label: 'What should this map be called?', value: m.name || 'Untitled Map' });
+            if (name == null || !name.trim()) return;
+            var r = await db.from('projects').update({ name: name.trim() }).eq('id', m.id);
+            if (r.error) { MSDialog.say({ title: 'Could not rename', body: r.error.message, danger: true }); return; }
+            loadMaps();
           };
           row.querySelector('[data-act=delete]').onclick = async function () {
             // a LOCKED map cannot be deleted from here — deletion must happen deliberately inside
             // the map itself (unlock in its Settings first). (user 7/22, re-affirmed 8/13; the
             // RPC refuses server-side too)
-            if (locked) { alert('"' + (m.name || 'Untitled Map') + '" is locked. Open the map and unlock it in Settings before deleting.'); return; }
-            if (!confirm('Move "' + (m.name || 'Untitled Map') + '" to Trash? You can restore it — or delete it permanently from Trash.')) return;
+            if (locked) { MSDialog.say({ title: 'That map is locked', body: '“' + (m.name || 'Untitled Map') + '” can be deleted once you open it and unlock it in Settings.' }); return; }
+            var ok = await MSDialog.ask({
+              title: 'Move “' + (m.name || 'Untitled Map') + '” to Trash?',
+              body: 'Nothing is deleted — you can restore it from Trash, or delete it permanently there.',
+              confirmLabel: 'Move to Trash', danger: true
+            });
+            if (!ok) return;
+            var row2 = this.closest ? this.closest('.map-row') : null;
+            if (row2) row2.style.display = 'none';                                  // gone on the click, not after the round trip
             var r = await trashProject(m.id);   // soft-delete (9i) — recoverable from Trash; RPC so locked maps work too
-            if (r.error) { alert('Could not move to Trash: ' + r.error.message); return; }
+            if (r.error) {
+              if (row2) row2.style.display = '';
+              MSDialog.say({ title: 'Could not move to Trash', body: r.error.message, danger: true });
+              return;
+            }
             removeR2Snapshot(m.id);
             loadMaps(); loadTrash();
           };
@@ -704,7 +761,7 @@
         }
         async function afterPurge(out) {
           if (out && out.queued) { /* instant — row disappears, drain runs behind the scenes */ }
-          else if (out && out.bytes > 0) alert(Math.round(out.bytes / 1048576) + ' MB released back to your storage.');
+          else if (out && out.bytes > 0) MSDialog.say({ title: 'Space released', body: Math.round(out.bytes / 1048576) + ' MB is back in your storage allowance.' });
           loadTrash(); loadMaps();
         }
         rows.forEach(function (m) {
@@ -712,14 +769,19 @@
           var row = trashRow('project', m, 'Untitled Map', stat);
           row.querySelector('[data-act=restore]').onclick = async function () {
             var r = await restoreProject(m.id);
-            if (r.error) { alert('Could not restore: ' + r.error.message); return; }
+            if (r.error) { MSDialog.say({ title: 'Could not restore', body: r.error.message, danger: true }); return; }
             loadMaps(); loadTrash();
           };
           row.querySelector('[data-act=purge]').onclick = async function () {
-            if (!confirm('Permanently delete "' + (m.name || 'Untitled Map') + '"? This CANNOT be undone.')) return;
+            var ok = await MSDialog.ask({
+              title: 'Permanently delete “' + (m.name || 'Untitled Map') + '”?',
+              body: 'This cannot be undone. The map and its data are gone for good, and the space returns to your allowance.',
+              confirmLabel: 'Delete forever', danger: true
+            });
+            if (!ok) return;
             var btn = row.querySelector('[data-act=purge]'); btn.disabled = true;
             try { await afterPurge(await purgeOne('project', m.id, btn)); }
-            catch (e) { alert('Could not delete: ' + e.message); btn.disabled = false; btn.textContent = 'Delete forever'; }
+            catch (e) { MSDialog.say({ title: 'Could not delete', body: e.message, danger: true }); btn.disabled = false; btn.textContent = 'Delete forever'; }
           };
           el.appendChild(row);
         });
@@ -731,14 +793,19 @@
           row.querySelector('[data-act=restore]').onclick = async function () {
             // back into the map it was deleted from — or a fresh "Restored: …" map if that map is gone
             var r = await db.rpc('ms_restore_layer', { p_layer: L.id });
-            if (r.error) { alert('Could not restore: ' + r.error.message); return; }
+            if (r.error) { MSDialog.say({ title: 'Could not restore', body: r.error.message, danger: true }); return; }
             loadMaps(); loadTrash();
           };
           row.querySelector('[data-act=purge]').onclick = async function () {
-            if (!confirm('Permanently delete the layer "' + (L.name || 'Untitled layer') + '" and its data? This CANNOT be undone.')) return;
+            var ok = await MSDialog.ask({
+              title: 'Permanently delete the layer “' + (L.name || 'Untitled layer') + '”?',
+              body: 'This cannot be undone. The layer and its data are gone for good, and the space returns to your allowance.',
+              confirmLabel: 'Delete forever', danger: true
+            });
+            if (!ok) return;
             var btn = row.querySelector('[data-act=purge]'); btn.disabled = true;
             try { await afterPurge(await purgeOne('layer', L.id, btn)); }
-            catch (e) { alert('Could not delete: ' + e.message); btn.disabled = false; btn.textContent = 'Delete forever'; }
+            catch (e) { MSDialog.say({ title: 'Could not delete', body: e.message, danger: true }); btn.disabled = false; btn.textContent = 'Delete forever'; }
           };
           el.appendChild(row);
         });
@@ -752,20 +819,27 @@
         var bulkRestore = document.getElementById('trash-bulk-restore');
         if (bulkRestore) bulkRestore.onclick = async function () {
           var sel = tickedRows(); if (!sel.length) return;
+          var restoreErrs = [];
           for (var i = 0; i < sel.length; i++) {
             var kind = sel[i].getAttribute('data-kind'), id = sel[i].getAttribute('data-id');
             var r = kind === 'project'
               ? await restoreProject(id)
               : await db.rpc('ms_restore_layer', { p_layer: id });
-            if (r.error) alert('Could not restore "' + sel[i].getAttribute('data-name') + '": ' + r.error.message);
+            if (r.error) restoreErrs.push(sel[i].getAttribute('data-name') + ' — ' + r.error.message);
           }
           loadMaps(); loadTrash();
+          if (restoreErrs.length) MSDialog.say({ title: 'Some items could not be restored', items: restoreErrs, danger: true });
         };
         var bulkPurge = document.getElementById('trash-bulk-purge');
         if (bulkPurge) bulkPurge.onclick = async function () {
           var sel = tickedRows(); if (!sel.length) return;
           var names = sel.map(function (cb) { return cb.getAttribute('data-name'); });
-          if (!confirm('Permanently delete ' + sel.length + ' item' + (sel.length === 1 ? '' : 's') + '? This CANNOT be undone.\n\n• ' + names.join('\n• '))) return;
+          var okPurge = await MSDialog.ask({
+            title: 'Permanently delete ' + sel.length + ' item' + (sel.length === 1 ? '' : 's') + '?',
+            body: 'This cannot be undone. These are gone for good, and their space returns to your allowance.',
+            items: names, confirmLabel: 'Delete forever', danger: true
+          });
+          if (!okPurge) return;
           // smallest first (user 8/12) — matters most on the interactive fallback path, where
           // clearing the small ones fast is visible progress
           sel.sort(function (a, b) { return Number(a.getAttribute('data-bytes')) - Number(b.getAttribute('data-bytes')); });
@@ -778,9 +852,9 @@
               if (out && !out.queued) freed += out.bytes || 0;
             } catch (e) { errs.push(sel[i].getAttribute('data-name') + ': ' + e.message); }
           }
-          if (freed > 0) alert(Math.round(freed / 1048576) + ' MB released back to your storage.');
-          if (errs.length) alert('Some items could not be deleted:\n' + errs.join('\n'));
           loadTrash(); loadMaps();
+          if (errs.length) MSDialog.say({ title: 'Some items could not be deleted', body: freed > 0 ? Math.round(freed / 1048576) + ' MB was released by the ones that worked.' : '', items: errs, danger: true });
+          else if (freed > 0) MSDialog.say({ title: 'Space released', body: Math.round(freed / 1048576) + ' MB is back in your storage allowance.' });
         };
         syncTrashBar();
       }
@@ -1138,7 +1212,15 @@
           b.onmousedown = function (e) { e.preventDefault(); };   // keep the selection in the editor
           b.onclick = function () {
             ed.focus();
-            if (spec[1] === '__link') { var url = window.prompt('Link URL:'); if (url) document.execCommand('createLink', false, url); return; }
+            if (spec[1] === '__link') {
+              var savedSel = window.getSelection().rangeCount ? window.getSelection().getRangeAt(0).cloneRange() : null;   // the dialog steals focus — put the caret back before linking
+              MSDialog.prompt({ title: 'Add a link', label: 'Where should this text link to?', value: 'https://' }).then(function (url) {
+                if (!url) return;
+                if (savedSel) { var s = window.getSelection(); s.removeAllRanges(); s.addRange(savedSel); }
+                document.execCommand('createLink', false, url);
+              });
+              return;
+            }
             document.execCommand(spec[1], false, null);
           };
           bar.appendChild(b);
@@ -1205,7 +1287,12 @@
       // ---- Delete account ----
       var delBtn = document.getElementById('btn-delete-account'), delMsg = document.getElementById('del-msg');
       if (delBtn) delBtn.addEventListener('click', async function () {
-        if (!confirm('Delete your account and all your maps? This cannot be undone.')) return;
+        var okDel = await MSDialog.ask({
+          title: 'Delete your account and every map in it?',
+          body: 'This cannot be undone. Every map you own is deleted and you are signed out.',
+          confirmLabel: 'Delete everything', danger: true
+        });
+        if (!okDel) return;
         delBtn.disabled = true; delMsg.textContent = 'Deleting your maps…'; delMsg.className = 'msg';
         // Remove the user's data (RLS scopes this to them). Removing the login record itself
         // needs a server step (Supabase admin / Edge Function) — flagged in the dev plan.
