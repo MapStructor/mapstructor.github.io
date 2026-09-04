@@ -758,14 +758,31 @@ export default {
           }
         } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
       } else if (tm) {
+        /* AN INVITED EDITOR MAY PUBLISH — 9/3, the SAME fix the showcase branch above got on 8/27,
+           which was never carried across to snapshots/ and tiles/. What that cost, measured on the
+           Slater map: the invited editor pressed Publish, the Postgres row was written (RLS lets an
+           editor do that), and BOTH R2 calls — the pre-delete and the PUT — came back 403 "not your
+           project". The editor's own console warned; the screen said "Published ✓". Viewers read the
+           R2 copy first, so the public map served the PREVIOUS publish for a week, missing a feature
+           the owner had added, and the only way to see it was to open the editor and sign in.
+           One definition of "who may edit this map", asked of the database, exactly like /article
+           and the showcase branch — three routes, one rule, no drift. Owner-compare stays as the
+           fast path so the common case costs no extra round trip. */
         try {
           var pr = await fetch(env.SUPABASE_URL + "/rest/v1/projects?id=eq." + tm[1] + "&select=user_id", {
             headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY }
           });
           var rows = pr.ok ? await pr.json() : [];
-          if (!rows.length || rows[0].user_id !== user.id) {
-            return new Response("not your project", { status: 403, headers: cors() });
+          var mayWrite = rows.length > 0 && rows[0].user_id === user.id;
+          if (!mayWrite) {
+            var er2 = await fetch(env.SUPABASE_URL + "/rest/v1/rpc/ms_project_editor", {
+              method: "POST",
+              headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+              body: JSON.stringify({ pid: tm[1] })
+            });
+            mayWrite = er2.ok && (await er2.json()) === true;
           }
+          if (!mayWrite) return new Response("not a map you can edit", { status: 403, headers: cors() });
         } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
       } else if ((user.email || "").toLowerCase() !== ADMIN_EMAIL) {
         // site/, archives/, anything else = the public web surfaces — admin only

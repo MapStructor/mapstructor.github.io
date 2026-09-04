@@ -4864,6 +4864,12 @@
          fails → R2 keeps the PREVIOUS publish, viewers read R2 first, and both warns claim a
          fallback that is not happening. Same repair: a failed mirror write DELETES the key so
          "viewers fall back to Postgres" is made true rather than hoped. */
+      /* 9/3 — this warned the CONSOLE and nothing else. On the Slater map the mirror write 403'd
+         for an invited editor (worker fix, same day), the cleanup 403'd too, and the screen still
+         said "Published ✓" while visitors kept getting the previous publish for a week. Nobody
+         reads a console. When the stale copy cannot be cleared, the person who just pressed
+         Publish is told, in their own terms, that visitors are still on the old version. */
+      var msSnapStale = null;
       async function msSnapAbandon(u2, tok2, why) {
         try {
           var rk = await fetch(u2, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok2 } });
@@ -4871,6 +4877,7 @@
           why += ', cleanup HTTP ' + rk.status;
         } catch (eK) { why += ', cleanup ' + String((eK && eK.message) || eK); }
         console.warn('snapshot R2 mirror failed (' + why + ') AND could not be cleared — viewers may see the PREVIOUS publish until the next successful one');
+        msSnapStale = why;
       }
       var snapTok = null;
       try { snapTok = (await db.auth.getSession()).data.session.access_token; } catch (eTok) {}
@@ -4894,7 +4901,11 @@
           if (!sr.ok) await msSnapAbandon(snapUrl, snapTok, 'HTTP ' + sr.status);
         }
       } catch (eSnap) { await msSnapAbandon(snapUrl, snapTok, String((eSnap && eSnap.message) || eSnap)); }
-      setStatus('Published ✓');
+      if (msSnapStale) {
+        setStatus('⚠ Published, but visitors still see the PREVIOUS version — the public copy could not be updated (' + msSnapStale + ').');
+        showToast('⚠ Your changes are saved and published, but the fast copy visitors read could not be replaced (' + msSnapStale +
+          '). People opening the map will keep seeing the previous version until this succeeds. Try Publish again; if it keeps happening, this needs looking at.', 15000);
+      } else setStatus('Published ✓');
       msClearUnpublished();   // live and public are in sync again
       if (hb) { hb.textContent = 'Published ✓'; setTimeout(function () { hb.textContent = 'Publish'; hb.disabled = false; }, 2500); }
 
@@ -8117,15 +8128,25 @@
          Now: ask msFreshToken, which actually tries to refresh before giving up and says which step
          failed; and retry ONCE on a 401, because a token that went stale between the check and the
          request is a thing that happens and is not the person's fault. */
+      /* …AND THEN IT SAID IT ANYWAY, FOR A YEAR — fixed 9/3, owner: "create article button is not
+         working :(". The merge above was inside out: `Object.assign({headers: …}, opts)` builds the
+         right headers and then lets `opts` REPLACE the whole `headers` key. Create article passes
+         `headers: {'Content-Type': 'application/json'}`, so the Authorization header was dropped on
+         the floor and the worker answered, correctly, "sign in first" — the exact wrong-cause
+         message the comment above was written to abolish, now produced by the fix for it.
+         Only POSTs were affected: "Link…" passes no headers, so its Authorization survived, which
+         is why one button worked and its neighbour did not. Build the init FIRST, then set the
+         headers, so nothing downstream can overwrite them. */
+      function msArtInit(t) {
+        var init = Object.assign({}, opts || {});
+        init.headers = Object.assign({}, (opts && opts.headers) || {}, { Authorization: 'Bearer ' + t });
+        return init;
+      }
       var tok = await msFreshToken();
-      var r = await fetch(FOLD_WORKER_BASE + path, Object.assign({
-        headers: Object.assign({ Authorization: 'Bearer ' + tok }, (opts && opts.headers) || {})
-      }, opts || {}));
+      var r = await fetch(FOLD_WORKER_BASE + path, msArtInit(tok));
       if (r.status === 401) {
         tok = await msFreshToken(true);
-        r = await fetch(FOLD_WORKER_BASE + path, Object.assign({
-          headers: Object.assign({ Authorization: 'Bearer ' + tok }, (opts && opts.headers) || {})
-        }, opts || {}));
+        r = await fetch(FOLD_WORKER_BASE + path, msArtInit(tok));
       }
       var out = await r.json().catch(function () { return {}; });
       if (!r.ok) throw new Error(out.error || ('the server answered HTTP ' + r.status));
