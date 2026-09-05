@@ -22,6 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { makeSigner } from "./r2-sign.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const r2md = fs.readFileSync(path.join(ROOT, "secrets/cloudflare-r2-credentials.md"), "utf8");
@@ -44,28 +45,10 @@ const STATUS = process.argv.includes("--status");
 if (!SLUG) { console.error("usage: --dir <folder> --slug <slug> | --revert --slug <slug> | --status --slug <slug>"); process.exit(1); }
 const PREFIX = `maps/${SLUG}/`;
 
-/* ── SigV4, any method (lifted from r2-sweep.mjs, which is GET-only) ─────────────────────────── */
-const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
-const hmac = (k, s) => crypto.createHmac("sha256", k).update(s).digest();
-function signed(method, key, query, body, extraHeaders) {
-  const host = ENDPOINT.replace("https://", "");
-  const now = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
-  const day = now.slice(0, 8);
-  const bodyHash = sha(body || "");
-  const hdrs = Object.assign({ host, "x-amz-content-sha256": bodyHash, "x-amz-date": now }, extraHeaders || {});
-  const names = Object.keys(hdrs).map((h) => h.toLowerCase()).sort();
-  const canonHdrs = names.map((h) => `${h}:${String(hdrs[h] ?? hdrs[Object.keys(hdrs).find((k) => k.toLowerCase() === h)]).trim()}\n`).join("");
-  const qs = Object.keys(query || {}).sort().map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k])}`).join("&");
-  const canonPath = `/${BUCKET}/${key}`.split("/").map(encodeURIComponent).join("/").replace(/%2F/g, "/");
-  const canon = `${method}\n${canonPath}\n${qs}\n${canonHdrs}\n${names.join(";")}\n${bodyHash}`;
-  const scope = `${day}/auto/s3/aws4_request`;
-  const toSign = `AWS4-HMAC-SHA256\n${now}\n${scope}\n${sha(canon)}`;
-  const sig = crypto.createHmac("sha256", hmac(hmac(hmac(hmac("AWS4" + SK, day), "auto"), "s3"), "aws4_request")).update(toSign).digest("hex");
-  const auth = `AWS4-HMAC-SHA256 Credential=${AK}/${scope}, SignedHeaders=${names.join(";")}, Signature=${sig}`;
-  const out = Object.assign({}, hdrs, { Authorization: auth });
-  delete out.host;
-  return { url: `${ENDPOINT}/${BUCKET}/${key}${qs ? "?" + qs : ""}`, headers: out };
-}
+/* ── SigV4, any method. ONE implementation, shared with archive-showcase.mjs: a drifted copy of an
+   auth protocol surfaces as an opaque 403 from Cloudflare in a publish path, not as a visible
+   error, which is precisely how a client's map once served a stale copy for a week. ─────────── */
+const signed = makeSigner({ endpoint: ENDPOINT, accessKey: AK, secretKey: SK, bucket: BUCKET });
 async function s3(method, key, { query, body, headers } = {}) {
   const { url, headers: h } = signed(method, key, query, body, headers);
   /* The timeout has to scale with the payload. A flat 60 s is fine for a 40 KB page and

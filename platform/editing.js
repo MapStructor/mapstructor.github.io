@@ -11900,7 +11900,28 @@
           s1 = await db.from('features').select('dataset_id').eq('layer_id', dataLid).order('feature_id').limit(1);
         }
       }
-      if (!s1.data || !s1.data.length || gen !== _attrLoadGen) return;   // no rows anywhere — nothing to show
+      if (gen !== _attrLoadGen) return;
+      if (!s1.data || !s1.data.length) {
+        // NO ROWS ANYWHERE — the normal state since the fold completed (9/4): a fully folded
+        // layer and its pointer copies own no rows at all, so there is no per-row stamp left to
+        // sample and this branch used to return silently, dropping the column. The 8/13b rule
+        // ("the rows' origin, never the layer's registration") exists because the two can
+        // legitimately disagree — but that only bites when rows EXIST to disagree with. With
+        // none, lineage is the only answer available, and it beats showing nothing.
+        // Sidecars baked before ms_dataset existed carry no dataset_id, so a re-bake is the
+        // real cure; this keeps the column truthful until then.
+        try {
+          var lin = await db.rpc('ms_dataset_for_layers', { p_layers: [lid] });
+          var row = !lin.error && (lin.data || [])[0];
+          var linId = row && row.dataset && (row.dataset.id || row.dataset);
+          if (!linId || gen !== _attrLoadGen) return;
+          (_attrRows || []).forEach(function (r) { if (r) { r.custom_fields = r.custom_fields || {}; if (r.custom_fields.ms_dataset == null) r.custom_fields.ms_dataset = linId; } });
+          if (_attrVirtual) _attrVirtual.msDatasetFill = linId;
+          if (!have) { _attrCols.push({ title: 'ms_dataset', kind: 'custom', key: 'ms_dataset', type: 'text', w: 130 }); buildAttrHead(); }
+          renderAttrBody(true);
+        } catch (e) { console.warn('ms_dataset lineage fallback failed:', e && e.message); }
+        return;
+      }
       var s2 = await db.from('features').select('dataset_id').eq('layer_id', dataLid).order('feature_id', { ascending: false }).limit(1);
       var a0 = s1.data[0].dataset_id, b0 = s2.data && s2.data[0] && s2.data[0].dataset_id;
       // unstamped or mixed stamps → per-row truth only (the next sidecar bake carries it)

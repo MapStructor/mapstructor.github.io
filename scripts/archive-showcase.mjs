@@ -13,6 +13,7 @@
  */
 import fs from "node:fs";
 import crypto from "node:crypto";
+import { makeSigner } from "./r2-sign.mjs";
 
 const ROOT = "c:/repos/mapstructor.github.io";
 const r2md = fs.readFileSync(ROOT + "/secrets/cloudflare-r2-credentials.md", "utf8");
@@ -25,27 +26,9 @@ const SLUG = process.argv[2], NAME = process.argv[3];
 if (!SLUG || !NAME) { console.error("usage: node archive-showcase.mjs <slug> <archive-name>"); process.exit(1); }
 const PREFIX = `maps/${SLUG}/`, DEST = `archives/${NAME}/`;
 
-const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
-const hmac = (k, s) => crypto.createHmac("sha256", k).update(s).digest();
-function signed(method, key, query, body, extraHeaders) {
-  const host = ENDPOINT.replace("https://", "");
-  const now = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
-  const day = now.slice(0, 8);
-  const bodyHash = sha(body || "");
-  const hdrs = Object.assign({ host, "x-amz-content-sha256": bodyHash, "x-amz-date": now }, extraHeaders || {});
-  const names = Object.keys(hdrs).map((h) => h.toLowerCase()).sort();
-  const canonHdrs = names.map((h) => `${h}:${String(hdrs[h] ?? hdrs[Object.keys(hdrs).find((k) => k.toLowerCase() === h)]).trim()}\n`).join("");
-  const qs = Object.keys(query || {}).sort().map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k])}`).join("&");
-  const canonPath = `/${BUCKET}/${key}`.split("/").map(encodeURIComponent).join("/").replace(/%2F/g, "/");
-  const canon = `${method}\n${canonPath}\n${qs}\n${canonHdrs}\n${names.join(";")}\n${bodyHash}`;
-  const scope = `${day}/auto/s3/aws4_request`;
-  const toSign = `AWS4-HMAC-SHA256\n${now}\n${scope}\n${sha(canon)}`;
-  const sig = crypto.createHmac("sha256", hmac(hmac(hmac(hmac("AWS4" + SK, day), "auto"), "s3"), "aws4_request")).update(toSign).digest("hex");
-  const auth = `AWS4-HMAC-SHA256 Credential=${AK}/${scope}, SignedHeaders=${names.join(";")}, Signature=${sig}`;
-  const out = Object.assign({}, hdrs, { Authorization: auth });
-  delete out.host;
-  return { url: `${ENDPOINT}/${BUCKET}/${key}${qs ? "?" + qs : ""}`, headers: out };
-}
+/* The signer is shared with showcase-update.mjs — two copies of an auth protocol drift into an
+   opaque 403 rather than a loud error, so there is exactly one (scripts/r2-sign.mjs). */
+const signed = makeSigner({ endpoint: ENDPOINT, accessKey: AK, secretKey: SK, bucket: BUCKET });
 async function s3(method, key, { query, body, headers } = {}) {
   const { url, headers: h } = signed(method, key, query, body, headers);
   const r = await fetch(url, { method, headers: h, body: body || undefined, signal: AbortSignal.timeout(120000) });
