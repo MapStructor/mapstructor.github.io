@@ -257,6 +257,103 @@ function basemapStyle(id) {
   return "mapbox://styles/" + siteConfig.mapboxUsername + "/" + id;
 }
 
+// ── Atomic basemap swap (9/8) ────────────────────────────────────────────────
+// The design flaw this ends: the basemap and the user's data layers lived in ONE style object,
+// so switching basemaps threw the whole style away — data included — and re-added the data
+// afterwards from config, behind deferred ticks and heal timers (mapinit readdSide). Every
+// "my points vanished when I switched basemaps" was that rebuild losing the race or rebuilding
+// from config that didn't know about this session's work; a layer created after boot that isn't
+// in the tree was simply gone for good (proven by basemap-race-gate 9/8: 4 of 4 switches).
+//
+// The fix makes the swap carry the data instead of destroying it: resolve the NEW basemap to
+// style JSON, lift the CURRENT style's runtime-added sources and layers into it verbatim — live
+// drawn features, current filters, current visibility — and hand setStyle the merged style in
+// one call. The map is never, at any instant, without its data layers, and nothing needs to be
+// rebuilt. readdSide still runs on style.load and finds everything present (addMapLayer is
+// idempotent), so it becomes a verifier; the heal timers stay only as the net under the
+// fallback below.
+//
+// "The basemap's own layers" are the id/source sets captured from each applied style's JSON
+// (map.__msBaseIds; boot capture in readdSide). Excluded from carry: mapbox-draw's gl-draw-*
+// (draw re-adds its own on style.load; a carried copy would collide) and `custom` layers
+// (deck.gl etc. can't round-trip through style JSON; their owners re-attach them).
+// Fallback: a style we can't resolve to JSON (fetch failure, mapbox:// with no token) takes the
+// old full-swap path unchanged and clears __msBaseIds so the next style.load re-captures.
+var msStyleJsonCache = {};
+function msResolveStyleJson(want) {
+  if (want && typeof want === "object") return Promise.resolve(want);
+  var url = String(want || "");
+  if (url.indexOf("mapbox://styles/") === 0) {
+    if (!(typeof mapboxgl !== "undefined" && mapboxgl.accessToken)) return Promise.resolve(null);
+    url = "https://api.mapbox.com/styles/v1/" + url.slice("mapbox://styles/".length) +
+          "?access_token=" + encodeURIComponent(mapboxgl.accessToken);
+  }
+  if (!/^https?:\/\//i.test(url)) return Promise.resolve(null);
+  if (msStyleJsonCache[url]) return Promise.resolve(msStyleJsonCache[url]);
+  return fetch(url).then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) { if (j && j.layers) msStyleJsonCache[url] = j; return msStyleJsonCache[url] || null; })
+    .catch(function () { return null; });
+}
+function msCaptureBaseIds(map) {
+  try {
+    var st = map.getStyle(), L = {}, S = {};
+    (st.layers || []).forEach(function (l) { if (l && l.type !== "custom" && !/^gl-draw/.test(l.id)) L[l.id] = 1; });
+    Object.keys(st.sources || {}).forEach(function (k) { if (!/^mapbox-gl-draw/.test(k)) S[k] = 1; });
+    map.__msBaseIds = { layers: L, sources: S };
+  } catch (e) {}
+}
+try { window.msCaptureBaseIds = msCaptureBaseIds; } catch (e) {}
+function msMergedSwap(map, want) {
+  msResolveStyleJson(want).then(function (next) {
+    if (map.__msWantStyle !== want) return;   // LAST CLICK WINS: a newer choice superseded this one
+    function plain() { map.__msBaseIds = null; try { map.setStyle(want, { diff: false }); } catch (e) {} }
+    var cur = null; try { cur = map.getStyle(); } catch (e) {}
+    var base = map.__msBaseIds;
+    if (!next || !next.layers || !cur || !cur.layers || !base) { plain(); return; }
+    var nextSrc = next.sources || {};
+    var ourSources = {}, ourLayers = [];
+    Object.keys(cur.sources || {}).forEach(function (k) {
+      if (base.sources[k] || nextSrc[k] || /^mapbox-gl-draw/.test(k)) return;
+      ourSources[k] = cur.sources[k];
+    });
+    (cur.layers || []).forEach(function (l) {
+      if (!l || base.layers[l.id] || l.type === "custom" || /^gl-draw/.test(l.id)) return;
+      ourLayers.push(l);
+    });
+    // the incoming basemap's own ids — recorded BEFORE the swap, so the style.load capture
+    // never runs against a style that already contains data layers
+    var L = {}, S = {};
+    next.layers.forEach(function (l) { if (l) L[l.id] = 1; });
+    Object.keys(nextSrc).forEach(function (k) { S[k] = 1; });
+    map.__msBaseIds = { layers: L, sources: S };
+    var merged = {};
+    Object.keys(next).forEach(function (k) { merged[k] = next[k]; });
+    merged.sources = {};
+    Object.keys(nextSrc).forEach(function (k) { merged.sources[k] = nextSrc[k]; });
+    Object.keys(ourSources).forEach(function (k) { merged.sources[k] = ourSources[k]; });
+    merged.layers = next.layers.concat(ourLayers);
+    try { map.setStyle(merged, { diff: false }); } catch (e) { plain(); }
+  });
+}
+
+// THE one entry point for changing a map's basemap — viewer radios (setupMapSwitching below) and
+// the editor's onMapRadio both call this, so there is exactly one swap implementation. The editor
+// used to run its own `map.setStyle(style)` copy, which still had both traps the engine fixed on
+// 7/18: default diff (strips runtime data layers WITHOUT firing style.load — nothing ever re-adds)
+// and the isStyleLoaded() deferral (queues the click on a style.load that never comes). That copy
+// was the owner's "points disappeared when switching basemaps".
+function msApplyBasemap(map, id) {
+  if (!map) return;
+  map.__msWantStyle = basemapStyle(id);
+  function go() { try { msMergedSwap(map, map.__msWantStyle); } catch (e) { try { map.setStyle(map.__msWantStyle, { diff: false }); } catch (e2) {} } }
+  if (map.__msBooted) go();
+  else if (!map.__msPendingStyle) {
+    map.__msPendingStyle = true;
+    map.once("style.load", function () { map.__msPendingStyle = false; go(); });
+  }
+}
+try { window.msApplyBasemap = msApplyBasemap; } catch (e) {}
+
 // Called from mapinit.js after maps are initialized
 function setupMapSwitching() {
   var rightInputs = document.getElementsByName("rtoggle");
@@ -273,16 +370,7 @@ function setupMapSwitching() {
   //    recomputes), queueing the click on a style.load that never came ("basemap doesn't
   //    change"). Only the INITIAL load needs deferring (boot flash-then-white bug, 7/15) —
   //    after boot (__msBooted, set by readdSide) apply immediately.
-  function applyStyle(map, id) {
-    if (!map) return;
-    map.__msWantStyle = basemapStyle(id);
-    function go() { try { map.setStyle(map.__msWantStyle, { diff: false }); } catch (e) {} }
-    if (map.__msBooted) go();
-    else if (!map.__msPendingStyle) {
-      map.__msPendingStyle = true;
-      map.once("style.load", function () { map.__msPendingStyle = false; go(); });
-    }
-  }
+  function applyStyle(map, id) { msApplyBasemap(map, id); }
   function idOf(layer) { return (typeof layer.className === "undefined") ? layer.target.className : layer.className; }
   function switchRightLayer(layer) { applyStyle(afterMap, idOf(layer)); }
   function switchLeftLayer(layer) { applyStyle(beforeMap, idOf(layer)); }

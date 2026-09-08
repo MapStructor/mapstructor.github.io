@@ -5288,13 +5288,16 @@
     _sessionBasemap[rad.name] = rad.value;
     var map = (rad.name === 'ltoggle') ? beforeMap : afterMap;
     if (!map || !rad.value) return;
-    // use the engine's basemapStyle() so FREE basemaps (styleUrl: inline/URL) switch correctly —
-    // hardcoding mapbox://styles/<user>/<id> whited out free basemaps (7/15). Fall back to that only
-    // if the engine helper isn't present. Defer off mid-load (never setStyle while loading).
+    // ONE swap implementation, the engine's (9/8): msApplyBasemap carries the data layers into
+    // the new style atomically. The hand-rolled setStyle that lived here had default diff on —
+    // which strips runtime-added data layers WITHOUT firing style.load, so nothing ever re-added
+    // them ("points disappeared when switching basemaps") — plus the isStyleLoaded() deferral
+    // the engine dropped 7/18 (it queues the click on a style.load that may never come).
+    if (typeof msApplyBasemap === 'function') { msApplyBasemap(map, rad.value); return; }
+    // legacy fallback only for a stale engine copy
     var user = (typeof siteConfig !== 'undefined' && siteConfig && siteConfig.mapboxUsername) ? siteConfig.mapboxUsername : 'mapbox';
     var style = (typeof basemapStyle === 'function') ? basemapStyle(rad.value) : ('mapbox://styles/' + user + '/' + rad.value);
-    function go() { try { map.setStyle(style); } catch (e) {} }
-    if (map.isStyleLoaded && map.isStyleLoaded()) go(); else map.once('style.load', go);
+    try { map.setStyle(style, { diff: false }); } catch (e) {}
   }
   function restoreSessionRadios() {   // after a re-render (which draws radios from the DEFAULTS), put the SESSION selection back
     ['ltoggle', 'rtoggle'].forEach(function (nm) {

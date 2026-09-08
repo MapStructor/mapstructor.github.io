@@ -139,6 +139,12 @@ function initMaps() {
 	// whole pass is safe.
 	function readdSide(map, side) {
 		map.__msBooted = true;   // generateMaps.applyStyle: post-boot switches apply immediately
+		// Atomic-swap bookkeeping (9/8): record which layers/sources belong to the BASEMAP, so a
+		// switch can carry everything else across. Right now — synchronously at style.load, before
+		// the deferred add() below runs — the style holds only the basemap, so the capture is clean.
+		// After a merged swap __msBaseIds is already set (from the incoming style's own JSON) and
+		// this no-ops; after a fallback plain swap it was cleared, and this re-captures.
+		if (!map.__msBaseIds && typeof msCaptureBaseIds === "function") msCaptureBaseIds(map);
 		function add() {
 			// a second setStyle can land between style.load and this deferred tick (boot auto-switch)
 			// — the add then hits a mid-load style and throws "Style is not done loading"; swallow it,
