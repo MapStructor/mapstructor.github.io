@@ -421,6 +421,10 @@ button.active {
   position: absolute;
   bottom: 0px;
   width: 100%;
+  /* 9/8: width:100% plus 10px of padding each side made this 410px wide in a 390px phone, and the
+     whole page could be swiped 20px sideways — the one thing that reads as broken on a phone even
+     when everything works. border-box keeps the desktop look identical. */
+  box-sizing: border-box;
   height: 67px;
   background: #f5f6f7;
   min-width: 100px;

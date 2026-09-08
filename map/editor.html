@@ -132,7 +132,7 @@
       href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css"
       type="text/css"
     />
-    <link href="engine/engine.css?v=1360db21" rel="stylesheet" />
+    <link href="engine/engine.css?v=87a29f63" rel="stylesheet" />
     <!--
     <link
       rel="stylesheet"
@@ -165,7 +165,9 @@
     <!-- <script src="js/lists/sliderDates.js"></script> -->
     <!-- <script src="js/lists/layersList.js"></script> -->
     <!-- <script src="js/lists/modalinfo.js"></script> -->
-    <script src="engine/handle-mobile-devices.js?v=4cd17f03"></script>
+    <!-- handle-mobile-devices.js is DELIBERATELY NOT LOADED here — see the note in index.html.
+         It redirected every phone, and every window 670px or narrower, to "./mobile.html", which
+         has never existed: the editor answered a 404 page instead of opening. -->
     <script src="engine/utils.js?v=5965caee"></script>
     <script src="engine/index.js?v=42ce28be"></script>
 

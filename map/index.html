@@ -130,7 +130,7 @@
       href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css"
       type="text/css"
     />
-    <link href="engine/engine.css?v=1360db21" rel="stylesheet" />
+    <link href="engine/engine.css?v=87a29f63" rel="stylesheet" />
     <!--
     <link
       rel="stylesheet"
@@ -163,7 +163,14 @@
     <!-- <script src="js/lists/sliderDates.js"></script> -->
     <!-- <script src="js/lists/layersList.js"></script> -->
     <!-- <script src="js/lists/modalinfo.js"></script> -->
-    <script src="engine/handle-mobile-devices.js?v=4cd17f03"></script>
+    <!-- handle-mobile-devices.js is DELIBERATELY NOT LOADED here (9/8). It sends any phone — and
+         any window 670px or narrower — to siteConfig.mobileRedirect, which is "./mobile.html", a
+         file that has never existed in this repo. Every phone visitor got a raw 404 page instead
+         of the map: found by conference-gate's phone leg, on the live site, on a shared link.
+         download.js has stripped this same include from the standalone zip since it was written
+         ("a self-redirect would loop"), so downloaded copies worked on phones while the live site
+         did not. Do not re-add it: the viewer renders on a phone, and a redirect to a page nobody
+         guarantees exists is strictly worse than doing nothing. -->
     <script src="engine/utils.js?v=5965caee"></script>
     <script src="engine/index.js?v=42ce28be"></script>
 
