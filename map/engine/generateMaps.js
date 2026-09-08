@@ -332,7 +332,22 @@ function msMergedSwap(map, want) {
     Object.keys(nextSrc).forEach(function (k) { merged.sources[k] = nextSrc[k]; });
     Object.keys(ourSources).forEach(function (k) { merged.sources[k] = ourSources[k]; });
     merged.layers = next.layers.concat(ourLayers);
-    try { map.setStyle(merged, { diff: false }); } catch (e) { plain(); }
+    // A style with no sprite/glyphs of its own (the raster basemap wrappers) inherits the current
+    // ones: sprite and font URLs then MATCH across the swap, which is what lets the diff below
+    // actually take the diff path — measured 9/8: without this, every free-basemap pair fell back
+    // to a full rebuild and labels blanked for 7-12 frames. Raster basemaps render no symbols, so
+    // the inherited sprite is never drawn by them; it exists to keep the URLs equal.
+    if (!merged.sprite && cur.sprite) merged.sprite = cur.sprite;
+    if (!merged.glyphs && cur.glyphs) merged.glyphs = cur.glyphs;
+    // diff:true (9/8, owner: labels blink on switch): since the merged style CONTAINS the data
+    // layers, the diff engine sees them unchanged and never touches them — so their labels keep
+    // their rendered glyphs instead of re-rasterizing through a full swap. The 7/18 danger
+    // ("diff strips runtime layers") only existed because the incoming style LACKED the data;
+    // it can't strip what the style declares. When a swap isn't diffable (sprite/glyph changes),
+    // mapbox-gl falls back to a full rebuild of the SAME merged style internally — behavior
+    // then equals the previous diff:false path. mapbox-draw's gl-draw layers are deliberately
+    // not carried: draw re-adds them itself when its source goes missing (styledata listener).
+    try { map.setStyle(merged, { diff: true }); } catch (e) { plain(); }
   });
 }
 
