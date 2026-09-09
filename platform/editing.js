@@ -6586,9 +6586,28 @@
         }
         // 9e round 2 (7/28): clicking truly EMPTY ground — no draw feature, no engine data feature,
         // not mid-draw-mode — clears the whole working selection (map highlight + table stars together).
-        if (!did && MSSel.count() && !engineFeatureAt(e.point)) {
+        var trulyEmpty = !did && !engineFeatureAt(e.point);
+        if (trulyEmpty && MSSel.count()) {
           var dmode = ''; try { dmode = draw && draw.getMode ? draw.getMode() : ''; } catch (eM) {}
           if (!/^draw_/.test(dmode)) clearAttrHighlight();
+        }
+        // 9/8 (render-owner probe): an empty-ground click must also RETURN every pulled engine
+        // feature — the same handing-back the Done button and the timeline disarm already do.
+        // Without this, the pull stayed parked in MapboxDraw with its engine copy filtered out for
+        // the rest of the session: one painter still (no double-render), but the WRONG one — a
+        // layer restyle skipped the parked feature (draw renders the colours copied at pull time),
+        // and _engineEditIds only ever grew. finishEngineEdit routes it: untouched → straight back
+        // to the engine render; changed → written into the engine source first. Gated on truly
+        // empty ground so clicking the NEXT feature never tears down the pull that click is
+        // creating, and on draw mode so a new-shape gesture is never disturbed mid-draw.
+        if (trulyEmpty && typeof _engineEditNode !== 'undefined') {
+          var dmodeF = ''; try { dmodeF = draw && draw.getMode ? draw.getMode() : ''; } catch (eF) {}
+          if (!/^draw_/.test(dmodeF)) {
+            Object.keys(_engineEditNode).forEach(function (dIdF) {
+              var nF = _engineEditNode[dIdF];
+              try { if (nF && featureToDb[dIdF] != null) finishEngineEdit(nF, featureToDb[dIdF]); } catch (eFl) { console.warn('editing: empty-ground engine-edit return', eFl); }
+            });
+          }
         }
         // the RIGHT swipe map has no MapboxDraw — run the same two-stage click model programmatically
         // there (stage 1 = panel/highlight, stage 2 = geometry), so both sides feel identical.
