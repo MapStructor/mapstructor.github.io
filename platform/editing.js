@@ -4238,9 +4238,16 @@
   //    real engine popup, and its .modal-content becomes editable right there — a small formatting
   //    toolbar + Save are injected into the popup. No separate window. ──
   function setModalAbout(about) {   // feed the engine's existing ℹ "About" popup (engine reads modal_content_html["about"] on click)
-    try { window.modal_header_text = window.modal_header_text || {}; window.modal_content_html = window.modal_content_html || {}; window.modal_header_text['about'] = 'About'; window.modal_content_html['about'] = about || ''; } catch (e) {}
+    try { window.modal_header_text['about'] = 'About'; window.modal_content_html['about'] = about || ''; } catch (e) {}   // stores declared by the engine (their one owner, 9/8); adding keys is not ownership
   }
   var _editPopupId = null;
+  // ── the modal lock is OWNED by platform/modalLock.js (9/8) — these two wrappers are the only
+  //    way this file touches it. Counted holds ended the prevLock/._prevLock save-and-restore
+  //    dances two modals had each grown; if modalLock.js failed to load, everything runs unlocked
+  //    (backdrop clicks can close panels — the old cosmetic behaviour) and nothing throws. ──
+  var _popupEditLockTok = null;
+  function lockHold(label) { try { return window.MSLock ? MSLock.hold(label) : null; } catch (e) { return null; } }
+  function lockDrop(t) { try { if (window.MSLock) MSLock.drop(t); } catch (e) {} }
   function setupInPlaceEditing() {
     var content = document.querySelector('div.modal-content'); if (!content) return false;
     if (!document.getElementById('editor-modal-tools')) {
@@ -4316,7 +4323,7 @@
       oCb.addEventListener('change', function () {
         if (this.checked) return;
         if (_editPopupId) { try { savePopupEdit(); } catch (e) {} }   // flush — closing inside the 600ms debounce must not drop the last keystrokes
-        _editPopupId = null; window.__msModalLock = false;   // edit session ended → backdrop can close again
+        _editPopupId = null; lockDrop(_popupEditLockTok); _popupEditLockTok = null;   // edit session ended → backdrop can close again
         var c = document.querySelector('div.modal-content'); if (c) c.removeAttribute('contenteditable');
         var tl = document.getElementById('editor-modal-tools'); if (tl) tl.classList.remove('on');
       });
@@ -4333,7 +4340,10 @@
     var content = document.querySelector('div.modal-content'); var tools = document.getElementById('editor-modal-tools');
     if (!content || !tools) return;
     _editPopupId = popupId; content.setAttribute('contenteditable', 'true'); tools.classList.add('on');
-    window.__msModalLock = true;   // while editing, the engine's backdrop-click won't close the modal — only the ✕ (see engine/index.js)
+    // while editing, the engine's backdrop-click won't close the modal — only the ✕ (see engine/index.js).
+    // Guarded: enableModalEdit can run again for a new popup without a close in between, and a
+    // second unreleased hold would leave the lock stuck for the whole session.
+    if (!_popupEditLockTok) _popupEditLockTok = lockHold('popup-edit');
   }
   async function savePopupEdit() {
     // SNAPSHOT the target + html now — the close handler nulls _editPopupId and this function
@@ -4354,7 +4364,7 @@
         var title = (node && node.label) || '';
         if (!title) { try { title = (document.querySelector('div.modal-header h1').textContent || '').trim(); } catch (x) {} }
         patch.popups = {}; patch.popups[pid] = { title: title, html: html };
-        try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; window.modal_content_html[pid] = html; window.modal_header_text[pid] = title || 'Info'; if (_editPopupId === pid) window.$('div.modal-header h1').text(title || 'Info'); } catch (x2) {}
+        try { window.modal_content_html[pid] = html; window.modal_header_text[pid] = title || 'Info'; if (_editPopupId === pid) window.$('div.modal-header h1').text(title || 'Info'); } catch (x2) {}
         // persist info_id on the layer/group row so the rendered info button carries this id (viewer + on reload)
         if (node) {
           // without this id the row's ℹ button never appears for readers, even though the text saved
@@ -4757,9 +4767,8 @@
           '</div>' +
         '</div>';
       document.body.appendChild(ov);
-      var prevLock = window.__msModalLock;
-      window.__msModalLock = true;   // the engine's backdrop-click must not close this one
-      function done(v) { window.__msModalLock = prevLock || false; ov.remove(); resolve(v); }
+      var lkTok = lockHold('stale-snapshot-ask');   // the engine's backdrop-click must not close this one; a counted hold replaced the prevLock save-and-restore
+      function done(v) { lockDrop(lkTok); ov.remove(); resolve(v); }
       ov.querySelector('#ms-stale-skip').addEventListener('click', function () { done('skip'); });
       ov.querySelector('#ms-stale-bake').addEventListener('click', function () { done('bake'); });
       ov.querySelector('#ms-stale-cancel').addEventListener('click', function () { done('cancel'); });
@@ -4941,22 +4950,12 @@
   // Re-init the bottom timeline slider + rulers to a [startYear, endYear] range (the engine reads a static
   // const at load, so we update the live jQuery-UI slider + ruler labels + globals instead).
   function applyTimelineRange(startDate, endDate) {
-    try {
-      var $ = window.$, m = window.moment; if (!$ || !m || !$('#slider').length) return false;
-      var s = m(startDate).unix(), e = (endDate === 'today') ? m().unix() : m(endDate).unix();   // "today" resolves to the current date each load
-      if (!s || !e || e <= s) return false;
-      var mid = Math.round((s + e) / 2), step = (e - s) / 10;
-      try { window.sliderStart = s; window.sliderEnd = e; window.sliderMiddle = mid; } catch (x) {}
-      $('#slider').slider('option', { min: s, max: e, value: mid });
-      $('#ruler-date1').text(m.unix(s + step).format('YYYY'));
-      $('#ruler-date2').text(m.unix(s + step * 3).format('YYYY'));
-      $('#ruler-date3').text(m.unix(mid).format('YYYY'));
-      $('#ruler-date4').text(m.unix(s + step * 7).format('YYYY'));
-      $('#ruler-date5').text(m.unix(s + step * 9).format('YYYY'));
-      $('#date').text(m.unix(mid).format('DD MMM YYYY'));
-      if (typeof changeDate === 'function') changeDate(mid);
-      return true;
-    } catch (err) { return false; }
+    // 9/8: delegates to the engine, which owns the slider and its globals. This function used to
+    // carry its own copy of the re-init math, and projectLoader carried a THIRD — three
+    // implementations of one behaviour, two of them writing the engine's sliderStart/End/Middle
+    // from outside. The engine's msApplyTimelineRange is now the single owner (same divergent-copy
+    // disease, same fix, as the 9/8 basemap switch).
+    try { return typeof msApplyTimelineRange === 'function' ? msApplyTimelineRange(startDate, endDate) : false; } catch (err) { return false; }
   }
   async function loadProjectChrome() {   // on load, apply per-project chrome (timeline range) once the slider exists
     if (window.__editorChromeLoaded) return; window.__editorChromeLoaded = true;
@@ -4966,7 +4965,7 @@
       var r = (mbC && mbC.pid === projectId && Date.now() < mbC.until)
         ? await mbC.project
         : await db.from('projects').select('raw_config').eq('id', projectId).single();
-      var rc = (r.data && r.data.raw_config) || {}; setModalAbout(rc.about || ''); applyHeaderChrome(rc); setTimeout(function () { applyHeaderChrome(rc); }, 600); setTimeout(function () { applyHeaderChrome(rc); }, 1500); if (rc.popups) { try { window.modal_content_html = window.modal_content_html || {}; window.modal_header_text = window.modal_header_text || {}; Object.keys(rc.popups).forEach(function (id) { var p = rc.popups[id]; var h = (p && typeof p === 'object') ? p.html : p; var ti = (p && typeof p === 'object') ? p.title : 'Info'; window.modal_content_html[id] = h || ''; window.modal_header_text[id] = ti || 'Info'; }); } catch (x) {} } var tl = rc.timeline; if (tl && tl.start && tl.end) { var tries = 0; var iv = setInterval(function () {
+      var rc = (r.data && r.data.raw_config) || {}; setModalAbout(rc.about || ''); applyHeaderChrome(rc); setTimeout(function () { applyHeaderChrome(rc); }, 600); setTimeout(function () { applyHeaderChrome(rc); }, 1500); if (rc.popups) { try { Object.keys(rc.popups).forEach(function (id) { var p = rc.popups[id]; var h = (p && typeof p === 'object') ? p.html : p; var ti = (p && typeof p === 'object') ? p.title : 'Info'; window.modal_content_html[id] = h || ''; window.modal_header_text[id] = ti || 'Info'; }); } catch (x) {} } var tl = rc.timeline; if (tl && tl.start && tl.end) { var tries = 0; var iv = setInterval(function () {
       if (applyTimelineRange(tl.start, tl.end)) { clearInterval(iv); return; }
       // The EDITOR's copy of the same give-up already wired in projectLoader.js for the viewer:
       // same rule, same 25×400ms budget, two files. Both now say so instead of leaving the map on
@@ -5501,10 +5500,10 @@
   // #17: show the signed-in account in the map header, like the front page nav — email → dashboard when
   // logged in; "Login" → the shared MapAuth modal otherwise. Styled like the View/Preview header pills.
   function wireHeaderUser() {
-    // lives in the site-wide top bar now (right slot); the editor's chip also offers Login
-    window.__msTopbarUserByPage = true;   // tell topbar.js not to add its own generic chip
-    // ...and drop ALL it already added — the boot race could stack several in the pre-mount bar
-    document.querySelectorAll('#ms-topbar-user').forEach(function (n) { n.remove(); });
+    // lives in the site-wide top bar now (right slot); the editor's chip also offers Login.
+    // 9/8: claimed through topbar's own API (it owns the flag AND drops any chip it already
+    // stacked) — no topbar means no chip to suppress, so the guard is the whole fallback.
+    try { if (window.MSTopbarClaimUser) MSTopbarClaimUser(); } catch (eTb) {}
     var right = document.getElementById('ms-topbar-right') || document.getElementById('editor-actions-status') || document.querySelector('.header-right');
     if (!right || document.getElementById('editor-nav-user')) return;
     var a = document.createElement('a');
@@ -7077,7 +7076,7 @@
   function closeStorageModal() {
     var ov = document.getElementById('ms-storage-modal'); if (!ov || ov.style.display === 'none') return;
     ov.style.display = 'none';
-    window.__msModalLock = ov._prevLock || false;   // restore, don't clear — the feature-edit modal may also hold the lock
+    lockDrop(ov._lockTok); ov._lockTok = null;   // drops OUR hold only — the feature-edit modal's own hold survives (the counted lock made "restore, don't clear" automatic)
     if (ov._esc) { document.removeEventListener('keydown', ov._esc, true); ov._esc = null; }
   }
   function showStorageModal() {
@@ -7123,8 +7122,7 @@
     document.getElementById('ms-sm-close').onclick = closeStorageModal;
     document.getElementById('ms-sm-later').onclick = closeStorageModal;
     if (ov.style.display !== 'flex') {   // opening (not a re-render while already open)
-      ov._prevLock = window.__msModalLock || false;
-      window.__msModalLock = true;   // editor hotkeys + engine backdrop stand down while this is up
+      ov._lockTok = lockHold('storage-modal');   // editor hotkeys + engine backdrop stand down while this is up
       ov._esc = function (e) { if (e.key === 'Escape') { e.stopPropagation(); closeStorageModal(); } };
       document.addEventListener('keydown', ov._esc, true);
       ov.style.display = 'flex';
@@ -11686,6 +11684,7 @@
   if (!window.MSSel) (function () {   // selection.js failed to load → same-contract inline fallback
     var _ids = [], _subs = [];
     function emit(reason, changed) { for (var i = 0; i < _subs.length; i++) { try { _subs[i]({ ids: _ids.slice(), reason: reason, changed: changed }); } catch (e) {} } }
+    // second-writer-ok: guarded (`if (!window.MSSel)`) load-failure net — the net cannot live in the file whose failure it covers, and it never overwrites the real owner (owner's option A, 9/8)
     window.MSSel = {
       ids: function () { return _ids.slice(); }, count: function () { return _ids.length; },
       has: function (fid) { return _ids.indexOf(String(fid)) > -1; },

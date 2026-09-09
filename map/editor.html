@@ -114,7 +114,7 @@
     <script src="../platform/auth.js?v=3a0ce355"></script>
   <script src="../platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
     <script src="../platform/guard.js?v=0f7b830c"></script>   <!-- map-load meter + freeze (service guard) -->
-    <script src="../platform/topbar.js?v=8154caa8"></script>
+    <script src="../platform/topbar.js?v=748e928e"></script>
     <script src="../platform/bookmarks.js?v=b8757559"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
     <script src="../platform/portalAdd.js?v=6aaecdff"></script>   <!-- Map Portal: sidebar window — add a bookmarked/own map into this one (All/Linked/Instance per layer) -->
     <script src="../platform/overlay.js?v=bc711f61"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
@@ -169,7 +169,7 @@
          It redirected every phone, and every window 670px or narrower, to "./mobile.html", which
          has never existed: the editor answered a 404 page instead of opening. -->
     <script src="engine/utils.js?v=5965caee"></script>
-    <script src="engine/index.js?v=42ce28be"></script>
+    <script src="engine/index.js?v=b1f5282f"></script>
 
     <!-- Google Analytics - driven by siteAnalytics.trackingId in header.js -->
     <!-- To revert: comment out NEW BLOCK below, uncomment OLD BLOCK below -->
@@ -418,13 +418,14 @@
     <script src="../platform/bigtable.js?v=039ca795" onerror="void(0)"></script>   <!-- Big-data attribute tier: Parquet sidecar + DuckDB-WASM (vendored, lazy) -->
     <script src="../platform/pricing.js?v=2609c548" onerror="void(0)"></script>
     <script src="../platform/renderRegistry.js?v=a7b0cf11" onerror="void(0)"></script>
-    <script src="../platform/projectLoader.js?v=ac45f788" onerror="void(0)"></script>
+    <script src="../platform/projectLoader.js?v=fb32ea1b" onerror="void(0)"></script>
     <script src="../platform/download.js?v=5ea053b4" onerror="void(0)"></script>   <!-- Download whole project (sidebar button) -->
     <script src="../platform/publishSite.js?v=4414a4ea" onerror="void(0)"></script>   <!-- Publish also refreshes /maps/<slug>/ when the map is bound to one -->
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js" onerror="void(0)"></script>   <!-- deck.gl: instant scrub without bakes (deckScrub.js); raster stays the fallback -->
     <script src="../platform/deckScrub.js?v=dcc056ef" onerror="void(0)"></script>
-    <script src="../platform/merge.js?v=7bb8917b" onerror="void(0)"></script>   <!-- merge two or more layers into one dataset -->
-    <script src="../platform/layerOrder.js?v=b5ab2a2c" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
+    <script src="../platform/modalLock.js?v=f7dcf2d2" onerror="void(0)"></script>   <!-- the ONE owner of the modal lock (counted holds); must load before merge/layerOrder/editing -->
+    <script src="../platform/merge.js?v=286b61f2" onerror="void(0)"></script>   <!-- merge two or more layers into one dataset -->
+    <script src="../platform/layerOrder.js?v=8c8c2788" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
     <script src="../platform/rasterScrub.js?v=1692c5f5" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
     <script src="../platform/tables.js?v=20d1c184" onerror="void(0)"></script>   <!-- Data tables + joins -->
     <script src="../platform/layerJson.js?v=77056a02" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->

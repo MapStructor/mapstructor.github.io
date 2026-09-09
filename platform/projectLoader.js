@@ -343,34 +343,20 @@ window.msApplyHeaderFeature = function (visible, projectName) {
       return b;
     }));
     if (raw.mapboxUsername) siteConfig.mapboxUsername = raw.mapboxUsername;
-    // Explicit stacking order (8/18). Read BEFORE the maps build so the first paint is already
-    // right; MSLayerOrder re-applies on every style.load from mapinit's readdSide.
-    if (Array.isArray(raw.layerOrder)) window.__msLayerOrder = raw.layerOrder.slice();
-    if (typeof raw.labelsOnTop === 'boolean') window.__msLabelsOnTop = raw.labelsOnTop;
-    // Timeline range (raw_config.timeline {start, end|"today"}): the EDITOR applies it via editing.js
-    // (applyTimelineRange), but the VIEWER never did — every published map showed the engine's default
-    // years. Same math as the editor, retried until the engine's slider exists.
+    // Explicit stacking order (8/18). Seeded BEFORE the maps build so the first paint is already
+    // right; MSLayerOrder re-applies on every style.load from mapinit's readdSide. Handed through
+    // the module (9/8) rather than written into its globals — layerOrder.js is the one owner of
+    // that state, and if it failed to load there is nobody to order layers for anyway.
+    try { if (window.MSLayerOrder && MSLayerOrder.seed) MSLayerOrder.seed(raw.layerOrder, raw.labelsOnTop); } catch (eLO) {}
+    // Timeline range (raw_config.timeline {start, end|"today"}): applied so the VIEWER honours a
+    // saved range too, retried until the engine's slider exists. 9/8: this block used to carry
+    // its own copy of the re-init math ("Same math as the editor" — the divergent-copy disease);
+    // the engine's msApplyTimelineRange is now the one owner and this only polls it.
     if (raw.timeline && raw.timeline.start && raw.timeline.end) {
       (function () {
         var tl = raw.timeline;
         function applyTL() {
-          try {
-            var $ = window.$, m = window.moment; if (!$ || !m || !$("#slider").length) return false;
-            var s = m(tl.start).unix(), e = (tl.end === "today") ? m().unix() : m(tl.end).unix();
-            if (!s || !e || e <= s) return false;
-            var mid = Math.round((s + e) / 2), step = (e - s) / 10;
-            try { window.sliderStart = s; window.sliderEnd = e; window.sliderMiddle = mid; } catch (x) {}
-            $("#slider").slider("option", { min: s, max: e, value: mid });
-            $("#ruler-date1").text(m.unix(s + step).format("YYYY"));
-            $("#ruler-date2").text(m.unix(s + step * 3).format("YYYY"));
-            $("#ruler-date3").text(m.unix(mid).format("YYYY"));
-            $("#ruler-date4").text(m.unix(s + step * 7).format("YYYY"));
-            $("#ruler-date5").text(m.unix(s + step * 9).format("YYYY"));
-            window.__msDate = mid;
-            $("#date").text(m.unix(mid).format("DD MMM YYYY"));
-            if (typeof changeDate === "function") changeDate(mid);
-            return true;
-          } catch (err) { return false; }
+          try { return typeof msApplyTimelineRange === "function" && msApplyTimelineRange(tl.start, tl.end); } catch (err) { return false; }
         }
         var tries = 0;
         var iv = setInterval(function () {
@@ -388,8 +374,7 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     // opens a modal when modal_header_text[id] is set — the editor loads these in loadProjectChrome(), but the
     // viewer never did, so saved info modals showed NOTHING in view. Load them here.
     try {
-      window.modal_content_html = window.modal_content_html || {};
-      window.modal_header_text = window.modal_header_text || {};
+      // stores declared by the engine (their one owner, 9/8) — this only adds keys.
       // .trim(): an `about` of only whitespace registered an About modal that opened empty.
       if (raw.about != null && String(raw.about).trim() !== "") { window.modal_header_text["about"] = "About"; window.modal_content_html["about"] = raw.about; }
       Object.keys(raw.popups || {}).forEach(function (id) {

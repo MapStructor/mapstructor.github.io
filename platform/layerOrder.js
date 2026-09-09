@@ -80,6 +80,16 @@
     try { if (typeof afterMap !== "undefined" && afterMap) LO.apply(afterMap, "right"); } catch (e) {}
   };
 
+  /* Boot handoff (9/8, retiring the multi-owner flags): projectLoader used to seed
+     window.__msLayerOrder / window.__msLabelsOnTop by writing the globals directly — a second
+     owner of state this module owns. It now hands the saved values through here instead. No
+     apply and no save: this runs before the maps exist, and readdSide applies the order on every
+     style.load anyway. */
+  LO.seed = function (order, labelsOn) {
+    if (Array.isArray(order)) window.__msLayerOrder = order.slice();
+    if (typeof labelsOn === "boolean") window.__msLabelsOnTop = labelsOn;
+  };
+
   /* Persistence is injected by the editor (it owns the db handle and the project id); the viewer
      and standalone copies only ever READ an order, so they leave this unset. */
   LO.onSave = null;
@@ -146,7 +156,10 @@
         '<button id="mslo-done">Done</button></div>' +
       "</div>";
     document.body.appendChild(ov);
-    try { window.__msModalLock = true; } catch (e) {}
+    // counted hold via the lock's one owner (platform/modalLock.js, 9/8) — a plain true/false
+    // write here unlocked whatever modal sat underneath when this panel closed
+    var _lockTok = null;
+    try { _lockTok = window.MSLock ? MSLock.hold("layer-order") : null; } catch (e) {}
 
     var list = ov.querySelector("#mslo-list");
     function commit() {
@@ -156,7 +169,7 @@
     var cleanup = function () {};   // assigned once the drag listeners exist (below)
     function close() {
       cleanup();
-      try { window.__msModalLock = false; } catch (e) {}
+      try { if (window.MSLock) MSLock.drop(_lockTok); } catch (e) {}
       if (ov.parentNode) ov.parentNode.removeChild(ov);
     }
     ov.querySelector("#mslo-close").onclick = close;

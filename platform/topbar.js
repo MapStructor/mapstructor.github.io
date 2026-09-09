@@ -6,6 +6,15 @@
   'use strict';
   if (window.__msTopbarBuilt) return;
   window.__msTopbarBuilt = true;
+
+  // A page that renders its OWN account chip (the editor does) calls this; the bar stands down
+  // and drops any chip it already mounted (the boot race could stack several in the pre-mount
+  // bar). 9/8: this replaced pages writing window.__msTopbarUserByPage themselves — the flag is
+  // this file's state, and callers claim rather than write.
+  window.MSTopbarClaimUser = function () {
+    window.__msTopbarUserByPage = true;
+    document.querySelectorAll('#ms-topbar-user').forEach(function (n) { n.remove(); });
+  };
   // NOTE: the parallel-dev "WINDOW A/B" badge is intentionally NOT here. It is a B-only dev aid,
   // injected at serve time by mapstructor-B/serve.py (+ window-badge.js) so it can NEVER reach
   // master or production. See PARALLEL.md § "B-only — never travels to master".

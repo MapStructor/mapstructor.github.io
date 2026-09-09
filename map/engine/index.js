@@ -16,6 +16,45 @@ var ruler_step = (sliderEnd - sliderStart) / 10,
   date_ruler4 = sliderStart + ruler_step * 7,
   date_ruler5 = sliderStart + ruler_step * 9;
 
+// ── The modal text stores (9/8). The ℹ/About reader further down uses these; historically the
+// legacy project lists declared them, and when platform pages stopped loading those lists every
+// platform writer grew its own `window.modal_header_text = window.modal_header_text || {}` guard
+// — five ensure-writes across two files for state THIS file reads. The engine now declares its
+// own stores once (guarded, so a legacy static project's `var modal_header_text = {…}` in
+// lists/ still wins), and platform code only ever adds keys.
+window.modal_header_text = window.modal_header_text || {};
+window.modal_content_html = window.modal_content_html || {};
+
+// ── THE ONE OWNER of the timeline range (9/8). Re-initialises the live slider + rulers + date
+// label to [startDate, endDate] ("today" allowed as the end) and applies the midpoint. The
+// engine reads a static range at load, so a saved per-map range must be applied to the LIVE
+// widgets — and both editing.js (applyTimelineRange) and projectLoader (applyTL) had grown their
+// own copy of this exact math, each writing the engine's slider globals from outside. Divergent
+// copies of one behaviour is how the basemap switch broke; both now delegate here. Returns false
+// until the slider exists — callers poll. (One deliberate merge: the editor's copy never stamped
+// window.__msDate, the loader's did; the owner does, so the date-value truth always matches the
+// slider it just set.)
+window.msApplyTimelineRange = function (startDate, endDate) {
+  try {
+    var $ = window.$, m = window.moment;
+    if (!$ || !m || !$("#slider").length) return false;
+    var s = m(startDate).unix(), e = (endDate === "today") ? m().unix() : m(endDate).unix();
+    if (!s || !e || e <= s) return false;
+    var mid = Math.round((s + e) / 2), step = (e - s) / 10;
+    sliderStart = s; sliderEnd = e; sliderMiddle = mid;   // the engine's own globals — owned here, no longer written from platform files
+    $("#slider").slider("option", { min: s, max: e, value: mid });
+    $("#ruler-date1").text(m.unix(s + step).format("YYYY"));
+    $("#ruler-date2").text(m.unix(s + step * 3).format("YYYY"));
+    $("#ruler-date3").text(m.unix(mid).format("YYYY"));
+    $("#ruler-date4").text(m.unix(s + step * 7).format("YYYY"));
+    $("#ruler-date5").text(m.unix(s + step * 9).format("YYYY"));
+    window.__msDate = mid;
+    $("#date").text(m.unix(mid).format("DD MMM YYYY"));
+    if (typeof changeDate === "function") changeDate(mid);
+    return true;
+  } catch (err) { return false; }
+};
+
 // Coalesce slider updates to ONE per animation frame — jQuery UI's `slide` fires on every
 // mousemove; only the LATEST value is applied per frame. While DRAGGING the update is
 // paintDate() (opacity case-expression — no tile re-layout, stays fluid on 30MB tilesets);

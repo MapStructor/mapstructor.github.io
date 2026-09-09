@@ -201,8 +201,11 @@
         '<div id="msmg-foot"><span id="msmg-status"></span><span id="msmg-actions"></span></div>' +
       "</div>";
     document.body.appendChild(ov);
-    try { window.__msModalLock = true; } catch (e) {}
-    function close() { try { window.__msModalLock = false; } catch (e) {} if (ov.parentNode) ov.parentNode.removeChild(ov); }
+    // counted hold via the lock's one owner (platform/modalLock.js, 9/8) — a plain true/false
+    // write here unlocked whatever modal sat underneath when this panel closed
+    var _lockTok = null;
+    try { _lockTok = window.MSLock ? MSLock.hold("merge") : null; } catch (e) {}
+    function close() { try { if (window.MSLock) MSLock.drop(_lockTok); } catch (e) {} if (ov.parentNode) ov.parentNode.removeChild(ov); }
     ov.querySelector("#msmg-x").onclick = close;
     // THE × IS THE ONLY WAY OUT (owner 8/18: "it's too easy to close and have to start over").
     // A backdrop click used to dismiss the whole thing, and a column mapping is real work — losing
