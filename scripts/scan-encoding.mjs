@@ -76,7 +76,17 @@ const ALLOWED = [
   /* String.fromCharCode, not a literal: the sequence written out as characters would make
      THIS file a mojibake hit, and the scanner would flag its own allowlist. */
   { file: "logs/time_log.md", seq: String.fromCharCode(0xe2, 0x20ac, 0x201d),
-    why: "log entry quoting the mojibake it reports fixing" }
+    why: "log entry quoting the mojibake it reports fixing" },
+  /* Same sentence, two renderings. Every .md deliberate quote reaches its generated .html twin
+     verbatim (owner 9/9: every markdown deliberate gets a sibling html), so an allowance that
+     covers only the source starts failing the moment the pair exists. Both entries stay keyed to
+     an exact sequence, so neither covers anything but this one quoted example. */
+  { file: "logs/time_log.md", seq: String.fromCharCode(0xe2, 0xa5),
+    why: "the same log entry quoting a mangled >= sign" },
+  { file: "logs/time_log.html", seq: String.fromCharCode(0xe2, 0x20ac, 0x201d),
+    why: "generated twin of logs/time_log.md — same deliberate quote" },
+  { file: "logs/time_log.html", seq: String.fromCharCode(0xe2, 0xa5),
+    why: "generated twin of logs/time_log.md — same deliberate quote" }
 ];
 let allowed = 0;
 
