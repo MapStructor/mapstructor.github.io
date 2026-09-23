@@ -175,16 +175,26 @@
     <!-- To revert: comment out NEW BLOCK below, uncomment OLD BLOCK below -->
 
     <!-- NEW BLOCK -->
-    <script src="engine/google-analytics.js?v=c68f4848" type="text/javascript"></script>
     <script>
-      window.dataLayer=window.dataLayer||[];
-      function gtag(){dataLayer.push(arguments);}
-      gtag("js",new Date());
-      gtag("config",siteAnalytics.trackingId);
-      var _s=document.createElement("script");
-      _s.async=true;
-      _s.src="https://www.googletagmanager.com/gtag/js?id="+siteAnalytics.trackingId;
-      document.head.appendChild(_s);
+      /* Same guard as map/index.html — see the comment there. Analytics stays available for a
+         client's own property, set in project/lists/header.js, but the shipped placeholder
+         "G-XXXXXXXXXX" no longer calls Google once per page load for a property that does not
+         exist. */
+      (function () {
+        var id = (window.siteAnalytics && siteAnalytics.trackingId) || "";
+        if (!/^(G|UA|AW|DC)-[A-Z0-9]/i.test(id) || /X{4}/i.test(id)) return;   // unset or placeholder
+        var legacy = document.createElement("script");
+        legacy.src = "engine/google-analytics.js?v=c68f4848";
+        document.head.appendChild(legacy);
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = function () { dataLayer.push(arguments); };
+        gtag("js", new Date());
+        gtag("config", id);
+        var _s = document.createElement("script");
+        _s.async = true;
+        _s.src = "https://www.googletagmanager.com/gtag/js?id=" + encodeURIComponent(id);
+        document.head.appendChild(_s);
+      })();
     </script>
     <!-- END NEW BLOCK -->
 
