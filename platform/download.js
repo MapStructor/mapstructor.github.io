@@ -125,8 +125,15 @@
 
     var variant = detectVariant();
     var archCount = variant === "maplibre" ? Object.keys(collectArchives()).length : 0;
+    /* NOT A CHOICE ANY MORE (owner, 9/22): "I don't think it should be a choice actually —
+       everything must be there. We need there to be no gap. Everything must be in a folder that
+       can be put up onto a completely separate website."
+       Both switches used to be checkboxes, and both could produce a copy that silently depended on
+       MapStructor: unticking Embed left tiled layers streaming from our Worker, and unticking raw
+       data shipped a map with no underlying file to hand anyone. A default nobody reads is not a
+       guarantee. What they bought instead is honesty about size — stated below, not hidden. */
     var embedRow = variant === "maplibre" && archCount > 0
-      ? "<label class=\"msdl-row\"><input type=\"checkbox\" id=\"msdl-embed\" checked> Embed map data in the folder (.pmtiles — the data itself works offline and from any host)</label>"
+      ? "<div class=\"msdl-row\">Map data for <b>" + archCount + "</b> tiled layer" + (archCount === 1 ? "" : "s") + " is embedded in the folder (.pmtiles), so it works offline and from any host. This is what makes the copy large.</div>"
       : "";
     var variantNote = variant === "maplibre"
       ? "This map uses no Mapbox layers, so the copy runs on <b>MapLibre</b> (free — no Mapbox token is included anywhere). Basemaps become free equivalents: satellite &rarr; Esri World Imagery, others &rarr; OpenFreeMap streets."
@@ -137,12 +144,12 @@
       "<button id=\"msdl-close\" title=\"Close\">&times;</button>" +
       "<h3>Download whole project</h3>" +
       "<p class=\"msdl-sub\">A self-contained, static copy of this map — a folder you can open on any computer or upload to any web host. It depends on nothing from MapStructor and never updates.</p>" +
-      "<label class=\"msdl-row\"><input type=\"checkbox\" id=\"msdl-rawdata\" checked> Include raw data (layer exports in <b>other_data/</b>)</label>" +
+      "<div class=\"msdl-row\">The raw data for every layer rides along in <b>other_data/</b>, so the copy carries the underlying files, not only the picture of them.</div>" +
       "<div class=\"msdl-row\">Data format: <select id=\"msdl-format\"><option value=\"geojson\" selected>GeoJSON</option></select><span style=\"color:#9a93ad;font-size:11px;\">(more formats later)</span></div>" +
       embedRow +
       "<button id=\"msdl-build\">Build ZIP</button>" +
       "<div id=\"msdl-status\"></div>" +
-      "<div id=\"msdl-note\">Run <b>start-map.bat</b> inside the unzipped folder (needs Python), or upload the folder to any static host and open <b>map/index.html</b>. " + variantNote + "</div>" +
+      "<div id=\"msdl-note\">Unzip it and <b>upload the whole folder to any web host</b> — opening the folder's address shows the map. To run it on this computer instead, double-click <b>start-map.bat</b> (needs Python). " + variantNote + "</div>" +
       "</div>";
     document.body.appendChild(ov);
     function close() { ov.remove(); }
@@ -151,12 +158,11 @@
     document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); } });
     ov.querySelector("#msdl-build").addEventListener("click", function () {
       var btn = this; btn.disabled = true;
-      var embedEl = ov.querySelector("#msdl-embed");
       buildZip({
-        rawData: !!ov.querySelector("#msdl-rawdata").checked,
+        rawData: true,          // both always on — see the NOT A CHOICE note above
         format: ov.querySelector("#msdl-format").value,
         variant: variant,
-        embed: !!(embedEl && embedEl.checked)
+        embed: true
       }).then(function () {
         btn.disabled = false; setStatus("Done — check your downloads folder.", "#2d7a2d");
       }, function (e) {
@@ -247,6 +253,29 @@
     var seen = {}, out = [];
     urls.forEach(function (x) { if (x && !seen[x]) { seen[x] = 1; out.push(x); } });
     return { name: name || (n.id || "data"), urls: out, label: n.label || n.id };
+  }
+
+  /* The layer's SOURCE data, as opposed to its tiles.
+     Found 9/22 by the export gate's new E9 check: a copy of a tiled map carried an embedded
+     .pmtiles and ZERO files in other_data/. Tiles are a rendering artifact — tippecanoe thins and
+     simplifies them per zoom — so a folder containing only tiles is a picture of the data, not the
+     data. Owner: "Everything must be there. We need there to be no gap."
+     The fold writes an export-ready FeatureCollection beside every archive, at the same key with a
+     .geojson extension (fold-rows) or .source.geojson (fold-raw, the uploader's own file). This
+     returns both spellings on both hosts and the caller takes the first that answers. */
+  function sourceDataFor(n) {
+    var u = String((n.source && ((n.source.tiles && n.source.tiles[0]) || n.source.url)) || "");
+    var pm = u.match(/pmt\/([0-9a-f-]{36})\/([0-9a-f-]{36})\//i);
+    var key = null;
+    if (n.parquet_key && /\.parquet$/.test(String(n.parquet_key))) key = String(n.parquet_key).replace(/^tiles\//, "").replace(/\.parquet$/, "");
+    else if (pm) key = pm[1] + "/" + pm[2];
+    if (!key) return null;
+    var urls = [];
+    [".geojson", ".source.geojson"].forEach(function (ext) {
+      urls.push(R2_TILE_BASE + "/" + key + ext);
+      urls.push(SB_TILE_BASE + "/" + key + ext);
+    });
+    return { name: n.id || key.split("/").pop(), urls: urls, label: n.label || n.id };
   }
 
   // node.id → {name,urls,label} for every layer whose archive we can fetch (names dedup to one file each)
@@ -658,6 +687,46 @@
     return html;
   }
 
+  /* ── the root index.html ────────────────────────────────────────────────── */
+
+  /* The front door of the folder. Its whole job is that uploading this folder to a web host and
+     visiting the address shows the map, instead of a directory listing.
+     It is a real page rather than a bare <meta refresh> for two reasons: the refresh can be
+     disabled or blocked, and someone who opened the folder by double-clicking a file (rather than
+     serving it) needs to be told WHY the map is blank — over file:// a browser refuses the data
+     requests the map makes, and that refusal looks exactly like a broken map. */
+  function genRootIndex(mapName, logoRel) {
+    var t = String(mapName || "Map");
+    var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); };
+    return "<!doctype html>\n<html lang=\"en\">\n<head>\n" +
+      "<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n" +
+      "<title>" + esc(t) + "</title>\n" +
+      (logoRel ? "<link rel=\"icon\" href=\"" + esc(logoRel) + "\">\n" : "") +
+      "<meta http-equiv=\"refresh\" content=\"0; url=map/index.html\">\n" +
+      "<link rel=\"canonical\" href=\"map/index.html\">\n" +
+      "<style>\n" +
+      "  :root { color-scheme: light dark; --ink:#1d1a26; --dim:#6b6680; --bg:#faf9fc; --card:#fff; --line:#e4e0ec; }\n" +
+      "  @media (prefers-color-scheme: dark) { :root { --ink:#eceaf2; --dim:#a9a3ba; --bg:#16141c; --card:#1e1b26; --line:#332e40; } }\n" +
+      "  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;\n" +
+      "         background:var(--bg); color:var(--ink);\n" +
+      "         font:15px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; padding:24px; }\n" +
+      "  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;\n" +
+      "          padding:28px 32px; max-width:34rem; }\n" +
+      "  h1 { margin:0 0 .4em; font-size:1.35rem; text-wrap:balance; }\n" +
+      "  p { margin:0 0 1em; color:var(--dim); }\n" +
+      "  a.go { display:inline-block; font-weight:600; color:inherit; }\n" +
+      "  code { background:var(--bg); border:1px solid var(--line); border-radius:5px; padding:1px 5px; }\n" +
+      "</style>\n</head>\n<body>\n" +
+      "<div class=\"card\">\n" +
+      "  <h1>" + esc(t) + "</h1>\n" +
+      "  <p>Opening the map&hellip; <a class=\"go\" href=\"map/index.html\">continue &rarr;</a></p>\n" +
+      "  <p><b>If the map is blank:</b> this folder has to be served over <code>http://</code>, not\n" +
+      "     opened straight off the disk &mdash; browsers refuse a page&rsquo;s data requests when it is\n" +
+      "     opened as a file. Upload the folder to any web host, or double-click\n" +
+      "     <code>start-map.bat</code> here to serve it on this computer.</p>\n" +
+      "</div>\n</body>\n</html>\n";
+  }
+
   /* ── start-map.bat ──────────────────────────────────────────────────────── */
 
   function genStartBat() {
@@ -967,18 +1036,48 @@
       setStatus("Exporting layer data…");
       var flat = [];
       (function w(a) { (a || []).forEach(function (n) { flat.push(n); if (n.children) w(n.children); }); })(grab(function () { return layers; }, []));
-      flat.forEach(function (n) {
-        if (n.outlineOf) return;   // outline twins borrow their parent's features — one export is enough
+      var wrote = 0, unreachable = [];
+      for (var ri = 0; ri < flat.length; ri++) {
+        var n = flat[ri];
+        if (n.outlineOf) continue;   // outline twins borrow their parent's features — one export is enough
         var fc = n.source && n.source.type === "geojson" && n.source.data;
         if (fc && fc.features && fc.features.length) {
           zip.file("other_data/" + (n.id || "layer") + ".geojson", JSON.stringify(cleanValue(fc, new WeakSet())));
+          wrote++;
+          continue;
         }
-      });
+        /* A TILED layer has no features in memory — its data lives in the archive on R2. Without
+           this the copy shipped tiles and nothing else for exactly the biggest layers, which are
+           the ones somebody would actually want the file for. */
+        var src = sourceDataFor(n);
+        if (!src) continue;
+        setStatus("Fetching the source data for “" + (src.label || src.name) + "”…");
+        var got = null;
+        for (var si = 0; si < src.urls.length && !got; si++) {
+          try { got = await fetchBin(src.urls[si]); } catch (eSrc) { /* try the next spelling/host */ }
+        }
+        if (got) { zip.file("other_data/" + src.name + ".geojson", got); wrote++; }
+        else unreachable.push(src.label || src.name);
+      }
+      // Say what is missing rather than shipping a quietly incomplete folder — a gap nobody is told
+      // about is the failure this whole change exists to remove.
+      if (unreachable.length) console.warn("download: no source file found for " + unreachable.join(", "));
+      console.log("download: " + wrote + " layer data file(s) in other_data/");
     }
 
     // 7. the launcher + its server (python's stock http.server ignores Range — .pmtiles needs 206s)
     zip.file("start-map.bat", genStartBat());
     zip.file("serve-map.py", await fetchText("../platform/serve-map.py"));
+
+    /* 8. the ROOT index.html — what makes "upload the folder to a web host" actually work.
+       Until 9/22 the only page in the zip was map/index.html, so dropping the folder into a
+       website folder and visiting its address gave a directory listing or a 404, and the dialog
+       had to tell people to append /map/index.html by hand. The published showcase never had this
+       problem because publishSite.js strips the "map/" prefix on the way up — same builder, two
+       different shapes, and only one of them opened.
+       It is deliberately NOT added to the publish build: there, map/index.html already becomes the
+       root index.html, and a second one would collide with it. */
+    if (!opts.returnZip) zip.file("index.html", genRootIndex(name, faviconHref.replace(/^\.\.\//, "")));
 
     // "Update the public site" needs the ENTRIES, not a .zip — same build, different ending.
     // Returning here also skips compressing ~80 MB we would immediately throw away. Everything the

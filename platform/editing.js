@@ -3499,7 +3499,17 @@
   // quickly. It is essential that it does."). Now only imports where inserting the rows would
   // ITSELF be the slow part go to the cloud; everything below imports rows and is visible and
   // editable immediately, with the browser tiler baking its tiles right after (auto-convert).
-  var FOLD_RAW_MIN = 50000;
+  // ── 9/22: LOWERED 50,000 → 2,000 (M13), owner's call. ──────────────────────────────────────
+  // The paragraph above is kept because it records why the number was raised in the first place,
+  // but its premise expired on 8/7: "fold-raw writes ZERO feature rows" is no longer true. The
+  // import now draws the features from memory and then bulk-inserts every row BEFORE the fold is
+  // dispatched (see SEEN FIRST, SAVED SECOND below) — so a folded import is visible just as fast
+  // as a live one, and the reason for 50,000 no longer holds.
+  // Why lower it: at 50,000 nothing real ever crossed the line — the largest layer in the whole
+  // database is 18,726 features — so the tiled half of the product never ran on live data, and a
+  // client's first big import would have been its first real exercise. 2,000 is the architecture
+  // doc's own number and matches the browser tiler's point threshold further down this file.
+  var FOLD_RAW_MIN = 2000;
   var FOLD_BYTES_MIN = 48 * 1024 * 1024;     // …or this much geometry, however few features carry it (8/15)
   // Cheap size estimate: sample coordinates rather than stringify (stringifying to measure would
   // cost the memory the measurement exists to protect).
@@ -11312,7 +11322,11 @@
       // WHAT IS THIS LAYER — every provenance, not just the original three (owner 8/20: "Should
       // also mention in the panel what type it is — we've only done portal added stuff for this").
       // The folded state rides along explicitly, because it is the one that silently changes what
-      // the user can DO (tables read the archive snapshot; per-feature editing is off).
+      // the user can DO — the ATTRIBUTE TABLE goes read-only (it shows the archive snapshot).
+      // It used to say "per-feature editing is off", which was simply false: clicking a feature on
+      // a folded layer pulls it out of the archive as a delta row and edits normally (the C4 branch
+      // of enterEngineEdit). The wrong string was believed and reported to the owner as product
+      // behaviour on 9/22 — a label is not evidence of what the code does.
       var kt = '';
       if (node.instanceOf) kt = '🔗 Linked instance — mirrors its source layer’s features (edit the original)';
       else if (node.outlineOf) { var _op = findNodeById(layers, node.outlineOf); kt = '〰 Outline layer — draws the borders of “' + ((_op && _op.label) || node.outlineOf) + '”'; }
@@ -11320,7 +11334,7 @@
       else if (isConvertedTs) kt = '🧩 Tileset — auto-generated from your data (features editable in the table)';
       else if (isTilesetNode(node)) kt = '🧩 Vector tileset — external source (features live in the remote tiles)';
       if (node._msCopyOf && kt) kt += ' · copy';
-      if (node.fold_state === 'folded') kt += (kt ? ' · ' : '') + '📦 FOLDED — feature rows are archived (tables read the archive snapshot; per-feature editing is off)';
+      if (node.fold_state === 'folded') kt += (kt ? ' · ' : '') + '📦 FOLDED — feature rows are archived. Click a feature on the map to edit it as usual; the attribute TABLE is read-only here (it shows the archive snapshot)';
       kindEl.textContent = kt; kindEl.style.display = kt ? 'block' : 'none';
     }
     // 7/21 universal bake: tiled layers RE-bake; live geojson layers can FIRST-TIME bake (optional —
