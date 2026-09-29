@@ -1036,13 +1036,26 @@
       setStatus("Exporting layer data…");
       var flat = [];
       (function w(a) { (a || []).forEach(function (n) { flat.push(n); if (n.children) w(n.children); }); })(grab(function () { return layers; }, []));
-      var wrote = 0, unreachable = [];
+      var wrote = 0, unreachable = [], usedNames = {};
+      /* Name the file after the LAYER, not its internal id. The first build of this shipped
+         other_data/new-mrxvfhxwfln-cvynlr-lzo3n1.geojson — a 322 MB file nobody could identify.
+         Handing someone their data in files they cannot tell apart is most of the way to not
+         handing it over at all. */
+      function dataFileName(n, fallback) {
+        var base = String(n.label || n.name || fallback || "layer")
+          .replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim()
+          .replace(/ /g, "_").slice(0, 80) || "layer";
+        var name = base, i = 2;
+        while (usedNames[name.toLowerCase()]) name = base + "_" + (i++);   // two layers may share a label
+        usedNames[name.toLowerCase()] = 1;
+        return name;
+      }
       for (var ri = 0; ri < flat.length; ri++) {
         var n = flat[ri];
         if (n.outlineOf) continue;   // outline twins borrow their parent's features — one export is enough
         var fc = n.source && n.source.type === "geojson" && n.source.data;
         if (fc && fc.features && fc.features.length) {
-          zip.file("other_data/" + (n.id || "layer") + ".geojson", JSON.stringify(cleanValue(fc, new WeakSet())));
+          zip.file("other_data/" + dataFileName(n, n.id) + ".geojson", JSON.stringify(cleanValue(fc, new WeakSet())));
           wrote++;
           continue;
         }
@@ -1056,7 +1069,7 @@
         for (var si = 0; si < src.urls.length && !got; si++) {
           try { got = await fetchBin(src.urls[si]); } catch (eSrc) { /* try the next spelling/host */ }
         }
-        if (got) { zip.file("other_data/" + src.name + ".geojson", got); wrote++; }
+        if (got) { zip.file("other_data/" + dataFileName(n, src.name) + ".geojson", got); wrote++; }
         else unreachable.push(src.label || src.name);
       }
       // Say what is missing rather than shipping a quietly incomplete folder — a gap nobody is told
