@@ -52,6 +52,20 @@
   }
 
   // ── small helpers ─────────────────────────────────────────────────────────
+  /* THE MSD BADGE, in one place (owner 9/29: "We need there to be a clear designation of something
+     as a MapStructor Dataset (MSD). I should see it everywhere an msd is mentioned.")
+     The dataset page, the repository listing and the portal browser each grew their own copy of
+     this green pill; a fourth hand-written copy is how they start to drift. Same colour, same
+     wording, same tooltip, everywhere — that sameness IS the designation. */
+  var MSD_PILL = 'display:inline-block;padding:1px 7px;border-radius:9px;background:#2d7a2d;' +
+                 'color:#ffffff;font-weight:700;font-size:10.5px;letter-spacing:.03em;vertical-align:1px;';
+  var MSD_TITLE = 'MapStructor Dataset — the first-party designation';
+  function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c];
+    });
+  }
+
   function el(tag, css, text) {
     var n = document.createElement(tag);
     if (css) n.style.cssText = css;
@@ -626,9 +640,18 @@
         if (_panelNode !== node) return;
         var d = map[lid];
         if (d) {
-          btn.textContent = '🏷 Dataset: ' + d.name;
-          btn.title = 'Registered as "' + d.name + '" (' + d.licence + ') — click to view or edit';
-          btn.style.background = '#f2fbf3'; btn.style.borderColor = '#bfe3c4'; btn.style.color = '#2f6b3a';
+          /* The LAYER PANEL was the one surface that knew a layer's dataset and never said whether
+             it was an MSD — and it is the surface the owner actually works in. The flag was already
+             coming back from ms_dataset_for_layers; nothing read it. */
+          if (d.msd) {
+            btn.innerHTML = '<span style="' + MSD_PILL + '">MSD</span> ' + escHtml(d.name);
+            btn.title = '"' + d.name + '" is a MapStructor Dataset (' + d.licence + ') — click to view or edit';
+            btn.style.background = '#eef8ee'; btn.style.borderColor = '#9fcfa4'; btn.style.color = '#245c2c';
+          } else {
+            btn.textContent = '🏷 Dataset: ' + d.name;
+            btn.title = 'Registered as "' + d.name + '" (' + d.licence + ') — click to view or edit';
+            btn.style.background = '#f2fbf3'; btn.style.borderColor = '#bfe3c4'; btn.style.color = '#2f6b3a';
+          }
           // inherited (origin is another layer) → this is a copy; offer the fork
           db.from('datasets').select('origin_layer_id').eq('id', d.id).single().then(function (o) {
             if (_panelNode !== node) return;

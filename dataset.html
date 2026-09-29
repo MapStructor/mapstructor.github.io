@@ -165,7 +165,18 @@
         if (d.lic_commercial === false) tags.appendChild(txt('span', 'no commercial use', 'tag warn'));
         if (d.snapshot_key) tags.appendChild(txt('span', 'read-only copy kept', 'tag ok'));
         if (d.curated) tags.appendChild(txt('span', 'curated', 'tag ok'));
-        if (d.msd) { var msdTag = txt('span', 'MSD', 'tag ok'); msdTag.title = 'MapStructor Dataset — a first-party designation'; msdTag.style.fontWeight = '700'; tags.appendChild(msdTag); }
+        /* The SAME pill as the catalogue, the portal browser and the layer panel. It used to be
+           `tag ok` — a pale green chip identical to "curated" and "read-only copy kept" sitting
+           beside it, so the one designation that is meant to stand out looked like housekeeping.
+           Owner 9/29: "We need there to be a CLEAR designation… I should see it everywhere."
+           Seeing it everywhere only works if it is recognisably the same thing each time. */
+        if (d.msd) {
+          var msdTag = txt('span', 'MSD', 'tag');
+          msdTag.title = 'MapStructor Dataset — the first-party designation';
+          msdTag.style.cssText = 'font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;' +
+                                 'background:#2d7a2d;color:#ffffff;letter-spacing:.03em;';
+          tags.insertBefore(msdTag, tags.firstChild);   // first, not last — it is the headline fact
+        }
 
         var dl = document.getElementById('d-about');
         row(dl, 'Source', d.source);

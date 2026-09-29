@@ -1868,24 +1868,77 @@
       : 'tiles/' + projectId + '/' + lid;
     return 'https://tiles.mapstructor.com/' + base + '.geojson';
   }
+  /* ── ONE pull at a time, and everyone waits on the SAME one ────────────────────────────────
+     Found 9/29 on the owner's Atlas of Historical County Boundaries map. Clicking a feature there
+     made it vanish and, much later, come back the wrong colour — and their clicks had left THREE
+     delta rows for one Connecticut and duplicates for Massachusetts and New York.
+
+     The dedupe query was never broken; run by hand it finds the existing row every time. The
+     cause is that this archive is **350 MB of GeoJSON**, downloaded and parsed in full to read
+     ONE feature. The tile copy is hidden the instant you click, so for the whole of that download
+     the feature is simply gone from the map — which reads as a dead click, so a person clicks
+     again. Each click started its own 350 MB download, each checked for an existing delta before
+     any of them had finished inserting one, and each inserted. Duplicate deltas are not a lookup
+     bug; they are the visible symptom of an operation slow enough that people repeat it.
+
+     Two guards, and between them the duplicates become impossible rather than unlikely:
+       · the DOWNLOAD is shared — a second click while one is in flight awaits the same promise
+         instead of starting another;
+       · the PULL is keyed by layer+feature — two clicks on the same feature share one insert.
+     The deeper fix is to stop fetching 350 MB to read one row at all (the parquet beside it is
+     77.8 MB and DuckDB already range-reads it elsewhere in this file) — that is a design change,
+     written up for the owner rather than smuggled in here. */
+  var _foldRawInflight = {};    // layerDbId → Promise<byId>, so concurrent clicks share one fetch
+  var _foldPullInflight = {};   // layerDbId + '/' + tileFid → Promise<row>, so repeat clicks share one pull
+
   async function foldRawIndex(node, lid) {
     var ver = String(node.tilesGeneratedAt || node.attrParquetAt || '0');
     var c = _foldRawCache[lid];
     if (c && c.ver === ver) return c.byId;
-    var r = await fetch(foldArtifactUrl(node, lid) + '?v=' + encodeURIComponent(ver), { cache: 'no-store' });
-    if (!r.ok) throw new Error('layer archive HTTP ' + r.status);
-    var fc = await r.json(), byId = {};
-    (fc.features || []).forEach(function (f) { var k = f.id != null ? f.id : (f.properties || {}).feature_id; if (k != null) byId[String(k)] = f; });
-    _foldRawCache[lid] = { ver: ver, byId: byId };
-    return byId;
+    if (_foldRawInflight[lid]) return _foldRawInflight[lid];
+    _foldRawInflight[lid] = (async function () {
+      var r = await fetch(foldArtifactUrl(node, lid) + '?v=' + encodeURIComponent(ver), { cache: 'no-store' });
+      if (!r.ok) throw new Error('layer archive HTTP ' + r.status);
+      var fc = await r.json(), byId = {};
+      (fc.features || []).forEach(function (f) { var k = f.id != null ? f.id : (f.properties || {}).feature_id; if (k != null) byId[String(k)] = f; });
+      _foldRawCache[lid] = { ver: ver, byId: byId };
+      return byId;
+    })();
+    try { return await _foldRawInflight[lid]; }
+    finally { delete _foldRawInflight[lid]; }   // cleared on failure too, so a retry is possible
   }
-  async function foldDeltaFor(node, lid, tileFid) {
+  function foldDeltaFor(node, lid, tileFid) {
+    var key = lid + '/' + tileFid;
+    if (_foldPullInflight[key]) return _foldPullInflight[key];
+    _foldPullInflight[key] = foldDeltaPull(node, lid, tileFid);
+    return _foldPullInflight[key].finally(function () { delete _foldPullInflight[key]; });
+  }
+  async function foldDeltaPull(node, lid, tileFid) {
     // an existing delta wins (it is the newer truth than the artifact)
     var ex = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url').eq('layer_id', lid).eq('custom_fields->>ms_foldsrc', String(tileFid)).limit(1);
-    if (!ex.error && ex.data && ex.data.length) return ex.data[0];
+    /* A FAILED lookup is not an absent delta. This used to read `if (!ex.error && …)`, so a
+       lookup that errored fell straight through to the insert below and silently made a second
+       delta for a feature that already had one — family B, the silent not-found, in the one place
+       where the consequence is duplicated data rather than a missing panel. Refuse instead. */
+    if (ex.error) throw new Error('could not check for an existing edit of this feature: ' + ex.error.message);
+    if (ex.data && ex.data.length) return ex.data[0];
+
+    /* RE-CLICKING YOUR OWN EDIT (found 9/29, and it made the feature unopenable for good).
+       An edited feature is redrawn by the `-edited-` overlay, and that overlay carries the DELTA
+       row's id — not the archived feature's. Clicking it therefore arrives here with a delta id,
+       which is looked for in the artifact index where it can never be: archive ids and delta ids
+       come from different ranges entirely. The pull returned null and the editor said "this
+       folded layer's archive is unavailable — try again", every time, forever. Trying again could
+       not help; the archive was fine.
+       So: before deciding the id is unknown, ask whether it IS one of our own rows. */
+    var self = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url').eq('layer_id', lid).eq('feature_id', tileFid).limit(1);
+    if (!self.error && self.data && self.data.length) return self.data[0];
+
     var byId = await foldRawIndex(node, lid);
     var af = byId[String(tileFid)];
-    if (!af || !af.geometry) return null;
+    /* Say WHICH id could not be found. "Unavailable" sent us looking at R2 for an archive that
+       was serving perfectly — the id was the problem, and the message hid that for an hour. */
+    if (!af || !af.geometry) { console.warn('fold: feature ' + tileFid + ' is in neither this layer\'s rows nor its archive (' + Object.keys(byId).length + ' archived features)'); return null; }
     var p = af.properties || {}, cf = {}, STDK = { feature_id: 1, label: 1, description: 1, start_date: 1, end_date: 1, content_id: 1, image_url: 1 };
     Object.keys(p).forEach(function (k) { if (!STDK[k]) cf[k] = p[k]; });
     cf.ms_foldsrc = String(tileFid);
@@ -1993,7 +2046,13 @@
     var row = null, rowGeom = null;
     if (foldedEdit) {
       // The Fold (C4): pull from the raw artifact → delta row; the rest is the normal machinery.
-      setStatus('Pulling feature from the layer archive…');
+      /* Say how long this will feel, not just that it is happening. The archive is downloaded
+         whole the first time a feature on the layer is clicked, and on the owner's 350 MB Atlas
+         layer that is a long silence with the feature already hidden — indistinguishable from a
+         dead click, which is what made them click again and again (9/29). The cached case is
+         instant, so only the first pull gets the warning. */
+      setStatus(_foldRawCache[lyrId] ? 'Opening this feature…'
+        : 'Downloading this layer’s archive to open one feature — on a large layer this takes a while. It is only needed once per layer.');
       try { row = await foldDeltaFor(node, lyrId, fid); } catch (eFp) { console.warn('fold delta pull failed', eFp); row = null; }
       if (!row || !row.geom) { engineViewerPanel(node, clickEvt); setStatus('This folded layer\'s archive is unavailable — try again.'); return; }
       drawId = 'db-' + row.feature_id;   // the DRAW copy tracks the DELTA row; the tile still hides by its own (artifact) id below
