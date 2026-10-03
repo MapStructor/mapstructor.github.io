@@ -545,6 +545,19 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     } catch (eEO) {}
   }
 
+  /* MSD layer badge (10/3): which leaves are the origin layer of a registered MSD, so the engine can
+     draw the mark beside them (generateLayers.msMsdBadge). The datasets table is the one place that
+     knows; one small public-readable query per map. Published to a GLOBAL set keyed by layer db id,
+     not a per-node stamp, so the badge survives the editor rebuilding the layer tree. Best-effort —
+     a failure just means no layer badges, never a broken panel. */
+  try {
+    var msdRes = await db.from("datasets").select("origin_layer_id").eq("origin_project_id", platformProjectId).eq("msd", true);
+    window.__msMsdLayerIds = window.__msMsdLayerIds || {};
+    if (!msdRes.error && msdRes.data) {
+      msdRes.data.forEach(function (r) { if (r.origin_layer_id) window.__msMsdLayerIds[r.origin_layer_id] = true; });
+    }
+  } catch (eMsdStamp) {}
+
   generateLayersPanel();
   generateBaseMapsPanel();
   initMaps();

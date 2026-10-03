@@ -51,6 +51,19 @@ function msModeBadge(d) {
     : '<span class="ms-mode-badge" title="Linked &mdash; reads another map&rsquo;s data live, read-only. Style it however you like and add your own columns; it adds 0 bytes of its own.">&#10697;</span>';
 }
 
+/* The MSD mark on a layer row (10/3, owner: "There should be a badge next to msds in the layers
+   sidebars as well"). A leaf is an MSD when it is the origin layer of a registered MSD dataset;
+   platform/projectLoader stamps `_isMsd` on it before the panel builds (the datasets table is the
+   one source of that truth). Rendered from the ONE pill definition (platform/msdBadge.js), with the
+   ms-msd-badge class so the same click-for-explanation listener covers it. Absent in standalone
+   downloads, which carry no MSD script and no stamp — correctly, nothing renders. */
+function msMsdBadge(d) {
+  if (!d || typeof window === "undefined" || !window.MSD || !window.__msMsdLayerIds) return "";
+  var dbid = d._layerDbId;   // the leaf's OWN db id — not its data source (an instance of the MSD is not the MSD)
+  if (!dbid || !window.__msMsdLayerIds[dbid]) return "";
+  return ' <span class="ms-msd-badge" style="' + window.MSD.PILL + '" title="' + window.MSD.TITLE.dataset + '">MSD</span>';
+}
+
 function renderLayerRow(layerData, groupName) {
   const iconClass = layerData.collapsed ? "fa-plus-square" : "fa-minus-square";
   const html = `
@@ -91,7 +104,7 @@ function renderGroupLayerItem(layerData, groupName, isGroupCollapsed) {
         />
         <label for="${layerData.id}">
           <i class="${layerData.isSolid ? "fas" : "far"} fa-${layerData.iconType || "slash"} ${["square", "circle", "comment-dots"].includes(layerData.iconType) ? "" : "slash-icon"}${layerData.colorBy ? " multicolor-icon" : ""}" style="color: ${layerData.iconColor || "#ff0000"}"></i>
-          ${layerData.label || ""}${msModeBadge(layerData)}
+          ${layerData.label || ""}${msModeBadge(layerData)}${msMsdBadge(layerData)}
         </label>
         ${layerRowButtons(layerData, layerData.label, true)}
       </div>
@@ -111,7 +124,7 @@ function renderSingleLayer(layerData) {
         />
         <label for="${layerData.id}">
           <i class="${layerData.isSolid ? "fas" : "far"} fa-${layerData.iconType || "slash"} ${["square", "circle", "comment-dots"].includes(layerData.iconType) ? "" : "slash-icon"}${layerData.colorBy ? " multicolor-icon" : ""}" style="color: ${layerData.iconColor || "#ff0000"}"></i>
-          ${layerData.label}${msModeBadge(layerData)}
+          ${layerData.label}${msModeBadge(layerData)}${msMsdBadge(layerData)}
         </label>
         ${layerRowButtons(layerData, layerData.label, true)}
       </div>

@@ -24,14 +24,35 @@
   'use strict';
   if (window.MSD) return;
 
+  /* Where the portal lives, resolved from THIS script's own URL so the link is correct from every
+     page the badge appears on — /map/editor.html, /dashboard.html, /portal.html all load
+     platform/msdBadge.js, at different relative depths. currentScript is only readable while the
+     script first runs, so capture it here, not inside the click handler. */
+  var PORTAL_URL = (function () {
+    try { return document.currentScript.src.replace(/platform\/msdBadge\.js.*$/, 'portal.html'); }
+    catch (e) { return 'portal.html'; }
+  })();
+
   var PILL = 'display:inline-block;padding:1px 7px;border-radius:9px;background:#2d7a2d;' +
              'color:#ffffff;font-weight:700;font-size:10.5px;letter-spacing:.03em;' +
              'vertical-align:1px;white-space:nowrap;font-family:inherit;cursor:pointer;';
 
   var TITLE = {
-    dataset: 'MapStructor Dataset — the first-party designation. Click for what this means.',
-    project: 'MapStructor Dataset Project — a first-party map, designated by MapStructor. Click for what this means.'
+    dataset: 'MapStructor Dataset — click to learn what this means.',
+    project: 'MapStructor Dataset Project — click to learn what this means.'
   };
+
+  /* The explanation body, the owner's own words (10/3). ONE text for both badges — it explains the
+     whole MSD / MapStructor Projects idea, which is what someone wants to understand whichever mark
+     they clicked. Split so the last sentence can carry a live link to the portal. */
+  var EXPLAIN_TEXT =
+    'A MapStructor Dataset (MSD) is an open dataset created through MapStructor Projects, from data ' +
+    'users create, or combined from several data sources. They are carefully curated, and users ' +
+    'work towards creating accuracy, precision and authority, and are ultimately given a finalized ' +
+    'status. You can think of it like a Wikipedia for maps, and created together like OpenStreetMap. ' +
+    'The purpose is for people to create datasets that are lacking and are needed or desired in the ' +
+    'world today, that are often otherwise difficult to make. Anyone can submit a map for ' +
+    'consideration as a MapStructor Project.';
 
   /* A real element, never an HTML string: these sit next to USER-TYPED names, and the pages that
      render those names build them with textContent precisely so a map called `<script>` cannot
@@ -115,7 +136,7 @@
       'display:flex;align-items:center;justify-content:center;font-family:"Source Sans Pro",Arial,sans-serif;';
     var card = document.createElement('div');
     card.style.cssText = 'background:#ffffff;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.35);' +
-      'width:420px;max-width:92vw;padding:20px 22px;color:#1e1b2e;';
+      'width:460px;max-width:92vw;padding:20px 22px;color:#1e1b2e;';
     var head = document.createElement('div');
     head.style.cssText = 'display:flex;align-items:center;gap:9px;margin-bottom:10px;';
     head.appendChild(badge(kind));
@@ -130,14 +151,21 @@
     card.appendChild(head);
     var body = document.createElement('div');
     body.style.cssText = 'font-size:13px;line-height:1.55;color:#3d3852;';
-    body.textContent = kind === 'project'
-      ? 'This map is first-party: MapStructor built it and maintains it, from datasets MapStructor ' +
-        'curates itself. The designation is awarded by MapStructor only — a map without this mark ' +
-        'was made by one of our users, and its content is theirs.'
-      : 'This dataset is first-party: MapStructor assembled it, cleaned it and keeps it current, ' +
-        'rather than mirroring it from elsewhere. The designation is awarded by MapStructor only — ' +
-        'datasets without this mark were contributed by users or imported from outside sources.';
+    body.textContent = EXPLAIN_TEXT;   // textContent, not innerHTML — fixed copy, kept safe by habit
     card.appendChild(body);
+    // the portal pointer, on its own line, with a live link
+    var see = document.createElement('div');
+    see.style.cssText = 'font-size:13px;line-height:1.55;color:#3d3852;margin-top:10px;';
+    see.appendChild(document.createTextNode('See MapStructor Projects and MapStructor Datasets in '));
+    var link = document.createElement('a');
+    link.href = PORTAL_URL;
+    link.textContent = 'the portal';
+    link.style.cssText = 'color:#7c5cbf;font-weight:700;text-decoration:none;';
+    link.addEventListener('mouseenter', function () { link.style.textDecoration = 'underline'; });
+    link.addEventListener('mouseleave', function () { link.style.textDecoration = 'none'; });
+    see.appendChild(link);
+    see.appendChild(document.createTextNode('.'));
+    card.appendChild(see);
     ov.appendChild(card);
     function close() { ov.remove(); document.removeEventListener('keydown', esc); }
     function esc(e) { if (e.key === 'Escape') close(); }
