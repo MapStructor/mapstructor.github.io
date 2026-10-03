@@ -145,7 +145,21 @@
       "<h3>Download whole project</h3>" +
       "<p class=\"msdl-sub\">A self-contained, static copy of this map — a folder you can open on any computer or upload to any web host. It depends on nothing from MapStructor and never updates.</p>" +
       "<div class=\"msdl-row\">The raw data for every layer rides along in <b>other_data/</b>, so the copy carries the underlying files, not only the picture of them.</div>" +
-      "<div class=\"msdl-row\">Data format: <select id=\"msdl-format\"><option value=\"geojson\" selected>GeoJSON</option></select><span style=\"color:#9a93ad;font-size:11px;\">(more formats later)</span></div>" +
+      /* FORMATS (owner 10/3: "we can make geoparquet the default, and make geojson and other
+         formats optional in addition").
+         GeoParquet is not a convenience — measured on the owner's own archives it is about 4.5x
+         smaller for the same data: Current Rail Network 321.7 MB -> 72.9 MB, Railroads 1826-1911
+         69.0 -> 15.2, Rail Lines 33.5 -> 6.9. On the Railways copy that is roughly 700 MB down to
+         370. And the parquet already exists beside every archive, so shipping it costs a different
+         file extension rather than any conversion.
+         BOTH are offered because the trade is who can open the file, not which is better: GeoJSON
+         opens in anything including a text editor, parquet wants QGIS 3.28+, ArcGIS Pro 3, DuckDB
+         or Python. Neither is read by the map itself — these files are the copy of the data for
+         the person you hand the folder to. */
+      "<div class=\"msdl-row\" style=\"display:block;\">Data for each layer, in <b>other_data/</b>:</div>" +
+      "<label class=\"msdl-row\"><input type=\"checkbox\" id=\"msdl-fmt-parquet\" checked> <span><b>GeoParquet</b> — about 4&frac12;&times; smaller. Opens in QGIS, ArcGIS Pro, DuckDB, Python.</span></label>" +
+      "<label class=\"msdl-row\"><input type=\"checkbox\" id=\"msdl-fmt-geojson\"> <span><b>GeoJSON</b> — much larger, but opens in anything, including a text editor.</span></label>" +
+      "<div class=\"msdl-row\" id=\"msdl-fmt-note\" style=\"display:block;color:#9a93ad;font-size:11px;\"></div>" +
       embedRow +
       "<button id=\"msdl-build\">Build ZIP</button>" +
       "<div id=\"msdl-status\"></div>" +
@@ -156,11 +170,29 @@
     ov.addEventListener("click", function (e) { if (e.target === ov) close(); });
     ov.querySelector("#msdl-close").addEventListener("click", close);
     document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); } });
+    /* At least one format, always. Unticking both would quietly produce the folder the 9/22
+       "everything must be there" rule exists to prevent — a map with no underlying data. */
+    var fmtP = ov.querySelector("#msdl-fmt-parquet"), fmtG = ov.querySelector("#msdl-fmt-geojson");
+    var fmtNote = ov.querySelector("#msdl-fmt-note");
+    function syncFormats(changed) {
+      if (!fmtP.checked && !fmtG.checked) {
+        (changed === fmtP ? fmtG : fmtP).checked = true;   // the other one takes over
+        fmtNote.textContent = "The folder always carries the data in at least one format.";
+      } else {
+        fmtNote.textContent = (fmtP.checked && fmtG.checked)
+          ? "Both will be included — the folder will be noticeably larger."
+          : (fmtG.checked ? "GeoJSON only — larger files, readable anywhere." : "");
+      }
+    }
+    fmtP.addEventListener("change", function () { syncFormats(fmtP); });
+    fmtG.addEventListener("change", function () { syncFormats(fmtG); });
+    syncFormats(null);
+
     ov.querySelector("#msdl-build").addEventListener("click", function () {
       var btn = this; btn.disabled = true;
       buildZip({
-        rawData: true,          // both always on — see the NOT A CHOICE note above
-        format: ov.querySelector("#msdl-format").value,
+        rawData: true,          // the data itself is never optional — see the NOT A CHOICE note above
+        formats: { parquet: !!fmtP.checked, geojson: !!fmtG.checked },
         variant: variant,
         embed: true
       }).then(function () {
@@ -270,12 +302,24 @@
     if (n.parquet_key && /\.parquet$/.test(String(n.parquet_key))) key = String(n.parquet_key).replace(/^tiles\//, "").replace(/\.parquet$/, "");
     else if (pm) key = pm[1] + "/" + pm[2];
     if (!key) return null;
-    var urls = [];
-    [".geojson", ".source.geojson"].forEach(function (ext) {
-      urls.push(R2_TILE_BASE + "/" + key + ext);
-      urls.push(SB_TILE_BASE + "/" + key + ext);
-    });
-    return { name: n.id || key.split("/").pop(), urls: urls, label: n.label || n.id };
+    /* One list of candidates PER FORMAT. The fold writes the parquet and the export-ready GeoJSON
+       side by side under the same key, so this is the same lookup with a different extension —
+       which is why offering parquet costs nothing to build. */
+    function cands(exts) {
+      var out = [];
+      exts.forEach(function (ext) {
+        out.push(R2_TILE_BASE + "/" + key + ext);
+        out.push(SB_TILE_BASE + "/" + key + ext);
+      });
+      return out;
+    }
+    return {
+      name: n.id || key.split("/").pop(), label: n.label || n.id,
+      byFormat: {
+        parquet: { ext: ".parquet", urls: cands([".parquet"]) },
+        geojson: { ext: ".geojson", urls: cands([".geojson", ".source.geojson"]) }
+      }
+    };
   }
 
   // node.id → {name,urls,label} for every layer whose archive we can fetch (names dedup to one file each)
@@ -1064,13 +1108,33 @@
            the ones somebody would actually want the file for. */
         var src = sourceDataFor(n);
         if (!src) continue;
-        setStatus("Fetching the source data for “" + (src.label || src.name) + "”…");
-        var got = null;
-        for (var si = 0; si < src.urls.length && !got; si++) {
-          try { got = await fetchBin(src.urls[si]); } catch (eSrc) { /* try the next spelling/host */ }
+        /* Default to GeoParquet when the caller said nothing, matching the dialog (owner 10/3).
+           The file name is decided ONCE per layer so both formats share it and differ only by
+           extension — Railroads.parquet beside Railroads.geojson, not two unrelated names. */
+        var want = opts.formats || { parquet: true, geojson: false };
+        var base = dataFileName(n, src.name);
+        var anyGot = false;
+        for (var fi = 0; fi < 2; fi++) {
+          var fmt = fi === 0 ? "parquet" : "geojson";
+          if (!want[fmt]) continue;
+          var spec = src.byFormat[fmt];
+          setStatus("Fetching the " + (fmt === "parquet" ? "GeoParquet" : "GeoJSON") + " for “" + (src.label || src.name) + "”…");
+          var got = null;
+          for (var si = 0; si < spec.urls.length && !got; si++) {
+            try { got = await fetchBin(spec.urls[si]); } catch (eSrc) { /* try the next spelling/host */ }
+          }
+          if (got) { zip.file("other_data/" + base + spec.ext, got); wrote++; anyGot = true; }
         }
-        if (got) { zip.file("other_data/" + dataFileName(n, src.name) + ".geojson", got); wrote++; }
-        else unreachable.push(src.label || src.name);
+        /* Fall back rather than ship nothing: a layer whose parquet is missing (folded before the
+           parquet existed) still travels as GeoJSON, which is the whole point of the folder. */
+        if (!anyGot && !want.geojson) {
+          var gj = src.byFormat.geojson, g2 = null;
+          for (var gi = 0; gi < gj.urls.length && !g2; gi++) {
+            try { g2 = await fetchBin(gj.urls[gi]); } catch (eG) {}
+          }
+          if (g2) { zip.file("other_data/" + base + gj.ext, g2); wrote++; anyGot = true; console.warn("download: no parquet for " + (src.label || src.name) + " — shipped GeoJSON instead"); }
+        }
+        if (!anyGot) unreachable.push(src.label || src.name);
       }
       // Say what is missing rather than shipping a quietly incomplete folder — a gap nobody is told
       // about is the failure this whole change exists to remove.
