@@ -26,11 +26,11 @@
 
   var PILL = 'display:inline-block;padding:1px 7px;border-radius:9px;background:#2d7a2d;' +
              'color:#ffffff;font-weight:700;font-size:10.5px;letter-spacing:.03em;' +
-             'vertical-align:1px;white-space:nowrap;font-family:inherit;';
+             'vertical-align:1px;white-space:nowrap;font-family:inherit;cursor:pointer;';
 
   var TITLE = {
-    dataset: 'MapStructor Dataset — the first-party designation',
-    project: 'MapStructor Dataset Project — a first-party map, designated by MapStructor'
+    dataset: 'MapStructor Dataset — the first-party designation. Click for what this means.',
+    project: 'MapStructor Dataset Project — a first-party map, designated by MapStructor. Click for what this means.'
   };
 
   /* A real element, never an HTML string: these sit next to USER-TYPED names, and the pages that
@@ -102,8 +102,59 @@
   }
   function syncProject() { return applyProject(_isProj); }
 
+  /* ── CLICK THE BADGE, GET THE EXPLANATION (10/3, owner: "Let's make the badge clickable, and
+     an explanation pop up"). One DELEGATED listener on the document rather than a handler per
+     badge: it covers every badge on every surface — including the dashboard's, which is built
+     from the PILL string inside an innerHTML row and so is not an element badge() made — and
+     every badge any future surface adds, with nothing to remember to wire up. */
+  function explain(kind) {
+    var old = document.getElementById('ms-msd-pop'); if (old) old.remove();
+    var ov = document.createElement('div');
+    ov.id = 'ms-msd-pop';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(30,27,46,.45);z-index:2147483100;' +
+      'display:flex;align-items:center;justify-content:center;font-family:"Source Sans Pro",Arial,sans-serif;';
+    var card = document.createElement('div');
+    card.style.cssText = 'background:#ffffff;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.35);' +
+      'width:420px;max-width:92vw;padding:20px 22px;color:#1e1b2e;';
+    var head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:9px;margin-bottom:10px;';
+    head.appendChild(badge(kind));
+    var h = document.createElement('b');
+    h.style.cssText = 'font-size:15px;';
+    h.textContent = kind === 'project' ? 'MapStructor Dataset Project' : 'MapStructor Dataset';
+    head.appendChild(h);
+    var x = document.createElement('button');
+    x.textContent = '×'; x.title = 'Close';
+    x.style.cssText = 'margin-left:auto;border:none;background:none;font-size:20px;line-height:1;cursor:pointer;color:#6b6680;';
+    head.appendChild(x);
+    card.appendChild(head);
+    var body = document.createElement('div');
+    body.style.cssText = 'font-size:13px;line-height:1.55;color:#3d3852;';
+    body.textContent = kind === 'project'
+      ? 'This map is first-party: MapStructor built it and maintains it, from datasets MapStructor ' +
+        'curates itself. The designation is awarded by MapStructor only — a map without this mark ' +
+        'was made by one of our users, and its content is theirs.'
+      : 'This dataset is first-party: MapStructor assembled it, cleaned it and keeps it current, ' +
+        'rather than mirroring it from elsewhere. The designation is awarded by MapStructor only — ' +
+        'datasets without this mark were contributed by users or imported from outside sources.';
+    card.appendChild(body);
+    ov.appendChild(card);
+    function close() { ov.remove(); document.removeEventListener('keydown', esc); }
+    function esc(e) { if (e.key === 'Escape') close(); }
+    ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+    x.addEventListener('click', close);
+    document.addEventListener('keydown', esc);
+    document.body.appendChild(ov);
+  }
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.classList || !t.classList.contains('ms-msd-badge')) return;
+    e.preventDefault(); e.stopPropagation();   // a badge inside a card-link opens the explanation, not the map
+    explain((t.textContent || '').indexOf('PROJECT') >= 0 ? 'project' : 'dataset');
+  }, true);
+
   window.MSD = {
     PILL: PILL, TITLE: TITLE, badge: badge, isProject: isProject, mark: mark,
-    applyProject: applyProject, syncProject: syncProject
+    applyProject: applyProject, syncProject: syncProject, explain: explain
   };
 })();

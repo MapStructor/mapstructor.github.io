@@ -74,7 +74,7 @@
     var bmIds = (await MSBookmarks.list()).filter(function (id) { return id !== projectId; });
     var bmRows = [];
     if (bmIds.length) {
-      var r = await db.from('projects').select('id,name').in('id', bmIds);
+      var r = await db.from('projects').select('id,name,msdProject:raw_config->>msdProject').in('id', bmIds);
       var found = {};
       if (!r.error && r.data) r.data.forEach(function (p0) { found[p0.id] = p0; });
       // A19 (8/6) took LINK-shared maps out of the projects table policy so they can't be
@@ -128,9 +128,13 @@
         // portal thumbs are stored site-relative ("images/…"); this window lives under /map/
         if (t && t.indexOf('images/') === 0) t = '../' + t;
         var thumbStyle = (t && THUMB_OK.test(t)) ? 'background-image:url(\'' + esc(t).replace(/'/g, '%27') + '\');' : '';
+        /* The MSD PROJECT mark from the ONE definition (platform/msdBadge.js) — class included so
+           the badge's click-for-explanation delegate covers this copy too. */
+        var mark = (String(p.msdProject) === 'true' && window.MSD)
+          ? '<span class="ms-msd-badge" style="' + MSD.PILL + '" title="' + MSD.TITLE.project + '">MSD PROJECT</span> ' : '';
         return '<div class="pp-row">' +
           '<span class="pp-thumb" style="' + thumbStyle + '"></span>' +
-          '<span class="nm" title="' + esc(p.name) + '">' + esc(p.name || 'Untitled Map') + '</span>' +
+          '<span class="nm" title="' + esc(p.name) + '">' + mark + esc(p.name || 'Untitled Map') + '</span>' +
           '<a class="pp-view" href="index.html?id=' + esc(p.id) + '" target="_blank" rel="noopener" title="Open this map in a new tab">View</a>' +
           '<button class="pp-add" data-id="' + p.id + '" data-name="' + esc(p.name || 'Untitled Map') + '">Add</button>' +
           '</div>';
@@ -144,7 +148,8 @@
         if (d.feature_count) meta.push(Number(d.feature_count).toLocaleString() + ' features');
         return '<div class="pp-row">' +
           '<span class="nm" title="' + esc(d.name) + '">' + esc(d.name || 'Untitled dataset') +
-          (d.msd ? ' <span title="MapStructor Dataset — first-party designation" style="display:inline-block;padding:0 5px;border-radius:4px;background:#2d7a2d;color:#fff;font-size:10px;font-weight:700;vertical-align:1px;">MSD</span>' : '') +
+          /* was a FIFTH hand-written pill — the exact drift msdBadge.js exists to stop */
+          (d.msd && window.MSD ? ' <span class="ms-msd-badge" style="' + MSD.PILL + '" title="' + MSD.TITLE.dataset + '">MSD</span>' : '') +
           (meta.length ? '<span style="display:block;font-size:11px;color:#9a94ad;">' + esc(meta.join(' · ')) + '</span>' : '') + '</span>' +
           '<a class="pp-view" href="../dataset.html?id=' + esc(d.slug || d.id) + '" target="_blank" rel="noopener" title="Open this dataset\'s page in a new tab">View</a>' +
           '<button class="pp-add" data-ds-proj="' + esc(d.origin_project_id) + '" data-ds-layer="' + esc(d.origin_layer_id) + '" data-name="' + esc(d.name || 'Untitled dataset') + '">Add</button>' +

@@ -1995,11 +1995,38 @@
     var self = await db.from('features').select('feature_id, layer_id, geom, label, description, start_date, end_date, content_id, custom_fields, image_url').eq('layer_id', lid).eq('feature_id', tileFid).limit(1);
     if (!self.error && self.data && self.data.length) return self.data[0];
 
-    var byId = await foldRawIndex(node, lid);
-    var af = byId[String(tileFid)];
+    /* ONE FEATURE, NOT THE FILE (10/3, owner: "make this universal, at a fundamental level").
+       The fast road is MSFoldRead — a range-read of the layer's GeoParquet that costs ~0.8 MB on
+       a new-layout bake and at worst the 77.8 MB parquet on an old one, never the 350 MB GeoJSON.
+       The whole-archive path below is the FALLBACK, reached only when the parquet road throws
+       (engine down, artifact missing, unreadable geometry) — or when the parquet says the id is
+       absent, because absence must be double-checked against the archive before it is believed:
+       the two artifacts are written by the same bake, but "the same" is a claim, not a check. */
+    var af = null;
+    if (window.MSFoldRead && node) {
+      try {
+        var foldBase = foldArtifactUrl(node, lid).replace(/\.geojson$/, '');
+        var pqUrl = foldBase + '.parquet', attrUrl = foldBase + '.attr.parquet';
+        var pqVer = String(node.tilesGeneratedAt || node.attrParquetAt || '0');
+        /* RACED, because a parquet road that never answers must not strand the click. Proven need,
+           not caution: the fold-feature-read gate blocks *.parquet to test the fallback, and the
+           first version of this await simply never returned — no row, no archive fetch, a feature
+           that could not be opened at all while the working road sat unused one line down. 90 s is
+           far above the worst honest read (the 77.8 MB old-layout artifact measured ~5 s). */
+        var raceMs = Number(window.MS_FOLDREAD_RACE_MS) || 90000;   // the gate shrinks this to test the fallback without the full wait
+        af = await Promise.race([
+          MSFoldRead.feature(pqUrl, attrUrl, pqVer, tileFid),
+          new Promise(function (_r, rej) { setTimeout(function () { rej(new Error('parquet read still silent after ' + raceMs + 'ms')); }, raceMs); })
+        ]);
+      } catch (ePq) { console.warn('fold: parquet single-feature read failed — falling back to the whole archive', ePq); af = null; }
+    }
+    if (!af) {
+      var byId = await foldRawIndex(node, lid);
+      af = byId[String(tileFid)];
+    }
     /* Say WHICH id could not be found. "Unavailable" sent us looking at R2 for an archive that
        was serving perfectly — the id was the problem, and the message hid that for an hour. */
-    if (!af || !af.geometry) { console.warn('fold: feature ' + tileFid + ' is in neither this layer\'s rows nor its archive (' + Object.keys(byId).length + ' archived features)'); return null; }
+    if (!af || !af.geometry) { console.warn('fold: feature ' + tileFid + ' is in neither this layer\'s rows nor its archive'); return null; }
     var p = af.properties || {}, cf = {}, STDK = { feature_id: 1, label: 1, description: 1, start_date: 1, end_date: 1, content_id: 1, image_url: 1 };
     Object.keys(p).forEach(function (k) { if (!STDK[k]) cf[k] = p[k]; });
     cf.ms_foldsrc = String(tileFid);
@@ -2119,8 +2146,11 @@
          layer that is a long silence with the feature already hidden — indistinguishable from a
          dead click, which is what made them click again and again (9/29). The cached case is
          instant, so only the first pull gets the warning. */
-      setStatus(_foldRawCache[lyrId] ? 'Opening this feature…'
-        : 'Downloading this layer’s archive to open one feature — on a large layer this takes a while. It is only needed once per layer.');
+      /* The common case is now a sub-second range read of one feature (MSFoldRead), so the status
+         is just "Opening". When the pull falls back to downloading the whole archive, that path's
+         own MB-by-MB streaming status takes over the line within its first 2 MB — the long story
+         is told by the road that is actually slow, not predicted here. */
+      setStatus('Opening this feature…');
       try { row = await foldDeltaFor(node, lyrId, fid); } catch (eFp) { console.warn('fold delta pull failed', eFp); row = null; }
       if (!row || !row.geom) { engineViewerPanel(node, clickEvt); setStatus('This folded layer\'s archive is unavailable — try again.'); return; }
       /* Record the one translation the moment it exists, not only at boot: without this a feature

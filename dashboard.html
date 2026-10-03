@@ -74,7 +74,7 @@
   <script src="platform/auth.js?v=3a0ce355"></script>
   <script src="platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
   <script src="platform/topbar.js?v=748e928e"></script>
-  <script src="platform/msdBadge.js?v=5c1a9e40"></script>   <!-- the MSD / MSD PROJECT mark, defined once -->
+  <script src="platform/msdBadge.js?v=7e2a4c91"></script>   <!-- the MSD / MSD PROJECT mark, defined once -->
   <script src="platform/bookmarks.js?v=b8757559"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
   <script src="platform/pricing.js?v=2609c548"></script>
   <script src="platform/sanitize.js?v=5854cd2d"></script>
@@ -584,7 +584,8 @@
             /* The MSD mark goes FIRST — it is the headline fact about the map, not another status
                pill. MSD.PILL is the single definition, so this can never drift from the other
                surfaces (platform/msdBadge.js). */
-            + (String(m.msdProject) === 'true' ? '<span style="' + (window.MSD ? MSD.PILL : '') + '" title="MapStructor Dataset Project - a first-party map">MSD PROJECT</span> ' : '')
+            // class ms-msd-badge = the one definition's delegated click-for-explanation listener covers this copy too
+            + (String(m.msdProject) === 'true' ? '<span class="ms-msd-badge" style="' + (window.MSD ? MSD.PILL : '') + '" title="MapStructor Dataset Project - a first-party map. Click for what this means.">MSD PROJECT</span> ' : '')
             + '<a class="map-name" href="' + openHref + '" style="color:inherit;text-decoration:none;">' + esc(m.name || 'Untitled Map') + '</a>'
             + '<span class="ms-bm" style="font-size:16px;line-height:1;"></span>'   // ★ bookmark (Map Portal) — starred maps show in the editor's Portal window
             + (locked ? '<span class="pill" style="cursor:default;background:#fdeaea;color:#b4453a;" title="Locked — editing is off; unlock inside the map’s Settings">🔒 locked</span>' : '')

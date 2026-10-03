@@ -88,13 +88,43 @@ except Exception:
 n_attr = con.execute("SELECT count(*) FROM bake_t").fetchone()[0]
 
 con.execute("INSTALL spatial; LOAD spatial;")
-con.execute("CREATE OR REPLACE TABLE geo_t AS SELECT * FROM ST_Read(" + sq(export_path) + ")")
+# DATE_AS_STRING=YES (10/3): GDAL's default date conversion is NOT faithful — measured, ST_Read
+# turned the archive's "1867-03-30" into DATE 1867-03-31, so every date column in every geo
+# parquet baked before this line is one day late (the merge pipeline never read them — C5 reads
+# the .geojson — but the user-facing GeoParquet download shipped the shifted dates, and the
+# editor's one-feature reader would have too). As strings they pass through byte for byte.
+con.execute("CREATE OR REPLACE TABLE geo_t AS SELECT * FROM ST_Read(" + sq(export_path) + ", open_options=['DATE_AS_STRING=YES'])")
+
+# ONE-FEATURE READS (10/3). The editor opens a clicked folded feature by range-reading this file
+# with `WHERE feature_id = ?` (platform/foldRead.js). DuckDB skips row groups by their min/max
+# stats, which only helps if (a) rows are ORDERED by feature_id so each group covers a narrow id
+# band, and (b) there is more than one group. (b) is the trap: DuckDB's own writer flushes groups
+# per 2048-row vector, so a 220-row/78 MB layer (big geometries) is ALWAYS one group no matter
+# what ROW_GROUP_SIZE says — measured 10/3: a one-feature geometry read cost the whole 77.8 MB.
+# So the layout pass below is pyarrow, which honors tiny groups. Measured on the same artifact:
+# 2 MB groups at zstd level 3 → 75.9 MB file (smaller than before) and 0.8 MB per clicked feature.
+geo_cols = [d[0] for d in con.execute("DESCRIBE geo_t").fetchall()]
+order = " ORDER BY feature_id" if "feature_id" in geo_cols else ""
 try:
-    con.execute("COPY geo_t TO " + sq(geo_out) + " (FORMAT PARQUET, COMPRESSION ZSTD)")
+    con.execute("COPY (SELECT * FROM geo_t" + order + ") TO " + sq(geo_out) + " (FORMAT PARQUET, COMPRESSION ZSTD)")
 except Exception:
-    con.execute("COPY geo_t TO " + sq(geo_out) + " (FORMAT PARQUET)")
+    con.execute("COPY (SELECT * FROM geo_t" + order + ") TO " + sq(geo_out) + " (FORMAT PARQUET)")
 n_geo = con.execute("SELECT count(*) FROM geo_t").fetchone()[0]
+
+relayout = "skipped"
+try:
+    import pyarrow.parquet as pq   # the workflow installs it; a local run without it still bakes
+    t = pq.read_table(geo_out)     # file-level metadata rides along — the 'geo' key QGIS/GDAL reads
+    size = os.path.getsize(geo_out)
+    rg = max(1, min(65536, int(2 * 1048576 * max(t.num_rows, 1) / max(size, 1)) or 1))   # ~2 MB per group
+    tmp = geo_out + ".rg"
+    pq.write_table(t, tmp, row_group_size=rg, compression="zstd", compression_level=3)
+    os.replace(tmp, geo_out)
+    relayout = f"{rg} rows/group"
+except Exception as e:             # the un-relaid file is still correct — just whole-column reads
+    relayout = "failed: " + str(e)[:120]
 
 os.remove(flat_path)
 print(json.dumps({"attr_rows": n_attr, "attr_bytes": os.path.getsize(attr_out),
-                  "geo_rows": n_geo, "geo_bytes": os.path.getsize(geo_out)}))
+                  "geo_rows": n_geo, "geo_bytes": os.path.getsize(geo_out),
+                  "geo_relayout": relayout}))
