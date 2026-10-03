@@ -1891,6 +1891,32 @@
   var _foldRawInflight = {};    // layerDbId → Promise<byId>, so concurrent clicks share one fetch
   var _foldPullInflight = {};   // layerDbId + '/' + tileFid → Promise<row>, so repeat clicks share one pull
 
+  /* ── ONE kind of feature id on the map ──────────────────────────────────────────────────────
+     A folded layer has two: the ARCHIVE's (what the tiles, the paint expressions and the
+     hide-filter all speak) and the DELTA ROW's primary key (what Postgres assigns when a feature
+     is pulled in to edit). Carrying both around under the same name `fid` is what produced the
+     9/29–10/3 bugs: an edited feature painted the fallback colour because its row id matched none
+     of the 220 entries in the layer's `match` on id, and re-clicking it looked the row id up in
+     the archive, where it can never be.
+     The rule now: **the archive id is the identity everywhere the map can see.** The row's own key
+     stays private to the database. This map records the one translation, so the two never have to
+     be guessed apart again.
+     Collapsing the other way — giving the delta row the archive's id as its primary key — was
+     considered and REJECTED on measurement: pointer copies share one archive (the owner's two
+     "Railroads" datasets return the same ids, 402062…), so editing the same feature on both would
+     collide on the primary key. */
+  var _foldSrcOf = {};   // layer slug → { deltaRowId: archiveId }
+  function noteFoldSrc(node, rowFid, srcFid) {
+    if (!node || rowFid == null || srcFid == null) return;
+    (_foldSrcOf[node.id] = _foldSrcOf[node.id] || {})[rowFid] = Number(srcFid);
+  }
+  /* What this feature is called ON THE MAP. For a live layer there is only one id and this is the
+     identity function — that is why every call site can use it unconditionally. */
+  function overlayKeyFor(node, rowFid) {
+    var m = node && _foldSrcOf[node.id];
+    return (m && m[rowFid] != null) ? m[rowFid] : rowFid;
+  }
+
   async function foldRawIndex(node, lid) {
     var ver = String(node.tilesGeneratedAt || node.attrParquetAt || '0');
     var c = _foldRawCache[lid];
@@ -1982,8 +2008,15 @@
         if (src == null) return;
         if (hid.indexOf(Number(src)) < 0) hid.push(Number(src));
         if (d.geom) {
-          eo[d.feature_id] = d.geom; found++;
-          eod[d.feature_id] = [
+          /* KEYED BY THE ARCHIVE ID, not the delta row's own (10/3). On the map there is now ONE
+             kind of feature id — the archived one. The delta row's primary key is a storage
+             detail the map never sees. Before this, the overlay carried the row id while the
+             layer's paint, its hide-filter and its tile all spoke the archive id, so an edited
+             feature fell out of a `match` on id and painted the fallback colour: the owner's
+             Massachusetts turning light blue. Same id everywhere, and that cannot recur. */
+          noteFoldSrc(node, d.feature_id, src);
+          eo[src] = d.geom; found++;
+          eod[src] = [
             d.start_date ? +String(d.start_date).slice(0, 10).replace(/-/g, '') : 0,
             d.end_date ? +String(d.end_date).slice(0, 10).replace(/-/g, '') : 99999999
           ];
@@ -2055,6 +2088,11 @@
         : 'Downloading this layer’s archive to open one feature — on a large layer this takes a while. It is only needed once per layer.');
       try { row = await foldDeltaFor(node, lyrId, fid); } catch (eFp) { console.warn('fold delta pull failed', eFp); row = null; }
       if (!row || !row.geom) { engineViewerPanel(node, clickEvt); setStatus('This folded layer\'s archive is unavailable — try again.'); return; }
+      /* Record the one translation the moment it exists, not only at boot: without this a feature
+         pulled in THIS session would land on the overlay under its row id and paint the fallback
+         colour, while the same feature after a reload painted correctly — a bug that appears and
+         disappears depending on whether you refreshed, which is the worst kind to chase. */
+      noteFoldSrc(node, row.feature_id, fid);
       drawId = 'db-' + row.feature_id;   // the DRAW copy tracks the DELTA row; the tile still hides by its own (artifact) id below
       if (draw && draw.get(drawId)) {   // delta already pulled this session — stage 1, same as the live re-click path
         if (CLICK_MODES) { enterDrawEditable(drawId, clickEvt && clickEvt.lngLat); return; }   // one-click: re-clicks edit too
@@ -2083,7 +2121,10 @@
     try { if (node.colorBy && node.colorBy.mapping) { var cbv2 = cbValueOf(row, node.colorBy.prop); var mc2 = cbv2 != null ? node.colorBy.mapping[String(cbv2)] : null; if (mc2) epProps.color = mc2; } } catch (e) {}
     try { draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: epProps }); } catch (e) { setStatus('Edit failed'); return; }
     (_engineEditIds[node.id] = _engineEditIds[node.id] || []); if (_engineEditIds[node.id].indexOf(fid) < 0) _engineEditIds[node.id].push(fid);   // hide the TILE copy by its own id (folded: the artifact id)
-    if (_engineEdited[node.id] && _engineEdited[node.id][rowFid] != null) { delete _engineEdited[node.id][rowFid]; refreshEditedOverlay(node); }   // pull it back off the overlay while editing (keyed by the row id finishEngineEdit uses)
+    /* keyed by the MAP's id for this feature (the archive id on a folded layer, the row id on a
+       live one) — overlayKeyFor is the one translation, so no call site has to know which. */
+    var _ovK = overlayKeyFor(node, rowFid);
+    if (_engineEdited[node.id] && _engineEdited[node.id][_ovK] != null) { delete _engineEdited[node.id][_ovK]; refreshEditedOverlay(node); }   // pull it back off the overlay while editing
     applyEngineEditFilter(node);   // hide the read-only render of just this feature, so only the editable copy shows
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {   // clear any stuck hover-highlight: the tile copy is now filtered out, so the engine's mouseleave won't fire to un-green it (otherwise every clicked feature stays glowing)
       var m = pair[1]; if (!m) return; var tgt = { source: node.id + '-' + pair[0], id: Number(fid) }; if (node['source-layer']) tgt.sourceLayer = node['source-layer'];
@@ -2393,11 +2434,12 @@
       return;
     }
     if (geom) {
-      (_engineEdited[node.id] = _engineEdited[node.id] || {})[fid] = geom;
+      var ovK = overlayKeyFor(node, fid);   // the archive id on a folded layer; `fid` itself on a live one
+      (_engineEdited[node.id] = _engineEdited[node.id] || {})[ovK] = geom;
       // carry the feature's days onto the overlay BEFORE featureMeta is dropped below — the
       // overlay is how this feature renders from now on, and it must keep filtering with time
       var dMeta = featureMeta[drawId] || {};
-      (_engineEditedDays[node.id] = _engineEditedDays[node.id] || {})[fid] = [
+      (_engineEditedDays[node.id] = _engineEditedDays[node.id] || {})[ovK] = [
         dMeta.start ? +String(dMeta.start).replace(/-/g, '') : 0,
         dMeta.end ? +String(dMeta.end).replace(/-/g, '') : 99999999
       ];
