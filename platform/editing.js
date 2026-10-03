@@ -1925,7 +1925,42 @@
     _foldRawInflight[lid] = (async function () {
       var r = await fetch(foldArtifactUrl(node, lid) + '?v=' + encodeURIComponent(ver), { cache: 'no-store' });
       if (!r.ok) throw new Error('layer archive HTTP ' + r.status);
-      var fc = await r.json(), byId = {};
+      /* SAY HOW FAR ALONG IT IS. Measured on the owner's Atlas layer: 350 MB, ~0.5s to fetch and
+         ~10.6s to parse — eleven seconds in which the editor said one static sentence and the
+         clicked feature was doing nothing visible. Silence of that length reads as a dead click,
+         and a dead click gets clicked again (9/29).
+         Streaming costs nothing here: the bytes have to arrive anyway, and r.json() would have
+         buffered them all regardless. Falls back to the plain read wherever the body cannot be
+         streamed or the length is unknown, so nothing depends on this working. */
+      var text = null;
+      try {
+        /* STREAM WHENEVER WE CAN, and only use content-length if it is actually there. The first
+           version of this gated on `total > 8 MB` and so never ran at all: tiles.mapstructor.com
+           sends no content-length on these GETs (the size had to be read with a range request when
+           this file was being measured). A progress bar that silently does not run is worse than
+           none — it reads as "the feature is simply slow". Megabytes when the total is unknown,
+           a percentage when it is known. */
+        var total = Number(r.headers.get('content-length') || 0);
+        if (r.body && r.body.getReader) {
+          var reader = r.body.getReader(), chunks = [], got = 0, lastSaid = 0;
+          for (;;) {
+            var step = await reader.read();
+            if (step.done) break;
+            chunks.push(step.value); got += step.value.length;
+            if (got - lastSaid > 2 * 1024 * 1024) {
+              lastSaid = got;
+              setStatus('Opening this feature — reading the layer archive, ' + (total
+                ? Math.round(100 * got / total) + '% of ' + (total / 1048576).toFixed(0) + ' MB…'
+                : (got / 1048576).toFixed(0) + ' MB so far…'));
+            }
+          }
+          if (got > 2 * 1024 * 1024) setStatus('Opening this feature — sorting ' + (got / 1048576).toFixed(0) + ' MB of shapes…');
+          var all = new Uint8Array(got), at = 0;
+          chunks.forEach(function (c) { all.set(c, at); at += c.length; });
+          text = new TextDecoder('utf-8').decode(all);
+        }
+      } catch (eStream) { text = null; }   // any trouble streaming → just read it the ordinary way
+      var fc = text != null ? JSON.parse(text) : await r.json(), byId = {};
       (fc.features || []).forEach(function (f) { var k = f.id != null ? f.id : (f.properties || {}).feature_id; if (k != null) byId[String(k)] = f; });
       _foldRawCache[lid] = { ver: ver, byId: byId };
       return byId;
