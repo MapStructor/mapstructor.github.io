@@ -62,5 +62,48 @@
     return true;
   }
 
-  window.MSD = { PILL: PILL, TITLE: TITLE, badge: badge, isProject: isProject, mark: mark };
+  /* ── The mark ON THE MAP ITSELF ────────────────────────────────────────────
+   * A map has TWO places its own title can appear, and only one of them is on screen at a time:
+   * the header bar's #header-text-value, and — when the header is off — the sidebar's .sb-title.
+   * The header is HIDDEN BY DEFAULT (projectLoader: shown only when features.header === true), so
+   * the first version of this, which mounted the badge on the header title alone, put the mark on
+   * an element that is absent for most maps, including the owner's. It was reported, correctly, as
+   * "not seeing the new badge anywhere".
+   *
+   * So this function owns BOTH surfaces and is idempotent: callers say whether the map is
+   * designated and it makes the page match, adding or removing as needed. `syncProject()` re-applies
+   * the last known state after something rebuilds the sidebar (the header toggle does exactly that).
+   */
+  var _isProj = false;
+  function titleHosts() {
+    var out = [];
+    var hv = document.getElementById('header-text-value');
+    if (hv && hv.parentNode) out.push({ anchor: hv, parent: hv.parentNode, inline: true });
+    var sb = document.querySelector('#sidebar-brand .sb-title');
+    // The sidebar title's textContent is rewritten whenever the header toggles, so the badge sits
+    // BESIDE it in the centred column, not inside it — otherwise the rewrite would silently eat it.
+    if (sb && sb.parentNode) out.push({ anchor: sb, parent: sb.parentNode, inline: false });
+    return out;
+  }
+  function applyProject(on) {
+    _isProj = !!on;
+    titleHosts().forEach(function (h) {
+      var has = h.parent.querySelector(':scope > .ms-msd-badge');
+      if (_isProj && !has) {
+        var b = badge('project');
+        if (h.inline) b.style.marginLeft = '8px';
+        else b.style.marginTop = '1px';
+        h.parent.insertBefore(b, h.anchor.nextSibling);
+      } else if (!_isProj && has) {
+        has.remove();
+      }
+    });
+    return _isProj;
+  }
+  function syncProject() { return applyProject(_isProj); }
+
+  window.MSD = {
+    PILL: PILL, TITLE: TITLE, badge: badge, isProject: isProject, mark: mark,
+    applyProject: applyProject, syncProject: syncProject
+  };
 })();

@@ -97,7 +97,14 @@
       "#msdl-panel{background:#fff;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.35);width:430px;max-width:92vw;padding:20px 22px;}" +
       "#msdl-panel h3{margin:0 0 4px;font-size:17px;color:#1e1b2e;}" +
       "#msdl-panel .msdl-sub{font-size:12px;color:#6b6680;margin:0 0 14px;line-height:1.5;}" +
-      ".msdl-row{display:flex;gap:8px;align-items:center;margin-bottom:10px;font-size:13px;color:#1e1b2e;}" +
+      /* PROSE IS PROSE (10/3). This was `display:flex`, which makes every CHILD NODE a flex item —
+         so a sentence containing <b>other_data/</b> laid itself out as three columns with the bold
+         bit stranded in the middle. Two rows had already been patched with inline display:block,
+         which is the tell: the rule was wrong, not the rows. Prose rows are blocks; only the
+         checkbox rows want flex, and they say so. */
+      ".msdl-row{margin-bottom:10px;font-size:13px;line-height:1.5;color:#1e1b2e;}" +
+      ".msdl-check{display:flex;gap:8px;align-items:flex-start;margin-bottom:9px;font-size:13px;line-height:1.45;color:#1e1b2e;cursor:pointer;}" +
+      ".msdl-check input{flex:none;margin-top:2px;}" +
       ".msdl-row select{padding:4px 8px;border:1px solid #cdc6e0;border-radius:6px;font-size:12px;}" +
       "#msdl-build{margin-top:6px;padding:8px 16px;border:none;border-radius:8px;background:#7c5cbf;color:#fff;font-weight:700;font-size:14px;cursor:pointer;}" +
       "#msdl-build[disabled]{opacity:.55;cursor:default;}" +
@@ -156,10 +163,10 @@
          opens in anything including a text editor, parquet wants QGIS 3.28+, ArcGIS Pro 3, DuckDB
          or Python. Neither is read by the map itself — these files are the copy of the data for
          the person you hand the folder to. */
-      "<div class=\"msdl-row\" style=\"display:block;\">Data for each layer, in <b>other_data/</b>:</div>" +
-      "<label class=\"msdl-row\"><input type=\"checkbox\" id=\"msdl-fmt-parquet\" checked> <span><b>GeoParquet</b> — about 4&frac12;&times; smaller. Opens in QGIS, ArcGIS Pro, DuckDB, Python.</span></label>" +
-      "<label class=\"msdl-row\"><input type=\"checkbox\" id=\"msdl-fmt-geojson\"> <span><b>GeoJSON</b> — much larger, but opens in anything, including a text editor.</span></label>" +
-      "<div class=\"msdl-row\" id=\"msdl-fmt-note\" style=\"display:block;color:#9a93ad;font-size:11px;\"></div>" +
+      "<div class=\"msdl-row\" style=\"margin-bottom:6px;\">Data for each layer, in <b>other_data/</b>:</div>" +
+      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-parquet\" checked> <span><b>GeoParquet</b> — about 4&frac12;&times; smaller. Opens in QGIS, ArcGIS Pro, DuckDB, Python.</span></label>" +
+      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-geojson\"> <span><b>GeoJSON</b> — much larger, but opens in anything, including a text editor.</span></label>" +
+      "<div class=\"msdl-row\" id=\"msdl-fmt-note\" style=\"color:#9a93ad;font-size:11px;\"></div>" +
       embedRow +
       "<button id=\"msdl-build\">Build ZIP</button>" +
       "<div id=\"msdl-status\"></div>" +

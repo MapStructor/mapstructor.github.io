@@ -5173,8 +5173,12 @@
       var u = await patchProjectConfig({ msdProject: on ? true : null });   // null deletes the key
       if (u.error) throw new Error(u.error.message);
       setStatus('Saved');
+      /* Show it NOW, not after a reload. The first version told the owner to refresh; "refresh to
+         make it work" is debt, and here it is one call — the badge lives on the title, which is
+         already on screen behind this panel. */
+      try { if (window.MSD && MSD.applyProject) MSD.applyProject(on); } catch (eB) {}
       if (note) note.textContent = on
-        ? 'Designated. The badge shows on this map, in My Maps and in the portal list — reload to see it here.'
+        ? 'Designated. The badge now shows beside this map’s title, and in My Maps and the portal list.'
         : 'Designation removed.';
       showToast(on ? 'Marked as a MapStructor Dataset Project' : 'MSD Project designation removed');
     } catch (e) {

@@ -57,6 +57,10 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     brand.querySelector(".sb-title").textContent = t;
   } catch (e) {}
   try { if (window.msMakeSidebarTitleEditable) window.msMakeSidebarTitleEditable(); } catch (e) {}   // editor-only: click the sidebar title to rename (like the header)
+  /* This function BUILDS the sidebar title and rewrites its text, so it is also the place that can
+     destroy an MSD PROJECT mark sitting beside it — and it runs on every header toggle. Re-apply
+     the known designation here and the mark survives the rebuild, in whichever title is showing. */
+  try { if (window.MSD && MSD.syncProject) MSD.syncProject(); } catch (e) {}
   try {   // visitors only see About when it has content; the editor keeps it so the owner can fill it
     var hasAbout = !!(window.modal_content_html && window.modal_content_html["about"]);
     var isEditor = /editor\.html/i.test(location.pathname);
@@ -395,14 +399,11 @@ window.msApplyHeaderFeature = function (visible, projectName) {
            own title, on the viewer as well as the editor — this is the surface a visitor actually
            sees, so leaving it off would make "everywhere" untrue where it matters most.
            The mark is appended, never built into the title text: the title is user-typed and is
-           set with textContent two lines up precisely so it cannot carry markup. */
-        try {
-          if (hv && window.MSD && MSD.isProject(raw) && !hv.parentNode.querySelector(".ms-msd-badge")) {
-            var bdg = MSD.badge("project");
-            bdg.style.marginLeft = "8px";
-            hv.parentNode.insertBefore(bdg, hv.nextSibling);
-          }
-        } catch (eMsd) { console.warn("MSD badge", eMsd); }
+           set with textContent two lines up precisely so it cannot carry markup.
+           applyProject covers BOTH title surfaces (header bar and, when the header is off, the
+           sidebar). Mounting on the header alone — the first version — showed nothing on a
+           default map, because the header is hidden by default. */
+        try { if (window.MSD) MSD.applyProject(MSD.isProject(raw)); } catch (eMsd) { console.warn("MSD badge", eMsd); }
         var li = document.getElementById("logo-img-wide"); if (li && raw.headerLogo) li.src = raw.headerLogo;
         var ll = document.getElementById("logo-link"); if (ll && raw.headerLink != null) ll.setAttribute("href", raw.headerLink);
         // #16/#17: the VIEWER adds an "✎ Edit" link to the site-wide top bar for anyone who may
