@@ -391,6 +391,18 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     setTimeout(function () {
       try {
         var hv = document.getElementById("header-text-value"); if (hv && project.name) hv.textContent = project.name;
+        /* MSD PROJECT (10/3): a map the owner has designated first-party wears the mark beside its
+           own title, on the viewer as well as the editor — this is the surface a visitor actually
+           sees, so leaving it off would make "everywhere" untrue where it matters most.
+           The mark is appended, never built into the title text: the title is user-typed and is
+           set with textContent two lines up precisely so it cannot carry markup. */
+        try {
+          if (hv && window.MSD && MSD.isProject(raw) && !hv.parentNode.querySelector(".ms-msd-badge")) {
+            var bdg = MSD.badge("project");
+            bdg.style.marginLeft = "8px";
+            hv.parentNode.insertBefore(bdg, hv.nextSibling);
+          }
+        } catch (eMsd) { console.warn("MSD badge", eMsd); }
         var li = document.getElementById("logo-img-wide"); if (li && raw.headerLogo) li.src = raw.headerLogo;
         var ll = document.getElementById("logo-link"); if (ll && raw.headerLink != null) ll.setAttribute("href", raw.headerLink);
         // #16/#17: the VIEWER adds an "✎ Edit" link to the site-wide top bar for anyone who may

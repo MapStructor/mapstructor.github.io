@@ -38,6 +38,7 @@
   <script src="platform/veil.js?v=35830abf"></script>
   <script src="platform/topbar.js?v=748e928e"></script>
   <script src="platform/bookmarks.js?v=b8757559"></script>
+  <script src="platform/msdBadge.js?v=38d7b5a6"></script>   <!-- the MSD / MSD PROJECT mark, defined once -->
 </head>
 <body>
 
@@ -65,11 +66,14 @@
     (function () {
       // Names and blurbs are USER text — rows are built with textContent, never innerHTML.
       var rows = [];   // { el, name } for the search filter
-      function row(id, name, meta) {
+      function row(id, name, meta, isMsd) {
         var a = document.createElement('a');
         a.className = 'ds-row';
         a.href = 'map/index.html?id=' + encodeURIComponent(id);
         var top = document.createElement('div'); top.className = 'ds-top';
+        /* The mark goes BEFORE the name and is a real element, not markup — these names are
+           user text and this row is built with textContent on purpose. */
+        if (isMsd && window.MSD) { top.appendChild(MSD.badge('project')); top.appendChild(document.createTextNode(' ')); }
         var nm = document.createElement('span'); nm.className = 'ds-name'; nm.textContent = name || 'Untitled Map'; top.appendChild(nm);
         var star = document.createElement('a'); star.className = 'ds-star'; star.href = '#'; star.textContent = '☆'; top.appendChild(star);
         a.appendChild(top);
@@ -84,13 +88,13 @@
         try {
           // The portal's own list, minus the featured picks (those live on portal.html).
           var r = await MapAuth.db.from('portal_entries')
-            .select('project_id, blurb, featured, sort_order, created_at, projects!inner(name, is_public, deleted_at)')
+            .select('project_id, blurb, featured, sort_order, created_at, projects!inner(name, is_public, deleted_at, raw_config)')
             .eq('projects.is_public', true).is('projects.deleted_at', null)
             .order('sort_order', { ascending: true }).order('created_at', { ascending: false });
           if (r.error) throw new Error(r.error.message);
           var rest = (r.data || []).filter(function (e) { return !e.featured; });
           var al = document.getElementById('all-list');
-          rest.forEach(function (e) { al.appendChild(row(e.project_id, e.projects && e.projects.name, e.blurb || '')); });
+          rest.forEach(function (e) { al.appendChild(row(e.project_id, e.projects && e.projects.name, e.blurb || '', window.MSD && MSD.isProject(e.projects && e.projects.raw_config))); });
           note.textContent = rest.length
             ? rest.length + ' more map' + (rest.length === 1 ? '' : 's')
             : 'Nothing here yet — every portal map is currently featured.';

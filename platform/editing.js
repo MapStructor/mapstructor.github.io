@@ -4496,6 +4496,18 @@
       // shows it through portal_entries.thumb.
       '<button id="esp-thumb" class="mss-btn">📸 Set current view as map thumbnail</button>' +
       '<div id="esp-thumb-note" class="mss-note"></div>' +
+      /* MSD PROJECT (10/3, owner: "we need to make an additional designation: MSD Project Page").
+         Admin-only and hidden for everyone else — "MapStructor Dataset" is a FIRST-PARTY claim, so
+         it is not something a visitor or a client can award their own map. The client gate here is
+         cosmetic, exactly as it is for dataset MSD; the real one is that only the owner can write
+         this project's raw_config at all. */
+      '<div id="esp-msd-wrap" style="display:none;">' +
+        '<label class="mss-row" style="display:flex;gap:7px;align-items:flex-start;margin:8px 0 2px;cursor:pointer;">' +
+          '<input id="esp-msd" type="checkbox" style="margin-top:2px;flex:none;" />' +
+          '<span><b>MapStructor Dataset Project</b><br><span class="mss-note" style="margin:0;">Marks this map as first-party. The MSD PROJECT badge then shows on the map itself, in My Maps, and in the portal list.</span></span>' +
+        '</label>' +
+        '<div id="esp-msd-note" class="mss-note"></div>' +
+      '</div>' +
       // ── TIMELINE ──
       '<div class="mss-sectop">' +
         MSEC('Timeline') +
@@ -4545,6 +4557,7 @@
     document.getElementById('esp-tl-today').addEventListener('change', function () { document.getElementById('esp-tl-end').disabled = this.checked; onTimelineSave(); });
     document.getElementById('esp-feat-header').addEventListener('change', onFeatureHeader);
     document.getElementById('esp-lock').addEventListener('change', onEditLockToggle);
+    (function () { var mb = document.getElementById('esp-msd'); if (mb) mb.addEventListener('change', onMsdProjectToggle); })();
     document.getElementById('esp-logo-file').addEventListener('change', onLogoFile);
     document.getElementById('esp-logo-link').addEventListener('change', onLogoLink);
     document.getElementById('esp-btn-add').addEventListener('click', onMapButtonAdd);
@@ -5055,8 +5068,43 @@
     injectSettingsPanel();
     var p = document.getElementById('editor-settings-panel');
     if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
-    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); document.getElementById('esp-lock').checked = !!(r.data.raw_config && r.data.raw_config.editLock); _mapBtns = (r.data.raw_config && r.data.raw_config.customButtons || []).slice(); renderMapBtnList(); } } catch (e) {}
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); document.getElementById('esp-lock').checked = !!(r.data.raw_config && r.data.raw_config.editLock); _mapBtns = (r.data.raw_config && r.data.raw_config.customButtons || []).slice(); renderMapBtnList();
+      /* The MSD Project row is shown ONLY to an admin, and its state read from the same row we
+         already have — no extra round trip. Awaiting the admin check here rather than at inject
+         time is deliberate: the panel is built once, and whether this user is an admin is not
+         known then. */
+      try {
+        var me = (window.MapAuth && MapAuth.currentUser) ? await MapAuth.currentUser() : null;
+        if (me && window.msIsAdminEmail && msIsAdminEmail(me.email)) {
+          var wrap = document.getElementById('esp-msd-wrap');
+          var box2 = document.getElementById('esp-msd');
+          if (wrap) wrap.style.display = 'block';
+          if (box2) box2.checked = !!(r.data.raw_config && r.data.raw_config.msdProject === true);
+        }
+      } catch (eAdm) {}
+    } } catch (e) {}
     p.style.display = 'block';
+  }
+  /* Designating a map an MSD Project. The key lives in raw_config beside showcaseSlug — the
+     projects table stays about projects, and nobody has to paste a migration. */
+  async function onMsdProjectToggle() {
+    var box = document.getElementById('esp-msd');
+    var on = !!(box && box.checked);
+    var note = document.getElementById('esp-msd-note');
+    setStatus('Saving…');
+    try {
+      var u = await patchProjectConfig({ msdProject: on ? true : null });   // null deletes the key
+      if (u.error) throw new Error(u.error.message);
+      setStatus('Saved');
+      if (note) note.textContent = on
+        ? 'Designated. The badge shows on this map, in My Maps and in the portal list — reload to see it here.'
+        : 'Designation removed.';
+      showToast(on ? 'Marked as a MapStructor Dataset Project' : 'MSD Project designation removed');
+    } catch (e) {
+      if (box) box.checked = !on;
+      if (note) note.textContent = 'Could not save: ' + ((e && e.message) || e);
+      setStatus('Save failed');
+    }
   }
   async function saveMapName(name) {
     name = (name || '').trim(); if (!name) return;

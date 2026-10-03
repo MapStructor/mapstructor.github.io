@@ -74,12 +74,13 @@
   <script src="platform/auth.js?v=3a0ce355"></script>
   <script src="platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
   <script src="platform/topbar.js?v=748e928e"></script>
+  <script src="platform/msdBadge.js?v=38d7b5a6"></script>   <!-- the MSD / MSD PROJECT mark, defined once -->
   <script src="platform/bookmarks.js?v=b8757559"></script>   <!-- Map Portal: ★ on each map row — starred maps appear in the editor's Portal window -->
   <script src="platform/pricing.js?v=2609c548"></script>
   <script src="platform/sanitize.js?v=5854cd2d"></script>
   <script src="platform/dialog.js?v=a697b9cc"></script>   <!-- MSDialog.ask/say/prompt — the product's own dialog, never the browser's -->
 
-  <script src="platform/datasets.js?v=fc4d2d21"></script>   <!-- datasets & provenance: layers as the atoms -->
+  <script src="platform/datasets.js?v=58383596"></script>   <!-- datasets & provenance: layers as the atoms -->
   <!-- guards.js = absence is an error at the boundary + hard limits announce themselves.
        Every call site checks window.MSGuard, so this degrades cleanly to silence if removed. -->
   <script src="platform/guards.js?v=174bacac"></script>
@@ -429,7 +430,7 @@
         } catch (e) {}
       }
       async function loadMaps() {
-        var sel = 'id,name,updated_at,is_public,visibility:raw_config->>visibility,editLock:raw_config->>editLock';   // only THIS user's maps (RLS still permissive — tighten at Step 25)
+        var sel = 'id,name,updated_at,is_public,visibility:raw_config->>visibility,editLock:raw_config->>editLock,msdProject:raw_config->>msdProject';   // only THIS user's maps (RLS still permissive — tighten at Step 25)
         var statsP = loadMapStats();
         var res = await db.from('projects').select(sel).eq('user_id', user.id).is('deleted_at', null).order('updated_at', { ascending: false });   // ACTIVE maps (trashed = deleted_at set)
         if (res.error) res = await db.from('projects').select(sel).eq('user_id', user.id).order('updated_at', { ascending: false });   // deleted_at not migrated yet → show all (run trash-soft-delete-setup.sql to enable Trash)
@@ -580,6 +581,10 @@
           var locked = m.editLock === 'true' || m.editLock === true;
           var stat = fmtStat(_mapStats[m.id]);
           row.innerHTML = '<input type="checkbox" class="ms-selmap" data-id="' + m.id + '" data-name="' + esc(m.name || 'Untitled Map') + '" data-locked="' + (locked ? '1' : '0') + '" title="Select for bulk actions" style="width:15px;height:15px;flex:none;cursor:pointer;" />'
+            /* The MSD mark goes FIRST — it is the headline fact about the map, not another status
+               pill. MSD.PILL is the single definition, so this can never drift from the other
+               surfaces (platform/msdBadge.js). */
+            + (String(m.msdProject) === 'true' ? '<span style="' + (window.MSD ? MSD.PILL : '') + '" title="MapStructor Dataset Project - a first-party map">MSD PROJECT</span> ' : '')
             + '<a class="map-name" href="' + openHref + '" style="color:inherit;text-decoration:none;">' + esc(m.name || 'Untitled Map') + '</a>'
             + '<span class="ms-bm" style="font-size:16px;line-height:1;"></span>'   // ★ bookmark (Map Portal) — starred maps show in the editor's Portal window
             + (locked ? '<span class="pill" style="cursor:default;background:#fdeaea;color:#b4453a;" title="Locked — editing is off; unlock inside the map’s Settings">🔒 locked</span>' : '')
