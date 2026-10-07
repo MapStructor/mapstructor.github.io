@@ -33,17 +33,23 @@ const CLASS_B = new Set(["GetObject", "HeadObject", "HeadBucket", "UsageSummary"
   "GetBucketEncryption", "GetBucketCors", "GetBucketLifecycleConfiguration"]);
 
 const since = new Date().toISOString().slice(0, 8) + "01";   // first of this month, UTC
-const QUERY = `query($acc:String!,$since:Date!){
+// Storage: the bytes Cloudflare METERS (and bills past 10 GB). Our own sum(layers.r2_bytes) misses
+// everything without a layers row — archive copies, showcases, backups, orphans — and read 1.32 GB
+// against a 3.16 GB bucket on 10/6. Max over the last day, per bucket, is the conservative reading.
+const sinceDt = new Date(Date.now() - 36 * 3600 * 1000).toISOString();
+const QUERY = `query($acc:String!,$since:Date!,$sinceDt:Time!){
   viewer{ accounts(filter:{accountTag:$acc}){
     r2OperationsAdaptiveGroups(limit:10000, filter:{date_geq:$since}){
-      sum{requests} dimensions{actionType} } } } }`;
+      sum{requests} dimensions{actionType} }
+    r2StorageAdaptiveGroups(limit:100, filter:{datetime_geq:$sinceDt}){
+      max{payloadSize metadataSize objectCount} dimensions{bucketName} } } } }`;
 
 const fail = (msg) => { console.error("::error::" + msg); process.exit(1); };
 
 const cf = await fetch("https://api.cloudflare.com/client/v4/graphql", {
   method: "POST",
   headers: { Authorization: "Bearer " + CF_TOKEN, "Content-Type": "application/json" },
-  body: JSON.stringify({ query: QUERY, variables: { acc: CF_ACCOUNT, since } })
+  body: JSON.stringify({ query: QUERY, variables: { acc: CF_ACCOUNT, since, sinceDt } })
 }).then(r => r.json()).catch(e => ({ errors: [{ message: String(e) }] }));
 
 if (cf.errors) fail("Cloudflare refused the query (the token most likely lacks Account Analytics: Read): "
@@ -60,6 +66,20 @@ console.log(`since ${since} — class A: ${classA.toLocaleString()} · class B: 
 rows.sort((a, b) => b.sum.requests - a.sum.requests).slice(0, 10)
   .forEach(r => console.log(`   ${r.dimensions.actionType.padEnd(24)} ${r.sum.requests.toLocaleString()}`));
 
+// ── storage, per bucket, as metered. One figure per bucket (max in the window), summed.
+const store = cf?.data?.viewer?.accounts?.[0]?.r2StorageAdaptiveGroups || [];
+const perBucket = {};
+for (const r of store) {
+  const b = r.dimensions.bucketName, bytes = Number(r.max.payloadSize || 0) + Number(r.max.metadataSize || 0);
+  perBucket[b] = Math.max(perBucket[b] || 0, bytes);
+}
+const meteredBytes = Object.values(perBucket).reduce((s, n) => s + n, 0);
+const GB = n => (n / 1073741824).toFixed(2) + " GB";
+console.log(`storage metered: ${GB(meteredBytes)} across ${Object.keys(perBucket).length} bucket(s)` +
+            (store.length ? "" : "  (no storage rows returned — token may lack R2 analytics, or window too short)"));
+Object.entries(perBucket).sort((a, b) => b[1] - a[1])
+  .forEach(([b, n]) => console.log(`   ${b.padEnd(24)} ${GB(n)}`));
+
 // ── park the numbers where the guard can act on them (service key bypasses RLS; no new function)
 if (!DRY) {
   const patch = await fetch(`${SB_URL}/rest/v1/ms_service_guard?id=eq.1`, {
@@ -71,6 +91,23 @@ if (!DRY) {
   });
   if (!patch.ok) fail(`could not record the numbers: HTTP ${patch.status} ${(await patch.text()).slice(0, 200)}`);
   console.log("recorded: HTTP " + patch.status);
+
+  // Storage goes in a second PATCH so the ops numbers above land even if the metered columns are
+  // missing (sql/setup/service-guard-v4-metered-r2.sql adds them). Zero rows = unknown; never
+  // write a 0 that the guard would read as "empty bucket".
+  if (meteredBytes > 0) {
+    const sp = await fetch(`${SB_URL}/rest/v1/ms_service_guard?id=eq.1`, {
+      method: "PATCH",
+      headers: { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY,
+                 "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ r2_metered_bytes: meteredBytes, r2_metered_at: new Date().toISOString() })
+    });
+    if (!sp.ok) console.log(`::warning::metered storage NOT recorded: HTTP ${sp.status} ${(await sp.text()).slice(0, 160)}`
+      + " — run sql/setup/service-guard-v4-metered-r2.sql");
+    else console.log("recorded storage: HTTP " + sp.status);
+  } else {
+    console.log("::warning::no metered storage figure — the guard keeps using sum(layers.r2_bytes)");
+  }
 }
 
 // ── read back what the guard now decides
