@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>formats lab — can DuckDB-WASM write GIS formats in the browser?</title></head>
+<body><pre id="log"></pre>
+<script type="module">
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+const VENDOR = new URL('../../platform/vendor/duckdb/', location.href).href;   // ABSOLUTE: the worker resolves relative paths against ITS OWN url
+window.labResult = (async () => {
+  const out = { steps: [] };
+  try {
+    const duckdb = await import(VENDOR + 'duckdb-browser.mjs?v=1.32.0');
+    const worker = new Worker(VENDOR + 'duckdb-browser-eh.worker.js?v=1.32.0');
+    const adb = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
+    await adb.instantiate(VENDOR + 'duckdb-eh.wasm?v=1.32.0');
+    const conn = await adb.connect();
+    out.steps.push('engine ok');
+    try { await conn.query('INSTALL spatial; LOAD spatial;'); out.steps.push('spatial loaded'); out.spatial = true; }
+    catch (e) { out.spatial = false; out.spatialErr = String(e.message || e).slice(0, 300); out.steps.push('spatial FAILED: ' + out.spatialErr); }
+    if (out.spatial) {
+      await conn.query(`CREATE TABLE t AS SELECT 1 AS id, 'a' AS name, ST_GeomFromText('POLYGON((0 0,1 0,1 1,0 1,0 0))') AS geom UNION ALL SELECT 2, 'b', ST_GeomFromText('POINT(5 5)')`);
+      out.drivers = {};
+      for (const [drv, file] of [['GPKG', 'out.gpkg'], ['ESRI Shapefile', 'out.shp'], ['KML', 'out.kml'], ['CSV', 'out.csv'], ['GeoJSON', 'out.geojson'], ['FlatGeobuf', 'out.fgb']]) {
+        try {
+          // GDAL writes need a file object that exists in DuckDB's virtual FS — register an empty one first
+          try { await adb.registerEmptyFileBuffer(file); } catch (eR) { out.steps.push('registerEmptyFileBuffer failed: ' + String(eR.message || eR).slice(0, 80)); }
+          await conn.query(`COPY t TO '${file}' WITH (FORMAT GDAL, DRIVER '${drv}')`);
+          const buf = await adb.copyFileToBuffer(file);
+          out.drivers[drv] = { ok: true, bytes: buf.length };
+        } catch (e) { out.drivers[drv] = { ok: false, err: String(e.message || e).slice(0, 160) }; }
+      }
+      // read a GeoParquet the way the platform writes it (WKB geometry) and write it out as GPKG
+      try {
+        const r = await conn.query(`SELECT count(*) n FROM t`); out.rows = Number(r.toArray()[0].n);
+      } catch (e) {}
+    }
+  } catch (e) { out.fatal = String(e.message || e).slice(0, 300); }
+  log(JSON.stringify(out, null, 1));
+  return out;
+})();
+</script></body></html>

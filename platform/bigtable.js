@@ -130,6 +130,39 @@
     return r;
   }
 
+  /* ── rows → parquet bytes ───────────────────────────────────────────────── */
+  // THE sidecar's shape, defined once. bakeFromRows uses it for the platform's own sidecars and
+  // the download builder uses it (10/6) so a copy of the map carries a table for EVERY tiled
+  // layer, including the ones under BIG_ROWS that never earned a sidecar here.
+  async function buildParquet(rows, tag) {
+    var e = await ensureEngine();
+    var keys = collectKeys(rows), types = keyTypes(rows, keys);
+    var flat = new Array(rows.length);
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i], o = {};
+      STD.forEach(function (f) { var v = r[f]; o[f] = v == null ? null : String(v); });
+      var cf = r.custom_fields || {};
+      for (var j = 0; j < keys.length; j++) {
+        var k = keys[j], v2 = cf[k];
+        o[CF + k] = v2 == null ? null : (types[k] === "DOUBLE" ? v2 : String(v2));
+      }
+      flat[i] = o;
+    }
+    var cols = STD.map(function (f) { return sq(f) + ": 'VARCHAR'"; })
+      .concat(keys.map(function (k) { return sq(CF + k) + ": " + sq(types[k]); })).join(", ");
+    var jname = "bake_" + String(tag || "x").replace(/[^A-Za-z0-9_-]/g, "_") + ".json";
+    await e.adb.registerFileText(jname, JSON.stringify(flat));
+    flat = null;
+    await e.conn.query("CREATE OR REPLACE TABLE bake_t AS SELECT * FROM read_json(" + sq(jname) + ", format='array', columns={" + cols + "})");
+    try { await e.conn.query("COPY bake_t TO 'bake_out.parquet' (FORMAT PARQUET, COMPRESSION ZSTD)"); }
+    catch (ez) { await e.conn.query("COPY bake_t TO 'bake_out.parquet' (FORMAT PARQUET)"); }   // zstd unavailable → default snappy
+    var buf = await e.adb.copyFileToBuffer("bake_out.parquet");
+    await e.conn.query("DROP TABLE IF EXISTS bake_t");
+    try { await e.adb.dropFile(jname); } catch (e1) {}
+    try { await e.adb.dropFile("bake_out.parquet"); } catch (e2) {}
+    return buf;
+  }
+
   /* ── bake: rows → parquet → storage → raw_config stamp ─────────────────── */
   var _baking = {};   // layerId → true while a bake is in flight (dedup)
   async function bakeFromRows(db, projectId, layerId, rows, status) {
@@ -138,32 +171,8 @@
     _baking[layerId] = true;
     status = status || function () {};
     try {
-      var e = await ensureEngine();
-      var keys = collectKeys(rows), types = keyTypes(rows, keys);
       status("Baking columnar sidecar (" + rows.length.toLocaleString("en-US") + " rows)…");
-      var flat = new Array(rows.length);
-      for (var i = 0; i < rows.length; i++) {
-        var r = rows[i], o = {};
-        STD.forEach(function (f) { var v = r[f]; o[f] = v == null ? null : String(v); });
-        var cf = r.custom_fields || {};
-        for (var j = 0; j < keys.length; j++) {
-          var k = keys[j], v2 = cf[k];
-          o[CF + k] = v2 == null ? null : (types[k] === "DOUBLE" ? v2 : String(v2));
-        }
-        flat[i] = o;
-      }
-      var cols = STD.map(function (f) { return sq(f) + ": 'VARCHAR'"; })
-        .concat(keys.map(function (k) { return sq(CF + k) + ": " + sq(types[k]); })).join(", ");
-      var jname = "bake_" + layerId + ".json";
-      await e.adb.registerFileText(jname, JSON.stringify(flat));
-      flat = null;
-      await e.conn.query("CREATE OR REPLACE TABLE bake_t AS SELECT * FROM read_json(" + sq(jname) + ", format='array', columns={" + cols + "})");
-      try { await e.conn.query("COPY bake_t TO 'bake_out.parquet' (FORMAT PARQUET, COMPRESSION ZSTD)"); }
-      catch (ez) { await e.conn.query("COPY bake_t TO 'bake_out.parquet' (FORMAT PARQUET)"); }   // zstd unavailable → default snappy
-      var buf = await e.adb.copyFileToBuffer("bake_out.parquet");
-      await e.conn.query("DROP TABLE IF EXISTS bake_t");
-      try { await e.adb.dropFile(jname); } catch (e1) {}
-      try { await e.adb.dropFile("bake_out.parquet"); } catch (e2) {}
+      var buf = await buildParquet(rows, layerId);
       status("Uploading sidecar (" + (buf.length / 1048576).toFixed(1) + " MB)…");
       var path = projectId + "/" + layerId + ".attr.parquet";
       var blob = new Blob([buf], { type: "application/octet-stream" });
@@ -288,7 +297,10 @@
     var name = "attr_" + layerId + ".parquet";
     try { await e.adb.dropFile(name); } catch (e1) {}
     // ?v= makes each bake a distinct URL — the browser/CDN can cache hard without ever serving a stale bake
-    await e.adb.registerFileURL(name, src + "?v=" + encodeURIComponent(ver || "0"), e.duckdb.DuckDBDataProtocol.HTTP, false);
+    // ABSOLUTE url: a standalone copy stamps its sidecars as relative "data/x.attr.parquet", and the
+    // DuckDB worker resolves relative paths against ITS OWN location, not the page's (10/6)
+    var abs = /^https?:/i.test(src) ? src : new URL(src, location.href).href;
+    await e.adb.registerFileURL(name, abs + "?v=" + encodeURIComponent(ver || "0"), e.duckdb.DuckDBDataProtocol.HTTP, false);
     return { e: e, name: name, r2: _sidecarSource[layerId] === "r2" };
   }
   function resultRows(res) {
@@ -361,6 +373,7 @@
   }
 
   window.MSBigTable = {
+    buildParquet: buildParquet,   // rows → sidecar bytes (the download builder bakes per-copy tables with this)
     BIG_ROWS: BIG_ROWS,
     BAKE_MAX: BAKE_MAX,
     ensureEngine: ensureEngine,

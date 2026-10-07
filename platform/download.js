@@ -11,7 +11,10 @@
      map/project/lists/*.js          GENERATED from the page's live runtime config — the serializer half
                                      ("C3.5 writer") of configLoader.js; same globals the engine reads
      map/project/secrets/mapbox-token.js   only when the page ran on a token other than restrictedToken
-     other_data/*.geojson     raw exports of the drawn/geojson layers (dialog checkbox)
+     map/project/{attrGrid,viewerTable,bigtable}.js + vendor/duckdb/   the ▦ features table (10/6)
+     map/data/<archive>.attr.parquet   each tiled layer's TABLE (attributes) — always, beside its tiles
+     other_data/*             raw GIS exports — OPTIONAL (off by default): GeoParquet (default when on),
+                              GeoJSON, Shapefile (.shp.zip), KML, CSV (geometry as WKT) — platform/geoExport.js
 
    The download is STANDALONE BY DESIGN: it depends on nothing MapStructor and never updates.
    Everything is serialized from the page's RUNTIME state, so what you see is exactly what you get —
@@ -132,13 +135,15 @@
 
     var variant = detectVariant();
     var archCount = variant === "maplibre" ? Object.keys(collectArchives()).length : 0;
-    /* NOT A CHOICE ANY MORE (owner, 9/22): "I don't think it should be a choice actually —
-       everything must be there. We need there to be no gap. Everything must be in a folder that
-       can be put up onto a completely separate website."
-       Both switches used to be checkboxes, and both could produce a copy that silently depended on
-       MapStructor: unticking Embed left tiled layers streaming from our Worker, and unticking raw
-       data shipped a map with no underlying file to hand anyone. A default nobody reads is not a
-       guarantee. What they bought instead is honesty about size — stated below, not hidden. */
+    /* WHAT IS NEVER A CHOICE, and what is (owner 9/22, refined 10/6).
+       9/22: "everything must be there. We need there to be no gap. Everything must be in a folder
+       that can be put up onto a completely separate website." → embedding the tiles is not a
+       checkbox: unticking it left tiled layers streaming from our Worker.
+       10/6: "All this time I meant that the data should come with the download being the TABLE
+       data, not the raw GIS data… The GIS data should be an additional option, not by default,
+       with parquet being the default, but offering all GIS formats." → the TABLE (every layer's
+       attributes, read by the ▦ button) always rides along; the raw geometry files are opt-in,
+       because they are what makes a copy huge and most people hosting a map never open them. */
     var embedRow = variant === "maplibre" && archCount > 0
       ? "<div class=\"msdl-row\">Map data for <b>" + archCount + "</b> tiled layer" + (archCount === 1 ? "" : "s") + " is embedded in the folder (.pmtiles), so it works offline and from any host. This is what makes the copy large.</div>"
       : "";
@@ -151,21 +156,22 @@
       "<button id=\"msdl-close\" title=\"Close\">&times;</button>" +
       "<h3>Download whole project</h3>" +
       "<p class=\"msdl-sub\">A self-contained, static copy of this map — a folder you can open on any computer or upload to any web host. It depends on nothing from MapStructor and never updates.</p>" +
-      "<div class=\"msdl-row\">The raw data for every layer rides along in <b>other_data/</b>, so the copy carries the underlying files, not only the picture of them.</div>" +
-      /* FORMATS (owner 10/3: "we can make geoparquet the default, and make geojson and other
-         formats optional in addition").
-         GeoParquet is not a convenience — measured on the owner's own archives it is about 4.5x
-         smaller for the same data: Current Rail Network 321.7 MB -> 72.9 MB, Railroads 1826-1911
-         69.0 -> 15.2, Rail Lines 33.5 -> 6.9. On the Railways copy that is roughly 700 MB down to
-         370. And the parquet already exists beside every archive, so shipping it costs a different
-         file extension rather than any conversion.
-         BOTH are offered because the trade is who can open the file, not which is better: GeoJSON
-         opens in anything including a text editor, parquet wants QGIS 3.28+, ArcGIS Pro 3, DuckDB
-         or Python. Neither is read by the map itself — these files are the copy of the data for
-         the person you hand the folder to. */
-      "<div class=\"msdl-row\" style=\"margin-bottom:6px;\">Data for each layer, in <b>other_data/</b>:</div>" +
-      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-parquet\" checked> <span><b>GeoParquet</b> — about 4&frac12;&times; smaller. Opens in QGIS, ArcGIS Pro, DuckDB, Python.</span></label>" +
-      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-geojson\"> <span><b>GeoJSON</b> — much larger, but opens in anything, including a text editor.</span></label>" +
+      "<div class=\"msdl-row\">Every layer's <b>table</b> (its attributes) rides along, and the &#9638; table button works in the copy.</div>" +
+      /* FORMATS. GeoParquet is the default when raw data is on — measured on the owner's own
+         archives it is about 4.5x smaller for the same data: Current Rail Network 321.7 MB ->
+         72.9 MB, Railroads 1826-1911 69.0 -> 15.2, Rail Lines 33.5 -> 6.9. The others are offered
+         because the trade is who can open the file: GeoJSON opens in anything, Shapefile is what
+         older GIS expects, KML is Google Earth, CSV is a spreadsheet (geometry as WKT). None of
+         them is read by the map itself — they are the copy of the data for the person you hand
+         the folder to. GeoPackage is not offered yet (needs a SQLite engine in the browser). */
+      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-raw\"> <span><b>Also include the raw GIS data</b> — the full geometry files, in <b>other_data/</b>, for QGIS, ArcGIS, Python. This makes the copy larger.</span></label>" +
+      "<div id=\"msdl-fmts\" style=\"display:none;margin:-2px 0 8px 24px;\">" +
+      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-parquet\" checked> <span><b>GeoParquet</b> — smallest (about 4&frac12;&times; smaller than GeoJSON). QGIS 3.28+, ArcGIS Pro, DuckDB, Python.</span></label>" +
+      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-geojson\"> <span><b>GeoJSON</b> — opens in anything, including a text editor.</span></label>" +
+      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-shapefile\"> <span><b>Shapefile</b> — a .zip per layer (.shp/.shx/.dbf/.prj), the classic GIS format.</span></label>" +
+      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-kml\"> <span><b>KML</b> — Google Earth.</span></label>" +
+      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-csv\"> <span><b>CSV</b> — a spreadsheet; geometry as WKT in the last column.</span></label>" +
+      "</div>" +
       "<div class=\"msdl-row\" id=\"msdl-fmt-note\" style=\"color:#9a93ad;font-size:11px;\"></div>" +
       embedRow +
       "<button id=\"msdl-build\">Build ZIP</button>" +
@@ -177,29 +183,29 @@
     ov.addEventListener("click", function (e) { if (e.target === ov) close(); });
     ov.querySelector("#msdl-close").addEventListener("click", close);
     document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); } });
-    /* At least one format, always. Unticking both would quietly produce the folder the 9/22
-       "everything must be there" rule exists to prevent — a map with no underlying data. */
-    var fmtP = ov.querySelector("#msdl-fmt-parquet"), fmtG = ov.querySelector("#msdl-fmt-geojson");
+    /* Raw data is opt-in; once it is on, at least one format stays ticked — raw data in no format
+       is not a folder anyone can use. */
+    var rawCb = ov.querySelector("#msdl-raw"), fmtsBox = ov.querySelector("#msdl-fmts");
+    var FMT = ["parquet", "geojson", "shapefile", "kml", "csv"];
+    var fmtEl = {}; FMT.forEach(function (k) { fmtEl[k] = ov.querySelector("#msdl-fmt-" + k); });
     var fmtNote = ov.querySelector("#msdl-fmt-note");
     function syncFormats(changed) {
-      if (!fmtP.checked && !fmtG.checked) {
-        (changed === fmtP ? fmtG : fmtP).checked = true;   // the other one takes over
-        fmtNote.textContent = "The folder always carries the data in at least one format.";
-      } else {
-        fmtNote.textContent = (fmtP.checked && fmtG.checked)
-          ? "Both will be included — the folder will be noticeably larger."
-          : (fmtG.checked ? "GeoJSON only — larger files, readable anywhere." : "");
-      }
+      fmtsBox.style.display = rawCb.checked ? "" : "none";
+      if (!rawCb.checked) { fmtNote.textContent = ""; return; }
+      var on = FMT.filter(function (k) { return fmtEl[k].checked; });
+      if (!on.length) { fmtEl[changed === fmtEl.parquet ? "geojson" : "parquet"].checked = true; on = FMT.filter(function (k) { return fmtEl[k].checked; }); fmtNote.textContent = "Raw data needs at least one format."; return; }
+      fmtNote.textContent = on.length > 1 ? on.length + " formats — the folder will be noticeably larger." : (on[0] === "geojson" ? "GeoJSON only — larger files, readable anywhere." : "");
     }
-    fmtP.addEventListener("change", function () { syncFormats(fmtP); });
-    fmtG.addEventListener("change", function () { syncFormats(fmtG); });
+    rawCb.addEventListener("change", function () { syncFormats(null); });
+    FMT.forEach(function (k) { fmtEl[k].addEventListener("change", function () { syncFormats(fmtEl[k]); }); });
     syncFormats(null);
 
     ov.querySelector("#msdl-build").addEventListener("click", function () {
       var btn = this; btn.disabled = true;
+      var formats = {}; FMT.forEach(function (k) { formats[k] = !!fmtEl[k].checked; });
       buildZip({
-        rawData: true,          // the data itself is never optional — see the NOT A CHOICE note above
-        formats: { parquet: !!fmtP.checked, geojson: !!fmtG.checked },
+        rawData: !!rawCb.checked,   // the TABLE always ships (map/data/*.attr.parquet); raw geometry files are opt-in
+        formats: formats,
         variant: variant,
         embed: true
       }).then(function () {
@@ -362,6 +368,105 @@
     throw new Error("Could not fetch the map data for “" + (a.label || a.name) + "”. Tried: " + tried.join("; "));
   }
 
+  /* ── THE TABLE for every embedded layer (10/6) ──────────────────────────
+     A copy of the map carries each tiled layer's attributes as data/<archive>.attr.parquet — the
+     sidecar MapStructor already baked for it when one exists and is current, else one baked right
+     here from the layer's rows (bigtable.js's buildParquet, the single definition of the sidecar's
+     shape). Many layers can share one archive (instances); they share the sidecar too. */
+  function ensureBigTableLib() {
+    if (window.MSBigTable) return Promise.resolve(window.MSBigTable);
+    return new Promise(function (res) {
+      var s = document.createElement("script");
+      s.src = "../platform/bigtable.js";
+      s.onload = function () { res(window.MSBigTable || null); };
+      s.onerror = function () { res(null); };
+      document.head.appendChild(s);
+    });
+  }
+  async function rowsForLayer(lid, setStatus, label) {
+    var db = (typeof MapAuth !== "undefined" && MapAuth && MapAuth.db) || null;
+    if (!db) return [];
+    var rows = [], last = null, CAP = 300000;   // bigtable's own BAKE_MAX
+    for (;;) {   // keyset, never OFFSET — deep offsets hit the statement timeout and truncate silently
+      var q = db.from("features").select("feature_id, label, description, start_date, end_date, content_id, custom_fields").eq("layer_id", lid).order("feature_id").limit(1000);
+      if (last != null) q = q.gt("feature_id", last);
+      var r = await q;
+      if (r.error) throw new Error(r.error.message);
+      if (!r.data || !r.data.length) break;
+      rows = rows.concat(r.data); last = r.data[r.data.length - 1].feature_id;
+      setStatus("Table for “" + label + "” — " + rows.length.toLocaleString() + " rows…");
+      if (r.data.length < 1000 || rows.length >= CAP) break;
+    }
+    return rows;
+  }
+  var FMT_KEYS = ["parquet", "geojson", "shapefile", "kml", "csv"];
+  function ensureGeoExportLib() {
+    if (window.MSGeoExport) return Promise.resolve(window.MSGeoExport);
+    return new Promise(function (res) {
+      var s = document.createElement("script");
+      s.src = "../platform/geoExport.js";
+      s.onload = function () { res(window.MSGeoExport || null); };
+      s.onerror = function () { res(null); };
+      document.head.appendChild(s);
+    });
+  }
+  // a browser-tiled layer's features, straight from Postgres, as a FeatureCollection (raw exports)
+  async function fcFromRows(lid, setStatus, label) {
+    var db = (typeof MapAuth !== "undefined" && MapAuth && MapAuth.db) || null;
+    if (!db) return null;
+    var feats = [], last = null, CAP = 300000;
+    for (;;) {
+      var q = db.from("features").select("feature_id, geom, label, description, start_date, end_date, content_id, custom_fields").eq("layer_id", lid).order("feature_id").limit(1000);
+      if (last != null) q = q.gt("feature_id", last);
+      var r = await q;
+      if (r.error) throw new Error(r.error.message);
+      if (!r.data || !r.data.length) break;
+      r.data.forEach(function (x) {
+        if (!x.geom) return;
+        var p = { label: x.label, description: x.description, start_date: x.start_date, end_date: x.end_date, content_id: x.content_id };
+        var cf = x.custom_fields || {}; for (var k in cf) if (p[k] === undefined) p[k] = cf[k];
+        feats.push({ type: "Feature", id: x.feature_id, properties: p, geometry: x.geom });
+      });
+      last = r.data[r.data.length - 1].feature_id;
+      setStatus("Data for “" + label + "” — " + feats.length.toLocaleString() + " features…");
+      if (r.data.length < 1000 || feats.length >= CAP) break;
+    }
+    return feats.length ? { type: "FeatureCollection", features: feats } : null;
+  }
+  async function shipSidecars(zip, embedById, setStatus) {
+    var out = {}, byId = {};
+    walkLeaves(function (n) { byId[n.id] = n; });
+    var ids = Object.keys(embedById || {});
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i], n = byId[id], em = embedById[id];
+      if (!n || !em || n.outlineOf) continue;
+      var file = "data/" + em.name + ".attr.parquet";
+      var shared = Object.keys(out).filter(function (k) { return out[k].file === file; })[0];
+      if (shared) { out[id] = out[shared]; continue; }
+      var label = n.label || n.id;
+      setStatus("Table for “" + label + "”…");
+      var bytes = null, rows = n.attrParquetRows || 0, at = n.attrParquetAt || null;
+      if (n.attrParquet && !n.attrParquetDirty) {
+        try { bytes = await fetchAsset(n.attrParquet + "?v=" + encodeURIComponent(at || "1"), "the table for “" + label + "”"); }
+        catch (eF) { bytes = null; }
+      }
+      if (!bytes) {
+        var lid = n._layerDbId || n._dataLayerId;
+        var recs = [];
+        try { recs = lid ? await rowsForLayer(lid, setStatus, label) : []; } catch (eR) { console.warn("download: rows for " + label, eR); }
+        if (recs.length) {
+          var BT = await ensureBigTableLib();
+          if (BT) try { bytes = await BT.buildParquet(recs, lid); rows = recs.length; at = new Date().toISOString(); }
+          catch (eB) { console.warn("download: table bake failed for " + label, eB); }
+        }
+      }
+      if (!bytes || !(bytes.byteLength || bytes.length)) { console.warn("download: no table for " + label); continue; }
+      zip.file("map/" + file, bytes);
+      out[id] = { file: file, rows: rows, at: at };
+    }
+    return out;
+  }
+
   function projectName() {
     var el = document.getElementById("header-text-value");
     var t = el && el.textContent ? el.textContent.trim() : "";
@@ -388,7 +493,11 @@
       "const headerButtons = " + js(grab(function () { return headerButtons; }, [])) + ";\n";
   }
 
-  function genLayersList(embedById, hasRasters) {
+  function genLayersList(embedById, hasRasters, sidecarById) {
+    // the ▦ table button needs a layer id and the export strips every _key — read them off the LIVE
+    // tree first and stamp a plain `tableId` on the frozen copy (generateLayers.js honours it)
+    var dbIds = {};
+    walkLeaves(function (n) { dbIds[n.id] = n._layerDbId || n._dataLayerId || null; });
     var data = cleanValue(grab(function () { return layers; }, []), new WeakSet()) || [];
     // embedded layers: the zip carries the archive itself — point the source at the local file
     // (relative pmtiles:// URL, resolved against map/index.html by the injected protocol handler)
@@ -400,14 +509,19 @@
     // ones too (the offline gate caught it: twelve live items where six were embedded, and two
     // blocked requests to supabase.co, one of them for a project that no longer exists). A
     // standalone copy must not know MapStructor's address at all.
-    if (embedById) (function w(a) {
+    (function w(a) {
       (a || []).forEach(function (n) {
         if (n.children) { w(n.children); return; }
-        var em = embedById[n.id];
+        n.tableId = dbIds[n.id] || n.id;
+        var em = embedById && embedById[n.id];
         if (em) {
           n.source = { type: "vector", url: "pmtiles://data/" + em.name + ".pmtiles" };
           delete n.pmtiles;        // the archive is in map/data/ now
-          delete n.attrParquet;    // the sidecar is not embedded — a dead remote read either way
+          // the TABLE sidecar rides in map/data/ beside the archive (10/6); a layer that got none
+          // loses the remote stamp — a dead read into MapStructor's address either way
+          var sc = sidecarById && sidecarById[n.id];
+          if (sc) { n.attrParquet = sc.file; n.attrParquetRows = sc.rows; n.attrParquetAt = sc.at; delete n.attrParquetDirty; }
+          else delete n.attrParquet;
         }
         // the embedded snapshots are served from window.rasterScrubData (local raster/*.png);
         // leaving the node copy would make the same layer load twice, once over the network
@@ -619,6 +733,19 @@
       "    <script src=\"project/renderRegistry.js\"></script>");
     html = html.replace(/^[ \t]*<script src="\.\.\/platform\/labels\.js[^"]*"[^>]*><\/script>.*$/m,
       "    <script src=\"project/labels.js\"></script>");
+    // THE TABLE RIDES ALONG (10/6 — owner: "we need the attribute table… it's essential to a map").
+    // attrGrid + viewerTable become project/ copies; viewerTable injects project/bigtable.js on
+    // demand (derived from its own src), which loads project/vendor/duckdb/ (34 MB, lazily, only
+    // when a table is opened) to read the data/*.attr.parquet sidecars by HTTP range.
+    // ORDER IS LOAD-BEARING: the copy has no platformProjectId, so engine/generateLayers.js renders
+    // the sidebar the instant it loads — and the ▦ is drawn only if window.__msViewerAttr is already
+    // set, which viewerTable.js does at load. On the platform projectLoader re-renders later, so the
+    // includes could sit anywhere; here they must come BEFORE the engine file (found by the export
+    // gate's E10, 10/6: flag true, rows in panel, no button).
+    html = html.replace(/^[ \t]*<script src="\.\.\/platform\/attrGrid\.js[^"]*"[^>]*><\/script>.*$\n?/m, "");
+    html = html.replace(/^[ \t]*<script src="\.\.\/platform\/viewerTable\.js[^"]*"[^>]*><\/script>.*$\n?/m, "");
+    html = html.replace(/^([ \t]*)(<script src="engine\/generateLayers\.js[^"]*"[^>]*><\/script>)/m,
+      "$1<script src=\"project/attrGrid.js\"></script>\n$1<script src=\"project/viewerTable.js\"></script>\n$1$2");
     html = html.replace(/^[ \t]*<script src="\.\.\/platform\/[^"]*"[^>]*><\/script>.*$\n?/gm, "");
     html = html.replace(/^[ \t]*<script src="https:\/\/cdn\.jsdelivr\.net\/npm\/@supabase\/supabase-js@2"><\/script>.*$\n?/gm, "");
 
@@ -930,6 +1057,7 @@
     }
 
     // 1c. embedded data — the .pmtiles archives themselves (dedup: many layers, one archive)
+    var sidecarById = null;
     if (embedById) {
       var archives = {};
       Object.keys(embedById).forEach(function (id) { archives[embedById[id].name] = embedById[id]; });
@@ -939,10 +1067,22 @@
         setStatus("Embedding map data " + (++anDone) + "/" + anKeys.length + " — " + (aRec.label || anKeys[ai]) + "…");
         zip.file("map/data/" + anKeys[ai] + ".pmtiles", await fetchArchive(aRec));
       }
+      // 1d. the TABLE for each of them, beside its archive (10/6)
+      sidecarById = await shipSidecars(zip, embedById, setStatus);
     }
 
     // 2. platform pieces that ride INSIDE the project folder
     setStatus("Bundling renderers…");
+    // 2a. the features-list table: windowed renderer + list, and — when a sidecar shipped — the
+    // parquet reader with its engine (DuckDB, 34 MB, loaded only when someone opens a table)
+    zip.file("map/project/attrGrid.js", await fetchText("../platform/attrGrid.js"));
+    zip.file("map/project/viewerTable.js", await fetchText("../platform/viewerTable.js"));
+    if (sidecarById && Object.keys(sidecarById).length) {
+      setStatus("Bundling the table engine…");
+      zip.file("map/project/bigtable.js", await fetchText("../platform/bigtable.js"));
+      var DUCK = ["duckdb-browser.mjs", "duckdb-browser-eh.worker.js", "duckdb-eh.wasm"];
+      for (var di = 0; di < DUCK.length; di++) zip.file("map/project/vendor/duckdb/" + DUCK[di], await fetchBin("../platform/vendor/duckdb/" + DUCK[di]));
+    }
     var rr = await fetchText("../platform/renderRegistry.js");
     rr += "\n\n/* ── standalone appendix (added by the download builder) ─────────────────\n" +
       "   Generated lists are pure data; reattach each layer's panel.render here —\n" +
@@ -1036,7 +1176,7 @@
     zip.file("map/project/lists/disclaimer.js", genDisclaimer());
     zip.file("map/project/lists/features.js", genFeatures());
     zip.file("map/project/lists/sliderDates.js", genSliderDates());
-    zip.file("map/project/lists/layersList.js", genLayersList(embedById, hasRasters));
+    zip.file("map/project/lists/layersList.js", genLayersList(embedById, hasRasters, sidecarById));
     zip.file("map/project/lists/modalinfo.js", genModalInfo());
     zip.file("map/project/lists/bounds.js", genBounds());
     zip.file("map/project/lists/mapData.js", genMapData());
@@ -1101,47 +1241,72 @@
         usedNames[name.toLowerCase()] = 1;
         return name;
       }
+      /* Default to GeoParquet when the caller said nothing (owner 10/3, 10/6). The file name is
+         decided ONCE per layer so every format shares it and differs only by extension —
+         Railroads.parquet beside Railroads.kml, not unrelated names. */
+      var want = opts.formats || { parquet: true };
+      if (!FMT_KEYS.some(function (k) { return want[k]; })) want.parquet = true;
+      var needFc = want.geojson || want.csv || want.kml || want.shapefile;
+      var GX = await ensureGeoExportLib();
+      if (!GX) console.warn("download: geoExport.js did not load — only ready-made files can ship");
+      if (want.parquet && GX) await ensureBigTableLib();   // the GeoParquet writer runs on DuckDB
       for (var ri = 0; ri < flat.length; ri++) {
         var n = flat[ri];
         if (n.outlineOf) continue;   // outline twins borrow their parent's features — one export is enough
-        var fc = n.source && n.source.type === "geojson" && n.source.data;
-        if (fc && fc.features && fc.features.length) {
-          zip.file("other_data/" + dataFileName(n, n.id) + ".geojson", JSON.stringify(cleanValue(fc, new WeakSet())));
-          wrote++;
-          continue;
-        }
-        /* A TILED layer has no features in memory — its data lives in the archive on R2. Without
-           this the copy shipped tiles and nothing else for exactly the biggest layers, which are
-           the ones somebody would actually want the file for. */
-        var src = sourceDataFor(n);
-        if (!src) continue;
-        /* Default to GeoParquet when the caller said nothing, matching the dialog (owner 10/3).
-           The file name is decided ONCE per layer so both formats share it and differ only by
-           extension — Railroads.parquet beside Railroads.geojson, not two unrelated names. */
-        var want = opts.formats || { parquet: true, geojson: false };
-        var base = dataFileName(n, src.name);
-        var anyGot = false;
-        for (var fi = 0; fi < 2; fi++) {
-          var fmt = fi === 0 ? "parquet" : "geojson";
-          if (!want[fmt]) continue;
-          var spec = src.byFormat[fmt];
-          setStatus("Fetching the " + (fmt === "parquet" ? "GeoParquet" : "GeoJSON") + " for “" + (src.label || src.name) + "”…");
-          var got = null;
-          for (var si = 0; si < spec.urls.length && !got; si++) {
-            try { got = await fetchBin(spec.urls[si]); } catch (eSrc) { /* try the next spelling/host */ }
+        var label = n.label || n.id;
+        var base = dataFileName(n, n.id);
+        var fc = null, pqBytes = null;
+        /* THREE places a layer's data can live, resolved in order:
+             1. in memory — a live GeoJSON layer (the page already holds every feature)
+             2. the fold archive on R2 — a cloud-tiled layer (parquet + export-ready GeoJSON beside its tiles)
+             3. Postgres rows — a browser-tiled layer (tiles baked here, rows never left the database)
+           Before 10/6 only 1 and 2 existed, so exactly the browser-tiled layers shipped nothing. */
+        var mem = n.source && n.source.type === "geojson" && n.source.data;
+        if (mem && mem.features && mem.features.length) {
+          fc = cleanValue(mem, new WeakSet());
+        } else {
+          var src = sourceDataFor(n);
+          if (src) {
+            if (want.parquet) {
+              setStatus("Fetching the GeoParquet for “" + label + "”…");
+              for (var si = 0; si < src.byFormat.parquet.urls.length && !pqBytes; si++) {
+                try { pqBytes = await fetchBin(src.byFormat.parquet.urls[si]); } catch (eSrc) { /* next spelling/host */ }
+              }
+            }
+            if (needFc || (want.parquet && !pqBytes)) {
+              setStatus("Fetching the GeoJSON for “" + label + "”…");
+              var gjBytes = null;
+              for (var gi = 0; gi < src.byFormat.geojson.urls.length && !gjBytes; gi++) {
+                try { gjBytes = await fetchBin(src.byFormat.geojson.urls[gi]); } catch (eG) {}
+              }
+              if (gjBytes) try { fc = JSON.parse(new TextDecoder().decode(gjBytes)); } catch (eJ) { fc = null; }
+            }
+          } else {
+            var lid = n._layerDbId || n._dataLayerId;
+            if (lid) try { fc = await fcFromRows(lid, setStatus, label); } catch (eRows) { console.warn("download: rows for " + label, eRows); }
           }
-          if (got) { zip.file("other_data/" + base + spec.ext, got); wrote++; anyGot = true; }
         }
-        /* Fall back rather than ship nothing: a layer whose parquet is missing (folded before the
-           parquet existed) still travels as GeoJSON, which is the whole point of the folder. */
-        if (!anyGot && !want.geojson) {
-          var gj = src.byFormat.geojson, g2 = null;
-          for (var gi = 0; gi < gj.urls.length && !g2; gi++) {
-            try { g2 = await fetchBin(gj.urls[gi]); } catch (eG) {}
+        if (!fc && !pqBytes) { unreachable.push(label); continue; }
+        var got = 0;
+        if (want.parquet) {
+          if (!pqBytes && fc && GX && fc.features.length) {
+            setStatus("Writing GeoParquet for “" + label + "”…");
+            try { pqBytes = await GX.toGeoParquet(fc, base); } catch (ePq) { console.warn("download: GeoParquet for " + label, ePq); }
           }
-          if (g2) { zip.file("other_data/" + base + gj.ext, g2); wrote++; anyGot = true; console.warn("download: no parquet for " + (src.label || src.name) + " — shipped GeoJSON instead"); }
+          if (pqBytes) { zip.file("other_data/" + base + ".parquet", pqBytes); got++; }
         }
-        if (!anyGot) unreachable.push(src.label || src.name);
+        if (want.geojson && fc) { zip.file("other_data/" + base + ".geojson", JSON.stringify(fc)); got++; }
+        if (want.csv && fc && GX) { zip.file("other_data/" + base + ".csv", GX.toCsv(fc)); got++; }
+        if (want.kml && fc && GX) { zip.file("other_data/" + base + ".kml", GX.toKml(fc, label)); got++; }
+        if (want.shapefile && fc && GX) {
+          setStatus("Writing the Shapefile for “" + label + "”…");
+          try { zip.file("other_data/" + base + ".shp.zip", await GX.toShapefileZip(fc, base)); got++; }
+          catch (eShp) { console.warn("download: Shapefile for " + label, eShp); }
+        }
+        /* Fall back rather than ship nothing: a layer asked for only as parquet whose parquet could
+           not be made still travels as GeoJSON, which is the whole point of the folder. */
+        if (!got && fc) { zip.file("other_data/" + base + ".geojson", JSON.stringify(fc)); got++; console.warn("download: shipped GeoJSON for " + label + " — the chosen formats could not be written"); }
+        if (got) wrote += got; else unreachable.push(label);
       }
       // Say what is missing rather than shipping a quietly incomplete folder — a gap nobody is told
       // about is the failure this whole change exists to remove.

@@ -15,8 +15,13 @@
    Postgres); no sidecar, stale bake, or ANY sidecar/R2 failure → the features-table stream below,
    exactly as before (anonymous reads work on public projects — the same RLS path hydration uses).
    List rendering is windowed via MSAttrWindow (attrGrid.js), so DOM size never depends on row
-   count. Standalone downloads ship without platform/, so none of this exists there and viewer
-   rows render exactly as before. */
+   count.
+
+   STANDALONE COPIES (10/6 — owner: "we need the attribute table… it's essential to a map"): the
+   download carries this file, attrGrid.js, bigtable.js and the DuckDB engine, plus a
+   data/<layer>.attr.parquet sidecar for every tiled layer. There is no Supabase there, so rows
+   come from the sidecar (DuckDB, HTTP range reads when hosted) or, for a live GeoJSON layer,
+   from the features already in the page. Zoom-to reads geometry from the loaded tiles/source. */
 (function () {
   "use strict";
   if (window.MSViewerTable) return;
@@ -104,10 +109,16 @@
     })(g.coordinates);
     return mm ? [[mm[0], mm[1]], [mm[2], mm[3]]] : null;
   }
+  function standalone() { return typeof MapAuth === "undefined" || !MapAuth || !MapAuth.db; }
   async function zoomToFeature(fid) {
     try {
       var g = _geomCache[fid];
-      if (!g && _node && _node.fold_state === "folded") {   // folded: no row — read the geometry from the loaded vector tiles
+      if (!g && _node && standalone()) {   // a live layer in a standalone copy: the geometry is in the page
+        var fcs = _node.source && _node.source.type === "geojson" && _node.source.data;
+        var hit = fcs && fcs.features && fcs.features.filter(function (f) { return String(f.id != null ? f.id : (f.properties || {}).feature_id) === String(fid); })[0];
+        if (hit && hit.geometry) g = hit.geometry;
+      }
+      if (!g && _node && (_node.fold_state === "folded" || standalone())) {   // folded (or no database at all): read the geometry from the loaded vector tiles
         maps().forEach(function (m) {
           if (g) return;
           ["-left", "-right"].forEach(function (side) {
@@ -122,7 +133,7 @@
         });
         if (g) _geomCache[fid] = g;
       }
-      if (!g) {
+      if (!g && !standalone()) {
         var r = await MapAuth.db.from("features").select("geom").eq("feature_id", fid).single();
         g = r.data && r.data.geom;
         if (g) _geomCache[fid] = g;
@@ -197,10 +208,39 @@
     return all.map(function (r) { return { feature_id: r.feature_id, label: r.label }; });
   }
 
+  // rows for a STANDALONE copy: the shipped sidecar, else the live layer's own features
+  async function standaloneRows(node, gen) {
+    if (node.attrParquet) {
+      var BT = await ensureBigTable();
+      if (!BT || gen !== _gen) return null;
+      document.getElementById("ms-vl-foot").textContent = "loading (table file)…";
+      var all = await BT.loadAll(node.tableId || node.id, node.attrParquet, node.attrParquetAt);
+      return all.map(function (r) { return { feature_id: r.feature_id, label: r.label }; });
+    }
+    var fc = node.source && node.source.type === "geojson" && node.source.data;
+    if (fc && fc.features) return fc.features.map(function (f, i) {
+      var p = f.properties || {};
+      return { feature_id: f.id != null ? f.id : (p.feature_id != null ? p.feature_id : i), label: p.label != null ? p.label : (p.name != null ? p.name : p.title) };
+    });
+    return null;
+  }
+  function showRows(rows, from) {
+    _rows = rows;
+    document.getElementById("ms-vl-foot").textContent = rows.length.toLocaleString() + " feature" + (rows.length === 1 ? "" : "s") + (from >= CAP ? " (first " + CAP.toLocaleString() + ")" : "");
+    if (!rows.length) { document.getElementById("ms-vl-tbody").innerHTML = '<tr><td style="color:#777777;">No features.</td></tr>'; return; }
+    _win = new MSAttrWindow({
+      scrollEl: document.getElementById("ms-vl-wrap"),
+      tbody: document.getElementById("ms-vl-tbody"),
+      renderRow: rowHtml,
+      colCount: function () { return 1; }
+    });
+    _win.setRows(_rows);
+  }
+
   async function openList(node) {
     ensureUi(); dock();
     var gen = ++_gen;
-    var lid = node._dataLayerId || node._layerDbId;
+    var lid = node._dataLayerId || node._layerDbId || node.tableId;
     var el = document.getElementById("ms-vl");
     el.style.display = "flex";
     document.getElementById("ms-vl-title").textContent = node.label || "Features";
@@ -208,7 +248,16 @@
     _rows = []; _selFid = null; _icon = layerGlyph(node); _node = node;
     document.getElementById("ms-vl-tbody").innerHTML = "";
     if (_win) { _win.destroy(); _win = null; }
-    if (!lid || typeof MapAuth === "undefined" || !MapAuth.db) { document.getElementById("ms-vl-foot").textContent = "No list available for this layer."; return; }
+    if (standalone()) {
+      var srows = null;
+      try { srows = await standaloneRows(node, gen); } catch (eS) { console.warn("viewerTable: standalone rows", eS); srows = null; }
+      if (gen !== _gen) return;
+      if (!srows) { document.getElementById("ms-vl-foot").textContent = "No list available for this layer."; return; }
+      _srcByLid[lid || node.id] = node.attrParquet ? "sidecar" : "page";
+      showRows(srows, 0);
+      return;
+    }
+    if (!lid) { document.getElementById("ms-vl-foot").textContent = "No list available for this layer."; return; }
     var db = MapAuth.db, from = 0, rows = null;
     try { rows = await sidecarRows(db, node, lid, gen); } catch (eSc) { rows = null; }   // ANY sidecar/R2 failure → the stream below
     if (gen !== _gen) return;
@@ -237,16 +286,7 @@
       } catch (e) { document.getElementById("ms-vl-foot").textContent = "Load failed: " + (e && e.message); return; }
     }
     if (gen !== _gen) return;
-    _rows = rows;
-    document.getElementById("ms-vl-foot").textContent = rows.length.toLocaleString() + " feature" + (rows.length === 1 ? "" : "s") + (from >= CAP ? " (first " + CAP.toLocaleString() + ")" : "");
-    if (!rows.length) { document.getElementById("ms-vl-tbody").innerHTML = '<tr><td style="color:#777777;">No features.</td></tr>'; return; }
-    _win = new MSAttrWindow({
-      scrollEl: document.getElementById("ms-vl-wrap"),
-      tbody: document.getElementById("ms-vl-tbody"),
-      renderRow: rowHtml,
-      colCount: function () { return 1; }
-    });
-    _win.setRows(_rows);
+    showRows(rows, from);
   }
 
   document.addEventListener("click", function (e) {

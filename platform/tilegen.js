@@ -27,9 +27,13 @@
   function nfmt(n) { try { return Number(n).toLocaleString("en-US"); } catch (e) { return String(n); } }
 
   // ── the maximums (geometry-aware): past any of these, a layer auto-converts ──
-  // points are cheap (Google My Maps caps layers at 2,000); lines/polygons carry whole
-  // geometries per feature (the buildings-lag case), so they convert much sooner.
-  var LIMITS = { pointFeatures: 2000, otherFeatures: 500, rawBytes: 4 * 1024 * 1024 };
+  // BYTES is the knob (10/6, decisions-log "Tiling threshold"): a layer loaded whole must download
+  // in 750 ms under bad conditions (2 Mbps ≈ 0.11 MB after latency), and tiling only pays once the
+  // whole file costs more than the ~2 extra round-trips tiles need — both land near 100 KB. The old
+  // 4 MB was a parse/render comfort number, not a download one. The feature counts stay as coarse
+  // floors (points are cheap — Google My Maps caps layers at 2,000; lines/polygons carry whole
+  // geometries per feature) but any layer past 100 KB tiles regardless of its count.
+  var LIMITS = { pointFeatures: 2000, otherFeatures: 500, rawBytes: 100 * 1024 };
 
   function needsTiles(featureCount, geomKind, rawBytes) {
     // Crossing this changes how the layer is stored and drawn for good — after it, per-feature
@@ -39,7 +43,7 @@
     if (rawBytes != null && rawBytes > LIMITS.rawBytes) {
       // numbers, not "5 MB" strings — cliff() compares with >, and string comparison is a coin flip
       if (G) G.cliff("auto-tile-bytes", rawBytes, LIMITS.rawBytes,
-        "this layer is about " + Math.round(rawBytes / 1048576) + " MB, past the point where plain data loads quickly, so it is being converted to tiles");
+        "this layer is about " + (rawBytes >= 1048576 ? (rawBytes / 1048576).toFixed(1) + " MB" : Math.round(rawBytes / 1024) + " KB") + ", past the point where plain data loads quickly on a slow connection, so it is being converted to tiles");
       return true;
     }
     var isPt = (geomKind === "circle" || geomKind === "Point");

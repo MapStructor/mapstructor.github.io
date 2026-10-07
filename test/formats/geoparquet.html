@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>geoExport lab — GeoParquet written in the browser reads back</title></head>
+<body><pre id="log"></pre>
+<script src="../../platform/bigtable.js"></script>
+<script src="../../platform/geoExport.js"></script>
+<script>
+window.labResult = (async () => {
+  const out = {};
+  try {
+    const fc = await (await fetch('../wysiwyg/data/parcels.geojson')).json();
+    fc.features.forEach((f, i) => { f.properties.name = 'Parcel ' + (i + 1); f.properties.area = i * 1.5; });
+    out.features = fc.features.length;
+    const t0 = performance.now();
+    const buf = await MSGeoExport.toGeoParquet(fc, 'parcels');
+    out.ms = Math.round(performance.now() - t0);
+    out.bytes = buf.length;
+    out.magic = String.fromCharCode(...buf.subarray(0, 4));
+    // read it back with the same engine
+    const e = await MSBigTable.ensureEngine();
+    await e.adb.registerFileBuffer('rb.parquet', buf);
+    const r = await e.conn.query("SELECT count(*)::INT AS n, count(geometry)::INT AS g, typeof(geometry) AS t, min(octet_length(geometry))::INT AS minlen FROM 'rb.parquet' GROUP BY t");
+    out.readback = r.toArray().map(x => x.toJSON());
+    const kv = await e.conn.query("SELECT key::VARCHAR AS k, value::VARCHAR AS v FROM parquet_kv_metadata('rb.parquet')");
+    out.kv = kv.toArray().map(x => x.toJSON()).map(x => ({ k: x.k, v: String(x.v).slice(0, 160) }));
+    const cols = await e.conn.query("SELECT column_name AS c, column_type AS t FROM (DESCRIBE SELECT * FROM 'rb.parquet')");
+    out.columns = cols.toArray().map(x => x.toJSON());
+    // first geometry: WKB header must say little-endian Polygon
+    const g = await e.conn.query("SELECT geometry FROM 'rb.parquet' LIMIT 1");
+    const wkb = g.toArray()[0].toJSON().geometry;
+    out.firstWkbHead = Array.from(new Uint8Array(wkb).subarray(0, 5));
+  } catch (e) { out.fatal = String(e.message || e).slice(0, 300); }
+  document.getElementById('log').textContent = JSON.stringify(out, null, 1);
+  return out;
+})();
+</script></body></html>

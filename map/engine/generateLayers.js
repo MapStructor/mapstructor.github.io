@@ -27,8 +27,12 @@ function layerRowButtons(layerData, zoomName, isLeaf) {
     if (window.__msEditorAttr) tableBtn = tblOff
       ? `<i class="fa fa-table attr-table-btn ms-tbl-off" title="Attribute table — hidden in view mode (still opens for you)"></i>`
       : `<i class="fa fa-table attr-table-btn" title="Attribute table"></i>`;
-    else if (window.__msViewerAttr && !tblOff && (layerData._layerDbId || layerData._dataLayerId) &&
-             (layerData.pmtiles || (layerData.source && layerData.source.type === "geojson")))
+    // tableId: a STANDALONE copy's layers carry no _layerDbId (the export strips _keys), so the
+    // download builder stamps the id it needs under this plain name (10/6 — the table ships with the copy)
+    else if (window.__msViewerAttr && !tblOff && (layerData._layerDbId || layerData._dataLayerId || layerData.tableId) &&
+             (layerData.pmtiles || layerData.attrParquet || (layerData.source && (layerData.source.type === "geojson" ||
+               // a standalone copy's tiled layer: `pmtiles` is gone (the archive is local) and the source is a pmtiles:// vector
+               (layerData.tableId && layerData.source.type === "vector")))))
       tableBtn = `<i class="fa fa-table attr-table-btn" title="Features list"></i>`;
   }
   return `<div class="layer-buttons-block"><div class="layer-buttons-list">${tableBtn}${infoBtn}${zoomBtn}</div></div>`;
