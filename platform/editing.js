@@ -2054,40 +2054,61 @@
       // owner's AtlasHCB (350 MB of geometry), 4 seconds into every boot, which is what "taking
       // a while to load, seems stuck" was. Only delta rows carry ms_foldsrc, so ask for those:
       // same result, 1.1s and 0 rows on that layer.
-      var r = await db.from('features').select('feature_id, geom, custom_fields, start_date, end_date')
-        .eq('layer_id', lid).not('custom_fields->>ms_foldsrc', 'is', null).limit(500);
-      if (r.error || !r.data || !r.data.length) return;
-      // Past this cap the OLDER edits to a folded layer simply are not restored, and the next
-      // save writes the un-restored state back — edits disappearing on reload with nothing said.
-      if (window.MSGuard) MSGuard.cliff('fold-delta-restore', r.data.length, 499,
-        'this layer has more edited features than one load restores, so the oldest edits are not showing');
+      /* EVERY delta, no cap (10/6). This used to be `.limit(500)`: past 500 unpublished edits
+         the OLDEST silently stopped restoring, and the next save wrote that state back — edits
+         vanishing on reload. The owner's rule is absolute: all edits are seen at all times. So
+         page by keyset (feature_id ascending, the same shape the copy path uses — never OFFSET,
+         which hits the statement timeout on deep pages) until a short page says we're done, and
+         paint after EACH page so the first edits are on screen in well under a second while a
+         large set streams in behind them. Not viewport-windowed on purpose: a delta carries its
+         whole geometry, the set is editor-only, and the publish re-fold is what bounds it —
+         windowing would add moveend machinery to solve a size the re-fold already solves. */
       var eo = (_engineEdited[node.id] = _engineEdited[node.id] || {});
       var eod = (_engineEditedDays[node.id] = _engineEditedDays[node.id] || {});
       var hid = (_engineEditIds[node.id] = _engineEditIds[node.id] || []);
-      var found = 0;
-      r.data.forEach(function (d) {
-        var src = d.custom_fields && d.custom_fields.ms_foldsrc;
-        if (src == null) return;
-        if (hid.indexOf(Number(src)) < 0) hid.push(Number(src));
-        if (d.geom) {
-          /* KEYED BY THE ARCHIVE ID, not the delta row's own (10/3). On the map there is now ONE
-             kind of feature id — the archived one. The delta row's primary key is a storage
-             detail the map never sees. Before this, the overlay carried the row id while the
-             layer's paint, its hide-filter and its tile all spoke the archive id, so an edited
-             feature fell out of a `match` on id and painted the fallback colour: the owner's
-             Massachusetts turning light blue. Same id everywhere, and that cannot recur. */
-          noteFoldSrc(node, d.feature_id, src);
-          eo[src] = d.geom; found++;
-          eod[src] = [
-            d.start_date ? +String(d.start_date).slice(0, 10).replace(/-/g, '') : 0,
-            d.end_date ? +String(d.end_date).slice(0, 10).replace(/-/g, '') : 99999999
-          ];
+      var PAGE = 300, last = null, found = 0, total = 0;
+      for (;;) {
+        var q = db.from('features').select('feature_id, geom, custom_fields, start_date, end_date')
+          .eq('layer_id', lid).not('custom_fields->>ms_foldsrc', 'is', null)
+          .order('feature_id').limit(PAGE);
+        if (last != null) q = q.gt('feature_id', last);
+        var r = await q;
+        if (r.error || !r.data || !r.data.length) break;
+        last = r.data[r.data.length - 1].feature_id;
+        total += r.data.length;
+        var pageFound = 0;
+        r.data.forEach(function (d) {
+          var src = d.custom_fields && d.custom_fields.ms_foldsrc;
+          if (src == null) return;
+          if (hid.indexOf(Number(src)) < 0) hid.push(Number(src));
+          if (d.geom) {
+            /* KEYED BY THE ARCHIVE ID, not the delta row's own (10/3). On the map there is now ONE
+               kind of feature id — the archived one. The delta row's primary key is a storage
+               detail the map never sees. Before this, the overlay carried the row id while the
+               layer's paint, its hide-filter and its tile all spoke the archive id, so an edited
+               feature fell out of a `match` on id and painted the fallback colour: the owner's
+               Massachusetts turning light blue. Same id everywhere, and that cannot recur. */
+            noteFoldSrc(node, d.feature_id, src);
+            eo[src] = d.geom; pageFound++;
+            eod[src] = [
+              d.start_date ? +String(d.start_date).slice(0, 10).replace(/-/g, '') : 0,
+              d.end_date ? +String(d.end_date).slice(0, 10).replace(/-/g, '') : 99999999
+            ];
+          }
+        });
+        found += pageFound;
+        if (pageFound) {   // paint this page now; the next one is still in flight
+          applyEngineEditFilter(node);
+          ensureEditedOverlay(node);
+          refreshEditedOverlay(node);
         }
-      });
-      if (!found) return;
-      applyEngineEditFilter(node);
-      ensureEditedOverlay(node);
-      refreshEditedOverlay(node);
+        if (r.data.length < PAGE) break;
+      }
+      // Not a cap any more — a nudge. Thousands of unpublished deltas means the layer is overdue
+      // for its re-fold (Publish, or the nightly), which is the designed way this set shrinks.
+      if (found && window.MSGuard) MSGuard.cliff('fold-delta-restore', total, 4999,
+        'this layer carries thousands of unpublished edits — all are showing, and publishing will fold them into the tiles');
+      try { window.__msFoldDeltaRestore = window.__msFoldDeltaRestore || {}; window.__msFoldDeltaRestore[node.id] = { total: total, found: found }; } catch (eW) {}
     } catch (e) {}
   }
   // A clicked TILE feature is clipped to its tile, so `clickEvt.features[0].geometry` is one
