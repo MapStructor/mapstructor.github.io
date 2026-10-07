@@ -1313,7 +1313,8 @@
   function ensureDrawnEngineLayer(node) {
     if (!node || !node.type || isTilesetNode(node) || node.source_type !== 'geojson-supabase') return;
     if (typeof addMapLayer !== 'function') return;
-    if (!node.source) node.source = { type: 'geojson', data: { type: 'FeatureCollection', features: [] } };
+    if (!node.source) node.source = Object.assign({ type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+      (typeof msLiveSourceProfile === 'function') ? msLiveSourceProfile(node.type) : {});   // WYSIWYG: same tiler profile as configLoader gives every live layer
     ensureNodeHighlight(node);
     var date = editorCurrentDate();
     [['left', beforeMap], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
@@ -2408,7 +2409,9 @@
       var map = pair[1]; if (!map) return; var sid = node.id + '-edited-' + pair[0];
       if (map.getSource(sid)) return;
       try {
-        map.addSource(sid, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        // the overlay re-renders tile features live — through the same tiler profile as the tiles (WYSIWYG, 10/6)
+        var oProf = (typeof msLiveSourceProfile === 'function') ? msLiveSourceProfile((node.type === 'line' || node.type === 'circle') ? node.type : 'fill') : {};
+        map.addSource(sid, Object.assign({ type: 'geojson', data: { type: 'FeatureCollection', features: [] } }, oProf));
         var orig = (map.getStyle().layers || []).filter(function (l) { return l.id === node.id + '-' + pair[0]; })[0];
         // match the LAYER's own type — the old hardcoded 'fill' made line/circle overlays invisible
         // (line geometries render nothing in a fill layer), which surfaced with folded line layers (C4)

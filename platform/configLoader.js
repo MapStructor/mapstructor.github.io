@@ -168,6 +168,21 @@ var ConfigLoader = (function () {
     return targets.length;
   }
 
+  // THE ONE TILER PROFILE for live GeoJSON sources (10/6, WYSIWYG). The engine renders a geojson
+  // source through its own geojson-vt — same library tilegen cuts tiles with, different settings,
+  // so a layer looked one way while live and another once baked. These are tilegen's numbers
+  // (extent 4096: tolerance 3 poly / 1 line, buffer 64, maxZoom 15 / 13 points) in the engine's
+  // units (pixels on a 512px tile: ÷8). Measured 10/6 (testing/harness/wysiwyg-gate.mjs): lines
+  // went from 44–54% of ink differing from the tiles to 7–24%, and what remains is antialias
+  // speckle along strokes, not shape; polygons were already equal. Every live source — the
+  // engine's layers, a drawn layer's twin, the edited overlay — takes this, so there is one
+  // definition and it cannot drift from tilegen's.
+  function msLiveSourceProfile(type) {
+    var pt = (type === "circle" || type === "symbol" || type === "heatmap");
+    return { tolerance: type === "line" ? 0.125 : 0.375, buffer: 8, maxzoom: pt ? 13 : 15 };
+  }
+  window.msLiveSourceProfile = msLiveSourceProfile;
+
   function geojsonDefaultPaint(type, color) {
     if (type === "fill") return { "fill-color": color, "fill-opacity": 0.35, "fill-outline-color": color };
     if (type === "line") return { "line-color": color, "line-width": 2 };
@@ -261,6 +276,8 @@ var ConfigLoader = (function () {
     // GeoJSON map layer — so they get the engine's paint/popup/panel like any tileset.
     if (row.source_type === "geojson-supabase") {
       leaf.source = { type: "geojson", data: { type: "FeatureCollection", features: (features || []).map(featureToGeo) } };
+      // WYSIWYG (10/6): render a live layer through the SAME tiler profile its tiles will be cut
+      // with, so editing shows what publishing shows. Applied once the layer's type is known, below.
       // off-by-default layer that got no features from the bundle → deferred (hydrateDeferredFeatures fills it post-boot).
       // 7/21: an INSTANCE with no bundled features defers too regardless of its own default — its source's
       // features may not be in the bundle (e.g. the source layer is off-by-default), and hydration reads
@@ -268,6 +285,7 @@ var ConfigLoader = (function () {
       if ((row.enabled_by_default === false || raw.instanceOf) && (!features || !features.length)) leaf._deferred = true;
       if (leaf.type == null) leaf.type = "circle";
       if (leaf.paint == null) leaf.paint = geojsonDefaultPaint(leaf.type, leaf.iconColor || "#3bb2d0");
+      Object.assign(leaf.source, msLiveSourceProfile(leaf.type));
     } else if (raw.convertedFrom && leaf.type === "fill" && leaf.paint == null) {
       // OUR converted tileset fills store no paint unless styled, which skipped the outline block
       // below entirely — the layer had 0.5 borders all through its import session and came back
