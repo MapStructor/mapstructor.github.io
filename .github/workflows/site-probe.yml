@@ -1,0 +1,33 @@
+# site-probe (10/8) — "why is the site slow to open?" measured from OUTSIDE the owner's network.
+# Fetches the homepage and one script 12 times from a GitHub runner and prints connect / TLS /
+# first-byte / total per attempt, plus the Cloudflare cache status. A stall that shows here is the
+# site's; one that only shows from the owner's machine is the owner's network's.
+name: site-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "URL to probe"
+        required: false
+        default: "https://mapstructor.com/"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe
+        env:
+          URL: ${{ github.event.inputs.url || 'https://mapstructor.com/' }}
+        run: |
+          echo "runner IP: $(curl -s -m 5 https://api.ipify.org || echo '?')"
+          for i in $(seq 1 12); do
+            curl -s -o /dev/null -m 20 -w "attempt $i: connect %{time_connect}s tls %{time_appconnect}s ttfb %{time_starttransfer}s total %{time_total}s http %{http_code} cf:%header{cf-cache-status} age:%header{age}\n" "$URL" || echo "attempt $i: FAILED (exit $?)"
+          done
+          echo "--- a script (edge-cached):"
+          for i in 1 2 3; do
+            curl -s -o /dev/null -m 20 -w "script $i: ttfb %{time_starttransfer}s total %{time_total}s cf:%header{cf-cache-status}\n" "https://mapstructor.com/platform/auth.js"
+          done
