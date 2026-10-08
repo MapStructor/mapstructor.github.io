@@ -1,0 +1,6 @@
+#!/bin/sh
+# pre-commit — stamp every page's local script/css refs with content hashes (scripts/stamp.mjs),
+# so cache-busting is nobody's job. Idempotent; stages whatever it rewrote.
+node scripts/stamp.mjs >/dev/null 2>&1 || exit 0
+git diff --name-only -- '*.html' | sed 's/^/ /' | xargs -r git add
+exit 0

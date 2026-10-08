@@ -14,7 +14,7 @@
      map/project/{attrGrid,viewerTable,bigtable}.js + vendor/duckdb/   the ▦ features table (10/6)
      map/data/<archive>.attr.parquet   each tiled layer's TABLE (attributes) — always, beside its tiles
      other_data/*             raw GIS exports — OPTIONAL (off by default): GeoParquet (default when on),
-                              GeoJSON, Shapefile (.shp.zip), KML, CSV (geometry as WKT) — platform/geoExport.js
+                              GeoJSON, Shapefile (.shp.zip), GeoPackage, KML, CSV (WKT) — platform/geoExport.js
 
    The download is STANDALONE BY DESIGN: it depends on nothing MapStructor and never updates.
    Everything is serialized from the page's RUNTIME state, so what you see is exactly what you get —
@@ -163,12 +163,13 @@
          because the trade is who can open the file: GeoJSON opens in anything, Shapefile is what
          older GIS expects, KML is Google Earth, CSV is a spreadsheet (geometry as WKT). None of
          them is read by the map itself — they are the copy of the data for the person you hand
-         the folder to. GeoPackage is not offered yet (needs a SQLite engine in the browser). */
+         the folder to. GeoPackage is built with sql.js (SQLite in WASM, fetched on first use). */
       "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-raw\"> <span><b>Also include the raw GIS data</b> — the full geometry files, in <b>other_data/</b>, for QGIS, ArcGIS, Python. This makes the copy larger.</span></label>" +
       "<div id=\"msdl-fmts\" style=\"display:none;margin:-2px 0 8px 24px;\">" +
       "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-parquet\" checked> <span><b>GeoParquet</b> — smallest (about 4&frac12;&times; smaller than GeoJSON). QGIS 3.28+, ArcGIS Pro, DuckDB, Python.</span></label>" +
       "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-geojson\"> <span><b>GeoJSON</b> — opens in anything, including a text editor.</span></label>" +
       "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-shapefile\"> <span><b>Shapefile</b> — a .zip per layer (.shp/.shx/.dbf/.prj), the classic GIS format.</span></label>" +
+      "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-gpkg\"> <span><b>GeoPackage</b> — one .gpkg file per layer; QGIS and ArcGIS open it directly.</span></label>" +
       "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-kml\"> <span><b>KML</b> — Google Earth.</span></label>" +
       "<label class=\"msdl-check\"><input type=\"checkbox\" id=\"msdl-fmt-csv\"> <span><b>CSV</b> — a spreadsheet; geometry as WKT in the last column.</span></label>" +
       "</div>" +
@@ -186,7 +187,7 @@
     /* Raw data is opt-in; once it is on, at least one format stays ticked — raw data in no format
        is not a folder anyone can use. */
     var rawCb = ov.querySelector("#msdl-raw"), fmtsBox = ov.querySelector("#msdl-fmts");
-    var FMT = ["parquet", "geojson", "shapefile", "kml", "csv"];
+    var FMT = ["parquet", "geojson", "shapefile", "gpkg", "kml", "csv"];
     var fmtEl = {}; FMT.forEach(function (k) { fmtEl[k] = ov.querySelector("#msdl-fmt-" + k); });
     var fmtNote = ov.querySelector("#msdl-fmt-note");
     function syncFormats(changed) {
@@ -399,7 +400,7 @@
     }
     return rows;
   }
-  var FMT_KEYS = ["parquet", "geojson", "shapefile", "kml", "csv"];
+  var FMT_KEYS = ["parquet", "geojson", "shapefile", "gpkg", "kml", "csv"];
   function ensureGeoExportLib() {
     if (window.MSGeoExport) return Promise.resolve(window.MSGeoExport);
     return new Promise(function (res) {
@@ -1246,7 +1247,7 @@
          Railroads.parquet beside Railroads.kml, not unrelated names. */
       var want = opts.formats || { parquet: true };
       if (!FMT_KEYS.some(function (k) { return want[k]; })) want.parquet = true;
-      var needFc = want.geojson || want.csv || want.kml || want.shapefile;
+      var needFc = want.geojson || want.csv || want.kml || want.shapefile || want.gpkg;
       var GX = await ensureGeoExportLib();
       if (!GX) console.warn("download: geoExport.js did not load — only ready-made files can ship");
       if (want.parquet && GX) await ensureBigTableLib();   // the GeoParquet writer runs on DuckDB
@@ -1302,6 +1303,11 @@
           setStatus("Writing the Shapefile for “" + label + "”…");
           try { zip.file("other_data/" + base + ".shp.zip", await GX.toShapefileZip(fc, base)); got++; }
           catch (eShp) { console.warn("download: Shapefile for " + label, eShp); }
+        }
+        if (want.gpkg && fc && GX) {
+          setStatus("Writing the GeoPackage for “" + label + "”…");
+          try { zip.file("other_data/" + base + ".gpkg", await GX.toGeoPackage(fc, base)); got++; }
+          catch (eGp) { console.warn("download: GeoPackage for " + label, eGp); }
         }
         /* Fall back rather than ship nothing: a layer asked for only as parquet whose parquet could
            not be made still travels as GeoJSON, which is the whole point of the folder. */

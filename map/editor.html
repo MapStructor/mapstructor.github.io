@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
   <head>
-  <!-- <script src="../platform/sitelock.js?v=2dd02c9b"></script> --> <!-- dev lock DISABLED - uncomment to re-lock -->
+  <!-- <script src="../platform/sitelock.js?v=d0d5c43f"></script> --> <!-- dev lock DISABLED - uncomment to re-lock -->
     <!-- SOURCES-->
 
     <!-- Platform project id (?id=<uuid>) - when set, the engine defers its boot
@@ -12,13 +12,13 @@
     </script>
 
     <!-- TESTING: delete this block and uncomment line below to clean up -->
-    <script src="project/lists/test-project.js?v=85c7b0c5"></script>
+    <script src="project/lists/test-project.js?v=995bc45e"></script>
     <script>
       var _project = useTestProject ? testProjectPath : "project";
       document.write('<script src="' + _project + '/lists/header.js?v=6e05a5db"><\/script>');
     </script>
     <!-- END TESTING -->
-    <!-- <script src="project/lists/header.js?v=6e05a5db"></script> -->
+    <!-- <script src="project/lists/header.js?v=0ed762f0"></script> -->
     <script>
       document.title = siteMeta.title;
       document.head.insertAdjacentHTML('beforeend', [
@@ -97,27 +97,27 @@
       rel="stylesheet"
       type="text/css"
     />
-    <link rel="stylesheet" href="engine/vendor/jquery-ui-1.10.3.custom/css/ui-darkness/jquery-ui-1.10.3.custom.css?v=9fc67ec3" />
+    <link rel="stylesheet" href="engine/vendor/jquery-ui-1.10.3.custom/css/ui-darkness/jquery-ui-1.10.3.custom.css?v=7b7da286" />
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
-    <script src="engine/vendor/jquery-ui-1.10.3.custom/js/jquery-ui-1.10.3.custom.min.js?v=e054b71a"></script>
-    <script src="engine/vendor/jquery.ui.touch-punch.min.js?v=80583b00"></script>
+    <script src="engine/vendor/jquery-ui-1.10.3.custom/js/jquery-ui-1.10.3.custom.min.js?v=d2a6d4c0"></script>
+    <script src="engine/vendor/jquery.ui.touch-punch.min.js?v=0ce24102"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.19.1/moment.min.js"></script>
 
     <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.js"></script>
     <!-- place search is Photon (free, tokenless) inside search.js - the Mapbox Geocoder plugin is gone (7/14) -->
-    <script src="../platform/search.js?v=8473c1a8"></script>
+    <script src="../platform/search.js?v=e3e8cdc5"></script>
 
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="../platform/auth.js?v=3a0ce355"></script>
-  <script src="../platform/veil.js?v=35830abf"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
-    <script src="../platform/guard.js?v=0f7b830c"></script>   <!-- map-load meter + freeze (service guard) -->
-    <script src="../platform/topbar.js?v=748e928e"></script>
-    <script src="../platform/bookmarks.js?v=b8757559"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
-    <script src="../platform/portalAdd.js?v=6aaecdff"></script>   <!-- Map Portal: sidebar window — add a bookmarked/own map into this one (All/Linked/Instance per layer) -->
-    <script src="../platform/overlay.js?v=bc711f61"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
+    <script src="../platform/auth.js?v=c3e839f1"></script>
+  <script src="../platform/veil.js?v=cd85e803"></script>   <!-- pre-launch veil (item 23) — flag lives inside the file -->
+    <script src="../platform/guard.js?v=81dc81e9"></script>   <!-- map-load meter + freeze (service guard) -->
+    <script src="../platform/topbar.js?v=99f53c33"></script>
+    <script src="../platform/bookmarks.js?v=f3ed1315"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
+    <script src="../platform/portalAdd.js?v=cc6dc44d"></script>   <!-- Map Portal: sidebar window — add a bookmarked/own map into this one (All/Linked/Instance per layer) -->
+    <script src="../platform/overlay.js?v=2322d302"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
       rel="stylesheet"
@@ -132,7 +132,7 @@
       href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css"
       type="text/css"
     />
-    <link href="engine/engine.css?v=87a29f63" rel="stylesheet" />
+    <link href="engine/engine.css?v=57b14772" rel="stylesheet" />
     <!--
     <link
       rel="stylesheet"
@@ -168,8 +168,8 @@
     <!-- handle-mobile-devices.js is DELIBERATELY NOT LOADED here — see the note in index.html.
          It redirected every phone, and every window 670px or narrower, to "./mobile.html", which
          has never existed: the editor answered a 404 page instead of opening. -->
-    <script src="engine/utils.js?v=5965caee"></script>
-    <script src="engine/index.js?v=b1f5282f"></script>
+    <script src="engine/utils.js?v=c14241d1"></script>
+    <script src="engine/index.js?v=82e05c05"></script>
 
     <!-- Google Analytics - driven by siteAnalytics.trackingId in header.js -->
     <!-- To revert: comment out NEW BLOCK below, uncomment OLD BLOCK below -->
@@ -200,7 +200,7 @@
 
     <!-- OLD BLOCK -->
      <!--
-    <script src="engine/google-analytics.js?v=c68f4848" type="text/javascript"></script>
+    <script src="engine/google-analytics.js?v=eab5a903" type="text/javascript"></script>
     <script
       async
       src="https://www.googletagmanager.com/gtag/js?id=UA-159545294-1"
@@ -333,7 +333,7 @@
 
       <br />
       <div>
-        <script src="engine/generateLayers.js?v=1006b345"></script>
+        <script src="engine/generateLayers.js?v=9d40aa1d"></script>
         <hr />
         <p class="title">MAPS</p>
 
@@ -407,11 +407,11 @@
     <!-- END TESTING -->
     <!-- <script src="js/lists/bounds.js"></script> -->
     <!-- <script src="js/lists/mapData.js"></script> -->
-    <script src="engine/generateMaps.js?v=a26e00b9"></script>
-    <script src="engine/refreshLayers.js?v=8994f49b"></script>
-    <script src="engine/addMapLayer.js?v=965cc1a2"></script>
-    <script src="engine/eventsHandle.js?v=7836c83e"></script>
-    <script src="engine/addLayers.js?v=3baf4b2f"></script>
+    <script src="engine/generateMaps.js?v=983cf39e"></script>
+    <script src="engine/refreshLayers.js?v=a837154f"></script>
+    <script src="engine/addMapLayer.js?v=cdb0e0a7"></script>
+    <script src="engine/eventsHandle.js?v=8a912a06"></script>
+    <script src="engine/addLayers.js?v=76cdc49d"></script>
     <!-- TESTING: delete this block and uncomment line below to clean up -->
     <script>
       document.write('<script src="' + _project + '/lists/restrictedToken.js?v=4ae4db3e"><\/script>');
@@ -419,31 +419,31 @@
     </script>
     <!-- END TESTING -->
     <!-- <script src="js/mapbox-token.js"></script> -->
-    <script src="engine/infoPanel.js?v=241ddcef"></script>
-    <script src="engine/mapinit.js?v=e0c74723"></script>
-    <script src="engine/sliderpopups.js?v=7eb70257"></script>
-    <script src="../platform/configLoader.js?v=1006wysi" onerror="void(0)"></script>
-    <script src="../platform/labels.js?v=62f918f1" onerror="void(0)"></script>
-    <script src="../platform/attrGrid.js?v=7c15e1cc" onerror="void(0)"></script>
-    <script src="../platform/bigtable.js?v=1006b345" onerror="void(0)"></script>   <!-- Big-data attribute tier: Parquet sidecar + DuckDB-WASM (vendored, lazy) -->
-    <script src="../platform/foldRead.js?v=2f8c1d04" onerror="void(0)"></script>   <!-- one-feature reads from fold GeoParquet archives (range reads, shares bigtable's engine) -->
-    <script src="../platform/pricing.js?v=2609c548" onerror="void(0)"></script>
-    <script src="../platform/renderRegistry.js?v=a7b0cf11" onerror="void(0)"></script>
-    <script src="../platform/msdBadge.js?v=b9c6e507" onerror="void(0)"></script>   <!-- MSD / MSD PROJECT mark, defined once; must load BEFORE projectLoader paints the header -->
-    <script src="../platform/projectLoader.js?v=d4e81b60" onerror="void(0)"></script>
-    <script src="../platform/download.js?v=1006b345" onerror="void(0)"></script>   <!-- Download whole project (sidebar button) -->
-    <script src="../platform/publishSite.js?v=4414a4ea" onerror="void(0)"></script>   <!-- Publish also refreshes /maps/<slug>/ when the map is bound to one -->
+    <script src="engine/infoPanel.js?v=809e2652"></script>
+    <script src="engine/mapinit.js?v=8b41561a"></script>
+    <script src="engine/sliderpopups.js?v=ba8ab5a0"></script>
+    <script src="../platform/configLoader.js?v=35f2935a" onerror="void(0)"></script>
+    <script src="../platform/labels.js?v=ef0410a4" onerror="void(0)"></script>
+    <script src="../platform/attrGrid.js?v=64ccee1b" onerror="void(0)"></script>
+    <script src="../platform/bigtable.js?v=a23a97a5" onerror="void(0)"></script>   <!-- Big-data attribute tier: Parquet sidecar + DuckDB-WASM (vendored, lazy) -->
+    <script src="../platform/foldRead.js?v=6f999f51" onerror="void(0)"></script>   <!-- one-feature reads from fold GeoParquet archives (range reads, shares bigtable's engine) -->
+    <script src="../platform/pricing.js?v=3f34a918" onerror="void(0)"></script>
+    <script src="../platform/renderRegistry.js?v=77ee026a" onerror="void(0)"></script>
+    <script src="../platform/msdBadge.js?v=436b88fe" onerror="void(0)"></script>   <!-- MSD / MSD PROJECT mark, defined once; must load BEFORE projectLoader paints the header -->
+    <script src="../platform/projectLoader.js?v=fa8b8c56" onerror="void(0)"></script>
+    <script src="../platform/download.js?v=219d7d72" onerror="void(0)"></script>   <!-- Download whole project (sidebar button) -->
+    <script src="../platform/publishSite.js?v=277be1dc" onerror="void(0)"></script>   <!-- Publish also refreshes /maps/<slug>/ when the map is bound to one -->
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js" onerror="void(0)"></script>   <!-- deck.gl: instant scrub without bakes (deckScrub.js); raster stays the fallback -->
-    <script src="../platform/deckScrub.js?v=dcc056ef" onerror="void(0)"></script>
-    <script src="../platform/modalLock.js?v=f7dcf2d2" onerror="void(0)"></script>   <!-- the ONE owner of the modal lock (counted holds); must load before merge/layerOrder/editing -->
-    <script src="../platform/merge.js?v=286b61f2" onerror="void(0)"></script>   <!-- merge two or more layers into one dataset -->
-    <script src="../platform/layerOrder.js?v=8c8c2788" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
-    <script src="../platform/rasterScrub.js?v=1692c5f5" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
-    <script src="../platform/tables.js?v=20d1c184" onerror="void(0)"></script>   <!-- Data tables + joins -->
-    <script src="../platform/layerJson.js?v=77056a02" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
-    <script src="../platform/queryWindow.js?v=177c6ca1" onerror="void(0)"></script>   <!-- Query & operations (merge lines / SQL / JS) -->
-    <script src="../platform/datasets.js?v=58383596" onerror="void(0)"></script>   <!-- datasets & provenance: layers as the atoms (delete this line + the file to remove) -->
-    <script src="../platform/share.js?v=9bc98d97" onerror="void(0)"></script>   <!-- Share panel (editor top bar; dashboard uses it too) -->
+    <script src="../platform/deckScrub.js?v=8e4bcad4" onerror="void(0)"></script>
+    <script src="../platform/modalLock.js?v=42b76e71" onerror="void(0)"></script>   <!-- the ONE owner of the modal lock (counted holds); must load before merge/layerOrder/editing -->
+    <script src="../platform/merge.js?v=75bf391d" onerror="void(0)"></script>   <!-- merge two or more layers into one dataset -->
+    <script src="../platform/layerOrder.js?v=a363db8d" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
+    <script src="../platform/rasterScrub.js?v=564f3212" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
+    <script src="../platform/tables.js?v=7012604a" onerror="void(0)"></script>   <!-- Data tables + joins -->
+    <script src="../platform/layerJson.js?v=fcc2ef29" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
+    <script src="../platform/queryWindow.js?v=7b083cb9" onerror="void(0)"></script>   <!-- Query & operations (merge lines / SQL / JS) -->
+    <script src="../platform/datasets.js?v=fdc5f390" onerror="void(0)"></script>   <!-- datasets & provenance: layers as the atoms (delete this line + the file to remove) -->
+    <script src="../platform/share.js?v=6cecc1c4" onerror="void(0)"></script>   <!-- Share panel (editor top bar; dashboard uses it too) -->
     <script>
       // Standalone deploys ship map/ without platform/ - if ?id= is set but the
       // loader didn't arrive, boot the static config so the page still works.
@@ -453,7 +453,7 @@
         initMaps();
       }
     </script>
-    <script src="../platform/init.js?v=b9a51ad8" onerror="void(0)"></script>
+    <script src="../platform/init.js?v=1143d135" onerror="void(0)"></script>
 
     <!-- -----------------------------------------------------------------------
          EDITOR: everything above this line is an exact copy of the viewer
@@ -463,16 +463,16 @@
          ------------------------------------------------------------------- -->
     <!-- cache-bust: editing.js changes often during dev; ?v=now forces a fresh load every reload (no stale code) -->
     <!-- selection.js = the selection store (single writer of the selected-feature set) — must load BEFORE editing.js -->
-    <script>document.write('<script src="../platform/selection.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
+    <script src="../platform/selection.js?v=0eb69836" onerror="void(0)"></script>
     <!-- audit.js = the invariant self-audit (read-only detector; editing.js calls it after every
          structural change). Must load BEFORE editing.js. Removing this line disables it cleanly:
          editing.js checks `typeof MSAudit` and stays silent when it isn't there. -->
-    <script>document.write('<script src="../platform/audit.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
+    <script src="../platform/audit.js?v=0aece7e8" onerror="void(0)"></script>
     <!-- guards.js = absence is an error at the boundary (MSGuard.warnOnce / MSGuard.save).
          Must load BEFORE editing.js. Removing this line degrades cleanly: every call site
          checks `window.MSGuard` and falls back to the plain call. -->
-    <script>document.write('<script src="../platform/guards.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
-    <script>document.write('<script src="../platform/editing.js?v=' + Date.now() + '" onerror="void(0)"><\/script>');</script>
+    <script src="../platform/guards.js?v=6e3e345a" onerror="void(0)"></script>
+    <script src="../platform/editing.js?v=0dcc9ae1" onerror="void(0)"></script>
 
     <!-- Save-to-account: anonymous maps live only at their URL; claim them via the shared MapAuth modal (dev plan Step 6 funnel).
          Sits just past the header's bottom edge (slight overlap for attention), clear of the ABOUT button. -->

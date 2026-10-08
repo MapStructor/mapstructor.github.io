@@ -13,7 +13,10 @@
      KML         — Placemark per feature with ExtendedData (Google Earth and friends)
      Shapefile   — @mapbox/shp-write (loaded from a CDN on first use): a zip of .shp/.shx/.dbf/.prj,
                    one set per geometry type, which is how shapefiles are handed around anyway
-     GeoPackage  — NOT yet: needs a SQLite engine in the browser (sql.js). Recorded, not built.
+     GeoPackage  — sql.js (SQLite compiled to WASM, loaded from a CDN on first use) builds the
+                   .gpkg in memory: the three required gpkg_* tables plus one feature table whose
+                   geometry is the GeoPackage binary header (magic, flags, SRS 4326, XY envelope)
+                   followed by the same WKB as above (10/7, owner: "Yep").
 
    Loaded on demand by download.js (like bigtable.js). Nothing here touches the network except the
    shapefile library fetch. */
@@ -212,5 +215,86 @@
     return (r && typeof r.then === "function") ? await r : r;
   }
 
-  window.MSGeoExport = { toWkb: toWkb, toWkt: toWkt, toGeoParquet: toGeoParquet, toCsv: toCsv, toKml: toKml, toShapefileZip: toShapefileZip, columns: columns };
+  /* ── GeoPackage (sql.js) ────────────────────────────────────────────────── */
+  var SQLJS_URLS = ["https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/", "https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/"];
+  var _sql = null;
+  function ensureSqlJs() {
+    if (_sql) return _sql;
+    _sql = new Promise(function (res, rej) {
+      var i = 0;
+      (function next() {
+        if (i >= SQLJS_URLS.length) { _sql = null; return rej(new Error("sql.js could not be loaded")); }
+        var base = SQLJS_URLS[i++], s = document.createElement("script"); s.src = base + "sql-wasm.js";
+        s.onload = function () {
+          if (!window.initSqlJs) return next();
+          window.initSqlJs({ locateFile: function (f) { return base + f; } }).then(res, next);
+        };
+        s.onerror = next;
+        document.head.appendChild(s);
+      })();
+    });
+    return _sql;
+  }
+  var WGS84_WKT = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]';
+  function gpkgBlob(g) {   // GeoPackage binary: "GP", version 0, flags (LE, XY envelope), srs_id, envelope, WKB
+    var wkb = toWkb(g);
+    var b = [Infinity, Infinity, -Infinity, -Infinity];
+    (function walk(c) { if (typeof c[0] === "number") { if (c[0] < b[0]) b[0] = c[0]; if (c[1] < b[1]) b[1] = c[1]; if (c[0] > b[2]) b[2] = c[0]; if (c[1] > b[3]) b[3] = c[1]; } else c.forEach(walk); })(g.coordinates || []);
+    var hasEnv = isFinite(b[0]), head = 8 + (hasEnv ? 32 : 0);
+    var out = new Uint8Array(head + wkb.length), dv = new DataView(out.buffer);
+    out[0] = 0x47; out[1] = 0x50; out[2] = 0; out[3] = hasEnv ? 0x03 : 0x01;   // flags: bit0 = little-endian, bits1-3 = envelope indicator (1 = XY)
+    dv.setInt32(4, 4326, true);
+    if (hasEnv) { dv.setFloat64(8, b[0], true); dv.setFloat64(16, b[2], true); dv.setFloat64(24, b[1], true); dv.setFloat64(32, b[3], true); }   // minx, maxx, miny, maxy
+    out.set(wkb, head);
+    return out;
+  }
+  function gpkgTypeName(gtypes) {
+    var ks = Object.keys(gtypes);
+    return ks.length === 1 ? ks[0].toUpperCase() : "GEOMETRY";
+  }
+  async function toGeoPackage(fc, name) {
+    var SQL = await ensureSqlJs();
+    var db = new SQL.Database();
+    var col = columns(fc), feats = fc.features || [];
+    var table = String(name || "layer").replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 60) || "layer";
+    if (/^[0-9]/.test(table)) table = "t_" + table;
+    // column names: SQLite identifiers, deduped, never colliding with fid/geom
+    var names = [], seen = { fid: 1, geom: 1 };
+    col.keys.forEach(function (k) {
+      var n = String(k).replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 60) || "col";
+      if (/^[0-9]/.test(n)) n = "c_" + n;
+      var base = n, i = 2; while (seen[n.toLowerCase()]) n = base + "_" + (i++);
+      seen[n.toLowerCase()] = 1; names.push(n);
+    });
+    var gtypes = {}, bb = [Infinity, Infinity, -Infinity, -Infinity];
+    feats.forEach(function (f) {
+      var g = f.geometry; if (!g || !g.type) return; gtypes[g.type] = 1;
+      (function walk(c) { if (typeof c[0] === "number") { if (c[0] < bb[0]) bb[0] = c[0]; if (c[1] < bb[1]) bb[1] = c[1]; if (c[0] > bb[2]) bb[2] = c[0]; if (c[1] > bb[3]) bb[3] = c[1]; } else c.forEach(walk); })(g.coordinates || []);
+    });
+    db.run("PRAGMA application_id = 1196444487; PRAGMA user_version = 10300;");
+    db.run("CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT NOT NULL, srs_id INTEGER NOT NULL PRIMARY KEY, organization TEXT NOT NULL, organization_coordsys_id INTEGER NOT NULL, definition TEXT NOT NULL, description TEXT)");
+    db.run("INSERT INTO gpkg_spatial_ref_sys VALUES ('Undefined cartesian SRS', -1, 'NONE', -1, 'undefined', 'undefined cartesian coordinate reference system'), ('Undefined geographic SRS', 0, 'NONE', 0, 'undefined', 'undefined geographic coordinate reference system'), ('WGS 84 geodetic', 4326, 'EPSG', 4326, ?, 'longitude/latitude coordinates in decimal degrees on the WGS 84 spheroid')", [WGS84_WKT]);
+    db.run("CREATE TABLE gpkg_contents (table_name TEXT NOT NULL PRIMARY KEY, data_type TEXT NOT NULL, identifier TEXT UNIQUE, description TEXT DEFAULT '', last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER, CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id))");
+    db.run("CREATE TABLE gpkg_geometry_columns (table_name TEXT NOT NULL, column_name TEXT NOT NULL, geometry_type_name TEXT NOT NULL, srs_id INTEGER NOT NULL, z TINYINT NOT NULL, m TINYINT NOT NULL, CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name), CONSTRAINT uk_gc_table_name UNIQUE (table_name), CONSTRAINT fk_gc_tn FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name), CONSTRAINT fk_gc_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id))");
+    var defs = names.map(function (n, j) { return qi(n) + " " + (col.types[col.keys[j]] === "DOUBLE" ? "REAL" : "TEXT"); });
+    db.run("CREATE TABLE " + qi(table) + " (fid INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB" + (defs.length ? ", " + defs.join(", ") : "") + ")");
+    db.run("INSERT INTO gpkg_contents (table_name, data_type, identifier, min_x, min_y, max_x, max_y, srs_id) VALUES (?, 'features', ?, ?, ?, ?, ?, 4326)",
+      [table, table, isFinite(bb[0]) ? bb[0] : null, isFinite(bb[1]) ? bb[1] : null, isFinite(bb[2]) ? bb[2] : null, isFinite(bb[3]) ? bb[3] : null]);
+    db.run("INSERT INTO gpkg_geometry_columns VALUES (?, 'geom', ?, 4326, 0, 0)", [table, gpkgTypeName(gtypes)]);
+    var ins = db.prepare("INSERT INTO " + qi(table) + " (geom" + names.map(function (n) { return ", " + qi(n); }).join("") + ") VALUES (?" + names.map(function () { return ", ?"; }).join("") + ")");
+    db.run("BEGIN");
+    for (var i = 0; i < feats.length; i++) {
+      var f = feats[i], p = f.properties || {};
+      var vals = [f.geometry && f.geometry.type ? gpkgBlob(f.geometry) : null];
+      col.keys.forEach(function (k) { var v = cell(p[k]); vals.push(v == null ? null : (col.types[k] === "DOUBLE" ? v : String(v))); });
+      ins.run(vals);
+    }
+    db.run("COMMIT");
+    ins.free();
+    var bytes = db.export();
+    db.close();
+    return bytes;
+  }
+
+  window.MSGeoExport = { toWkb: toWkb, toWkt: toWkt, toGeoParquet: toGeoParquet, toCsv: toCsv, toKml: toKml, toShapefileZip: toShapefileZip, toGeoPackage: toGeoPackage, columns: columns };
 })();
