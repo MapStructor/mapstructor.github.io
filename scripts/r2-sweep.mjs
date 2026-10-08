@@ -27,21 +27,30 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const r2md = fs.readFileSync(path.join(ROOT, "secrets/cloudflare-r2-credentials.md"), "utf8");
-const sbmd = fs.readFileSync(path.join(ROOT, "secrets/supabase.md"), "utf8");
-const ENDPOINT = (r2md.match(/https:\/\/[a-z0-9]+\.r2\.cloudflarestorage\.com/) || [])[0];
+/* CREDENTIALS: environment first (the weekly GitHub Action — .github/workflows/r2-sweep.yml — passes
+   the tiles bucket's WRITE pair, R2_TILES_*, plus the service key), then the gitignored secrets/
+   files for a run from this machine (read-only sweeper token → dry runs only). 10/7: owner said
+   the sweep "should be done in the process anyway, and not manually". */
+const E = process.env;
+const rd = (f) => { try { return fs.readFileSync(path.join(ROOT, f), "utf8"); } catch (e) { return ""; } };
+const r2md = rd("secrets/cloudflare-r2-credentials.md");
+const sbmd = rd("secrets/supabase.md");
+const ENDPOINT = E.R2_ENDPOINT || (E.R2_ACCOUNT_ID ? `https://${E.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : (r2md.match(/https:\/\/[a-z0-9]+\.r2\.cloudflarestorage\.com/) || [])[0]);
 // SWEEP_* lines are the read-only token scoped to the LIVE bucket (mapstructor-tiles); the plain
 // R2_* lines are the old ames-tiles token, kept for the Ames map. The sweeper prefers SWEEP_*.
-const sweepAK = (r2md.match(/SWEEP_ACCESS_KEY_ID = ([0-9a-f]{32})/) || [])[1];   // hex only — PASTE_HERE placeholders don't count
-const sweepSK = (r2md.match(/SWEEP_SECRET_ACCESS_KEY = ([0-9a-f]{64})/) || [])[1];
+const sweepAK = E.SWEEP_ACCESS_KEY_ID || (r2md.match(/SWEEP_ACCESS_KEY_ID = ([0-9a-f]{32})/) || [])[1];   // hex only — PASTE_HERE placeholders don't count
+const sweepSK = E.SWEEP_SECRET_ACCESS_KEY || (r2md.match(/SWEEP_SECRET_ACCESS_KEY = ([0-9a-f]{64})/) || [])[1];
 const haveSweep = !!(sweepAK && sweepSK);
-const BUCKET = haveSweep ? (r2md.match(/SWEEP_BUCKET = (\S+)/) || [])[1] : (r2md.match(/R2_BUCKET = (\S+)/) || [])[1];
+const BUCKET = E.SWEEP_BUCKET || (haveSweep ? (r2md.match(/SWEEP_BUCKET = (\S+)/) || [])[1] : (r2md.match(/R2_BUCKET = (\S+)/) || [])[1]);
 const AK = haveSweep ? sweepAK : (r2md.match(/R2_ACCESS_KEY_ID = (\S+)/) || [])[1];
 const SK = haveSweep ? sweepSK : (r2md.match(/R2_SECRET_ACCESS_KEY = (\S+)/) || [])[1];
 if (!haveSweep) console.warn(`(no sweeper token yet — reporting against the OLD ${BUCKET} bucket; paste the SWEEP_* token to point at the live one)\n`);
-const SB_URL = (sbmd.match(/https:\/\/[a-z0-9]+\.supabase\.co/) || [])[0];
-const SVC = (sbmd.match(/sb_secret_[A-Za-z0-9_\-]+/) || [])[0];
+const SB_URL = E.SUPABASE_URL || (sbmd.match(/https:\/\/[a-z0-9]+\.supabase\.co/) || [])[0] || "https://eqpxlwbjqiwfjlsuapvu.supabase.co";
+const SVC = E.SUPABASE_SERVICE_KEY || (sbmd.match(/sb_secret_[A-Za-z0-9_\-]+/) || [])[0];
 if (!ENDPOINT || !BUCKET || !AK || !SK || !SB_URL || !SVC) { console.error("could not read credentials"); process.exit(1); }
+// SAFETY CAP for the automated run: a classification bug that suddenly "orphans" the whole bucket
+// must not be able to empty it. One run deletes at most this much; anything bigger aborts loudly.
+const MAX_DELETE_BYTES = Number(E.SWEEP_MAX_DELETE_BYTES || 2 * 1024 * 1024 * 1024);
 
 /* ── minimal SigV4 for ListObjectsV2 (GET, empty body) ─────────────────────── */
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
@@ -228,7 +237,9 @@ if (APPLY) {
   const drifted = man.filter((k) => !cur.has(k));
   if (drifted.length) console.log(`\ndrift protection — ${drifted.length} manifest key(s) no longer classify as orphan, SKIPPED:\n  ` + drifted.join("\n  "));
   const sizes = new Map(uniq.map((o) => [o.key, o.size]));
-  console.log(`\nAPPLY: deleting ${doomed.length} approved orphan object(s) · ${mb(doomed.reduce((a, k) => a + (sizes.get(k) || 0), 0))}…`);
+  const doomedBytes = doomed.reduce((a, k) => a + (sizes.get(k) || 0), 0);
+  if (doomedBytes > MAX_DELETE_BYTES) { console.error(`ABORT — orphan pass would delete ${mb(doomedBytes)}, over the ${mb(MAX_DELETE_BYTES)} per-run cap. Review the classification.`); process.exit(1); }
+  console.log(`\nAPPLY: deleting ${doomed.length} approved orphan object(s) · ${mb(doomedBytes)}…`);
   let ok = 0, freed = 0;
   for (const k of doomed) {
     const r = await s3req("DELETE", k);
@@ -246,4 +257,58 @@ if (APPLY) {
   console.log(`VERIFY: all ${doomed.length} gone. Bucket now ${after.length} objects · ${mb(after.reduce((a, o) => a + o.size, 0))}.`);
 }
 
-console.log(`\n${APPLY ? "Delete pass done — only manifest-approved keys were touched." : (STAMP ? "Stamping aside, nothing was deleted." : "DRY RUN — nothing was deleted, nothing was stamped.")}`);
+/* ── the ledger pass (10/7): purged layers' leftover objects ───────────────
+   WOULD DELETE above = objects a ms_deleted_artifacts row claims and no live layer reads. The
+   delete-forever RPCs record them precisely because Postgres cannot reach the bucket; this is the
+   half that finishes the job. Each row is stamped swept_at once its objects are gone. */
+const APPLY_LEDGER = process.argv.includes("--apply-ledger");
+if (APPLY_LEDGER && wouldDelete.length) {
+  const bytes = wouldDelete.reduce((a, x) => a + x.o.size, 0);
+  if (bytes > MAX_DELETE_BYTES) { console.error(`ABORT — ledger pass would delete ${mb(bytes)}, over the ${mb(MAX_DELETE_BYTES)} per-run cap. Review the classification.`); process.exit(1); }
+  console.log(`\nLEDGER PASS: deleting ${wouldDelete.length} purged-layer object(s) · ${mb(bytes)}…`);
+  let ok = 0, freed = 0; const doneRows = new Set(), failRows = new Set();
+  for (const { row, o } of wouldDelete) {
+    const r = await s3req("DELETE", o.key);
+    if (r.ok || r.status === 204) { ok++; freed += o.size; doneRows.add(row.id); continue; }
+    failRows.add(row.id);
+    console.error(`  FAILED HTTP ${r.status} on ${o.key}: ${(await r.text()).slice(0, 160)}`);
+    if (r.status === 401 || r.status === 403) { console.error(`aborting — the token cannot delete.`); process.exit(1); }
+  }
+  console.log(`deleted ${ok}/${wouldDelete.length} · ${mb(freed)} freed`);
+  const stampIds = [...doneRows].filter((id) => !failRows.has(id));
+  if (stampIds.length) {
+    const r = await fetch(`${SB_URL}/rest/v1/ms_deleted_artifacts?id=in.(${stampIds.join(",")})&swept_at=is.null`, {
+      method: "PATCH", headers: { apikey: SVC, Authorization: "Bearer " + SVC, "Content-Type": "application/json", Prefer: "return=representation" },
+      body: JSON.stringify({ swept_at: new Date().toISOString() }),
+    });
+    const rows = await r.json();
+    console.log(r.ok ? `STAMPED swept_at on ${rows.length} ledger row(s) whose objects are gone.` : `stamp failed HTTP ${r.status}: ${JSON.stringify(rows).slice(0, 200)}`);
+  }
+} else if (APPLY_LEDGER) {
+  console.log(`\n--apply-ledger: nothing to delete.`);
+}
+
+/* ── an explicit prefix removal (10/7: the owner's 316 MB prepush backup) ──
+   Deliberately NOT part of any classification: the exact prefix is named by a human, listed first,
+   capped, deleted, verified. Refuses the artifact prefixes — those belong to the passes above. */
+const rmIdx = process.argv.indexOf("--rm-prefix");
+const RM = rmIdx > -1 ? (process.argv[rmIdx + 1] || "").trim() : (E.SWEEP_RM_PREFIX || "").trim();
+if (RM) {
+  if (RM.length < 8 || /^(tiles|sidecars|geoparquet)\//.test(RM) || !/\/$/.test(RM)) { console.error(`--rm-prefix refused: "${RM}" (must be a folder-style prefix ending in "/", not an artifact prefix)`); process.exit(1); }
+  const victims = await listAll(RM);
+  const bytes = victims.reduce((a, o) => a + o.size, 0);
+  console.log(`\nRM PREFIX "${RM}": ${victims.length} object(s) · ${mb(bytes)}`);
+  if (bytes > MAX_DELETE_BYTES) { console.error(`ABORT — over the ${mb(MAX_DELETE_BYTES)} per-run cap.`); process.exit(1); }
+  let ok = 0;
+  for (const o of victims) {
+    const r = await s3req("DELETE", o.key);
+    if (r.ok || r.status === 204) { ok++; continue; }
+    console.error(`  FAILED HTTP ${r.status} on ${o.key}: ${(await r.text()).slice(0, 160)}`);
+    if (r.status === 401 || r.status === 403) process.exit(1);
+  }
+  const left = await listAll(RM);
+  console.log(`deleted ${ok}/${victims.length} · ${mb(bytes)} freed · VERIFY: ${left.length} object(s) remain under "${RM}"`);
+  if (left.length) process.exit(1);
+}
+
+console.log(`\n${APPLY || APPLY_LEDGER || RM ? "Delete pass done — only approved keys were touched." : (STAMP ? "Stamping aside, nothing was deleted." : "DRY RUN — nothing was deleted, nothing was stamped.")}`);
