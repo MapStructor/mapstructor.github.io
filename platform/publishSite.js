@@ -117,9 +117,16 @@
     json: "application/json", geojson: "application/geo+json", png: "image/png", jpg: "image/jpeg",
     jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml", webp: "image/webp", ico: "image/x-icon",
     woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", eot: "application/vnd.ms-fontobject",
-    pmtiles: "application/octet-stream", py: "text/x-python", bat: "text/plain"
+    pmtiles: "application/octet-stream", py: "text/x-python", bat: "text/plain",
+    // 10/9: the table engine ships as an ES MODULE + WASM. A browser refuses to import() a module
+    // served as octet-stream, which is exactly how the first table-carrying publish went live:
+    // ▦ present, "No list available" — DuckDB never loaded. These two types are load-bearing.
+    mjs: "text/javascript; charset=utf-8", wasm: "application/wasm", parquet: "application/octet-stream"
   };
   function mime(rel) { return MIME[(rel.split(".").pop() || "").toLowerCase()] || "application/octet-stream"; }
+  // extensions where a WRONG Content-Type breaks the page outright — those get their live type checked
+  // on every publish, so a fix to this map re-sends them even though their bytes did not change
+  var TYPE_SENSITIVE = { mjs: 1, wasm: 1, js: 1, css: 1, html: 1 };
 
   /* Flatten the built zip into the exact key layout /maps/<slug>/ serves.
      TWO rewrites happen here and nowhere else:
@@ -307,6 +314,26 @@
       if (known) { if (known[files[i].rel] !== h) changed.push(files[i]); }
       else if (etags) { if (etags[files[i].rel] !== md5(files[i].bytes)) changed.push(files[i]); }
       else changed.push(files[i]);
+    }
+    /* Bytes equal but TYPE wrong → still changed. One ranged GET per type-sensitive file that
+       would otherwise be skipped; the 206 carries the live Content-Type. */
+    var inChanged = {}; changed.forEach(function (f) { inChanged[f.rel] = 1; });
+    var toType = files.filter(function (f) { return !inChanged[f.rel] && TYPE_SENSITIVE[(f.rel.split(".").pop() || "").toLowerCase()]; });
+    if (toType.length) {
+      say("Checking file types on the live copy…");
+      var tn = 0;
+      async function typeWorker() {
+        for (;;) {
+          var ti = tn++; if (ti >= toType.length) return;
+          try {
+            var tr = await fetch(fresh(PUBLIC + "maps/" + slug + "/" + toType[ti].rel), { headers: { Range: "bytes=0-0" }, cache: "no-store" });
+            var ct = (tr.headers.get("content-type") || "").toLowerCase().replace(/\s+/g, "");
+            try { await tr.arrayBuffer(); } catch (eB2) {}
+            if (tr.ok && ct !== mime(toType[ti].rel).toLowerCase().replace(/\s+/g, "")) { changed.push(toType[ti]); inChanged[toType[ti].rel] = 1; }
+          } catch (eT) { /* unreadable → leave as unchanged; the byte check already passed */ }
+        }
+      }
+      await Promise.all([typeWorker(), typeWorker(), typeWorker(), typeWorker(), typeWorker(), typeWorker()]);
     }
     say(changed.length + " of " + files.length + " files changed…");
     if (!changed.length) { say("Already up to date."); return { slug: slug, uploaded: 0, url: PUBLIC + "maps/" + slug + "/" }; }

@@ -80,7 +80,8 @@ async function listAll(prefix) {
 const MIME = { html: "text/html; charset=utf-8", js: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", json: "application/json",
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", svg: "image/svg+xml", webp: "image/webp",
   pbf: "application/x-protobuf", pmtiles: "application/octet-stream", geojson: "application/geo+json",
-  parquet: "application/octet-stream", ico: "image/x-icon", woff2: "font/woff2" };
+  parquet: "application/octet-stream", ico: "image/x-icon", woff2: "font/woff2",
+  mjs: "text/javascript; charset=utf-8", wasm: "application/wasm" };   // 10/9: the table engine is a module + wasm — octet-stream breaks import()
 const mime = (f) => MIME[f.split(".").pop().toLowerCase()] || "application/octet-stream";
 
 /* ── status ──────────────────────────────────────────────────────────────────────────────────── */
