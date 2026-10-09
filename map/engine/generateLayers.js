@@ -161,18 +161,21 @@ function buildContainerHTML(node) {
     // divider: a section row that renders as a heading — no checkbox, no children of its own.
     // The (hidden, empty) container div stays so anything addressing #cont-<id> keeps working.
     // Size (8/13): small (default) / medium / large — how far the rules stretch.
-    // COLLAPSIBLE (10/8, owner: "make it so that raw layers can be minimized or expanded, and is
-    // minimized by default"): a divider has no children, so its caret folds what FOLLOWS it — every
-    // sibling block up to the next divider of the same or larger size (utils.js dividerSpan).
-    // node.collapsed is the saved default (raw_config.collapsed, the editor's "Expanded by default"
-    // box); applyDividerStates() hides the spans of collapsed dividers once the panel is built.
+    // COLLAPSIBLE, PER DIVIDER, OFF BY DEFAULT (10/8, owner: "a checkbox for it being
+    // expandable/minimizable, off by default — I'll turn it on for raw layers"). With
+    // raw_config.msDividerFold on, the divider gets a ± caret that folds what FOLLOWS it — every
+    // sibling block up to the next divider of the same or larger size (utils.js dividerSpan) —
+    // and node.collapsed (raw_config, the editor's "Starts minimized" box) is its starting state;
+    // applyDividerStates() applies that once the panel is built. Without the flag: a plain heading.
     var dsz = node.msDividerSize === "medium" ? " md" : node.msDividerSize === "large" ? " lg" : "";
-    var dOpen = !node.collapsed;
+    var fold = !!node.msDividerFold, dOpen = !fold || !node.collapsed;
+    var caret = fold
+      ? '<i class="fas ' + (dOpen ? 'fa-minus-square' : 'fa-plus-square') + ' compress-expand-icon ms-divider-caret" id="' + (node.caretId || ('caret-' + node.id)) + '"' +
+          ' onclick="dividerCompressExpand(\'' + node.id + '\')" title="' + (dOpen ? 'Minimize' : 'Expand') + '"></i>'
+      : '';
     return (
       '<div class="ms-section-block ms-divider-block' + dsz + (dOpen ? '' : ' ms-divider-collapsed') + '" id="' + node.id + '">' +
-        '<div class="layer-list-row ms-divider-row">' +
-          '<i class="fas ' + (dOpen ? 'fa-minus-square' : 'fa-plus-square') + ' compress-expand-icon ms-divider-caret" id="' + (node.caretId || ('caret-' + node.id)) + '"' +
-            ' onclick="dividerCompressExpand(\'' + node.id + '\')" title="' + (dOpen ? 'Minimize' : 'Expand') + '"></i>' +
+        '<div class="layer-list-row ms-divider-row">' + caret +
           '<label class="ms-divider-label">' + (node.label || '') + '</label>' +
         '</div>' +
         '<div id="' + node.containerId + '" style="display:none"></div>' +

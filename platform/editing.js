@@ -653,9 +653,34 @@
         '<div style="display:flex;gap:5px;">' +
         ['small', 'medium', 'large'].map(function (s) {
           return '<button data-dsz="' + s + '" style="flex:1;padding:5px 0;border:1px solid #bbbbbb;border-radius:4px;background:#fff;color:#333;font:600 12px Source Sans Pro,Arial,sans-serif;cursor:pointer;text-transform:capitalize;">' + s + '</button>';
-        }).join('') + '</div>';
+        }).join('') + '</div>' +
+        /* FOLDING (10/8): per divider, off by default. On, the divider gets a ± caret that folds
+           everything after it up to the next divider of its size or larger; "Starts minimized" is
+           the saved default (raw_config.collapsed — the same key sections use). */
+        '<label style="display:flex;gap:6px;align-items:center;margin:8px 0 0;font-size:12px;cursor:pointer;"><input type="checkbox" id="elp-divfold"> Can be minimized (shows a &plusmn; caret)</label>' +
+        '<label id="elp-divfold-start" style="display:none;gap:6px;align-items:center;margin:4px 0 0 20px;font-size:12px;cursor:pointer;"><input type="checkbox" id="elp-divfold-min"> Starts minimized</label>';
       var nameEl = document.getElementById('elp-name');
       if (nameEl && nameEl.parentNode) nameEl.parentNode.insertBefore(row, nameEl.nextSibling);
+      async function saveDivider(n, what) {
+        setStatus('Saving…');
+        try {
+          var r = await db.from('layer_sections').update({ raw_config: rawFrom(n, SECTION_CONSUMED) }).eq('id', n._dbId);
+          if (r.error) throw new Error(r.error.message);
+          setStatus('Saved');
+        } catch (eS) { setStatus('Save failed: ' + eS.message); }
+        rerender();
+      }
+      row.querySelector('#elp-divfold').addEventListener('change', function () {
+        var n = _divSizeNode; if (!n || !n._dbId) return;
+        n.msDividerFold = this.checked ? true : undefined;   // undefined → the key drops out of raw_config
+        document.getElementById('elp-divfold-start').style.display = this.checked ? 'flex' : 'none';
+        saveDivider(n);
+      });
+      row.querySelector('#elp-divfold-min').addEventListener('change', function () {
+        var n = _divSizeNode; if (!n || !n._dbId) return;
+        n.collapsed = this.checked ? true : undefined;
+        saveDivider(n);
+      });
       row.addEventListener('click', async function (e) {
         var b = e.target && e.target.closest && e.target.closest('button[data-dsz]'); if (!b) return;
         var n = _divSizeNode; if (!n || !n._dbId) return;
@@ -672,6 +697,10 @@
     }
     _divSizeNode = node;
     markDividerSize(node.msDividerSize || 'small');
+    var fcb = document.getElementById('elp-divfold'), mcb = document.getElementById('elp-divfold-min');
+    if (fcb) fcb.checked = !!node.msDividerFold;
+    if (mcb) mcb.checked = !!node.collapsed;
+    var fs = document.getElementById('elp-divfold-start'); if (fs) fs.style.display = node.msDividerFold ? 'flex' : 'none';
     row.style.display = 'block';
   }
   var _divSizeNode = null;
