@@ -66,6 +66,52 @@
     return Array.prototype.map.call(new Uint8Array(h), function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
   }
 
+  /* WHEN THE MANIFEST CANNOT SAY WHAT CHANGED, ASK R2 (10/9). A CLI push records no hashes, and a
+     stale manifest is distrusted entirely — either way this used to mean "send the whole copy".
+     On the Railways showcase that is a 146 MB archive pulled down and pushed back through the
+     Worker from a browser tab, and it died mid-flight ("Failed to fetch") on the 35th of 131 files,
+     every time. R2 returns each object's MD5 as its ETag (single-part uploads — every object this
+     and the CLI write), so one HEAD per file tells us whether the live copy already IS the built
+     one. Multipart uploads carry a "-N" ETag that is not an MD5; those read as "changed", which is
+     the safe direction. MD5 comes from SparkMD5 (CDN, loaded on first use — the Web Crypto API has
+     no MD5 by design). */
+  var SPARK_URLS = ["https://cdnjs.cloudflare.com/ajax/libs/spark-md5/3.0.2/spark-md5.min.js", "https://cdn.jsdelivr.net/npm/spark-md5@3.0.2/spark-md5.min.js"];
+  var _spark = null;
+  function ensureMd5() {
+    if (window.SparkMD5) return Promise.resolve(window.SparkMD5);
+    if (_spark) return _spark;
+    _spark = new Promise(function (res, rej) {
+      var i = 0;
+      (function next() {
+        if (i >= SPARK_URLS.length) { _spark = null; return rej(new Error("MD5 library could not be loaded")); }
+        var s = document.createElement("script"); s.src = SPARK_URLS[i++];
+        s.onload = function () { window.SparkMD5 ? res(window.SparkMD5) : next(); };
+        s.onerror = next;
+        document.head.appendChild(s);
+      })();
+    });
+    return _spark;
+  }
+  function md5(bytes) { return window.SparkMD5.ArrayBuffer.hash(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); }
+  async function liveEtags(slug, rels, say) {
+    var out = {}, next = 0, done = 0;
+    async function worker() {
+      for (;;) {
+        var i = next++; if (i >= rels.length) return;
+        try {
+          // a ONE-BYTE ranged GET, not HEAD: the Worker route answers HEAD without the ETag but a
+          // 206 carries the full object's ETag (and exposes it cross-origin) — measured 10/9
+          var r = await fetch(fresh(PUBLIC + "maps/" + slug + "/" + rels[i]), { headers: { Range: "bytes=0-0" }, cache: "no-store" });
+          if (r.ok) { var e = (r.headers.get("etag") || "").replace(/^W\//, "").replace(/"/g, ""); if (/^[0-9a-f]{32}$/i.test(e)) out[rels[i]] = e.toLowerCase(); }
+          try { await r.arrayBuffer(); } catch (eB) {}   // drain the one byte so the connection is reused
+        } catch (eH) { /* unreadable live file → treated as changed, which is the safe direction */ }
+        done++; if (done % 20 === 0) say("Comparing with what's live… (" + done + "/" + rels.length + ")");
+      }
+    }
+    await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+    return out;
+  }
+
   var MIME = {
     html: "text/html; charset=utf-8", js: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8",
     json: "application/json", geojson: "application/geo+json", png: "image/png", jpg: "image/jpeg",
@@ -244,15 +290,25 @@
       }
     }
 
+    /* No usable hashes (a CLI push, or a manifest that disagreed with the live page): ask R2 what is
+       live, file by file, and compare MD5s — see liveEtags. Only a file whose live MD5 differs (or
+       that is not live at all) is sent. A wrong "unchanged" would leave a stale file live forever,
+       which is why the comparison is the object's own content hash and nothing looser. */
+    var etags = null;
+    if (!known) {
+      say("Comparing with what's live…");
+      try { await ensureMd5(); etags = await liveEtags(slug, files.map(function (f) { return f.rel; }), say); }
+      catch (eE) { etags = null; say("Could not compare with the live copy — sending everything…"); }
+    }
     var hashes = {}, changed = [];
     for (var i = 0; i < files.length; i++) {
       var h = await sha256(files[i].bytes);
       hashes[files[i].rel] = h;
-      /* No hashes in the manifest means the last publish came from the CLI, which doesn't record
-         them. Upload everything rather than guess — a wrong "unchanged" leaves a stale file live
-         forever, and nothing downstream would ever notice. */
-      if (!known || known[files[i].rel] !== h) changed.push(files[i]);
+      if (known) { if (known[files[i].rel] !== h) changed.push(files[i]); }
+      else if (etags) { if (etags[files[i].rel] !== md5(files[i].bytes)) changed.push(files[i]); }
+      else changed.push(files[i]);
     }
+    say(changed.length + " of " + files.length + " files changed…");
     if (!changed.length) { say("Already up to date."); return { slug: slug, uploaded: 0, url: PUBLIC + "maps/" + slug + "/" }; }
     /* Whenever anything ships, index.html ships with it — it is the file the verify judges the whole
        publish by, so it must be one this run actually wrote. */
