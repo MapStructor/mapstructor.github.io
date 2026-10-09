@@ -111,6 +111,54 @@ function findLayer(nodes, label) {
     }
   }
   
+  // ── collapsible DIVIDERS (10/8) ─────────────────────────────────────────
+  // A divider section has no children; what it "contains" is everything after it in the panel up to
+  // the next divider of the same or larger size (small < medium < large). So "RAW LAYERS" (large)
+  // folds every section and layer below it; "UNITED STATES" (medium) folds only up to the next
+  // medium/large divider. The caret's class is the one source of truth for open/closed, exactly like
+  // sectionCompressExpand, so the editor's "Expanded by default" box can drive it the same way.
+  function dividerRank(block) { return block.classList.contains("lg") ? 3 : block.classList.contains("md") ? 2 : 1; }
+  function dividerSpan(block) {
+    var span = [], rank = dividerRank(block), el = block.nextElementSibling;
+    while (el) {
+      if (el.classList && el.classList.contains("ms-divider-block") && dividerRank(el) >= rank) break;
+      span.push(el);
+      el = el.nextElementSibling;
+    }
+    return span;
+  }
+  function applyDividerStates() {
+    var blocks = document.querySelectorAll(".ms-divider-block");
+    for (var i = 0; i < blocks.length; i++) {
+      var b = blocks[i], caret = b.querySelector(".ms-divider-caret");
+      var open = !caret || caret.classList.contains("fa-minus-square");
+      b.classList.toggle("ms-divider-collapsed", !open);
+      var span = dividerSpan(b);
+      for (var j = 0; j < span.length; j++) {
+        // a block hidden by an OUTER collapsed divider stays hidden even if this one is open
+        if (open) { if (span[j].getAttribute("data-ms-folded-by") === b.id) { span[j].style.display = ""; span[j].removeAttribute("data-ms-folded-by"); } }
+        else if (!span[j].getAttribute("data-ms-folded-by")) { span[j].style.display = "none"; span[j].setAttribute("data-ms-folded-by", b.id); }
+      }
+    }
+  }
+  function dividerCompressExpand(block_id) {
+    var b = document.getElementById(block_id); if (!b) return;
+    var caret = b.querySelector(".ms-divider-caret"); if (!caret) return;
+    var open = caret.classList.contains("fa-minus-square");
+    caret.classList.remove(open ? "fa-minus-square" : "fa-plus-square");
+    caret.classList.add(open ? "fa-plus-square" : "fa-minus-square");
+    caret.title = open ? "Expand" : "Minimize";
+    // closing: fold the whole span; opening: release only what THIS divider folded (inner ones keep theirs)
+    var span = dividerSpan(b);
+    for (var j = 0; j < span.length; j++) {
+      if (open) { if (!span[j].getAttribute("data-ms-folded-by")) { span[j].style.display = "none"; span[j].setAttribute("data-ms-folded-by", b.id); } }
+      else if (span[j].getAttribute("data-ms-folded-by") === b.id) { span[j].style.display = ""; span[j].removeAttribute("data-ms-folded-by"); }
+    }
+    b.classList.toggle("ms-divider-collapsed", open);
+  }
+  window.dividerCompressExpand = dividerCompressExpand;
+  window.applyDividerStates = applyDividerStates;
+
   function sectionCompressExpand(section_id, caret_id) {
     if ($(caret_id).hasClass("fa-minus-square")) {
       $(caret_id).removeClass("fa-minus-square").addClass("fa-plus-square");

@@ -10785,7 +10785,10 @@
         caret.classList.remove(expanded ? 'fa-plus-square' : 'fa-minus-square');
         caret.classList.add(expanded ? 'fa-minus-square' : 'fa-plus-square');
       }
-      if (node.type === 'section' && node.containerId) {
+      if (node.type === 'section' && node.msDivider) {
+        // a divider folds what FOLLOWS it (10/8) — the caret class was just set above; re-apply the spans
+        if (typeof applyDividerStates === 'function') applyDividerStates();
+      } else if (node.type === 'section' && node.containerId) {
         var box = document.getElementById(node.containerId);
         if (box) box.style.display = expanded ? '' : 'none';
       } else if (node.type === 'group' && node.itemSelector) {

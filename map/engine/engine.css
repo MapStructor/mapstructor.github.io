@@ -494,6 +494,9 @@ div.layer-list-row.ms-divider-row { display: flex; align-items: center; gap: 8px
 .ms-divider-block.md div.layer-list-row.ms-divider-row { width: 72%; }
 .ms-divider-block.lg div.layer-list-row.ms-divider-row { width: 98%; }
 .ms-divider-row::before, .ms-divider-row::after { content: ""; flex: 1; border-top: 1px solid #cfcadb; }
+.ms-divider-caret { cursor: pointer; color: #7c7691; font-size: 13px; flex: none; }
+.ms-divider-caret:hover { color: #1e1b2e; }
+.ms-divider-collapsed .ms-divider-label { opacity: .8; }
 .ms-divider-label {
   margin: 0;
   font-size: 11px;
