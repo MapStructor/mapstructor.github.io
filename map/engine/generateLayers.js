@@ -167,15 +167,15 @@ function buildContainerHTML(node) {
     // sibling block up to the next divider of the same or larger size (utils.js dividerSpan) —
     // and node.collapsed (raw_config, the editor's "Starts minimized" box) is its starting state;
     // applyDividerStates() applies that once the panel is built. Without the flag: a plain heading.
+    // NO ± ICON (owner 10/8: "I want there to be no +/- caret") — the heading itself is the
+    // toggle; data-ms-fold on the block is the one source of truth for open/closed.
     var dsz = node.msDividerSize === "medium" ? " md" : node.msDividerSize === "large" ? " lg" : "";
     var fold = !!node.msDividerFold, dOpen = !fold || !node.collapsed;
-    var caret = fold
-      ? '<i class="fas ' + (dOpen ? 'fa-minus-square' : 'fa-plus-square') + ' compress-expand-icon ms-divider-caret" id="' + (node.caretId || ('caret-' + node.id)) + '"' +
-          ' onclick="dividerCompressExpand(\'' + node.id + '\')" title="' + (dOpen ? 'Minimize' : 'Expand') + '"></i>'
-      : '';
     return (
-      '<div class="ms-section-block ms-divider-block' + dsz + (dOpen ? '' : ' ms-divider-collapsed') + '" id="' + node.id + '">' +
-        '<div class="layer-list-row ms-divider-row">' + caret +
+      '<div class="ms-section-block ms-divider-block' + dsz + (dOpen ? '' : ' ms-divider-collapsed') + '" id="' + node.id + '"' +
+        (fold ? ' data-ms-fold="' + (dOpen ? 'open' : 'closed') + '"' : '') + '>' +
+        '<div class="layer-list-row ms-divider-row' + (fold ? ' ms-divider-foldable' : '') + '"' +
+          (fold ? ' onclick="dividerCompressExpand(\'' + node.id + '\')" title="' + (dOpen ? 'Click to minimize' : 'Click to expand') + '"' : '') + '>' +
           '<label class="ms-divider-label">' + (node.label || '') + '</label>' +
         '</div>' +
         '<div id="' + node.containerId + '" style="display:none"></div>' +

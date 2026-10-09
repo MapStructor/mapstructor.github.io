@@ -130,8 +130,8 @@ function findLayer(nodes, label) {
   function applyDividerStates() {
     var blocks = document.querySelectorAll(".ms-divider-block");
     for (var i = 0; i < blocks.length; i++) {
-      var b = blocks[i], caret = b.querySelector(".ms-divider-caret");
-      var open = !caret || caret.classList.contains("fa-minus-square");
+      var b = blocks[i], fold = b.getAttribute("data-ms-fold");   // absent = not foldable = always open
+      var open = fold !== "closed";
       b.classList.toggle("ms-divider-collapsed", !open);
       var span = dividerSpan(b);
       for (var j = 0; j < span.length; j++) {
@@ -143,11 +143,10 @@ function findLayer(nodes, label) {
   }
   function dividerCompressExpand(block_id) {
     var b = document.getElementById(block_id); if (!b) return;
-    var caret = b.querySelector(".ms-divider-caret"); if (!caret) return;
-    var open = caret.classList.contains("fa-minus-square");
-    caret.classList.remove(open ? "fa-minus-square" : "fa-plus-square");
-    caret.classList.add(open ? "fa-plus-square" : "fa-minus-square");
-    caret.title = open ? "Expand" : "Minimize";
+    var fold = b.getAttribute("data-ms-fold"); if (!fold) return;   // not foldable
+    var open = fold !== "closed";
+    b.setAttribute("data-ms-fold", open ? "closed" : "open");
+    var row = b.querySelector(".ms-divider-row"); if (row) row.title = open ? "Click to expand" : "Click to minimize";
     // closing: fold the whole span; opening: release only what THIS divider folded (inner ones keep theirs)
     var span = dividerSpan(b);
     for (var j = 0; j < span.length; j++) {

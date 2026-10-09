@@ -657,7 +657,7 @@
         /* FOLDING (10/8): per divider, off by default. On, the divider gets a ± caret that folds
            everything after it up to the next divider of its size or larger; "Starts minimized" is
            the saved default (raw_config.collapsed — the same key sections use). */
-        '<label style="display:flex;gap:6px;align-items:center;margin:8px 0 0;font-size:12px;cursor:pointer;"><input type="checkbox" id="elp-divfold"> Can be minimized (shows a &plusmn; caret)</label>' +
+        '<label style="display:flex;gap:6px;align-items:center;margin:8px 0 0;font-size:12px;cursor:pointer;"><input type="checkbox" id="elp-divfold"> Can be minimized (click the heading to toggle)</label>' +
         '<label id="elp-divfold-start" style="display:none;gap:6px;align-items:center;margin:4px 0 0 20px;font-size:12px;cursor:pointer;"><input type="checkbox" id="elp-divfold-min"> Starts minimized</label>';
       var nameEl = document.getElementById('elp-name');
       if (nameEl && nameEl.parentNode) nameEl.parentNode.insertBefore(row, nameEl.nextSibling);
@@ -10815,7 +10815,9 @@
         caret.classList.add(expanded ? 'fa-minus-square' : 'fa-plus-square');
       }
       if (node.type === 'section' && node.msDivider) {
-        // a divider folds what FOLLOWS it (10/8) — the caret class was just set above; re-apply the spans
+        // a divider folds what FOLLOWS it (10/8) — set its state, re-apply the spans
+        var dblk = document.getElementById(node.id);
+        if (dblk && dblk.getAttribute('data-ms-fold')) dblk.setAttribute('data-ms-fold', expanded ? 'open' : 'closed');
         if (typeof applyDividerStates === 'function') applyDividerStates();
       } else if (node.type === 'section' && node.containerId) {
         var box = document.getElementById(node.containerId);
