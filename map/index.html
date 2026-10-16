@@ -116,6 +116,7 @@
     <script src="../platform/topbar.js?v=99f53c33"></script>   <!-- #17: header shows the signed-in account (and enables Edit-map/#16 later) -->
     <script src="../platform/bookmarks.js?v=f3ed1315"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
     <script src="../platform/overlay.js?v=2322d302"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
+    <script src="../platform/content.js?v=fdb5b648"></script>   <!-- content system: entries for a clicked feature (panel mode "entries"), entry + encyclopedia pages -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
       rel="stylesheet"
@@ -395,7 +396,7 @@
          (MSGuard.warnOnce / .save / .cliff). Loaded FIRST so every later file can use it; every
          call site checks window.MSGuard, so removing this line degrades cleanly to silence. -->
     <script src="../platform/guards.js?v=6e3e345a" onerror="void(0)"></script>
-    <script src="engine/infoPanel.js?v=809e2652"></script>
+    <script src="engine/infoPanel.js?v=a6172ab9"></script>
     <script src="engine/mapinit.js?v=8b41561a"></script>
     <script src="engine/sliderpopups.js?v=ba8ab5a0"></script>
     <script src="../platform/configLoader.js?v=35f2935a" onerror="void(0)"></script>

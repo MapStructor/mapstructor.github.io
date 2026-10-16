@@ -176,9 +176,31 @@ function handlePanelClick(layer, event) {
 }
 
 function renderInfoPanel(layer, props, clickedId, lngLat, popupHTML, mode) {
-  if (mode === "notes") renderNotesPanel(layer, props, clickedId, lngLat, popupHTML);
+  if (mode === "entries") renderEntriesPanel(layer, props, clickedId, lngLat, popupHTML);   // content system (platform/content.js): the feature's entry
+  else if (mode === "notes") renderNotesPanel(layer, props, clickedId, lngLat, popupHTML);
   else if (mode === "both") { renderNotesPanel(layer, props, clickedId, lngLat, popupHTML); fetchAndRender(layer, props, clickedId, lngLat, popupHTML, true); }   // title+notes, then append the Drupal page
   else fetchAndRender(layer, props, clickedId, lngLat, popupHTML);   // "drupal"
+}
+// CONTENT SYSTEM (10/16): layer.panel = { mode: "entries", entries: { type, key } } — the clicked
+// feature's <key> property is looked up in that content type's entries (platform/content.js), and
+// the panel shows the entry: title, pills, summary, conditions, "Read more". A feature with no
+// entry opens nothing — same rule as a feature with no notes. The bubble on the map is the entry's
+// title (the engine's own popup chrome), not the feature's label, so the UK polygon says which page.
+function renderEntriesPanel(layer, props, clickedId, lngLat, popupHTML) {
+  if (!window.MSContent) return;
+  var state = infoPanelState[layer.id];
+  MSContent.panelFor(layer, props).then(function (res) {
+    if (!res) return;
+    var $el = $("#" + state.divId);
+    $el.html(res.html);
+    floatPanelToTop(state.divId);
+    openSidebarIfHidden();
+    state.isOpen = true;
+    setPanelHighlight(layer, clickedId, true);
+    var bubble = "<div class='" + state.popupClass + "'>" + $("<div>").text(res.title).html() + "</div>";
+    showPanelPopups(state, lngLat, bubble);
+    $el.slideDown();
+  }).catch(function (e) { console.warn("entries panel", e); });
 }
 function renderNotesPanel(layer, props, clickedId, lngLat, popupHTML) {
   // A feature with NO info (no title, notes, or image) gets no panel in the viewer — nothing to show.

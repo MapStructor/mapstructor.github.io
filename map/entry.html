@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Entry — MapStructor</title>
+  <link rel="icon" href="../images/logo-transparent.png">
+  <style>
+    /* One entry of a map's content system (platform/content.js): the "Read more" page behind the
+       info panel. Everything shown is the map owner's content, rendered by the type's fields. */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --p: #7c5cbf; --p-dark: #6246a8; }
+    body { font-family: 'Source Sans Pro', 'Helvetica Neue', Arial, sans-serif; background: #f0eaff; color: #1e1b2e; min-height: 100vh; }
+    nav { position: fixed; top: 0; right: 0; display: flex; align-items: center; gap: 4px; padding: 16px clamp(16px, 4vw, 40px); z-index: 20; }
+    nav a { color: #6e6585; text-decoration: none; font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 6px; white-space: nowrap; }
+    nav a:hover { color: var(--p); }
+    main { max-width: 880px; margin: 0 auto; padding: clamp(64px, 9vw, 96px) clamp(16px, 4vw, 40px) 60px; }
+    .sheet { background: #fff; border: 1px solid rgba(124,92,191,0.18); border-radius: 14px; }
+    .ms-ct-article { max-width: none; }
+    .mapline { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; font-size: 13px; color: #6e6585; }
+    .mapline a { color: var(--p); text-decoration: none; font-weight: 700; }
+    .btn { display: inline-block; text-decoration: none; font-weight: 700; font-size: 13px; padding: 8px 16px; border-radius: 8px; background: var(--p); color: #fff; }
+    .btn:hover { background: var(--p-dark); }
+    .empty { padding: 40px 24px; color: #6e6585; text-align: center; }
+    footer { display: flex; justify-content: center; gap: 18px; padding: 24px; }
+    footer a { color: #9490a8; text-decoration: none; font-size: 12.5px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="../platform/auth.js?v=c3e839f1"></script>
+  <script src="../platform/content.js?v=fdb5b648"></script>
+</head>
+<body>
+  <nav>
+    <a href="../index.html">Home</a>
+    <a id="nav-map" href="#">Map</a>
+    <a id="nav-index" href="#">Encyclopedia</a>
+  </nav>
+  <main>
+    <div class="mapline" id="mapline"></div>
+    <div class="sheet" id="sheet"><div class="empty" id="status">Loading…</div></div>
+  </main>
+  <footer><a href="../index.html">MapStructor</a></footer>
+  <script>
+    (async function () {
+      var q = new URLSearchParams(location.search);
+      var pid = (q.get('id') || '').trim(), slug = (q.get('entry') || '').trim();
+      var sheet = document.getElementById('sheet'), status = document.getElementById('status');
+      function fail(msg) { status.textContent = msg; }
+      if (!pid || !slug) return fail('This page needs a map id and an entry.');
+      MSContent.css();
+      var mapUrl = 'index.html?id=' + encodeURIComponent(pid);
+      document.getElementById('nav-map').href = mapUrl;
+      document.getElementById('nav-index').href = MSContent.indexUrl(pid);
+      var db = MapAuth.db;
+      var proj = null;
+      try { var pr = await db.from('projects').select('id, name').eq('id', pid).maybeSingle(); proj = pr.data; } catch (e) {}
+      var mapName = (proj && proj.name) || 'Map';
+      var ml = document.getElementById('mapline');
+      var a1 = document.createElement('a'); a1.href = mapUrl; a1.textContent = mapName; ml.appendChild(a1);
+      var sep = document.createElement('span'); sep.textContent = '·'; ml.appendChild(sep);
+      var a2 = document.createElement('a'); a2.href = MSContent.indexUrl(pid); a2.textContent = 'Encyclopedia'; ml.appendChild(a2);
+
+      var e = await MSContent.entryBySlug(pid, slug);
+      if (!e) return fail('No entry called “' + slug + '” on this map.');
+      var types = await MSContent.types(pid);
+      var type = types.filter(function (t) { return t.id === e.type_id; })[0] || null;
+      var links = await MSContent.linksOf(pid, e.id);
+      var ids = [].concat(links.out.map(function (l) { return l.to_id; }), links.in.map(function (l) { return l.from_id; }));
+      var byId = await MSContent.entriesById(pid, ids);
+      var parentLink = links.out.filter(function (l) { return l.rel === 'parent'; })[0];
+      var parent = parentLink ? byId[parentLink.to_id] : null;
+      var children = links.in.filter(function (l) { return l.rel === 'parent'; }).map(function (l) { return byId[l.from_id]; }).filter(Boolean)
+        .sort(function (a, b) { return a.title.localeCompare(b.title); });
+      var childType = children.length ? types.filter(function (t) { return t.id === children[0].type_id; })[0] : null;
+      document.title = e.title + ' — ' + mapName;
+      sheet.innerHTML = MSContent.renderPage(type, e, pid, {
+        parent: parent, children: children,
+        childrenLabel: childType ? (childType.name_plural || childType.name) : 'Within',
+        indexLabel: 'Encyclopedia',
+        linkHtml: function (v) { var t = (parent && parent.slug === v) ? parent.title : v; return '<a href="' + MSContent.esc(MSContent.entryUrl(pid, v)) + '">' + MSContent.esc(t) + '</a>'; }
+      });
+      var open = document.createElement('p'); open.style.margin = '0 16px 20px';
+      var btn = document.createElement('a'); btn.className = 'btn'; btn.href = mapUrl; btn.textContent = 'Open on the map'; open.appendChild(btn);
+      sheet.appendChild(open);
+    })();
+  </script>
+</body>
+</html>
