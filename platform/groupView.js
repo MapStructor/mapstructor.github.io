@@ -137,12 +137,22 @@
       }
       return best;
     }
+    /* ONE OWNER PER CURSOR (10/18 — the "no pointer finger in the viewer" bug, open since 10/3).
+       This module listens to EVERY mouse move on EVERY map, grouped layers or not, and used to
+       clear any 'pointer' it found whenever the mouse was not over a grouped family — i.e. on
+       every move over an ordinary layer, one millisecond after eventsHandle.js had set it.
+       Measured 10/18 by wrapping the canvas cursor setter with its caller: per move,
+       "pointer (eventsHandle:73) · pointer (eventsHandle:80) · (cleared) (groupView:145)", on a
+       map with no grouped layer at all; settled cursor "", container shows grab. Six earlier
+       theories never looked here because the instrument could not be built then.
+       Rule now: this module only clears a pointer IT set. Everyone else's pointer is theirs. */
+    var cursorMine = false;
     function setCursor(on) {
       eachMap(function (m) {
         try {
           var c = m.getCanvas();
-          if (on) { if (c.style.cursor !== 'pointer') c.style.cursor = 'pointer'; }
-          else if (c.style.cursor === 'pointer') c.style.cursor = '';
+          if (on) { if (c.style.cursor !== 'pointer') c.style.cursor = 'pointer'; cursorMine = true; }
+          else if (cursorMine) { if (c.style.cursor === 'pointer') c.style.cursor = ''; cursorMine = false; }
         } catch (e) {}
       });
     }
