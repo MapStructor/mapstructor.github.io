@@ -336,7 +336,8 @@ function changeDate(unixDate) {
     // 7/21: timelineIgnore — this layer always shows EVERYTHING (e.g. a linked instance used as an
     // "all data at once" view of end-dated data). Clear any date filter instead of applying one.
     // 10/18: the layer's OWN filter rides along (msLayerFilter) — a slider move used to drop it
-    const lf = msLayerFilter(layer.filter || null, layer.timelineIgnore ? null : dateFilter);
+    const ownF = (layer.customJson && layer.customJson.filter) || layer.filter || null;   // Custom JSON's filter counts as the layer's own
+    const lf = msLayerFilter(ownF, layer.timelineIgnore ? null : dateFilter);
     if (beforeMap.getLayer(leftId))  beforeMap.setFilter(leftId,  lf);
     if (afterMap.getLayer(rightId))  afterMap.setFilter(rightId,  lf);
     // companion layers (stroke outline, hover highlight) get a date filter at ADD time —
@@ -349,7 +350,7 @@ function changeDate(unixDate) {
     });
     // 7/21: LABELS follow the slider too — coalesce keeps dateless anchors (group/point anchors carry
     // no Day props) always visible, while tile-riding labels hide with their features
-    const lblF = msLabelFilter(layer.filter || null, msDateFilter("label", date, layer.timelineIgnore));
+    const lblF = msLabelFilter(ownF, msDateFilter("label", date, layer.timelineIgnore));
     // companions-ok: -edited- is filtered by editing.js applyEditedOverlayDayFilter, which patches
     // changeDate and paintDate. Editor-only, and it must not be filtered twice.
     ["-label-"].forEach(sfx => {

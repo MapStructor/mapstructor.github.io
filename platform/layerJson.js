@@ -59,6 +59,15 @@
     if (clean.source != null && typeof clean.source !== "string") delete clean.source;
     cj = clean;
     if (!Object.keys(cj).length) return 0;
+    // HOVER SURVIVES A CUSTOM OPACITY (10/18): the engine wraps a fill's opacity in a hover/selected
+    // case at add time (addLayers.js hoverInlinePaint). A custom fill-opacity set through
+    // setPaintProperty replaced that wrap and silently killed the highlight. Wrap it the same way.
+    try {
+      if (cj.paint && cj.paint["fill-opacity"] != null && typeof hoverInlinePaint === "function") {
+        var nodeH = nodeById(slug);
+        if (nodeH) cj = Object.assign({}, cj, { paint: hoverInlinePaint(nodeH, Object.assign({}, cj.paint)) });
+      }
+    } catch (eH) {}
     var n = 0;
     var fastOnly = Object.keys(cj).every(function (k) { return k === "paint" || k === "layout"; });
     [[typeof beforeMap !== "undefined" ? beforeMap : null, "left"], [typeof afterMap !== "undefined" ? afterMap : null, "right"]].forEach(function (pr) {

@@ -7,7 +7,10 @@ function addMapLayer(map, layerConfig, date) {
   // 10/18: a layer's OWN filter (config `filter`, legacy syntax) is ANDed with the date filter,
   // not replaced by it — see msLayerFilter in utils.js
   const dateF = (date && !layerConfig.timelineIgnore) ? ["all", ["<=", "DayStart", date], [">=", "DayEnd", date]] : null;
-  const f = msLayerFilter(layerConfig.filter || null, dateF);
+  // a filter in the layer's Custom JSON (raw_config.customJson.filter, the panel's { } JSON tab) is
+  // the same thing as an own filter — honoured here at add time, not only when layerJson re-applies
+  const own = (layerConfig.customJson && layerConfig.customJson.filter) || layerConfig.filter || null;
+  const f = msLayerFilter(own, dateF);
   const cfg = { ...layerConfig };
   if (f) cfg.filter = f; else delete cfg.filter;
   if (cfg.source && typeof cfg.source === "object" && map.getSource(cfg.id)) cfg.source = cfg.id;
