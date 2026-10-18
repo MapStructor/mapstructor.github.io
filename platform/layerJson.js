@@ -202,25 +202,29 @@
     // made the two tabs read the same). Engine plumbing (sources, element ids, internals) and the
     // custom JSON itself are left out; everything the panel edits stays.
     var PLUMBING = { source: 1, "source-layer": 1, containerId: 1, className: 1, topLayerClass: 1, toggleElement: 1, caretId: 1, itemSelector: 1, customJson: 1, features: 1, children: 1 };
-    var view = "";
-    if (node) {
+    function panelJson(obj) {
       var seen = [];
-      view = JSON.stringify(node, function (k, v) {
+      return JSON.stringify(obj, function (k, v) {
         if (typeof v === "function" || (k && (PLUMBING[k] || k.charAt(0) === "_"))) return undefined;
         if (k === "render") return undefined;   // panel.render is code, reattached by slug
         if (v && typeof v === "object") { if (seen.indexOf(v) !== -1) return "[circular]"; seen.push(v); }
         return v;
       }, 2);
     }
-    document.getElementById("msj-view").textContent = view;
+    // The STORED row is the truth the panel persists; the in-memory node is not — the editor
+    // copies live paint back into it (so under a Custom JSON the node carried the override and
+    // the two tabs read the same, 10/18). Show the node only until the row arrives.
+    document.getElementById("msj-view").textContent = node ? panelJson(node) : "";
     var ta = document.getElementById("msj-edit");
     ta.value = ""; status("");
     if (!node) return;
     try {
       var lid = await dbIdOf(node);
       if (lid) {
-        var r = await db().from("layers").select("raw_config").eq("id", lid).single();
-        var cj = r.data && r.data.raw_config && r.data.raw_config.customJson;
+        var r = await db().from("layers").select("name, raw_config").eq("id", lid).single();
+        var rc = (r.data && r.data.raw_config) || {};
+        document.getElementById("msj-view").textContent = panelJson(Object.assign({ id: slug, name: r.data && r.data.name }, rc));
+        var cj = rc.customJson;
         if (cj) ta.value = JSON.stringify(cj, null, 2);
         ta.setAttribute("data-lid", lid);
       } else ta.removeAttribute("data-lid");
