@@ -31,7 +31,12 @@
     }, 2);
   }
 
-  async function dbIdOf(node) {   // tileset URL carries the id; otherwise match by name
+  async function dbIdOf(node) {   // the leaf's own row id first; tileset URL; otherwise match by name
+    // 10/18: a LINKED MIRROR renders the SOURCE's tiles, so its URL carries the source layer's id —
+    // the modal then read (and saved) the source's Custom JSON while the map applied the mirror's
+    // by name. The owner opened { } JSON on the property map and saw an empty tab. Every leaf
+    // knows its own row (configLoader stamps _layerDbId); ask it first.
+    if (node && node._layerDbId) return node._layerDbId;
     try {
       var u = node.source && (node.source.url || (node.source.tiles && node.source.tiles[0]) || "");
       var m = String(u).match(/pmt\/[^/]+\/([0-9a-f-]{36})\//i);
