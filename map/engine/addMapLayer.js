@@ -14,6 +14,23 @@ function addMapLayer(map, layerConfig, date) {
   const cfg = { ...layerConfig };
   if (f) cfg.filter = f; else delete cfg.filter;
   if (cfg.source && typeof cfg.source === "object" && map.getSource(cfg.id)) cfg.source = cfg.id;
+  // CUSTOM JSON IS A COMPLETE OVERRIDE (owner 10/18: "any time there is a custom JSON, it should
+  // override all styling, and not selectively"). When a layer carries raw_config.customJson, its
+  // paint and layout are REPLACED by the custom ones — not merged — so the panel's styling plays
+  // no part; keys the custom JSON leaves out fall to the renderer's defaults. The engine applies
+  // it here, at add time, so the first frame, the viewer, the editor and a downloaded copy all
+  // agree (layerJson.js re-applies live edits the same way). Two things are not styling and stay
+  // the engine's: layout.visibility (the layer checkbox) and the hover/selected opacity wrap.
+  const cjA = layerConfig.customJson;
+  if (cjA && typeof cjA === "object") {
+    const vis = cfg.layout && cfg.layout.visibility;
+    cfg.paint = JSON.parse(JSON.stringify(cjA.paint || {}));
+    if (typeof hoverInlinePaint === "function") cfg.paint = hoverInlinePaint(layerConfig, cfg.paint);
+    cfg.layout = JSON.parse(JSON.stringify(cjA.layout || {}));
+    if (vis != null) cfg.layout.visibility = vis;
+    if (cjA.minzoom != null) cfg.minzoom = cjA.minzoom;
+    if (cjA.maxzoom != null) cfg.maxzoom = cjA.maxzoom;
+  }
   // A tileset layer imported without a stored paint (styleColumnPaint returns the raw null for
   // non-geojson sources) would make map.addLayer THROW on `paint: null` — the whole layer then
   // never renders (only its separately-added highlight shows). Fall back to the layer's own colour.

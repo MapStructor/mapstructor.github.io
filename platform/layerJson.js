@@ -74,28 +74,27 @@
       }
     } catch (eH) {}
     var n = 0;
-    var fastOnly = Object.keys(cj).every(function (k) { return k === "paint" || k === "layout"; });
+    // COMPLETE OVERRIDE (owner 10/18): the custom JSON REPLACES paint, layout and filter — no
+    // key-by-key merge, no "fast path" that leaves the panel's other keys in place. The layer is
+    // re-added with exactly the custom styling; visibility (the checkbox) stays the engine's.
     [[typeof beforeMap !== "undefined" ? beforeMap : null, "left"], [typeof afterMap !== "undefined" ? afterMap : null, "right"]].forEach(function (pr) {
       var m = pr[0]; if (!m) return;
       var id = slug + "-" + pr[1];
       try {
         if (!m.getLayer(id)) return;
-        if (fastOnly) {
-          Object.keys(cj.paint || {}).forEach(function (k) { try { m.setPaintProperty(id, k, cj.paint[k]); n++; } catch (e) {} });
-          Object.keys(cj.layout || {}).forEach(function (k) { try { m.setLayoutProperty(id, k, cj.layout[k]); n++; } catch (e) {} });
-          return;
-        }
         var st = m.getStyle(), def = null, beforeId = null;
         for (var i = 0; i < st.layers.length; i++) {
           if (st.layers[i].id === id) { def = st.layers[i]; beforeId = st.layers[i + 1] ? st.layers[i + 1].id : null; break; }
         }
         if (!def) return;
         var merged = JSON.parse(JSON.stringify(def));
-        Object.keys(cj).forEach(function (k) {
-          if ((k === "paint" || k === "layout") && merged[k] && typeof cj[k] === "object") {
-            Object.keys(cj[k]).forEach(function (kk) { merged[k][kk] = cj[k][kk]; });
-          } else merged[k] = cj[k];
-        });
+        var vis = merged.layout && merged.layout.visibility;
+        merged.paint = JSON.parse(JSON.stringify(cj.paint || {}));
+        merged.layout = JSON.parse(JSON.stringify(cj.layout || {}));
+        if (vis != null) merged.layout.visibility = vis;
+        if (cj.filter != null) merged.filter = cj.filter; else delete merged.filter;
+        ["type", "source-layer", "minzoom", "maxzoom", "metadata"].forEach(function (k) { if (cj[k] != null) merged[k] = cj[k]; });
+        if (typeof cj.source === "string") merged.source = cj.source;
         merged.id = id;                                     // identity is never overridable — everything else is
         if (!cj.source) merged.source = def.source;
         m.removeLayer(id);
@@ -143,11 +142,11 @@
       '<div id="msj-head"><span>{ } Layer JSON</span><span id="msj-x">&times;</span></div>' +
       '<div id="msj-body">' +
       '<select id="msj-sel"></select>' +
-      '<div id="msj-tabs"><span class="msj-tab on" data-t="view">Config (read-only)</span><span class="msj-tab" data-t="edit">Custom JSON</span></div>' +
+      '<div id="msj-tabs"><span class="msj-tab on" data-t="view">Panel JSON (read-only)</span><span class="msj-tab" data-t="edit">Custom JSON (overrides ALL styling)</span></div>' +
       '<div id="msj-view"></div>' +
       '<textarea id="msj-edit" spellcheck="false"></textarea>' +
       '<div class="msj-row"><button id="msj-copy" class="msj-btn">Copy</button><button id="msj-save" class="msj-btn" style="display:none">Save & apply</button><span id="msj-status"></span></div>' +
-      '<div class="msj-note">Custom JSON starts empty — type or paste here. Anything the renderer\'s layer spec allows — <b>paint, layout, filter, minzoom/maxzoom, type…</b> (blur, dasharray, expressions, all of it); other keys are ignored, and JSON the renderer rejects leaves the layer untouched. Example: <code>{"paint":{"line-color":"#ff0000","line-width":3}}</code>. Applies <b>live as you type</b> when valid; Save stores it and re-applies every load. The Config tab is copy-paste-safe as a starting point. Note: the timeline re-writes <i>filter</i> on each slider move.</div>' +
+      '<div class="msj-note"><b>Panel JSON</b> is exactly what the panel\'s controls hold — the layer\'s stored settings, nothing else. <b>Custom JSON</b>, when present, is a <b>complete</b> style: it replaces the layer\'s paint, layout and filter entirely (the panel\'s styling then plays no part; keys you leave out fall to the renderer\'s defaults, so include every paint key you need, e.g. <code>{"paint":{"fill-color":"#ff0000","fill-opacity":0.5,"fill-outline-color":"#000"}}</code>). Anything the renderer\'s layer spec allows — expressions, blur, dasharray, filter, minzoom/maxzoom. Applies <b>live as you type</b> when valid; Save stores it and it re-applies on every load, in the viewer and in downloads. The layer checkbox (visibility) and the hover highlight stay the engine\'s.</div>' +
       "</div>";
     document.body.appendChild(el);
     el.querySelector("#msj-x").addEventListener("click", function () { el.style.display = "none"; });
@@ -197,15 +196,22 @@
   async function fill() {
     var slug = document.getElementById("msj-sel").value;
     var node = nodeById(slug);
-    // the read-only view is the LIVE STYLE-LAYER definition — safe to copy straight into
-    // Custom JSON as a starting point (the tree-node config is not layer-spec and was the
-    // 7/16 disappearing-layer trap); falls back to the node when the layer isn't on the map
+    // PANEL JSON (owner 10/18): "json (not custom) should be exactly what you'd see in the panel".
+    // So the read-only view is the layer's STORED settings — what the panel's controls hold — and
+    // not the live style-layer definition (which, under a Custom JSON, showed the override and
+    // made the two tabs read the same). Engine plumbing (sources, element ids, internals) and the
+    // custom JSON itself are left out; everything the panel edits stays.
+    var PLUMBING = { source: 1, "source-layer": 1, containerId: 1, className: 1, topLayerClass: 1, toggleElement: 1, caretId: 1, itemSelector: 1, customJson: 1, features: 1, children: 1 };
     var view = "";
-    try {
-      var st = (typeof beforeMap !== "undefined" && beforeMap && beforeMap.getStyle) ? beforeMap.getStyle() : null;
-      if (st) for (var i = 0; i < st.layers.length; i++) if (st.layers[i].id === slug + "-left") { view = JSON.stringify(st.layers[i], null, 2); break; }
-    } catch (e) {}
-    if (!view && node) view = nodeJson(node);
+    if (node) {
+      var seen = [];
+      view = JSON.stringify(node, function (k, v) {
+        if (typeof v === "function" || (k && (PLUMBING[k] || k.charAt(0) === "_"))) return undefined;
+        if (k === "render") return undefined;   // panel.render is code, reattached by slug
+        if (v && typeof v === "object") { if (seen.indexOf(v) !== -1) return "[circular]"; seen.push(v); }
+        return v;
+      }, 2);
+    }
     document.getElementById("msj-view").textContent = view;
     var ta = document.getElementById("msj-edit");
     ta.value = ""; status("");
