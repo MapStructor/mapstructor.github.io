@@ -45,6 +45,36 @@ function msDateFilter(kind, day, timelineIgnore) {
     : ["all", ["<=", "DayStart", day], [">=", "DayEnd", day]];
 }
 
+/* A LAYER'S OWN FILTER (10/18). A layer may carry `filter` in its config — "never draw these
+   features" (the property-justice map hides Natural Earth's leases, buffer zones and rocks:
+   Baikonur, Siachen Glacier, Bir Tawil…). The engine used to REPLACE the filter with the date
+   filter at add time and on every slider move, so a stored filter was silently ignored. Now the
+   two are ANDed, and a timeline-ignoring layer keeps its own filter instead of null.
+   Syntax: the shape date filter is LEGACY (["<=","DayStart",day]) and mixing legacy with
+   expression syntax makes setFilter throw (the AHM filter bug) — so an own filter is written in
+   legacy syntax too (["!in","label",…]). Label companions use the EXPRESSION date rule, so the
+   own filter is translated for them (the common legacy forms only; anything else is skipped
+   there rather than thrown). */
+function msLayerFilter(own, dateF) {
+  if (!own) return dateF || null;
+  if (!dateF) return own;
+  return ["all", own, dateF];
+}
+function msLegacyToExpr(f) {
+  if (!Array.isArray(f)) return null;
+  var op = f[0];
+  if (op === "all" || op === "any") { var parts = f.slice(1).map(msLegacyToExpr); return parts.every(Boolean) ? [op].concat(parts) : null; }
+  if (op === "in" || op === "!in") { var e = ["in", ["get", f[1]], ["literal", f.slice(2)]]; return op === "in" ? e : ["!", e]; }
+  if (op === "==" || op === "!=" || op === "<" || op === "<=" || op === ">" || op === ">=") return [op, ["get", f[1]], f[2]];
+  return null;
+}
+function msLabelFilter(own, dateF) {
+  var e = own ? msLegacyToExpr(own) : null;
+  if (!e) return dateF || null;
+  return dateF ? ["all", e, dateF] : e;
+}
+if (typeof window !== "undefined") { window.msLayerFilter = msLayerFilter; window.msLabelFilter = msLabelFilter; window.msLegacyToExpr = msLegacyToExpr; }
+
 /* Which date rule does this map-layer id follow? Derived from the id rather than remembered at
    each call site — the same reason the companion list lives here. */
 function msDateKindFor(layerId) {

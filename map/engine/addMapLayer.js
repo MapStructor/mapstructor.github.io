@@ -4,9 +4,12 @@
 function addMapLayer(map, layerConfig, date) {
   if (map.getLayer(layerConfig.id)) return;
   // 7/21: timelineIgnore layers never take the date filter — they always show everything
-  const cfg = (date && !layerConfig.timelineIgnore)
-    ? { ...layerConfig, filter: ["all", ["<=", "DayStart", date], [">=", "DayEnd", date]] }
-    : { ...layerConfig };
+  // 10/18: a layer's OWN filter (config `filter`, legacy syntax) is ANDed with the date filter,
+  // not replaced by it — see msLayerFilter in utils.js
+  const dateF = (date && !layerConfig.timelineIgnore) ? ["all", ["<=", "DayStart", date], [">=", "DayEnd", date]] : null;
+  const f = msLayerFilter(layerConfig.filter || null, dateF);
+  const cfg = { ...layerConfig };
+  if (f) cfg.filter = f; else delete cfg.filter;
   if (cfg.source && typeof cfg.source === "object" && map.getSource(cfg.id)) cfg.source = cfg.id;
   // A tileset layer imported without a stored paint (styleColumnPaint returns the raw null for
   // non-geojson sources) would make map.addLayer THROW on `paint: null` — the whole layer then

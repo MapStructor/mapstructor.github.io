@@ -59,9 +59,17 @@ function styleColumnStroke(layer) {
 // on hover/selected (the AHM building-dim). An overlay twin in the layer's own colour is invisible
 // on an opaque fill — same colour painted over itself — so opaque tileset fills use this instead.
 function hoverInlinePaint(layer, p) {
-  if (!p || layer.type !== "fill" || layer.highlight !== true || typeof p["fill-opacity"] !== "number") return p;
+  // 10/18: the opacity may be an EXPRESSION (colour-from-data maps set it per feature by
+  // confidence); a case over an expression is still a valid expression. The old number-only
+  // guard silently turned hover highlighting OFF for every such layer (owner: "hover
+  // highlighting… not working"). A fully transparent feature stays transparent: hovering
+  // it must not paint it in, so the hover opacity is capped by the feature's own opacity.
+  if (!p || layer.type !== "fill" || layer.highlight !== true) return p;
+  const base = p["fill-opacity"];
+  if (typeof base !== "number" && !Array.isArray(base)) return p;
   const on = ["any", ["boolean", ["feature-state", "hover"], false], ["boolean", ["feature-state", "selected"], false]];
-  return { ...p, "fill-opacity": ["case", on, 0.5, p["fill-opacity"]] };
+  const hover = typeof base === "number" ? 0.5 : ["min", 0.5, base];
+  return { ...p, "fill-opacity": ["case", on, hover, base] };
 }
 function addLayersToMap(map, side, date) {
   flatLayers(layers).forEach(layer => {
