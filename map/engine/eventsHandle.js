@@ -55,14 +55,27 @@ function msCustomLabelCol(config) {
 function msFeatureLabel(config, f) {
   if (!config || !f) return undefined;
   if (msCustomLabelCol(config)) {
-    var lid = config._layerDbId, vals = lid ? MSCustomCols.cached(lid) : null;
-    if (!vals) { if (lid) MSCustomCols.load(lid).then(function () {}, function () {}); return undefined; }
+    var lid = config._layerDbId || config.tableId, vals = lid ? MSCustomCols.cached(lid) : null;   // tableId: a standalone copy (the _keys are stripped there; the values ride on the config)
+    if (!vals && lid) { MSCustomCols.load(lid).then(function () {}, function () {}); vals = MSCustomCols.cached(lid); }   // a frozen copy seeds synchronously; the database answers on a later hover
+    if (!vals) return undefined;
     var k = MSCustomCols.featureKey(config, f), row = k != null ? vals[k] : null;
     return row ? row[config.prop] : undefined;
   }
   return f.properties ? f.properties[config.prop] : undefined;
 }
 try { window.msFeatureLabel = msFeatureLabel; } catch (e) {}
+// the colour-by VALUE of a feature (the bubble / pill colour): a tile property, or — colour by one
+// of this map's own columns (step 14) — the value from the Custom Columns Table
+function msColorByValue(config, f) {
+  var cb = config && config.colorBy; if (!cb || !cb.prop || !f) return null;
+  if (cb.custom && typeof window !== "undefined" && window.MSCustomCols) {
+    var lid = config._layerDbId || config.tableId;
+    if (lid && !MSCustomCols.cached(lid)) { MSCustomCols.load(lid).then(function () {}, function () {}); }
+    return MSCustomCols.valueOf(config, lid, f, cb.prop);
+  }
+  return f.properties ? f.properties[cb.prop] : null;
+}
+try { window.msColorByValue = msColorByValue; } catch (e) {}
 function msHoverDoesSomething(config) {
   if (msLockInert(config)) return false;
   return !!(config && (config.popupStyle || config.click || config.groupBy ||
@@ -80,7 +93,7 @@ function setupLayerEvents() {
 function wireLayerInteraction(config) {
   if (wiredInteraction[config.id]) return;
   wiredInteraction[config.id] = true;
-  if (msCustomLabelCol(config) && config._layerDbId && !MSCustomCols.cached(config._layerDbId)) MSCustomCols.load(config._layerDbId).then(function () {}, function () {});   // the label's values, before the first hover
+  if (msCustomLabelCol(config) && (config._layerDbId || config.tableId) && !MSCustomCols.cached(config._layerDbId || config.tableId)) MSCustomCols.load(config._layerDbId || config.tableId).then(function () {}, function () {});   // the label's values, before the first hover
   setupLayerEventForMap(beforeMap, config, "left");
   setupLayerEventForMap(afterMap,  config, "right");
 }
@@ -132,7 +145,7 @@ function setupLayerEventForMap(map, config, side) {
           var styleAttr = "";
           try {
             if (config.colorBy && config.colorBy.mapping) {
-              var cbv = e.features[0].properties[config.colorBy.prop];
+              var cbv = msColorByValue(config, e.features[0]);
               var cbc = cbv != null ? config.colorBy.mapping[String(cbv)] : null;
               if (cbc && typeof hexToRgba === "function") styleAttr = " style=\"background-color:" + hexToRgba(cbc, 0.5) + ";border-color:" + cbc + "\"";
             }

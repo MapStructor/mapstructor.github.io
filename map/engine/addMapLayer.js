@@ -40,5 +40,17 @@ function addMapLayer(map, layerConfig, date) {
       : cfg.type === "circle" ? { "circle-color": c, "circle-radius": 5 }
       : { "line-color": c, "line-width": 2 };
   }
+  /* ONLY THE LAYER'S OWN PAINT KEYS REACH THE RENDERER (10/20). A fill's stored paint carries
+     `line-width` / `line-opacity` — the stroke companion's settings, kept on the fill's row because
+     the companion is derived from it (configLoader). Mapbox GL warns about an unknown paint key
+     and draws the layer anyway; MapLibre REJECTS the layer ("paint.line-width: unknown property"),
+     so in a downloaded copy every fill with a non-1 border was silently missing — found by the
+     export gate on the property map (E6: 0 ordered layers present; E11f: no fill layer to read).
+     The config keeps every key; only the spec handed to addLayer is trimmed. */
+  if ((cfg.type === "fill" || cfg.type === "line" || cfg.type === "circle") && cfg.paint && typeof cfg.paint === "object") {
+    const own = {};
+    Object.keys(cfg.paint).forEach(function (k) { if (k.indexOf(cfg.type + "-") === 0) own[k] = cfg.paint[k]; });
+    cfg.paint = own;
+  }
   map.addLayer(cfg);
 }

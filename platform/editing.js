@@ -9332,6 +9332,13 @@
       var f = ['to-string', ['get', cb.prop || 'label']], blank = ['any', ['==', f, ''], ['==', f, ' ']];
       return ['case', blank, (hidden.indexOf('__absent__') > -1 ? 0 : base), (hidden.indexOf('__present__') > -1 ? 0 : base)];
     }
+    // a column of this map's own (step 14): its values are not in the tiles — the match keys on
+    // the feature id / join column, from the Custom Columns Table
+    if (cb && cb.custom && cb.mapping && window.MSCustomCols) {
+      var lid = node._layerDbId || slugToLayerDbId[node.id], vals = lid ? MSCustomCols.cached(lid) : null;
+      if (!vals) { if (lid) MSCustomCols.load(lid).then(function () { applyStyleVisibility(node); persistStyleRows(node); }, function () {}); return base; }   // re-applied (and persisted) once the values arrive
+      return MSCustomCols.opacityExpr(node, vals, cb.prop, hidden, base);
+    }
     if (cb && cb.mapping) { var expr = ['match', ['to-string', ['get', cb.prop]]]; hidden.forEach(function (v) { expr.push(v, 0); }); expr.push(base); return expr; }
     return base;
   }

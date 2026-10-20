@@ -452,7 +452,10 @@
         catch (eF) { bytes = null; }
       }
       if (!bytes) {
-        var lid = n._layerDbId || n._dataLayerId;
+        // the DATA layer first (10/20, step 13): a Linked mirror has no rows of its own — its
+        // table is the source's rows (the Companion Columns Table); before this the mirror's own
+        // id was asked and the countries layer shipped no table at all
+        var lid = n._dataLayerId || n._layerDbId;
         var recs = [];
         try { recs = lid ? await rowsForLayer(lid, setStatus, label) : []; } catch (eR) { console.warn("download: rows for " + label, eR); }
         if (recs.length) {
@@ -466,6 +469,78 @@
       out[id] = { file: file, rows: rows, at: at };
     }
     return out;
+  }
+
+  /* ── THE CUSTOM COLUMNS TABLE for every layer that has one (10/20, step 13) ─────────────
+     A copy carries each layer's own columns (customColumns.js — the values live in layer_overlay,
+     which the copy can never reach) twice: as map/data/<name>.custom.parquet, a plain table beside
+     the layer's tiles (join column + the columns), and frozen on the layer's config as
+     `customValues` + `customValuesFile`, which is what the copy's engine reads (hover label) and
+     what the raw exports join into their features. */
+  async function tableToParquet(rows, cols, tag) {   // rows = [{col: value}], cols = [{key, type}] → parquet bytes (DuckDB, as the sidecar bake)
+    var BT = await ensureBigTableLib();
+    if (!BT || !BT.ensureEngine) throw new Error("bigtable.js (DuckDB) is not loaded");
+    var e = await BT.ensureEngine();
+    var sq = function (s) { return "'" + String(s).replace(/'/g, "''") + "'"; };
+    var name = "cc_" + String(tag || "x").replace(/[^A-Za-z0-9_-]/g, "_"), jname = name + ".json", pname = name + ".parquet";
+    var spec = cols.map(function (c) { return sq(c.key) + ": " + sq(c.type || "VARCHAR"); }).join(", ");
+    await e.adb.registerFileText(jname, JSON.stringify(rows));
+    try {
+      await e.conn.query("CREATE OR REPLACE TABLE cc_t AS SELECT * FROM read_json(" + sq(jname) + ", format='array', columns={" + spec + "})");
+      try { await e.conn.query("COPY cc_t TO " + sq(pname) + " (FORMAT PARQUET, COMPRESSION ZSTD)"); }
+      catch (ez) { await e.conn.query("COPY cc_t TO " + sq(pname) + " (FORMAT PARQUET)"); }
+      return await e.adb.copyFileToBuffer(pname);
+    } finally {
+      try { await e.conn.query("DROP TABLE IF EXISTS cc_t"); } catch (e1) {}
+      try { await e.adb.dropFile(jname); } catch (e2) {}
+      try { await e.adb.dropFile(pname); } catch (e3) {}
+    }
+  }
+  async function shipCustomColumns(zip, embedById, setStatus) {
+    var out = {};
+    if (!window.MSCustomCols) return out;
+    var leaves = []; walkLeaves(function (n) { leaves.push(n); });
+    for (var i = 0; i < leaves.length; i++) {
+      var n = leaves[i], defs = MSCustomCols.defsOf(n);
+      if (!defs.length || n.outlineOf) continue;
+      var lid = n._layerDbId; if (!lid) continue;
+      var label = n.label || n.id;
+      setStatus("Your columns on “" + label + "”…");
+      var values = null;
+      try { values = MSCustomCols.cached(lid) || await MSCustomCols.load(lid); } catch (eV) { console.warn("download: your columns for " + label, eV); continue; }
+      var keys = Object.keys(values || {});
+      var join = MSCustomCols.joinOf(n) || "msid";
+      var em = embedById && embedById[n.id];
+      var file = "data/" + (em ? em.name : n.id) + ".custom.parquet";
+      var rec = { file: file, values: values || {}, join: join, columns: defs.map(function (d) { return d.key; }), rows: keys.length };
+      if (keys.length) {
+        var rows = keys.map(function (k) { var r = {}; r[join] = String(k); defs.forEach(function (d) { var v = values[k] ? values[k][d.key] : null; r[d.key] = v == null ? null : String(v); }); return r; });
+        var cols = [{ key: join, type: "VARCHAR" }].concat(defs.map(function (d) { return { key: d.key, type: "VARCHAR" }; }));
+        try { zip.file("map/" + file, await tableToParquet(rows, cols, n.id)); }
+        catch (eP) {   // no table engine → the same table as JSON, so the values still travel as a file
+          console.warn("download: custom columns parquet for " + label + " failed — shipping JSON", eP);
+          rec.file = file.replace(/\.parquet$/, ".json");
+          zip.file("map/" + rec.file, JSON.stringify({ join: join, columns: rec.columns, rows: rows }));
+        }
+      }
+      out[n.id] = rec;
+    }
+    return out;
+  }
+  // the custom values joined into a FeatureCollection's properties (raw exports), by the join key
+  function joinCustomInto(fc, rec, node) {
+    if (!fc || !fc.features || !rec || !rec.values) return 0;
+    var join = window.MSCustomCols ? MSCustomCols.joinOf(node) : null, n = 0;
+    fc.features.forEach(function (f) {
+      var k = join ? ((f.properties || {})[join]) : f.id;
+      if (k == null && !join) k = (f.properties || {}).feature_id;
+      var v = k != null ? rec.values[String(k)] : null;
+      if (!v) return;
+      f.properties = f.properties || {};
+      rec.columns.forEach(function (c) { if (v[c] != null) f.properties[c] = v[c]; });
+      n++;
+    });
+    return n;
   }
 
   function projectName() {
@@ -494,7 +569,7 @@
       "const headerButtons = " + js(grab(function () { return headerButtons; }, [])) + ";\n";
   }
 
-  function genLayersList(embedById, hasRasters, sidecarById) {
+  function genLayersList(embedById, hasRasters, sidecarById, customById) {
     // the ▦ table button needs a layer id and the export strips every _key — read them off the LIVE
     // tree first and stamp a plain `tableId` on the frozen copy (generateLayers.js honours it)
     var dbIds = {};
@@ -527,6 +602,10 @@
         // the embedded snapshots are served from window.rasterScrubData (local raster/*.png);
         // leaving the node copy would make the same layer load twice, once over the network
         if (hasRasters) delete n.rasterYears;
+        // this map's own columns (step 13): the values ride on the config — the copy's engine
+        // reads them (customColumns.js seeds from here) — and the table file sits in map/data/
+        var cc = customById && customById[n.id];
+        if (cc) { n.customValues = cc.values; n.customValuesFile = cc.file; }
       });
     })(data);
     return "/* generated by MapStructor — the map's live config, frozen. panel.render functions are\n" +
@@ -734,6 +813,10 @@
       "    <script src=\"project/renderRegistry.js\"></script>");
     html = html.replace(/^[ \t]*<script src="\.\.\/platform\/labels\.js[^"]*"[^>]*><\/script>.*$/m,
       "    <script src=\"project/labels.js\"></script>");
+    // this map's own columns (step 13): the engine reads their values through customColumns.js —
+    // a project/ copy, seeded from the frozen config (no database in the copy)
+    html = html.replace(/^[ \t]*<script src="\.\.\/platform\/customColumns\.js[^"]*"[^>]*><\/script>.*$/m,
+      "    <script src=\"project/customColumns.js\"></script>");
     // THE TABLE RIDES ALONG (10/6 — owner: "we need the attribute table… it's essential to a map").
     // attrGrid + viewerTable become project/ copies; viewerTable injects project/bigtable.js on
     // demand (derived from its own src), which loads project/vendor/duckdb/ (34 MB, lazily, only
@@ -1072,12 +1155,17 @@
       sidecarById = await shipSidecars(zip, embedById, setStatus);
     }
 
+    // 1e. this map's own columns (step 13): a table file per layer that has them, and the values
+    // for the frozen config (stamped in genLayersList)
+    var customById = await shipCustomColumns(zip, embedById, setStatus);
+
     // 2. platform pieces that ride INSIDE the project folder
     setStatus("Bundling renderers…");
     // 2a. the features-list table: windowed renderer + list, and — when a sidecar shipped — the
     // parquet reader with its engine (DuckDB, 34 MB, loaded only when someone opens a table)
     zip.file("map/project/attrGrid.js", await fetchText("../platform/attrGrid.js"));
     zip.file("map/project/viewerTable.js", await fetchText("../platform/viewerTable.js"));
+    zip.file("map/project/customColumns.js", await fetchText("../platform/customColumns.js"));   // the values reader (seeds from the frozen config)
     if (sidecarById && Object.keys(sidecarById).length) {
       setStatus("Bundling the table engine…");
       zip.file("map/project/bigtable.js", await fetchText("../platform/bigtable.js"));
@@ -1177,7 +1265,7 @@
     zip.file("map/project/lists/disclaimer.js", genDisclaimer());
     zip.file("map/project/lists/features.js", genFeatures());
     zip.file("map/project/lists/sliderDates.js", genSliderDates());
-    zip.file("map/project/lists/layersList.js", genLayersList(embedById, hasRasters, sidecarById));
+    zip.file("map/project/lists/layersList.js", genLayersList(embedById, hasRasters, sidecarById, customById));
     zip.file("map/project/lists/modalinfo.js", genModalInfo());
     zip.file("map/project/lists/bounds.js", genBounds());
     zip.file("map/project/lists/mapData.js", genMapData());
@@ -1263,18 +1351,22 @@
              3. Postgres rows — a browser-tiled layer (tiles baked here, rows never left the database)
            Before 10/6 only 1 and 2 existed, so exactly the browser-tiled layers shipped nothing. */
         var mem = n.source && n.source.type === "geojson" && n.source.data;
+        // this map's own columns ride in the raw files too (step 13): a ready-made parquet from
+        // the server cannot carry them, so a layer with custom columns is always written here
+        // from its features, joined
+        var ccRec = customById && customById[n.id] && customById[n.id].rows ? customById[n.id] : null;
         if (mem && mem.features && mem.features.length) {
           fc = cleanValue(mem, new WeakSet());
         } else {
           var src = sourceDataFor(n);
           if (src) {
-            if (want.parquet) {
+            if (want.parquet && !ccRec) {
               setStatus("Fetching the GeoParquet for “" + label + "”…");
               for (var si = 0; si < src.byFormat.parquet.urls.length && !pqBytes; si++) {
                 try { pqBytes = await fetchBin(src.byFormat.parquet.urls[si]); } catch (eSrc) { /* next spelling/host */ }
               }
             }
-            if (needFc || (want.parquet && !pqBytes)) {
+            if (needFc || ccRec || (want.parquet && !pqBytes)) {
               setStatus("Fetching the GeoJSON for “" + label + "”…");
               var gjBytes = null;
               for (var gi = 0; gi < src.byFormat.geojson.urls.length && !gjBytes; gi++) {
@@ -1282,11 +1374,17 @@
               }
               if (gjBytes) try { fc = JSON.parse(new TextDecoder().decode(gjBytes)); } catch (eJ) { fc = null; }
             }
-          } else {
-            var lid = n._layerDbId || n._dataLayerId;
+          }
+          /* A BROWSER-TILED layer has an archive-shaped address but no export files beside it on the
+             server (only the cloud fold writes those) — before 10/20 it reached this point with
+             nothing and shipped nothing. Its rows are still in the database: read them. The DATA
+             layer first, so a Linked mirror exports its source's features. */
+          if (!fc && !pqBytes) {
+            var lid = n._dataLayerId || n._layerDbId;
             if (lid) try { fc = await fcFromRows(lid, setStatus, label); } catch (eRows) { console.warn("download: rows for " + label, eRows); }
           }
         }
+        if (fc && ccRec) { var joined = joinCustomInto(fc, ccRec, n); console.log("download: " + label + " — your columns joined into " + joined + " features"); }
         if (!fc && !pqBytes) { unreachable.push(label); continue; }
         var got = 0;
         if (want.parquet) {

@@ -151,7 +151,8 @@ function handlePanelClick(layer, event) {
   var pillStyle = "";
   try {
     if (layer.colorBy && layer.colorBy.mapping) {
-      var cbv = props[layer.colorBy.prop];
+      // a colour-by on one of this map's own columns reads the value from the Custom Columns Table (step 14)
+      var cbv = (typeof msColorByValue === "function") ? msColorByValue(layer, event.features[0]) : props[layer.colorBy.prop];
       var cbc = cbv != null ? layer.colorBy.mapping[String(cbv)] : null;
       if (cbc) pillStyle = " style=\"background-color:" + hexToRgba(cbc, 0.5) + ";border-color:" + cbc + "\"";
     }

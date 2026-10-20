@@ -38,11 +38,22 @@
   /* ── values: Supabase, or a standalone copy's frozen values ─────────────── */
   var cache = {};   // layer db id → { key: fields }
   function db() { return (root.MapAuth && root.MapAuth.db) || null; }
+  // A STANDALONE COPY (download.js, step 13) has no database: the values ride on the frozen layer
+  // config as `customValues` (keyed by the join key), beside `customValuesFile` — the table file
+  // in map/data/. Seeded from the page's layer tree the first time a layer's values are asked for.
+  function frozenValues(layerId) {
+    var tree = null;
+    try { tree = root.layers; } catch (e) {}
+    if (!tree && typeof layers !== "undefined") { try { tree = layers; } catch (e2) {} }
+    var hit = null;
+    (function w(a) { (a || []).forEach(function (n) { if (hit || !n) return; if (n.children) { w(n.children); return; } if ((n.tableId === layerId || n._layerDbId === layerId) && n.customValues) hit = n.customValues; }); })(tree || []);
+    return hit;
+  }
   async function load(layerId, force) {
     if (!layerId) return {};
     if (cache[layerId] && !force) return cache[layerId];
     var out = {}, d = db();
-    if (!d) return cache[layerId] = out;
+    if (!d) return cache[layerId] = (frozenValues(layerId) || out);
     var last = null;
     for (;;) {
       var q = d.from("layer_overlay").select("key, fields").eq("layer_id", layerId).order("key").limit(1000);
@@ -140,6 +151,18 @@
       return (mapping && mapping[v]) || null;
     }, fallback);
   }
+  // the style categories' hide (step 14): features whose value is in `hidden` get opacity 0
+  function opacityExpr(node, values, prop, hidden, base) {
+    hidden = hidden || [];
+    if (!hidden.length) return base;
+    return matchExpr(node, values, prop, function (v) { return hidden.indexOf(v) > -1 ? 0 : null; }, base);
+  }
+  // the value a feature carries in a custom column (the hover bubble / pill colour, step 14)
+  function valueOf(node, layerId, f, prop) {
+    var vals = layerId ? cache[layerId] : null; if (!vals) return null;
+    var k = featureKey(node, f), row = k != null ? vals[k] : null;
+    return row ? row[prop] : null;
+  }
   // outline by column (step 10): `mapping[value] = {color, width}`; the layer's own outline colour
   // and width are the fallbacks for features without a value
   function outlineExprs(node, values, prop, mapping, fallbackColor, fallbackWidth) {
@@ -164,7 +187,7 @@
 
   var api = { defsOf: defsOf, defOf: defOf, joinOf: joinOf, rowKey: rowKey, featureKey: featureKey, distinctValues: distinctValues,
     load: load, cached: cached, seed: seed, set: set, setMany: setMany, dropColumn: dropColumn,
-    colorExpr: colorExpr, outlineExprs: outlineExprs, hideFilter: hideFilter, NO_FILL: NO_FILL };
+    colorExpr: colorExpr, outlineExprs: outlineExprs, opacityExpr: opacityExpr, valueOf: valueOf, hideFilter: hideFilter, NO_FILL: NO_FILL };
   root.MSCustomCols = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);
