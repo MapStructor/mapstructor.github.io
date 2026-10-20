@@ -1683,7 +1683,8 @@
         // NOT gated on _msPanelOn: this fires for a clicked FEATURE, i.e. the Info Panel, and the
         // Layers switch is completely disconnected from it (owner 8/29).
         // 8/29 (owner): LOCKED layers are inert in the editor, BOTH modes — no panel, ever.
-        try { var nLk = findNodeById(layers, layer && layer.id); if (nLk && nLk.editable === false) return; } catch (eLk) {}
+        // 10/20 (owner): a LINKED mirror is not locked — nothing to edit on it, so the viewer's panel opens
+        try { var nLk = findNodeById(layers, layer && layer.id); if (nLk && nLk.editable === false && !nLk._msFromLayer && !nLk.instanceOf) return; } catch (eLk) {}
         // VIEW MODE: the viewer's own panel behavior runs.
         if (msViewLike()) return _origHPC.apply(this, arguments);
         // ALSO suppress for small drawn layers (their features live in MapboxDraw): if the engine copy is
@@ -6820,8 +6821,10 @@
               var sdU = (m === beforeMap) ? 'left' : 'right', eLids = [];
               (function walkU(arr) { (arr || []).forEach(function (n) {
                 var viU = (typeof msHoverDoesSomething === 'function' ? msHoverDoesSomething(n) : !!(n.popupStyle || n.click)) || !!n.panel;   // n.panel = the feature's Info Panel; the Layers switch never gates it
-                // 8/29 (owner): LOCKED layers never earn the finger — their features count as basemap
-                var careU = (n.editable === false) ? false : (vwC ? viU : (isEngineEditable(n) || viU));
+                // 8/29 (owner): LOCKED layers never earn the finger — their features count as basemap.
+                // 10/20 (owner): a LINKED mirror is not locked — it earns the finger when the viewer would give one
+                var lockedU = n.editable === false && !n._msFromLayer && !n.instanceOf;
+                var careU = lockedU ? false : (vwC ? viU : (isEngineEditable(n) || viU));
                 if (careU) [n.id + '-' + sdU, n.id + '-edited-' + sdU].forEach(function (L) { if (m.getLayer(L)) eLids.push(L); });
                 if (n.children) walkU(n.children); }); })(layers);
               if (eLids.length) {
