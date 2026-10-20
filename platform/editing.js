@@ -9827,32 +9827,49 @@
     }
     renderOutlineByValues(node);
   }
+  // (owner 10/20: "the uniform thickness vs by column contradict each other") while a column is
+  // picked the single colour / width rows step aside — the list owns every outline, including the
+  // "(no value)" row (the fallback); Single outline brings the rows back
+  function syncOutlineByRows(node) {
+    var on = !!(node && node.outlineBy && node.outlineBy.mapping && node.type === 'fill' && !node.outlineOf && !node.outlineSplit);
+    ['elp-outline-row', 'elp-outline-match-row', 'elp-width-row'].forEach(function (id) { var el = document.getElementById(id); if (el && on) el.style.display = 'none'; });
+    if (!on && node && node.type === 'fill' && !node.outlineSplit) {
+      var oRow = document.getElementById('elp-outline-row'); if (oRow) oRow.style.display = 'block';
+      var mRow = document.getElementById('elp-outline-match-row'); if (mRow) mRow.style.display = 'block';
+      var wRow = document.getElementById('elp-width-row'); if (wRow && (isTilesetNode(node) || node.source_type === 'geojson-supabase')) wRow.style.display = 'block';
+    }
+  }
   function renderOutlineByValues(node) {
     var list = document.getElementById('elp-outlineby-values'), info = document.getElementById('elp-outlineby-info'); if (!list) return;
     var ob = node && node.outlineBy;
+    syncOutlineByRows(node);
     if (!ob || !ob.mapping) { list.style.display = 'none'; list.innerHTML = ''; if (info) info.textContent = ''; return; }
-    var counts = {};
+    var counts = {}, noValue = 0;
     if (ob.custom && window.MSCustomCols) {
       var vals = MSCustomCols.cached(slugToLayerDbId[node.id]) || {};
-      Object.keys(vals).forEach(function (k) { var v = vals[k] ? vals[k][ob.prop] : null; if (v != null && v !== '') counts[String(v)] = (counts[String(v)] || 0) + 1; });
+      Object.keys(vals).forEach(function (k) { var v = vals[k] ? vals[k][ob.prop] : null; if (v != null && v !== '') counts[String(v)] = (counts[String(v)] || 0) + 1; else noValue++; });
     }
-    if (info) info.textContent = Object.keys(ob.mapping).length + ' value' + (Object.keys(ob.mapping).length === 1 ? '' : 's') + ' of ' + (ob.custom ? 'your column “' + ob.prop + '”' : ob.prop) + ', each its own outline colour and width; the colour and width above are the fallback.';
+    if (info) info.textContent = Object.keys(ob.mapping).length + ' value' + (Object.keys(ob.mapping).length === 1 ? '' : 's') + ' of ' + (ob.custom ? 'your column “' + ob.prop + '”' : ob.prop) + ' — each value its own outline colour and width; “(no value)” is every feature without one.';
     list.style.display = 'block';
-    list.innerHTML = Object.keys(ob.mapping).map(function (v) {
-      var m = ob.mapping[v] || {}, hex = looksHex(m.color) ? normHex(m.color) : '#000000', w = typeof m.width === 'number' ? m.width : 1;
-      return '<div style="display:flex;align-items:center;gap:7px;margin:3px 0;">' +
-        '<input type="color" data-obval="' + attrEsc(v) + '" data-obfield="color" value="' + hex + '" title="outline colour" style="width:30px;height:22px;padding:0;border:1px solid #bbbbbb;border-radius:3px;background:#fff;flex:0 0 auto;" />' +
-        '<input type="number" data-obval="' + attrEsc(v) + '" data-obfield="width" value="' + w + '" min="0" max="40" step="0.1" title="outline width (px)" class="ms-in" style="width:58px;flex:0 0 auto;padding:2px 4px;" />' +
-        '<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;" title="' + attrEsc(v) + '">' + attrEsc(v === '' || v === ' ' ? '(blank)' : v) + '</span>' +
-        (counts[v] != null ? '<span class="ms-note" style="margin:0;flex:0 0 auto;">' + counts[v] + '</span>' : '') +
+    var rowHtml = function (v, m, label, dashed, count, novalue) {
+      var hex = looksHex(m.color) ? normHex(m.color) : '#000000', w = typeof m.width === 'number' ? m.width : 1;
+      var attrs = novalue ? 'data-obnovalue="1" data-obval=""' : 'data-obval="' + attrEsc(v) + '"';
+      return '<div style="display:flex;align-items:center;gap:7px;margin:3px 0;' + (novalue ? 'padding-top:4px;border-top:1px solid #e6e6e6;' : '') + '">' +
+        '<input type="color" ' + attrs + ' data-obfield="color" value="' + hex + '" title="outline colour" style="width:30px;height:22px;padding:0;border:1px ' + (dashed ? 'dashed' : 'solid') + ' #bbbbbb;border-radius:3px;background:#fff;flex:0 0 auto;" />' +
+        '<input type="number" ' + attrs + ' data-obfield="width" value="' + w + '" min="0" max="40" step="0.1" title="outline width (px)" class="ms-in" style="width:58px;flex:0 0 auto;padding:2px 4px;" />' +
+        '<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;' + (novalue ? 'font-style:italic;' : '') + '" title="' + attrEsc(label) + '">' + attrEsc(label) + '</span>' +
+        (count != null ? '<span class="ms-note" style="margin:0;flex:0 0 auto;">' + count + '</span>' : '') +
         '</div>';
-    }).join('');
+    };
+    list.innerHTML = Object.keys(ob.mapping).map(function (v) {
+      return rowHtml(v, ob.mapping[v] || {}, (v === '' || v === ' ') ? '(blank)' : v, false, counts[v], false);
+    }).join('') + rowHtml('', ob.fallback || obFallbacks(node), '(no value)', true, null, true);   // (no count: features with no row at all are not in the table)
   }
   // compile + persist + apply live (the paint carries the expressions; the meta rides raw_config.outlineBy)
-  async function reapplyOutlineBy(node, lid) {
+  async function reapplyOutlineBy(node, lid, fbOverride) {
     var paint = JSON.parse(JSON.stringify(node.paint || {}));
     var ex = node.outlineBy ? await obExprs(node, lid) : null;
-    var fb = obFallbacks(node);
+    var fb = fbOverride || obFallbacks(node);
     paint['fill-outline-color'] = ex ? ex.color : fb.color;
     paint['line-width'] = ex ? ex.width : fb.width;
     node.paint = paint;
@@ -9874,7 +9891,14 @@
     var lid = slugToLayerDbId[node.id]; if (!lid) return;
     setStatus('Saving…');
     try {
-      if (!prop) { node.outlineBy = null; await reapplyOutlineBy(node, lid); renderOutlineByValues(node); return; }
+      if (!prop) {   // Single outline: the "(no value)" colour + width become the one outline (the paint held expressions, so the fallback is read from the meta before it goes)
+        var fbPrev = obFallbacks(node);
+        node.outlineBy = null;
+        await reapplyOutlineBy(node, lid, fbPrev);
+        var sw0 = document.getElementById('elp-outline'), wr0 = document.getElementById('elp-width'), wv0 = document.getElementById('elp-width-val');
+        if (sw0 && looksHex(fbPrev.color)) sw0.value = normHex(fbPrev.color); if (wr0) wr0.value = fbPrev.width; if (wv0) wv0.textContent = fbPrev.width;
+        renderOutlineByValues(node); return;
+      }
       var custom = !!(window.MSCustomCols && MSCustomCols.defOf(node, prop));
       var vals = [];
       if (custom) vals = MSCustomCols.distinctValues(await MSCustomCols.load(lid, true), prop);
@@ -9898,8 +9922,10 @@
   function onOutlineByValue(v, field, raw) {   // one value's swatch or width moved: the mapping changes now, the paint follows once it settles
     var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.outlineBy || !node.outlineBy.mapping) return;
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
-    var m = node.outlineBy.mapping[v] = node.outlineBy.mapping[v] || {};
+    var m = (v === '' || v == null) ? (node.outlineBy.fallback = node.outlineBy.fallback || obFallbacks(node))   // the "(no value)" row edits the fallback
+                                    : (node.outlineBy.mapping[v] = node.outlineBy.mapping[v] || {});
     if (field === 'width') { var n = parseFloat(raw); if (isNaN(n) || n < 0) return; m.width = n; } else m.color = raw;
+    if (v === '' || v == null) { var sw = document.getElementById('elp-outline'), wr = document.getElementById('elp-width'), wv = document.getElementById('elp-width-val'); if (field === 'width') { if (wr) wr.value = m.width; if (wv) wv.textContent = m.width; } else if (sw && looksHex(m.color)) sw.value = normHex(m.color); }   // the hidden single controls stay in step
     clearTimeout(_obValT);
     _obValT = setTimeout(function () { setStatus('Saving…'); reapplyOutlineBy(node, lid); }, 350);
   }
@@ -11678,9 +11704,9 @@
       else if (t.hasAttribute('data-cbnofill')) onColorByNoFill(t.getAttribute('data-cbnofill'), t.checked);
     });
     document.getElementById('elp-outlineby').addEventListener('change', function () { onOutlineBy(this.value); });
-    document.getElementById('elp-outlineby-values').addEventListener('input', function (e) {   // a value's swatch or width moved (step 10)
+    document.getElementById('elp-outlineby-values').addEventListener('input', function (e) {   // a value's swatch or width moved (step 10); the "(no value)" row = the fallback
       var t = e.target; if (!t || !t.hasAttribute('data-obval')) return;
-      onOutlineByValue(t.getAttribute('data-obval'), t.getAttribute('data-obfield'), t.value);
+      onOutlineByValue(t.hasAttribute('data-obnovalue') ? '' : t.getAttribute('data-obval'), t.getAttribute('data-obfield'), t.value);
     });
     document.getElementById('elp-bin-present').addEventListener('input', livePresenceColors);   // live preview while dragging the picker
     document.getElementById('elp-bin-absent').addEventListener('input', livePresenceColors);
