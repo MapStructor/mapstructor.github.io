@@ -12,7 +12,8 @@
 
    THE JOIN KEY (raw_config.customJoin): absent = the feature id, which every MapStructor-baked
    tileset carries; or the name of a column that IS in the tiles (ISO_A2_EH on an external
-   tileset with no ids). Data only here (10/19 rebuild, steps 2–7): no styling, no compile. */
+   tileset with no ids). Data (10/19 rebuild, steps 2–7) + the expressions a custom column
+   drives (steps 9–12): fill colour, no-fill, outline colour/width, hide-by-value. */
 (function (root) {
   "use strict";
   if (root.MSCustomCols) return;
@@ -115,18 +116,37 @@
      The column is not in the tiles, so the expressions key on the join column: ["id"] for the
      feature id, ["to-string",["get",<col>]] for a natural key. */
   function keyLiteral(node, k) { return joinOf(node) ? String(k) : Number(k); }
-  // fill colour: one pair per feature whose value has a colour in the mapping; `fallback` for the rest
-  function colorExpr(node, values, prop, mapping, fallback) {
+  var NO_FILL = "rgba(0,0,0,0)";
+  // one match on the join key: `pick(value)` gives each feature's literal (null = not in the match)
+  function matchExpr(node, values, prop, pick, fallback) {
     var join = joinOf(node);
     var e = ["match", join ? ["to-string", ["get", join]] : ["id"]];
     Object.keys(values || {}).forEach(function (k) {
       var v = values[k] ? values[k][prop] : null; if (v == null || v === "") return;
-      var c = mapping && mapping[String(v)]; if (!c) return;
-      e.push(keyLiteral(node, k), c);
+      var lit = pick(String(v)); if (lit == null) return;
+      e.push(keyLiteral(node, k), lit);
     });
     if (e.length <= 2) return fallback;
     e.push(fallback);
     return e;
+  }
+  // fill colour: one pair per feature whose value has a colour in the mapping; `fallback` for the
+  // rest. A value in `nofill` (step 10, 10/20) draws NO fill — the feature is there (hover, click,
+  // outline) but see-through; the mapping keeps its colour for the pills and the legend.
+  function colorExpr(node, values, prop, mapping, fallback, nofill) {
+    nofill = nofill || [];
+    return matchExpr(node, values, prop, function (v) {
+      if (nofill.indexOf(v) > -1) return NO_FILL;
+      return (mapping && mapping[v]) || null;
+    }, fallback);
+  }
+  // outline by column (step 10): `mapping[value] = {color, width}`; the layer's own outline colour
+  // and width are the fallbacks for features without a value
+  function outlineExprs(node, values, prop, mapping, fallbackColor, fallbackWidth) {
+    return {
+      color: matchExpr(node, values, prop, function (v) { var m = mapping && mapping[v]; return (m && m.color) || null; }, fallbackColor),
+      width: matchExpr(node, values, prop, function (v) { var m = mapping && mapping[v]; return (m && typeof m.width === "number") ? m.width : null; }, fallbackWidth)
+    };
   }
   // the layer's OWN filter from hidden values (legacy syntax — the engine ANDs it with its legacy
   // date filter): hidden values exclude their features; "(no value)" hidden = an allow-list
@@ -144,7 +164,7 @@
 
   var api = { defsOf: defsOf, defOf: defOf, joinOf: joinOf, rowKey: rowKey, featureKey: featureKey, distinctValues: distinctValues,
     load: load, cached: cached, seed: seed, set: set, setMany: setMany, dropColumn: dropColumn,
-    colorExpr: colorExpr, hideFilter: hideFilter };
+    colorExpr: colorExpr, outlineExprs: outlineExprs, hideFilter: hideFilter, NO_FILL: NO_FILL };
   root.MSCustomCols = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

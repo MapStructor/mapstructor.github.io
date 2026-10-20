@@ -7758,6 +7758,14 @@
         if (cbNode.opacityBy) { var oby = parseFloat(row.custom_fields[cbNode.opacityBy.prop]); if (!isNaN(oby)) props.opacity = oby; }
         if (cbNode.thicknessBy) { var tby = parseFloat(row.custom_fields[cbNode.thicknessBy.prop]); if (!isNaN(tby)) { props.strokewidth = tby; props.radius = tby; } }
       }
+      // colour-by "no fill" + outline by column (step 10) in the draw copies, from the feature's own value
+      if (cbNode && cbNode.colorBy && cbNode.colorBy.nofill && cbNode.colorBy.nofill.length) {
+        var nfv = cbValueOf(row, cbNode.colorBy.prop); if (nfv != null && cbNode.colorBy.nofill.indexOf(String(nfv)) > -1) props.opacity = 0;
+      }
+      if (cbNode && cbNode.outlineBy && cbNode.outlineBy.mapping && !cbNode.outlineBy.custom) {
+        var obv = cbValueOf(row, cbNode.outlineBy.prop), obm = obv != null ? cbNode.outlineBy.mapping[String(obv)] : null;
+        if (obm) { if (obm.color) props.outline = obm.color; if (typeof obm.width === 'number') props.strokewidth = obm.width; }
+      }
       // UNIVERSAL STYLE COLUMNS: every feature carries ms_color / ms_linecolor / ms_opacity / ms_thickness —
       // when set they style THAT feature (trumping the layer style AND colour-by). Editable in the attribute table.
       if (row.custom_fields) {
@@ -8920,7 +8928,14 @@
     var want = (node._uiLabel != null) ? node._uiLabel : (node.prop || 'label');
     lf.innerHTML = '<option value="label">label (the feature\'s own Label)</option>';
     sortedKeys.forEach(function (k) { if (k === 'label') return; var o2 = document.createElement('option'); o2.value = k; o2.textContent = k; lf.appendChild(o2); });
-    if (want !== 'label' && sortedKeys.indexOf(want) < 0) { var oc = document.createElement('option'); oc.value = want; oc.textContent = want; lf.appendChild(oc); }   // keep a saved value that isn't a known column
+    // this map's own columns (★, 10/20 — owner: "The label field doesn't offer 'yours' columns"):
+    // the bubble reads their values from the Custom Columns Table (engine msFeatureLabel)
+    var known = sortedKeys.slice();
+    if (window.MSCustomCols) MSCustomCols.defsOf(node).forEach(function (d) {
+      if (!d || !d.key || known.indexOf(d.key) > -1) return;
+      known.push(d.key); var oc2 = document.createElement('option'); oc2.value = d.key; oc2.textContent = '★ ' + d.key + ' (your column)'; lf.appendChild(oc2);
+    });
+    if (want !== 'label' && known.indexOf(want) < 0) { var oc = document.createElement('option'); oc.value = want; oc.textContent = want; lf.appendChild(oc); }   // keep a saved value that isn't a known column
     lf.value = want;
   }
   // DEDICATED COLUMNS are style-by-able too (8/14, "not seeing label as an option haha"): the
@@ -9028,6 +9043,7 @@
           addPresenceOption(sel, node);   // + "Labeled vs unlabeled" (reflects saved presence mode)
           ccColorOptions(node, sel, info);   // + this map's own columns (step 9) and the Random / By value block
         }
+        fillOutlineBySelect(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));   // Outline by column (step 10): the tile columns + this map's own
       }
       return;
     }
@@ -9079,6 +9095,7 @@
       fillLabelFieldSelect(node, sortedKeys);
       fillGroupBySelect(node, sortedKeys);
       ccColorOptions(node, sel, info);   // + this map's own columns (step 9) and the Random / By value block
+      fillOutlineBySelect(node, sortedKeys);   // Outline by column (step 10)
     } catch (e) {}
   }
   // the Color by select lists this map's own columns (★) after the layer's; the saved pick is restored
@@ -9507,9 +9524,11 @@
           var s3 = String(v).trim();
           mapping[v] = s3.toLowerCase() === 'none' ? 'rgba(0,0,0,0)' : (looksHex(s3) ? normHex(s3) : s3);   // as-is: rgb() stays rgb()
         });
+        var keepNf = (node.colorBy && node.colorBy.prop === prop && node.colorBy.nofill) || null;   // no-fill ticks survive a re-pick of the same column
         node.colorBy = { prop: prop, mode: allHex ? 'hex' : 'category', mapping: mapping, pick: keep ? 'value' : 'random' };
+        if (keepNf && keepNf.length) node.colorBy.nofill = keepNf;
         var expr = ['match', ['to-string', ['get', prop]]];
-        order.forEach(function (v) { expr.push(v, mapping[v]); });
+        order.forEach(function (v) { expr.push(v, cbColorOf(node.colorBy, v)); });
         expr.push(fallback);
         // TILED layers colour INSTANTLY, bake or no bake (owner 8/13: "it should be immediate
         // for vectors — I should just click rebake if I change the styling"): when the column
@@ -9590,14 +9609,21 @@
       Object.keys(vals).forEach(function (k) { var v = vals[k] ? vals[k][cb.prop] : null; if (v != null && v !== '') counts[String(v)] = (counts[String(v)] || 0) + 1; });
     }
     var hideCell = function (attr, on) { return '<label class="ms-check" style="margin:0;flex:0 0 auto;font-size:11px;color:#8a83a0;" title="Hidden: not drawn, no hover, no popup"><input type="checkbox" ' + attr + (on ? ' checked' : '') + ' style="vertical-align:middle;margin:0 3px 0 0;" />hide</label>'; };
+    // "no fill" (step 10): the value's features draw no fill — still there to hover, click and
+    // outline (the four countries drawn by their states on the property map); the swatch keeps
+    // its colour for the pills and the legend
+    var nofill = cb.nofill || [], fillOk = node.type === 'fill';
+    var nofillCell = function (v, on) { return fillOk ? '<label class="ms-check" style="margin:0;flex:0 0 auto;font-size:11px;color:#8a83a0;" title="No fill: see-through, outline and hover stay"><input type="checkbox" data-cbnofill="' + attrEsc(v) + '"' + (on ? ' checked' : '') + ' style="vertical-align:middle;margin:0 3px 0 0;" />no fill</label>' : ''; };
     list.innerHTML = Object.keys(cb.mapping).map(function (v) {
-      var c = cb.mapping[v], hex = looksHex(c) ? normHex(c) : '#888888', isHid = hidden.indexOf(v) > -1;
+      var c = cb.mapping[v], hex = looksHex(c) ? normHex(c) : '#888888', isHid = hidden.indexOf(v) > -1, isNf = nofill.indexOf(v) > -1;
+      var swStyle = 'width:30px;height:22px;padding:0;border:1px ' + (isNf ? 'dashed' : 'solid') + ' #bbbbbb;border-radius:3px;flex:0 0 auto;' + (isNf ? 'opacity:.45;' : '');
       return '<div style="display:flex;align-items:center;gap:7px;margin:3px 0;' + (isHid ? 'opacity:.55;' : '') + '">' +
         (pick === 'value'
-          ? '<input type="color" data-cbval="' + attrEsc(v) + '" value="' + hex + '" title="' + attrEsc(c) + '" style="width:30px;height:22px;padding:0;border:1px solid #bbbbbb;border-radius:3px;background:#fff;flex:0 0 auto;" />'
-          : '<span style="display:inline-block;width:30px;height:22px;border:1px solid #bbbbbb;border-radius:3px;background:' + attrEsc(c) + ';flex:0 0 auto;" title="' + attrEsc(c) + ' (Random — pick By value to edit)"></span>') +
+          ? '<input type="color" data-cbval="' + attrEsc(v) + '" value="' + hex + '" title="' + attrEsc(c) + (isNf ? ' (no fill)' : '') + '" style="' + swStyle + 'background:#fff;" />'
+          : '<span style="display:inline-block;' + swStyle + 'background:' + attrEsc(c) + ';" title="' + attrEsc(c) + ' (Random — pick By value to edit)"></span>') +
         '<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;' + (isHid ? 'text-decoration:line-through;' : '') + '" title="' + attrEsc(v) + '">' + attrEsc(v === '' || v === ' ' ? '(blank)' : v) + '</span>' +
         (counts[v] != null ? '<span class="ms-note" style="margin:0;flex:0 0 auto;">' + counts[v] + '</span>' : '') +
+        nofillCell(v, isNf) +
         hideCell('data-cbhide="' + attrEsc(v) + '"', isHid) +
         '</div>';
     }).join('') +
@@ -9616,6 +9642,21 @@
     setStatus('Saving…');
     await reapplyColorBy(node, lid);
     renderColorByMode(node);
+  }
+  async function onColorByNoFill(v, on) {   // a value's no-fill tick (step 10): see-through fill, everything else stays
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var nf = (node.colorBy.nofill || []).slice(), i = nf.indexOf(v);
+    if (on && i < 0) nf.push(v); if (!on && i > -1) nf.splice(i, 1);
+    node.colorBy.nofill = nf;
+    setStatus('Saving…');
+    await reapplyColorBy(node, lid);
+    renderColorByMode(node);
+  }
+  // the colour a value paints: no-fill values draw see-through (step 10), the rest their mapping colour
+  function cbColorOf(cb, v) {
+    if (cb && cb.nofill && cb.nofill.indexOf(String(v)) > -1) return (window.MSCustomCols && MSCustomCols.NO_FILL) || 'rgba(0,0,0,0)';
+    return cb && cb.mapping ? cb.mapping[String(v)] : null;
   }
   async function onColorByHideNoValue(on) {
     var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
@@ -9699,7 +9740,7 @@
   // the expression for a column of this map's own: keyed on the join column, one pair per feature with a value
   async function ccColorExpr(node, lid, cb, fallback) {   // one author: customColumns.js (the build scripts compile the same way)
     var values = MSCustomCols.cached(lid) || await MSCustomCols.load(lid);
-    return MSCustomCols.colorExpr(node, values, cb.prop, cb.mapping, fallback);
+    return MSCustomCols.colorExpr(node, values, cb.prop, cb.mapping, fallback, cb.nofill);
   }
   async function ccColorBy(node, lid, prop) {
     var info = document.getElementById('elp-colorby-info');
@@ -9709,19 +9750,158 @@
       var vals = MSCustomCols.distinctValues(values, prop);
       if (!vals.length) { setStatus('No values in that column'); showToast('That column has no values yet'); return; }
       var keep = (node.colorBy && node.colorBy.prop === prop && node.colorBy.mapping) || null;
+      var keepNf = (keep && node.colorBy.nofill) || null, keepHid = (keep && node.colorBy.hidden) || null, keepNoV = !!(keep && node.colorBy.hideNoValue);
       var mapping = {};
       vals.forEach(function (v, i) { mapping[v] = (keep && keep[v]) || COLORBY_PALETTE[i % COLORBY_PALETTE.length]; });
       node.colorBy = { prop: prop, mode: 'category', mapping: mapping, custom: true, pick: (keep && node.colorBy.pick === 'value') ? 'value' : 'random' };
+      // the same column re-applied (a value edited in the table) keeps its hide / no-fill choices
+      if (keepHid && keepHid.length) node.colorBy.hidden = keepHid.filter(function (v) { return vals.indexOf(v) > -1; });
+      if (keepNoV) node.colorBy.hideNoValue = true;
+      if (keepNf && keepNf.length) node.colorBy.nofill = keepNf.filter(function (v) { return vals.indexOf(v) > -1; });
       await reapplyColorBy(node, lid);
       if (info) info.textContent = vals.length + ' value' + (vals.length === 1 ? '' : 's') + ' of your column “' + prop + '”, one colour each.';
       renderColorByMode(node);
     } catch (e) { console.warn('colorBy (your column) failed', e); setStatus('Save failed'); }
   }
   var _ccColorT = {};
-  function scheduleCcColorBy(node) {   // a value edited in the table → the colour-by follows (new values get a colour)
-    if (!node || !node.colorBy || !node.colorBy.custom) return;
+  function scheduleCcColorBy(node) {   // a value edited in the table → the colour-by (and the outline-by) follows (new values get a colour)
+    if (!node) return;
     clearTimeout(_ccColorT[node.id]);
-    _ccColorT[node.id] = setTimeout(function () { var lid = slugToLayerDbId[node.id]; if (lid) ccColorBy(node, lid, node.colorBy.prop); }, 700);
+    _ccColorT[node.id] = setTimeout(function () {
+      var lid = slugToLayerDbId[node.id]; if (!lid) return;
+      if (node.colorBy && node.colorBy.custom) ccColorBy(node, lid, node.colorBy.prop);
+      if (node.outlineBy && node.outlineBy.custom) onOutlineBy(node.outlineBy.prop, node);
+    }, 700);
+  }
+  /* ── OUTLINE BY COLUMN (step 10, 10/20) ─────────────────────────────────────────────────────
+     `node.outlineBy = { prop, custom, mapping: { value: { color, width } } }`. Every value of the
+     column gets its own outline colour and width, edited in the panel; the layer's own outline
+     colour and width are the fallback. Compiled into the persisted paint — fill-outline-color and
+     line-width as match expressions — so the viewer renders it with no runtime state: configLoader
+     turns a non-1 width into the stroke companion line layer (as for any thick border). A column of
+     this map's own keys on the feature id / join column (customColumns.js outlineExprs); a column in
+     the tiles keys on the property. */
+  // the outline colour and width for features WITHOUT a value: kept on the meta (outlineBy.fallback)
+  // once a column is picked, because the paint then holds expressions — the panel's swatch and
+  // width slider show and edit this fallback
+  function obFallbacks(node) {
+    var fb = node && node.outlineBy && node.outlineBy.fallback;
+    if (fb && typeof fb.width === 'number' && fb.color) return { color: fb.color, width: fb.width };
+    var c = outlineColorOf(node) || '#000000';
+    var w = (node.paint && typeof node.paint['line-width'] === 'number') ? node.paint['line-width'] : FILL_BORDER_DEFAULT;
+    return { color: c, width: w };
+  }
+  function obExprsSync(node, lid) {   // null when a custom column's values are not loaded yet
+    var ob = node.outlineBy; if (!ob || !ob.prop || !ob.mapping) return null;
+    var fb = obFallbacks(node);
+    if (ob.custom) {
+      if (!window.MSCustomCols) return null;
+      var values = MSCustomCols.cached(lid); if (!values) return null;
+      return MSCustomCols.outlineExprs(node, values, ob.prop, ob.mapping, fb.color, fb.width);
+    }
+    var ec = ['match', ['to-string', ['get', ob.prop]]], ew = ['match', ['to-string', ['get', ob.prop]]];
+    Object.keys(ob.mapping).forEach(function (v) { var m = ob.mapping[v] || {}; if (m.color) ec.push(v, m.color); if (typeof m.width === 'number') ew.push(v, m.width); });
+    return { color: ec.length > 2 ? ec.concat([fb.color]) : fb.color, width: ew.length > 2 ? ew.concat([fb.width]) : fb.width };
+  }
+  async function obExprs(node, lid) {
+    if (node.outlineBy && node.outlineBy.custom && window.MSCustomCols && !MSCustomCols.cached(lid)) await MSCustomCols.load(lid);
+    return obExprsSync(node, lid);
+  }
+  function fillOutlineBySelect(node, keys) {   // the select: the layer's columns, then this map's own (★)
+    var row = document.getElementById('elp-outlineby-row'), sel = document.getElementById('elp-outlineby'); if (!row || !sel) return;
+    var on = node && node.type === 'fill' && !node.outlineOf && !node.outlineSplit;
+    row.style.display = on ? 'block' : 'none';
+    if (!on) return;
+    sel.innerHTML = '<option value="">Single outline (colour and width above)</option>';
+    var known = [];
+    (keys || []).forEach(function (k) { if (k === 'DayStart' || k === 'DayEnd' || known.indexOf(k) > -1) return; known.push(k); var o = document.createElement('option'); o.value = k; o.textContent = k; sel.appendChild(o); });
+    if (window.MSCustomCols) MSCustomCols.defsOf(node).forEach(function (d) {
+      if (!d || !d.key || known.indexOf(d.key) > -1) return;
+      known.push(d.key); var o2 = document.createElement('option'); o2.value = d.key; o2.textContent = '★ ' + d.key + ' (your column)'; sel.appendChild(o2);
+    });
+    var ob = node.outlineBy;
+    if (ob && ob.prop && known.indexOf(ob.prop) < 0) { var o3 = document.createElement('option'); o3.value = ob.prop; o3.textContent = ob.prop; sel.appendChild(o3); }
+    sel.value = (ob && ob.prop) || '';
+    if (ob && ob.custom && window.MSCustomCols && slugToLayerDbId[node.id] && !MSCustomCols.cached(slugToLayerDbId[node.id])) {
+      MSCustomCols.load(slugToLayerDbId[node.id]).then(function () { if (activeLayerId === node.id) renderOutlineByValues(node); }, function () {});
+    }
+    renderOutlineByValues(node);
+  }
+  function renderOutlineByValues(node) {
+    var list = document.getElementById('elp-outlineby-values'), info = document.getElementById('elp-outlineby-info'); if (!list) return;
+    var ob = node && node.outlineBy;
+    if (!ob || !ob.mapping) { list.style.display = 'none'; list.innerHTML = ''; if (info) info.textContent = ''; return; }
+    var counts = {};
+    if (ob.custom && window.MSCustomCols) {
+      var vals = MSCustomCols.cached(slugToLayerDbId[node.id]) || {};
+      Object.keys(vals).forEach(function (k) { var v = vals[k] ? vals[k][ob.prop] : null; if (v != null && v !== '') counts[String(v)] = (counts[String(v)] || 0) + 1; });
+    }
+    if (info) info.textContent = Object.keys(ob.mapping).length + ' value' + (Object.keys(ob.mapping).length === 1 ? '' : 's') + ' of ' + (ob.custom ? 'your column “' + ob.prop + '”' : ob.prop) + ', each its own outline colour and width; the colour and width above are the fallback.';
+    list.style.display = 'block';
+    list.innerHTML = Object.keys(ob.mapping).map(function (v) {
+      var m = ob.mapping[v] || {}, hex = looksHex(m.color) ? normHex(m.color) : '#000000', w = typeof m.width === 'number' ? m.width : 1;
+      return '<div style="display:flex;align-items:center;gap:7px;margin:3px 0;">' +
+        '<input type="color" data-obval="' + attrEsc(v) + '" data-obfield="color" value="' + hex + '" title="outline colour" style="width:30px;height:22px;padding:0;border:1px solid #bbbbbb;border-radius:3px;background:#fff;flex:0 0 auto;" />' +
+        '<input type="number" data-obval="' + attrEsc(v) + '" data-obfield="width" value="' + w + '" min="0" max="40" step="0.1" title="outline width (px)" class="ms-in" style="width:58px;flex:0 0 auto;padding:2px 4px;" />' +
+        '<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;" title="' + attrEsc(v) + '">' + attrEsc(v === '' || v === ' ' ? '(blank)' : v) + '</span>' +
+        (counts[v] != null ? '<span class="ms-note" style="margin:0;flex:0 0 auto;">' + counts[v] + '</span>' : '') +
+        '</div>';
+    }).join('');
+  }
+  // compile + persist + apply live (the paint carries the expressions; the meta rides raw_config.outlineBy)
+  async function reapplyOutlineBy(node, lid) {
+    var paint = JSON.parse(JSON.stringify(node.paint || {}));
+    var ex = node.outlineBy ? await obExprs(node, lid) : null;
+    var fb = obFallbacks(node);
+    paint['fill-outline-color'] = ex ? ex.color : fb.color;
+    paint['line-width'] = ex ? ex.width : fb.width;
+    node.paint = paint;
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      if (node.outlineBy) rc.outlineBy = node.outlineBy; else delete rc.outlineBy;
+      if (node.outlineBy && rc.outlineMatchFill) { delete rc.outlineMatchFill; node.outlineMatchFill = false; var mcb = document.getElementById('elp-outline-match'); if (mcb) mcb.checked = false; }   // a border by column is not a border matching the fill
+      rc.styleChangedAt = new Date().toISOString(); node.styleChangedAt = rc.styleChangedAt;
+      var r2 = await db.from('layers').update({ paint: paint, raw_config: rc }).eq('id', lid);
+      if (r2.error) throw new Error(r2.error.message);
+    } catch (e) { console.warn('outlineBy save failed', e); setStatus('Save failed'); return; }
+    applyLayerStylePreview(node, null, null, null, null, null);   // engine layers: fill-outline sentinel + the stroke companion, both sides
+    if (!isTilesetNode(node)) { try { await loadFeatures(); } catch (eL) {} }   // draw copies: per-feature outline / strokewidth
+    setStatus('Saved');
+  }
+  async function onOutlineBy(prop, nodeArg) {
+    var node = nodeArg || (activeLayerId && findNodeById(layers, activeLayerId)); if (!node) return;
+    var lid = slugToLayerDbId[node.id]; if (!lid) return;
+    setStatus('Saving…');
+    try {
+      if (!prop) { node.outlineBy = null; await reapplyOutlineBy(node, lid); renderOutlineByValues(node); return; }
+      var custom = !!(window.MSCustomCols && MSCustomCols.defOf(node, prop));
+      var vals = [];
+      if (custom) vals = MSCustomCols.distinctValues(await MSCustomCols.load(lid, true), prop);
+      else if (isTilesetNode(node)) {
+        var cr = await db.rpc('ms_layer_key_counts', { p_layer: node._dataLayerId || lid, p_key: prop });
+        ((cr && cr.data) || []).forEach(function (c) { if (c.k != null && vals.indexOf(String(c.k)) < 0) vals.push(String(c.k)); });
+      } else {
+        var fr = await window.MSFetchRows(db, 'custom_fields, label, description, start_date, end_date, image_url', function (q) { return q.eq('layer_id', node.instanceOf || lid); });
+        (fr.rows || []).forEach(function (f) { var v = cbValueOf(f, prop); if (v != null && vals.indexOf(String(v)) < 0) vals.push(String(v)); });
+      }
+      if (!vals.length) { setStatus('No values in that column'); showToast('That column has no values yet'); var s0 = document.getElementById('elp-outlineby'); if (s0) s0.value = (node.outlineBy && node.outlineBy.prop) || ''; return; }
+      var keep = (node.outlineBy && node.outlineBy.prop === prop && node.outlineBy.mapping) || null;
+      var fb = obFallbacks(node), mapping = {};
+      vals.sort().forEach(function (v) { mapping[v] = (keep && keep[v]) || { color: fb.color, width: fb.width }; });   // seeded with the layer's own outline — nothing changes until a value is edited
+      node.outlineBy = { prop: prop, custom: custom, mapping: mapping, fallback: { color: fb.color, width: fb.width } };
+      await reapplyOutlineBy(node, lid);
+      renderOutlineByValues(node);
+    } catch (e) { console.warn('outlineBy failed', e); setStatus('Save failed'); }
+  }
+  var _obValT = null;
+  function onOutlineByValue(v, field, raw) {   // one value's swatch or width moved: the mapping changes now, the paint follows once it settles
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.outlineBy || !node.outlineBy.mapping) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var m = node.outlineBy.mapping[v] = node.outlineBy.mapping[v] || {};
+    if (field === 'width') { var n = parseFloat(raw); if (isNaN(n) || n < 0) return; m.width = n; } else m.color = raw;
+    clearTimeout(_obValT);
+    _obValT = setTimeout(function () { setStatus('Saving…'); reapplyOutlineBy(node, lid); }, 350);
   }
   // rebuild the fill expression from the CURRENT mapping and persist it + apply it live
   async function reapplyColorBy(node, lid) {
@@ -9732,7 +9912,7 @@
     if (cb.custom && window.MSCustomCols) expr = await ccColorExpr(node, lid, cb, fallback);
     else {
       expr = ['match', ['to-string', ['get', cb.prop]]];
-      Object.keys(cb.mapping).forEach(function (v) { expr.push(v, cb.mapping[v]); });
+      Object.keys(cb.mapping).forEach(function (v) { expr.push(v, cbColorOf(cb, v)); });
       expr.push(fallback);
       if (isTilesetNode(node)) {   // same instant rule as onColorBy: unbaked columns ride a by-id match
         var dataNode = node.outlineOf ? (findNodeById(layers, node.outlineOf) || node) : node;
@@ -9806,7 +9986,7 @@
   var TILECAT_BYID_CAP = 30000;
   function tiledColorByGetExpr(cb, fallback) {
     var eg = ['match', ['to-string', ['get', cb.prop]]];
-    Object.keys(cb.mapping).forEach(function (v) { eg.push(v, cb.mapping[v]); });
+    Object.keys(cb.mapping).forEach(function (v) { eg.push(v, cbColorOf(cb, v)); });
     eg.push(fallback);
     return eg;
   }
@@ -9829,7 +10009,7 @@
       (q.data || []).forEach(function (x) {
         var vv = x.v;
         if (vv != null && (cb.prop === 'start_date' || cb.prop === 'end_date')) vv = String(vv).slice(0, 10);   // mapping keys are date-only
-        var c = vv != null ? cb.mapping[String(vv)] : null;
+        var c = vv != null ? cbColorOf(cb, vv) : null;
         if (c) { pairs.push(Number(x.feature_id)); pairs.push(c); }
       });
       if (!q.data || q.data.length < size) break;
@@ -11177,6 +11357,7 @@
       '.ms-sec{font-size:25px;font-weight:800;letter-spacing:.07em;color:#7c5cbf;margin:0 0 8px;text-transform:uppercase;border-bottom:2px solid #ede9f7;padding-bottom:4px;text-align:center;}' +   // section heading
       '.ms-sectop{margin-top:16px;padding:10px 12px 12px;border:3px solid #e5e0f3;border-radius:10px;background:#fbfaff;box-shadow:0px 0px 3px 4px rgba(124,92,191,0.09);}' +   // each section = a delineated card (border + soft shadow + faint tint)
       '.ms-grp{margin-top:10px;padding-top:16px;padding-bottom:7px;border-top:2px solid #090909bf;}' +          // paired-control group divider
+      '.ms-subsec{font-size:13px;font-weight:800;letter-spacing:.07em;color:#7c5cbf;text-transform:uppercase;margin:0 0 7px;}' +   // a group's own heading inside a section (10/20: "Outline")
       '.ms-lbl{display:block;font-size:11px;color:#555555;margin-bottom:2px;}' +           // small field label above a control
       '.ms-check{display:block;cursor:pointer;font-size:12px;color:#555555;}' +            // checkbox + text row
       '.ms-in{width:100%;box-sizing:border-box;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +  // text input / number / select
@@ -11352,6 +11533,7 @@
       '</div>' +
       // ── OUTLINE group: the stroke's toggle, color, width and per-column thickness together ──
       '<div class="' + GRP + '">' +
+      '<div id="elp-outline-head" class="ms-subsec">Outline</div>' +   // (10/20, owner) the line area has its own heading
       '<label id="elp-outline-vis-row" class="ms-check" style="display:none;margin-bottom:4px;"><input id="elp-outline-vis" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Show outline</label>' +
       '<div id="elp-outline-row"><label class="ms-lbl">Outline color</label>' +
       '<input id="elp-outline" type="color" class="ms-color" style="height:28px;" /></div>' +
@@ -11360,7 +11542,16 @@
       // and a later split inherits it.
       '<label id="elp-outline-match-row" class="ms-check" style="display:none;margin:4px 0 0;"><input id="elp-outline-match" type="checkbox" style="vertical-align:middle;margin:0 3px 0 0;" />Match fill colors</label>' +
       '<div id="elp-width-row" style="margin-top:6px;"><label class="ms-lbl"><span id="elp-width-label">Width</span> <span id="elp-width-val"></span></label>' +
-      '<input id="elp-width" type="range" min="0.5" max="12" step="0.5" class="ms-range" /></div>' +
+      '<input id="elp-width" type="range" min="0.1" max="12" step="0.1" class="ms-range" /></div>' +   // 0.1 steps (10/20, owner: "jumps by 0.5 — way too much")
+      // ── OUTLINE BY COLUMN (step 10, 10/20): each value of a column gets its own outline colour
+      //    and width; the colour and width above are the fallback for features without a value.
+      //    A column of this map's own (★) keys the expressions on the feature id / join column.
+      '<div id="elp-outlineby-row" style="margin-top:6px;display:none;">' +
+        '<label class="ms-lbl">Outline by data column</label>' +
+        '<select id="elp-outlineby" class="ms-in"><option value="">Single outline (colour and width above)</option></select>' +
+        '<div id="elp-outlineby-info" class="ms-note"></div>' +
+        '<div id="elp-outlineby-values" style="display:none;max-height:230px;overflow:auto;margin-top:4px;padding:4px 6px;border:1px solid #e2e2e2;border-radius:5px;background:#fafafa;"></div>' +
+      '</div>' +
       // (8/14) sideways offset — "colored offset borders tend to be a great way to show divisions":
       // shifts the line off the shared edge so two bordering features' colours both stay readable.
       // Engine-rendered lines only (MapboxDraw's fixed styles can't offset).
@@ -11480,10 +11671,16 @@
     document.getElementById('elp-colorby-values').addEventListener('input', function (e) {
       var sw = e.target && e.target.closest('input[data-cbval]'); if (sw) onColorByValueColor(sw.getAttribute('data-cbval'), sw.value);
     });
-    document.getElementById('elp-colorby-values').addEventListener('change', function (e) {   // the hide ticks (step 11)
+    document.getElementById('elp-colorby-values').addEventListener('change', function (e) {   // the hide ticks (step 11) + the no-fill ticks (step 10)
       var t = e.target; if (!t || t.type !== 'checkbox') return;
       if (t.id === 'elp-cbhide-novalue') onColorByHideNoValue(t.checked);
       else if (t.hasAttribute('data-cbhide')) onColorByHide(t.getAttribute('data-cbhide'), t.checked);
+      else if (t.hasAttribute('data-cbnofill')) onColorByNoFill(t.getAttribute('data-cbnofill'), t.checked);
+    });
+    document.getElementById('elp-outlineby').addEventListener('change', function () { onOutlineBy(this.value); });
+    document.getElementById('elp-outlineby-values').addEventListener('input', function (e) {   // a value's swatch or width moved (step 10)
+      var t = e.target; if (!t || !t.hasAttribute('data-obval')) return;
+      onOutlineByValue(t.getAttribute('data-obval'), t.getAttribute('data-obfield'), t.value);
     });
     document.getElementById('elp-bin-present').addEventListener('input', livePresenceColors);   // live preview while dragging the picker
     document.getElementById('elp-bin-absent').addEventListener('input', livePresenceColors);
@@ -11840,6 +12037,7 @@
     var color = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
     var op = paintOpacity(node.paint); if (op == null) op = (node.type === 'fill') ? 0.35 : 1;
     var outline = outlineColorOf(node) || '#000000';
+    if (node.outlineBy && node.outlineBy.fallback && node.outlineBy.fallback.color) outline = node.outlineBy.fallback.color;   // outline by column: the swatch shows the fallback (step 10)
     document.getElementById('elp-title').textContent = node.label || 'Layer style';
     // what IS this layer? (user 7/15: the panel must say tileset vs drawn/GIS)
     var kindEl = document.getElementById('elp-kind');
@@ -11923,10 +12121,13 @@
       ? msPaintKeyFor(node.type, 'color').replace(/-color$/, '')
       // enum-ok: the no-engine-helper fallback; defaults to 'fill' exactly as msPaintKeyFor does.
       : (node.type === 'line' ? 'line' : node.type === 'circle' ? 'circle' : 'fill');
-    var width = paintWidth(node.paint); if (width == null) width = (nType === 'circle') ? 1.5 : (nType === 'fill' ? 0.5 : 2);   // fills: 0.5 border default
+    var width = paintWidth(node.paint);
+    if (width == null && node.outlineBy && node.outlineBy.fallback && typeof node.outlineBy.fallback.width === 'number') width = node.outlineBy.fallback.width;   // outline by column: the slider shows the fallback (step 10)
+    if (width == null) width = (nType === 'circle') ? 1.5 : (nType === 'fill' ? 0.5 : 2);   // fills: 0.5 border default
     document.getElementById('elp-width').value = width;
     document.getElementById('elp-width-val').textContent = width;
     document.getElementById('elp-width-label').textContent = (nType === 'line') ? 'Width' : 'Outline width';
+    (function () { var oh = document.getElementById('elp-outline-head'); if (oh) oh.textContent = (nType === 'line') ? 'Line' : (nType === 'circle') ? 'Stroke' : 'Outline'; })();
     fillWzoomUI(node);   // 7/21: "Vary width by zoom" checkbox + stops (lines only; parses the stored expression)
     // width = line/outline thickness: lines, un-split polygons (auto-outline), and circles (circle-stroke-width — uncapped, no split needed)
     document.getElementById('elp-width-row').style.display = ((nType === 'line') || (fillStroke && !node.outlineSplit) || nType === 'circle') ? 'block' : 'none';
@@ -14082,6 +14283,16 @@
     var _opExpr = (node.opacityBy && node.paint && Array.isArray(node.paint[_ok2])) ? node.paint[_ok2] : null;
     var _tk2 = numByKeys(node, 'thickness')[0];
     var _thExpr = (node.thicknessBy && node.paint && Array.isArray(node.paint[_tk2])) ? node.paint[_tk2] : null;
+    // outline by column (step 10): its two expressions survive unrelated edits; the outline colour
+    // or width slider moving changes the FALLBACK (features without a value) — recompiled below
+    var _obOn = !!(node.outlineBy && node.outlineBy.mapping && node.type === 'fill');
+    var _obColorExpr = (_obOn && node.paint && Array.isArray(node.paint['fill-outline-color'])) ? node.paint['fill-outline-color'] : null;
+    var _obWidthExpr = (_obOn && node.paint && Array.isArray(node.paint['line-width'])) ? node.paint['line-width'] : null;
+    if (_obOn && (field === 'outline' || field === 'width')) {
+      node.outlineBy.fallback = node.outlineBy.fallback || obFallbacks(node);
+      if (field === 'outline') node.outlineBy.fallback.color = value; else node.outlineBy.fallback.width = value;
+      setStyleMetaRC(slugToLayerDbId[node.id], 'outlineBy', node.outlineBy);
+    }
     // zoom-varied width (7/21): survives unrelated edits; moving the uniform width slider EXITS it
     var _wzExpr = (node.type === 'line' && node.paint && Array.isArray(node.paint['line-width']) && node.paint['line-width'][0] === 'interpolate') ? node.paint['line-width'] : null;
     // (8/14) line-offset survives the rebuild — buildLayerPaint knows nothing about it
@@ -14139,6 +14350,14 @@
       var _pMatch = node.outlineOf ? findNodeById(layers, node.outlineOf) : null;
       if (node.outlineOf) { if (_pMatch) node.paint['line-color'] = fillColorValue(_pMatch); }
       else if (node.type === 'fill') node.paint['fill-outline-color'] = fillColorValue(node);
+    }
+    if (_obOn) {
+      if (field === 'outline' || field === 'width') {   // a new fallback: recompile from the loaded values (or keep the old expressions until they load)
+        var _obNew = null;
+        try { _obNew = obExprsSync(node, slugToLayerDbId[node.id]); } catch (eOb) {}
+        if (_obNew) { node.paint['fill-outline-color'] = _obNew.color; node.paint['line-width'] = _obNew.width; }
+        else { if (_obColorExpr) node.paint['fill-outline-color'] = _obColorExpr; if (_obWidthExpr) node.paint['line-width'] = _obWidthExpr; }
+      } else { if (_obColorExpr) node.paint['fill-outline-color'] = _obColorExpr; if (_obWidthExpr) node.paint['line-width'] = _obWidthExpr; }
     }
     applyLayerStylePreview(node, op, outline, outlineVis, width, radius);
     clearTimeout(_layerStyleTimer);

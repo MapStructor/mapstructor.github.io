@@ -43,6 +43,26 @@ function msLockInert(config) {
   return !!(config && config.editable === false && !config._msFromLayer && !config.instanceOf && typeof window !== "undefined" && window.__msLockInert);
 }
 try { window.msLockInert = msLockInert; } catch (e) {}
+/* THE LABEL A BUBBLE SHOWS (10/20, owner: "The label field doesn't offer 'yours' columns"). The
+   popup's label field (config.prop) is usually a property in the tiles. It can also be one of THIS
+   MAP's own columns (the Linked Tileset Custom Columns Table — customColumns.js): those values are
+   not in the tiles, so they are read from the table, keyed by the feature id (or the join column).
+   The table is fetched once per layer, the first time it is needed (and up front at wiring time
+   when the label field already names such a column); until it arrives a bubble has no label. */
+function msCustomLabelCol(config) {
+  return !!(config && config.prop && typeof window !== "undefined" && window.MSCustomCols && MSCustomCols.defOf(config, config.prop));
+}
+function msFeatureLabel(config, f) {
+  if (!config || !f) return undefined;
+  if (msCustomLabelCol(config)) {
+    var lid = config._layerDbId, vals = lid ? MSCustomCols.cached(lid) : null;
+    if (!vals) { if (lid) MSCustomCols.load(lid).then(function () {}, function () {}); return undefined; }
+    var k = MSCustomCols.featureKey(config, f), row = k != null ? vals[k] : null;
+    return row ? row[config.prop] : undefined;
+  }
+  return f.properties ? f.properties[config.prop] : undefined;
+}
+try { window.msFeatureLabel = msFeatureLabel; } catch (e) {}
 function msHoverDoesSomething(config) {
   if (msLockInert(config)) return false;
   return !!(config && (config.popupStyle || config.click || config.groupBy ||
@@ -60,6 +80,7 @@ function setupLayerEvents() {
 function wireLayerInteraction(config) {
   if (wiredInteraction[config.id]) return;
   wiredInteraction[config.id] = true;
+  if (msCustomLabelCol(config) && config._layerDbId && !MSCustomCols.cached(config._layerDbId)) MSCustomCols.load(config._layerDbId).then(function () {}, function () {});   // the label's values, before the first hover
   setupLayerEventForMap(beforeMap, config, "left");
   setupLayerEventForMap(afterMap,  config, "right");
 }
@@ -96,7 +117,7 @@ function setupLayerEventForMap(map, config, side) {
         // bubble on top of it (that stack was the double-bubble bug).
         var pillOpen = false;
         try { var st = (typeof infoPanelState !== "undefined") ? infoPanelState[config.id] : null; pillOpen = !!(st && st.isOpen && st.viewId === e.features[0].id); } catch (err) {}
-        const val = e.features[0].properties[config.prop];
+        const val = msFeatureLabel(config, e.features[0]);
         // #13: a feature with no label gets NO bubble — never leave the previous feature's label showing
         // .trim(): a label that is a single SPACE is not a label. Without it, hovering such a
         // feature opened a bubble containing "<div class='…'> </div>" — a 20×24 empty box with no
@@ -149,7 +170,7 @@ function setupLayerEventForMap(map, config, side) {
     }
 
     function buildPopupHTML(event) {
-      const val = event.features?.[0]?.properties?.[config.prop] ?? "";
+      const val = msFeatureLabel(config, event.features?.[0]) ?? "";
       return "<div class='" + config.popupStyle + "'>" + val + "</div>";
     }
 
@@ -175,7 +196,7 @@ function setupLayerEventForMap(map, config, side) {
       viewId = clickedId;
 
       // #13: no label → no bubble (the highlight above still shows the selection)
-      const val = event.features?.[0]?.properties?.[config.prop];
+      const val = msFeatureLabel(config, event.features?.[0]);
       if (val === undefined || val === null || String(val).trim() === "") {   // whitespace is not a label — see the hover guard above
         if (afterPopup.isOpen())  afterPopup.remove();
         if (beforePopup.isOpen()) beforePopup.remove();
