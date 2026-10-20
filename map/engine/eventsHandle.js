@@ -34,11 +34,17 @@ try { window.msEventsOwnsHover = msEventsOwnsHover; } catch (e) {}
    With no hover popup, no click and no hover highlight, the layer now ignores the mouse entirely.
    `groupBy` stays interactive on purpose: a "treat as one" layer hovers as a group, and the group
    overlay — not this gate — owns that. */
+// 8/29 (owner): in the EDITOR (both its modes), a LOCK-SHAPE layer's features are mouse-inert —
+// "the same as if you clicked the basemap". editing.js sets __msLockInert; the published viewer
+// never does. 10/20 (owner): a LINKED layer (a portal mirror — editable:false because the source
+// owns the data, not because anyone locked it) keeps the viewer's hover, finger and click in the
+// editor: there is nothing to edit on it, so nothing competes.
+function msLockInert(config) {
+  return !!(config && config.editable === false && !config._msFromLayer && !config.instanceOf && typeof window !== "undefined" && window.__msLockInert);
+}
+try { window.msLockInert = msLockInert; } catch (e) {}
 function msHoverDoesSomething(config) {
-  // 8/29 (owner): in the EDITOR (both its modes), a lock-shape layer's features are mouse-inert —
-  // "the same as if you clicked the basemap". editing.js sets __msLockInert; the published viewer
-  // never does, so this guard is a no-op there.
-  if (config && config.editable === false && typeof window !== "undefined" && window.__msLockInert) return false;
+  if (msLockInert(config)) return false;
   return !!(config && (config.popupStyle || config.click || config.groupBy ||
     (config.highlight && config.hoverHighlight !== false)));
 }
@@ -156,7 +162,7 @@ function setupLayerEventForMap(map, config, side) {
     }
 
     function clickHandle(event) {
-      if (config.editable === false && typeof window !== "undefined" && window.__msLockInert) return;   // 8/29: locked = inert in the editor (see msHoverDoesSomething)
+      if (msLockInert(config)) return;   // 8/29: locked = inert in the editor; 10/20: Linked mirrors are not locked (see msLockInert)
       if (!config.click) { closeInfo(); return; }   // #12: click-popup toggled off live
       const clickedId = event.features?.[0]?.id;
       if (clickedId == null) return;

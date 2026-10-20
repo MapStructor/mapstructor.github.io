@@ -81,7 +81,7 @@ function registerInfoPanelClicks() {
 
     if (!hoverOwnedElsewhere) {
     beforeMap.on("mousemove", layer.id + "-left", function(e) {
-      if (layer.editable === false && typeof window !== "undefined" && window.__msLockInert) return;   // 8/29: locked = inert in the editor
+      if (typeof msLockInert === "function" ? msLockInert(layer) : (layer.editable === false && typeof window !== "undefined" && window.__msLockInert)) return;   // 8/29: locked = inert in the editor; 10/20: Linked mirrors are not locked (eventsHandle.js msLockInert)
       beforeMap.getCanvas().style.cursor = "pointer";
       if (e.features.length > 0) {
         if (hoveredId.left !== null)
@@ -98,7 +98,7 @@ function registerInfoPanelClicks() {
     });
 
     afterMap.on("mousemove", layer.id + "-right", function(e) {
-      if (layer.editable === false && typeof window !== "undefined" && window.__msLockInert) return;   // 8/29: locked = inert in the editor
+      if (typeof msLockInert === "function" ? msLockInert(layer) : (layer.editable === false && typeof window !== "undefined" && window.__msLockInert)) return;   // 8/29: locked = inert in the editor; 10/20: Linked mirrors are not locked
       afterMap.getCanvas().style.cursor = "pointer";
       if (e.features.length > 0) {
         if (hoveredId.right !== null)
