@@ -10432,7 +10432,8 @@
       // msDateFilter is the sole author of both. (-edited- is owned by applyEditedOverlayDayFilter.)
       [node.id + '-' + pair[0], node.id + '-stroke-' + pair[0], node.id + '-highlighted-' + pair[0],
        node.id + '-label-' + pair[0]].forEach(function (id) {
-        try { if (m.getLayer(id)) m.setFilter(id, msDateFilter(msDateKindFor(id), on ? null : d, false)); } catch (e) {}
+        // the layer's OWN filter (hidden values, step 11) rides along — this used to drop it (10/20)
+        try { if (m.getLayer(id)) { var ownT = (node.customJson && node.customJson.filter) || node.filter || null; var dT = msDateFilter(msDateKindFor(id), on ? null : d, false); m.setFilter(id, msDateKindFor(id) === 'label' ? msLabelFilter(ownT, dT) : msLayerFilter(ownT, dT)); } } catch (e) {}
       });
     });
     // companions-ok: -edited- is not enumerated here on purpose. It has ONE owner, and the fix for
@@ -10615,7 +10616,7 @@
           // -label- added 8/21: re-sourcing left the label layer on the PREVIOUS date filter.
           [node.id + '-' + pr2[0], node.id + '-stroke-' + pr2[0], node.id + '-highlighted-' + pr2[0],
            node.id + '-label-' + pr2[0]].forEach(function (lid2) {
-            try { if (m2.getLayer(lid2)) m2.setFilter(lid2, msDateFilter(msDateKindFor(lid2), dNow, node.timelineIgnore)); } catch (e3) {}
+            try { if (m2.getLayer(lid2)) { var ownR = (node.customJson && node.customJson.filter) || node.filter || null; var dR = msDateFilter(msDateKindFor(lid2), dNow, node.timelineIgnore); m2.setFilter(lid2, msDateKindFor(lid2) === 'label' ? msLabelFilter(ownR, dR) : msLayerFilter(ownR, dR)); } } catch (e3) {}
           });
         });
         // companions-ok: -edited- has one owner; call it instead of adding the suffix here again.
