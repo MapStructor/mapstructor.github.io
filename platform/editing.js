@@ -12213,7 +12213,20 @@
           '</span></span></span>' +
           '<span id="editor-attr-close" title="Close">&times;</span></div>' +
         '<div id="editor-attr-cols-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#faf9fd;font-size:12.5px;">' +
-          '<div style="color:#8a86a0;margin-bottom:3px;">Untick a column to hide it here (the data stays). <span class="attr-kind attr-kind-tile">tiles</span> = in the vector tiles · <span class="attr-kind attr-kind-companion">source</span> = the source layer’s data, read-only · <span class="attr-kind attr-kind-custom">yours</span> = this map’s own column · <span class="attr-join">&#9939;</span> = the join column</div>' +
+          '<div style="color:#8a86a0;margin-bottom:3px;">Tick the columns to hide, then <b>Hide</b> (untick + Hide brings them back; the data stays). <span class="attr-kind attr-kind-tile">tiles</span> = in the vector tiles · <span class="attr-kind attr-kind-companion">source</span> = the source layer’s data, read-only · <span class="attr-kind attr-kind-custom">yours</span> = this map’s own column · <span class="attr-join">&#9939;</span> = the join column</div>' +
+          // (10/19, owner) show one KIND at a time, select / unselect what is shown, and apply with Hide
+          '<div id="attr-cols-bar" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:5px;">' +
+            '<span style="color:#8a86a0;">show:</span>' +
+            '<button type="button" class="attr-cols-filter on" data-kind="all">all</button>' +
+            '<button type="button" class="attr-cols-filter" data-kind="tile">tiles</button>' +
+            '<button type="button" class="attr-cols-filter" data-kind="companion">source</button>' +
+            '<button type="button" class="attr-cols-filter" data-kind="custom">yours</button>' +
+            '<span style="width:8px;"></span>' +
+            '<button type="button" id="attr-cols-selall" class="attr-cols-btn">Select all</button>' +
+            '<button type="button" id="attr-cols-selnone" class="attr-cols-btn">Unselect all</button>' +
+            '<button type="button" id="attr-cols-hide" class="attr-cols-btn" style="background:#23374d;color:#fff;border-color:#23374d;">Hide</button>' +
+            '<span id="attr-cols-status" style="color:#8a86a0;"></span>' +
+          '</div>' +
           '<div id="attr-cols-list" style="max-height:120px;overflow:auto;"></div>' +
         '</div>' +
         '<div id="editor-attr-addcol-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#faf9fd;font-size:12.5px;">' +
@@ -12385,29 +12398,77 @@
     setStatus('Saved');
     scheduleCustomStyle(_attrCC.node.id);   // a value change may move a colour / outline / hide — recompile the persisted paint
   }
-  function attrToggleColumn(key, show) {
+  // the Columns panel (10/19, owner): a tick means HIDE; nothing moves until Hide is pressed,
+  // which applies the whole ticked set (ticked → hidden, unticked → shown). The kind buttons
+  // only filter the list; ticks on columns outside the current filter are kept in _attrColsPending.
+  var _attrColsPending = null, _attrColsFilter = 'all', _attrColsWired = false;
+  function applyHiddenColumns(hidden) {
     var node = _attrSlug && findNodeById(layers, _attrSlug); if (!node) return;
     node.attrView = node.attrView || {};
-    var hidden = (node.attrView.hidden || []).slice();
-    var i = hidden.indexOf(key);
-    if (show && i > -1) hidden.splice(i, 1);
-    if (!show && i < 0) hidden.push(key);
     node.attrView.hidden = hidden;
     _attrCols = _attrColsAll.filter(function (c) { return hidden.indexOf(attrColKey(c)) < 0; });
     _attrSort = null;
     buildAttrHead(); renderAttrBody(true); persistAttrView();
   }
+  function attrToggleColumn(key, show) {   // kept for callers that hide ONE column at once
+    var node = _attrSlug && findNodeById(layers, _attrSlug); if (!node) return;
+    var hidden = ((node.attrView && node.attrView.hidden) || []).slice();
+    var i = hidden.indexOf(key);
+    if (show && i > -1) hidden.splice(i, 1);
+    if (!show && i < 0) hidden.push(key);
+    applyHiddenColumns(hidden);
+  }
   function fillColsPanel() {
     var box = document.getElementById('attr-cols-list'); if (!box) return;
     var node = _attrSlug && findNodeById(layers, _attrSlug);
     var hidden = (node && node.attrView && node.attrView.hidden) || [];
-    box.innerHTML = _attrColsAll.filter(function (c) { return c.kind !== 'sel'; }).map(function (c) {
-      var k = attrColKey(c), on = hidden.indexOf(k) < 0;
-      return '<label style="display:inline-flex;align-items:center;gap:5px;margin:2px 10px 2px 0;white-space:nowrap;"><input type="checkbox" data-colkey="' + attrEsc(k) + '"' + (on ? ' checked' : '') + ' style="margin:0;"> <span>' + attrEsc(c.title) + '</span>' + ccBadge(c) + '</label>';
-    }).join('');
+    _attrColsPending = {}; hidden.forEach(function (k) { _attrColsPending[k] = true; });
+    _attrColsFilter = 'all';
+    if (!document.getElementById('attr-cols-css')) {
+      var st = document.createElement('style'); st.id = 'attr-cols-css';
+      st.textContent = '.attr-cols-filter,.attr-cols-btn{font-size:11.5px;padding:2px 8px;border:1px solid #c9c4d8;border-radius:4px;background:#fff;color:#2b3a4a;cursor:pointer;}' +
+        '.attr-cols-filter.on{background:#4a3670;color:#fff;border-color:#4a3670;}.attr-cols-filter:hover,.attr-cols-btn:hover{background:#eef2f7;}.attr-cols-filter.on:hover{background:#4a3670;}' +
+        '#attr-cols-list label.attr-cols-hid span{color:#9a94ad;text-decoration:line-through;}';
+      document.head.appendChild(st);
+    }
+    if (!_attrColsWired) {
+      _attrColsWired = true;
+      Array.prototype.forEach.call(document.querySelectorAll('#attr-cols-bar .attr-cols-filter'), function (b) {
+        b.addEventListener('click', function () { _attrColsFilter = b.getAttribute('data-kind'); renderColsList(); });
+      });
+      document.getElementById('attr-cols-selall').addEventListener('click', function () { setColsListTicks(true); });
+      document.getElementById('attr-cols-selnone').addEventListener('click', function () { setColsListTicks(false); });
+      document.getElementById('attr-cols-hide').addEventListener('click', function () {
+        var keys = Object.keys(_attrColsPending || {}).filter(function (k) { return _attrColsPending[k]; });
+        applyHiddenColumns(keys);
+        var st2 = document.getElementById('attr-cols-status'); if (st2) st2.textContent = keys.length ? keys.length + ' hidden' : 'all columns shown';
+        renderColsList();
+      });
+    }
+    renderColsList();
+  }
+  function colsListEntries() {
+    return _attrColsAll.filter(function (c) { return c.kind !== 'sel' && (_attrColsFilter === 'all' || (c.origin || 'own') === _attrColsFilter || (_attrColsFilter === 'companion' && !c.origin)); });
+  }
+  function renderColsList() {
+    var box = document.getElementById('attr-cols-list'); if (!box) return;
+    var node = _attrSlug && findNodeById(layers, _attrSlug);
+    var hiddenNow = (node && node.attrView && node.attrView.hidden) || [];
+    Array.prototype.forEach.call(document.querySelectorAll('#attr-cols-bar .attr-cols-filter'), function (b) { b.classList.toggle('on', b.getAttribute('data-kind') === _attrColsFilter); });
+    var rows = colsListEntries();
+    box.innerHTML = rows.length ? rows.map(function (c) {
+      var k = attrColKey(c), ticked = !!(_attrColsPending && _attrColsPending[k]), isHid = hiddenNow.indexOf(k) > -1;
+      return '<label class="' + (isHid ? 'attr-cols-hid' : '') + '" style="display:inline-flex;align-items:center;gap:5px;margin:2px 10px 2px 0;white-space:nowrap;" title="' + (isHid ? 'hidden now' : 'shown now') + '"><input type="checkbox" data-colkey="' + attrEsc(k) + '"' + (ticked ? ' checked' : '') + ' style="margin:0;"> <span>' + attrEsc(c.title) + '</span>' + ccBadge(c) + '</label>';
+    }).join('') : '<span style="color:#9a94ad;">no columns of that kind</span>';
     Array.prototype.forEach.call(box.querySelectorAll('input[data-colkey]'), function (cb) {
-      cb.addEventListener('change', function () { attrToggleColumn(cb.getAttribute('data-colkey'), cb.checked); });
+      cb.addEventListener('change', function () { _attrColsPending[cb.getAttribute('data-colkey')] = cb.checked; });
     });
+    var st = document.getElementById('attr-cols-status');
+    if (st) { var nT = Object.keys(_attrColsPending || {}).filter(function (k) { return _attrColsPending[k]; }).length; st.textContent = nT + ' ticked · ' + hiddenNow.length + ' hidden now'; }
+  }
+  function setColsListTicks(on) {   // select / unselect what is SHOWN by the current kind filter
+    colsListEntries().forEach(function (c) { _attrColsPending[attrColKey(c)] = on; });
+    renderColsList();
   }
   function applyAttrView(node) {   // reorder _attrCols by the saved order + mark pinned (★ always first) + drop the hidden ones
     var av = node && node.attrView;
