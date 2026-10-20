@@ -12017,13 +12017,18 @@
     var values = (_attrCC && _attrCC.values) || {};
     rows.forEach(function (r) { if (!r) return; var k = MSCustomCols.rowKey(node, r); r._cc = (k != null && values[k]) || null; });
   }
+  var CC_KIND_BADGE = {
+    tile: ['tiles', 'Linked Tileset Column — baked into the vector tiles, so the map can style by it directly'],
+    companion: ['source', 'Linked Tileset Companion Column — the source layer’s own data, read-only from this map'],
+    custom: ['yours', 'Linked Tileset Custom Column — this map’s own column, editable here']
+  };
   function ccBadge(c) {
     if (!c || !c.origin || c.origin === 'own') return '';
-    var t = c.origin === 'tile' ? ['tiles', 'Linked Tileset Column — baked into the vector tiles, so the map can style by it directly']
-      : c.origin === 'companion' ? ['source', 'Linked Tileset Companion Column — the source layer’s own data, read-only from this map']
-      : ['yours', 'Linked Tileset Custom Column — this map’s own column, editable here'];
-    return '<span class="attr-kind attr-kind-' + c.origin + '" title="' + attrEsc(t[1]) + '">' + t[0] + '</span>' +
-      (c.join ? '<span class="attr-join" title="Join column — the key that ties this map’s custom values to each feature">&#9939;</span>' : '');
+    // the JOIN column is in every table (the tiles' feature id, the source's msid, the key of this
+    // map's own values), so it carries all three marks — one badge would misrepresent it (owner 10/19)
+    var kinds = c.join ? ['tile', 'companion', 'custom'] : [c.origin];
+    return kinds.map(function (k) { var t = CC_KIND_BADGE[k]; return '<span class="attr-kind attr-kind-' + k + '" title="' + attrEsc(t[1]) + '">' + t[0] + '</span>'; }).join('') +
+      (c.join ? '<span class="attr-join" title="Join column — the key that ties every table to the same feature: the tiles’ id, the source’s msid, and the key of this map’s own values">&#9939;</span>' : '');
   }
   async function saveAttrCCCell(fid, key, value) {
     if (!_attrCC || !window.MSCustomCols) return;
@@ -12117,8 +12122,8 @@
     fillColsJoin(node);
     renderColsList();
   }
-  function colsListEntries() {
-    return _attrColsAll.filter(function (c) { return c.kind !== 'sel' && (_attrColsFilter === 'all' || (c.origin || 'own') === _attrColsFilter || (_attrColsFilter === 'companion' && !c.origin)); });
+  function colsListEntries() {   // the join column belongs to every kind, so every kind filter lists it
+    return _attrColsAll.filter(function (c) { return c.kind !== 'sel' && (_attrColsFilter === 'all' || c.join || (c.origin || 'own') === _attrColsFilter || (_attrColsFilter === 'companion' && !c.origin)); });
   }
   function renderColsList() {
     var box = document.getElementById('attr-cols-list'); if (!box) return;
