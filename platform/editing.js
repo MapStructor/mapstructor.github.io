@@ -9441,6 +9441,7 @@
         node.colorBy = null;
         paint[key] = fallback;
         if (info) info.textContent = '';
+        node.filter = null;   // the hidden values went with the colour-by (step 11)
       } else {
         /* SAY IT AT THE MOMENT OF THE CHOICE. A vector-tile layer paints from its TILES, and the
            tiles only carry the columns that were baked. Colour by a column that was not baked and
@@ -9535,7 +9536,7 @@
       // persist: paint renders everywhere (incl. the public viewer); colorBy meta drives this UI + draw colors
       var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
       var rc = (cur.data && cur.data.raw_config) || {};
-      if (node.colorBy) rc.colorBy = node.colorBy; else delete rc.colorBy;
+      if (node.colorBy) rc.colorBy = node.colorBy; else { delete rc.colorBy; delete rc.filter; }   // no colour-by → no hidden values either (step 11)
       // SNAPSHOT FRESHNESS INCLUDES STYLE (8/19, "the bake didn't do colors again"): the raster
       // freezes colours at bake time, so a restyle must move a stamp the panel can compare with
       // rasterYears.at — otherwise the stale-raster warning only fires on DATA changes and a
@@ -9552,6 +9553,7 @@
         }
       });
       await syncMatchedOutline(node);   // a split-off border that MATCHES follows the new colours
+      if (!node.colorBy) applyOwnFilterLive(node);   // single colour again: the hide-by-value filter is lifted live too
       if (!isTilesetNode(node)) await loadFeatures();   // draw copies re-color; tilesets recolor via paint alone
       rerender();   // sidebar icon flips to/from the multicolor gradient (generateLayers reads node.colorBy)
       syncColorInputForColorBy(node);   // panel swatch ↔ multicolor strip
@@ -9576,21 +9578,108 @@
     if (!on) { list.style.display = 'none'; list.innerHTML = ''; return; }
     var pick = cb.pick === 'value' ? 'value' : 'random';
     Array.prototype.forEach.call(document.querySelectorAll('input[name="elp-cbmode"]'), function (r) { r.checked = r.value === pick; });
-    list.style.display = pick === 'value' ? 'block' : 'none';
-    if (pick !== 'value') { list.innerHTML = ''; return; }
-    var counts = {};
+    // the list shows in BOTH modes (step 11): Random = the dealt colour as a chip, By value = a
+    // swatch to edit; every row has a HIDE tick, and a last row covers features with no value
+    list.style.display = 'block';
+    var counts = {}, hidden = cb.hidden || [];
     if (cb.custom && window.MSCustomCols) {   // how many features carry each value (from the loaded table)
       var vals = MSCustomCols.cached(slugToLayerDbId[node.id]) || {};
       Object.keys(vals).forEach(function (k) { var v = vals[k] ? vals[k][cb.prop] : null; if (v != null && v !== '') counts[String(v)] = (counts[String(v)] || 0) + 1; });
     }
+    var hideCell = function (attr, on) { return '<label class="ms-check" style="margin:0;flex:0 0 auto;font-size:11px;color:#8a83a0;" title="Hidden: not drawn, no hover, no popup"><input type="checkbox" ' + attr + (on ? ' checked' : '') + ' style="vertical-align:middle;margin:0 3px 0 0;" />hide</label>'; };
     list.innerHTML = Object.keys(cb.mapping).map(function (v) {
-      var c = cb.mapping[v], hex = looksHex(c) ? normHex(c) : '#888888';
-      return '<div style="display:flex;align-items:center;gap:7px;margin:3px 0;">' +
-        '<input type="color" data-cbval="' + attrEsc(v) + '" value="' + hex + '" title="' + attrEsc(c) + '" style="width:30px;height:22px;padding:0;border:1px solid #bbbbbb;border-radius:3px;background:#fff;flex:0 0 auto;" />' +
-        '<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;" title="' + attrEsc(v) + '">' + attrEsc(v === '' || v === ' ' ? '(blank)' : v) + '</span>' +
+      var c = cb.mapping[v], hex = looksHex(c) ? normHex(c) : '#888888', isHid = hidden.indexOf(v) > -1;
+      return '<div style="display:flex;align-items:center;gap:7px;margin:3px 0;' + (isHid ? 'opacity:.55;' : '') + '">' +
+        (pick === 'value'
+          ? '<input type="color" data-cbval="' + attrEsc(v) + '" value="' + hex + '" title="' + attrEsc(c) + '" style="width:30px;height:22px;padding:0;border:1px solid #bbbbbb;border-radius:3px;background:#fff;flex:0 0 auto;" />'
+          : '<span style="display:inline-block;width:30px;height:22px;border:1px solid #bbbbbb;border-radius:3px;background:' + attrEsc(c) + ';flex:0 0 auto;" title="' + attrEsc(c) + ' (Random — pick By value to edit)"></span>') +
+        '<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;' + (isHid ? 'text-decoration:line-through;' : '') + '" title="' + attrEsc(v) + '">' + attrEsc(v === '' || v === ' ' ? '(blank)' : v) + '</span>' +
         (counts[v] != null ? '<span class="ms-note" style="margin:0;flex:0 0 auto;">' + counts[v] + '</span>' : '') +
+        hideCell('data-cbhide="' + attrEsc(v) + '"', isHid) +
         '</div>';
-    }).join('');
+    }).join('') +
+      '<div style="display:flex;align-items:center;gap:7px;margin:5px 0 2px;padding-top:4px;border-top:1px solid #e6e6e6;' + (cb.hideNoValue ? 'opacity:.55;' : '') + '">' +
+        '<span style="display:inline-block;width:30px;height:22px;border:1px dashed #bbbbbb;border-radius:3px;background:' + attrEsc((node.iconColor && looksHex(node.iconColor)) ? node.iconColor : '#3bb2d0') + ';flex:0 0 auto;" title="features with no value take the layer colour"></span>' +
+        '<span style="flex:1;min-width:0;font-size:12px;font-style:italic;' + (cb.hideNoValue ? 'text-decoration:line-through;' : '') + '">(no value)</span>' +
+        hideCell('id="elp-cbhide-novalue"', !!cb.hideNoValue) +
+      '</div>';
+  }
+  async function onColorByHide(v, hidden) {   // a value's hide tick (step 11): a filter — not drawn, no hover, no popup
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var h = (node.colorBy.hidden || []).slice(), i = h.indexOf(v);
+    if (hidden && i < 0) h.push(v); if (!hidden && i > -1) h.splice(i, 1);
+    node.colorBy.hidden = h;
+    setStatus('Saving…');
+    await reapplyColorBy(node, lid);
+    renderColorByMode(node);
+  }
+  async function onColorByHideNoValue(on) {
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    node.colorBy.hideNoValue = !!on;
+    setStatus('Saving…');
+    await reapplyColorBy(node, lid);
+    renderColorByMode(node);
+  }
+  /* the layer's OWN filter from the colour-by's hidden values (legacy syntax: the engine ANDs it
+     with the legacy date filter — utils.js msLayerFilter). A column in the tiles filters by the
+     property; a column of this map's own (not in the tiles) filters by feature id, from the values
+     table; a tiled column that is not baked filters by the ids the database gives for those values. */
+  async function colorByFilter(node, lid) {
+    var cb = node.colorBy; if (!cb || !cb.prop || !cb.mapping) return null;
+    var hidden = cb.hidden || [], noV = !!cb.hideNoValue;
+    if (!hidden.length && !noV) return null;
+    if (cb.custom && window.MSCustomCols) {
+      var values = MSCustomCols.cached(lid) || await MSCustomCols.load(lid);
+      var join = MSCustomCols.joinOf(node), prop = join || '$id';
+      var lit = function (k) { return join ? String(k) : Number(k); };
+      var keys = Object.keys(values), hid = [], shown = [];
+      keys.forEach(function (k) { var v = values[k] ? values[k][cb.prop] : null; if (v == null || v === '') return; (hidden.indexOf(String(v)) > -1 ? hid : shown).push(lit(k)); });
+      if (noV) return ['in', prop].concat(shown);          // allow-list: only features with a value that is not hidden
+      return hid.length ? ['!in', prop].concat(hid) : null;
+    }
+    var inTiles = true;
+    if (isTilesetNode(node)) {   // same test as the colour expression: is the column in the loaded tiles?
+      inTiles = false;
+      try {
+        var fs9 = beforeMap.querySourceFeatures(node.id + '-left', node['source-layer'] ? { sourceLayer: node['source-layer'] } : undefined) || [];
+        for (var i9 = 0; i9 < fs9.length && i9 < 200; i9++) if (fs9[i9].properties && (cb.prop in fs9[i9].properties)) { inTiles = true; break; }
+      } catch (e9) {}
+    }
+    if (inTiles) {
+      var parts = [];
+      if (hidden.length) parts.push(['!in', cb.prop].concat(hidden));
+      if (noV) { parts.push(['has', cb.prop]); parts.push(['!=', cb.prop, '']); }
+      return parts.length === 1 ? parts[0] : ['all'].concat(parts);
+    }
+    // unbaked tiled column: ids from the database (light select, keyset), capped like the colour match
+    var dataNode = node.outlineOf ? (findNodeById(layers, node.outlineOf) || node) : node;
+    var dataLid = dataNode === node ? lid : (slugToLayerDbId[dataNode.id] || lid);
+    var vSel = CB_DEDICATED.indexOf(cb.prop) > -1 ? ('v:' + cb.prop) : ('v:custom_fields->>' + cb.prop);
+    var hidIds = [], shownIds = [], lastFid = null;
+    for (;;) {
+      var qb = db.from('features').select('feature_id, ' + vSel).eq('layer_id', dataLid);
+      if (lastFid !== null) qb = qb.gt('feature_id', lastFid);
+      var q = await qb.order('feature_id').limit(1000);
+      if (q.error) break;
+      (q.data || []).forEach(function (x) { var vv = x.v; if (vv == null || vv === '') return; (hidden.indexOf(String(vv)) > -1 ? hidIds : shownIds).push(Number(x.feature_id)); });
+      if (!q.data || q.data.length < 1000) break;
+      lastFid = q.data[q.data.length - 1].feature_id;
+      if (hidIds.length + shownIds.length > TILECAT_BYID_CAP) { showToast('Too many features to hide by value on this layer without a re-bake'); return null; }
+    }
+    if (noV) return ['in', '$id'].concat(shownIds);
+    return hidIds.length ? ['!in', '$id'].concat(hidIds) : null;
+  }
+  function applyOwnFilterLive(node) {   // the own filter ANDed with the date, on the shape, its stroke and its highlight, both sides
+    var d = editorCurrentDate();
+    var dateF = (d && !node.timelineIgnore) ? msDateFilter('shape', d, false) : null;
+    var own = (node.customJson && node.customJson.filter) || node.filter || null;   // a Custom JSON filter still wins (its model: complete override)
+    var f = msLayerFilter(own, dateF);
+    [['left', (typeof beforeMap !== 'undefined' ? beforeMap : null)], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
+      var m = pair[1]; if (!m) return;
+      [node.id + '-' + pair[0], node.id + '-stroke-' + pair[0], node.id + '-highlighted-' + pair[0]].forEach(function (x) { try { if (m.getLayer(x)) m.setFilter(x, f); } catch (e) {} });
+    });
   }
   async function onColorByMode(pick) {
     var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
@@ -9668,14 +9757,18 @@
     paint[key] = expr;
     if (node.outlineMatchFill && node.type === 'fill') paint['fill-outline-color'] = JSON.parse(JSON.stringify(expr));
     node.paint = paint;
+    var ownF = null; try { ownF = await colorByFilter(node, lid); } catch (eF) { console.warn('hide-by-value filter failed', eF); }
+    node.filter = ownF;
     try {
       var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
       var rc = (cur.data && cur.data.raw_config) || {};
       rc.colorBy = node.colorBy;
+      if (ownF) rc.filter = ownF; else delete rc.filter;   // the hidden values ARE the layer's own filter (step 11)
       rc.styleChangedAt = new Date().toISOString(); node.styleChangedAt = rc.styleChangedAt;
       var r2 = await db.from('layers').update({ paint: paint, raw_config: rc }).eq('id', lid);
       if (r2.error) throw new Error(r2.error.message);
     } catch (e) { console.warn('colorBy save failed', e); setStatus('Save failed'); return; }
+    applyOwnFilterLive(node);
     [[beforeMap, '-left'], [typeof afterMap !== 'undefined' ? afterMap : null, '-right']].forEach(function (ms) {
       var m = ms[0]; if (!m) return;
       try { if (m.getLayer(node.id + ms[1])) m.setPaintProperty(node.id + ms[1], key, paint[key]); } catch (e) {}
@@ -11396,6 +11489,11 @@
     Array.prototype.forEach.call(document.querySelectorAll('input[name="elp-cbmode"]'), function (r) { r.addEventListener('change', function () { if (this.checked) onColorByMode(this.value); }); });
     document.getElementById('elp-colorby-values').addEventListener('input', function (e) {
       var sw = e.target && e.target.closest('input[data-cbval]'); if (sw) onColorByValueColor(sw.getAttribute('data-cbval'), sw.value);
+    });
+    document.getElementById('elp-colorby-values').addEventListener('change', function (e) {   // the hide ticks (step 11)
+      var t = e.target; if (!t || t.type !== 'checkbox') return;
+      if (t.id === 'elp-cbhide-novalue') onColorByHideNoValue(t.checked);
+      else if (t.hasAttribute('data-cbhide')) onColorByHide(t.getAttribute('data-cbhide'), t.checked);
     });
     document.getElementById('elp-bin-present').addEventListener('input', livePresenceColors);   // live preview while dragging the picker
     document.getElementById('elp-bin-absent').addEventListener('input', livePresenceColors);
