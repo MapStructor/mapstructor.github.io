@@ -9630,14 +9630,9 @@
     var cb = node.colorBy; if (!cb || !cb.prop || !cb.mapping) return null;
     var hidden = cb.hidden || [], noV = !!cb.hideNoValue;
     if (!hidden.length && !noV) return null;
-    if (cb.custom && window.MSCustomCols) {
+    if (cb.custom && window.MSCustomCols) {   // one author: customColumns.js
       var values = MSCustomCols.cached(lid) || await MSCustomCols.load(lid);
-      var join = MSCustomCols.joinOf(node), prop = join || '$id';
-      var lit = function (k) { return join ? String(k) : Number(k); };
-      var keys = Object.keys(values), hid = [], shown = [];
-      keys.forEach(function (k) { var v = values[k] ? values[k][cb.prop] : null; if (v == null || v === '') return; (hidden.indexOf(String(v)) > -1 ? hid : shown).push(lit(k)); });
-      if (noV) return ['in', prop].concat(shown);          // allow-list: only features with a value that is not hidden
-      return hid.length ? ['!in', prop].concat(hid) : null;
+      return MSCustomCols.hideFilter(node, values, cb.prop, hidden, noV);
     }
     var inTiles = true;
     if (isTilesetNode(node)) {   // same test as the colour expression: is the column in the loaded tiles?
@@ -9699,18 +9694,9 @@
     _cbValT = setTimeout(function () { setStatus('Saving…'); reapplyColorBy(node, lid); }, 350);
   }
   // the expression for a column of this map's own: keyed on the join column, one pair per feature with a value
-  async function ccColorExpr(node, lid, cb, fallback) {
+  async function ccColorExpr(node, lid, cb, fallback) {   // one author: customColumns.js (the build scripts compile the same way)
     var values = MSCustomCols.cached(lid) || await MSCustomCols.load(lid);
-    var join = MSCustomCols.joinOf(node);
-    var e = ['match', join ? ['to-string', ['get', join]] : ['id']];
-    Object.keys(values).forEach(function (k) {
-      var v = values[k] ? values[k][cb.prop] : null; if (v == null || v === '') return;
-      var c = cb.mapping[String(v)]; if (!c) return;
-      e.push(join ? String(k) : Number(k), c);
-    });
-    if (e.length <= 2) return fallback;
-    e.push(fallback);
-    return e;
+    return MSCustomCols.colorExpr(node, values, cb.prop, cb.mapping, fallback);
   }
   async function ccColorBy(node, lid, prop) {
     var info = document.getElementById('elp-colorby-info');

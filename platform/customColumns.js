@@ -111,8 +111,40 @@
     return out.sort();
   }
 
+  /* ── the styling a custom column drives (steps 9 + 11; one author for the editor AND the build scripts) ──
+     The column is not in the tiles, so the expressions key on the join column: ["id"] for the
+     feature id, ["to-string",["get",<col>]] for a natural key. */
+  function keyLiteral(node, k) { return joinOf(node) ? String(k) : Number(k); }
+  // fill colour: one pair per feature whose value has a colour in the mapping; `fallback` for the rest
+  function colorExpr(node, values, prop, mapping, fallback) {
+    var join = joinOf(node);
+    var e = ["match", join ? ["to-string", ["get", join]] : ["id"]];
+    Object.keys(values || {}).forEach(function (k) {
+      var v = values[k] ? values[k][prop] : null; if (v == null || v === "") return;
+      var c = mapping && mapping[String(v)]; if (!c) return;
+      e.push(keyLiteral(node, k), c);
+    });
+    if (e.length <= 2) return fallback;
+    e.push(fallback);
+    return e;
+  }
+  // the layer's OWN filter from hidden values (legacy syntax — the engine ANDs it with its legacy
+  // date filter): hidden values exclude their features; "(no value)" hidden = an allow-list
+  function hideFilter(node, values, prop, hidden, hideNoValue) {
+    hidden = hidden || [];
+    if (!hidden.length && !hideNoValue) return null;
+    var join = joinOf(node), key = join || "$id", hid = [], shown = [];
+    Object.keys(values || {}).forEach(function (k) {
+      var v = values[k] ? values[k][prop] : null; if (v == null || v === "") return;
+      (hidden.indexOf(String(v)) > -1 ? hid : shown).push(keyLiteral(node, k));
+    });
+    if (hideNoValue) return ["in", key].concat(shown);
+    return hid.length ? ["!in", key].concat(hid) : null;
+  }
+
   var api = { defsOf: defsOf, defOf: defOf, joinOf: joinOf, rowKey: rowKey, featureKey: featureKey, distinctValues: distinctValues,
-    load: load, cached: cached, seed: seed, set: set, setMany: setMany, dropColumn: dropColumn };
+    load: load, cached: cached, seed: seed, set: set, setMany: setMany, dropColumn: dropColumn,
+    colorExpr: colorExpr, hideFilter: hideFilter };
   root.MSCustomCols = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

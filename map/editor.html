@@ -118,7 +118,7 @@
     <script src="../platform/bookmarks.js?v=f3ed1315"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
     <script src="../platform/portalAdd.js?v=cc6dc44d"></script>   <!-- Map Portal: sidebar window — add a bookmarked/own map into this one (All/Linked/Instance per layer) -->
     <script src="../platform/overlay.js?v=9ef160c7"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
-    <script src="../platform/customColumns.js?v=f9ca1bf0"></script>   <!-- Linked Tileset Custom Columns Table: this map's own columns on a layer, values by join key -->
+    <script src="../platform/customColumns.js?v=3e33f7b8"></script>   <!-- Linked Tileset Custom Columns Table: this map's own columns on a layer, values by join key -->
     <script src="../platform/content.js?v=fdb5b648"></script>   <!-- content system: entries for a clicked feature (panel mode "entries"), entry + encyclopedia pages -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
@@ -474,7 +474,7 @@
          Must load BEFORE editing.js. Removing this line degrades cleanly: every call site
          checks `window.MSGuard` and falls back to the plain call. -->
     <script src="../platform/guards.js?v=6e3e345a" onerror="void(0)"></script>
-    <script src="../platform/editing.js?v=88e3a7a5" onerror="void(0)"></script>
+    <script src="../platform/editing.js?v=4c27e51e" onerror="void(0)"></script>
 
     <!-- Save-to-account: anonymous maps live only at their URL; claim them via the shared MapAuth modal (dev plan Step 6 funnel).
          Sits just past the header's bottom edge (slight overlap for attention), clear of the ABOUT button. -->
