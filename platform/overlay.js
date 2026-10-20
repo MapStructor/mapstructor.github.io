@@ -16,18 +16,15 @@
   function client() { db = db || (window.MapAuth && MapAuth.db); return db; }
   var cache = {};   // layerDbId → { featureId: fields } — re-applies survive hydration overwrites
 
-  // 10/18: the table is keyed by a TEXT join key (layer-overlay-key.sql) — the feature id as text
-  // for id-joined layers, a natural key (ISO…) otherwise. This module's callers are the GeoJSON
-  // merge paths, which join by feature id, so `key` and `feature_id` agree here.
   async function load(layerDbId) {
     var out = {}, last = null;
     for (;;) {
-      var q = client().from('layer_overlay').select('key, fields').eq('layer_id', layerDbId).order('key').limit(1000);
-      if (last != null) q = q.gt('key', last);
+      var q = client().from('layer_overlay').select('feature_id, fields').eq('layer_id', layerDbId).order('feature_id').limit(1000);
+      if (last != null) q = q.gt('feature_id', last);
       var r = await q;
       if (r.error || !r.data || !r.data.length) break;
-      r.data.forEach(function (x) { out[String(x.key)] = x.fields || {}; });
-      last = r.data[r.data.length - 1].key;
+      r.data.forEach(function (x) { out[String(x.feature_id)] = x.fields || {}; });
+      last = r.data[r.data.length - 1].feature_id;
       if (r.data.length < 1000) break;
     }
     cache[layerDbId] = out;
@@ -36,16 +33,12 @@
 
   // merge one cell (empty value clears the key; an emptied row is left as {} — harmless)
   async function set(layerDbId, featureId, key, value) {
-    var k = String(featureId);
-    var cur = await client().from('layer_overlay').select('fields').eq('layer_id', layerDbId).eq('key', k).maybeSingle();
+    var cur = await client().from('layer_overlay').select('fields').eq('layer_id', layerDbId).eq('feature_id', featureId).maybeSingle();
     var f = (cur.data && cur.data.fields) || {};
     if (value === null || value === '') delete f[key]; else f[key] = value;
-    var row = { layer_id: layerDbId, key: k, fields: f, updated_at: new Date().toISOString() };
-    if (/^\d+$/.test(k)) row.feature_id = Number(k);
-    var r = await client().from('layer_overlay').upsert(row, { onConflict: 'layer_id,key' });
+    var r = await client().from('layer_overlay').upsert({ layer_id: layerDbId, feature_id: featureId, fields: f, updated_at: new Date().toISOString() }, { onConflict: 'layer_id,feature_id' });
     if (!r.error) {
-      if (cache[layerDbId]) cache[layerDbId][k] = f;
-      if (window.MSCustomCols && MSCustomCols.cached(layerDbId)) MSCustomCols.cached(layerDbId)[k] = f;   // one table, two readers — keep both caches honest
+      if (cache[layerDbId]) cache[layerDbId][String(featureId)] = f;
       known = null;   // a write changes the world — the next refreshAll re-discovers (a column
                       // added THIS session isn't in the boot-time scan, and cached [] hid it)
     }

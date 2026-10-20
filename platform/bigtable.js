@@ -134,16 +134,13 @@
   // THE sidecar's shape, defined once. bakeFromRows uses it for the platform's own sidecars and
   // the download builder uses it (10/6) so a copy of the map carries a table for EVERY tiled
   // layer, including the ones under BIG_ROWS that never earned a sidecar here.
-  // opts.std (10/18): the plain columns to write instead of the sidecar's standard set — the
-  // download's Custom Columns Table file is {key, c:<col>…}, same writer, one shape definition
-  async function buildParquet(rows, tag, opts) {
+  async function buildParquet(rows, tag) {
     var e = await ensureEngine();
-    var STDC = (opts && opts.std) || STD;
     var keys = collectKeys(rows), types = keyTypes(rows, keys);
     var flat = new Array(rows.length);
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i], o = {};
-      STDC.forEach(function (f) { var v = r[f]; o[f] = v == null ? null : String(v); });
+      STD.forEach(function (f) { var v = r[f]; o[f] = v == null ? null : String(v); });
       var cf = r.custom_fields || {};
       for (var j = 0; j < keys.length; j++) {
         var k = keys[j], v2 = cf[k];
@@ -151,7 +148,7 @@
       }
       flat[i] = o;
     }
-    var cols = STDC.map(function (f) { return sq(f) + ": 'VARCHAR'"; })
+    var cols = STD.map(function (f) { return sq(f) + ": 'VARCHAR'"; })
       .concat(keys.map(function (k) { return sq(CF + k) + ": " + sq(types[k]); })).join(", ");
     var jname = "bake_" + String(tag || "x").replace(/[^A-Za-z0-9_-]/g, "_") + ".json";
     await e.adb.registerFileText(jname, JSON.stringify(flat));

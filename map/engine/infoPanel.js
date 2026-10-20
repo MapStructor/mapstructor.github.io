@@ -152,10 +152,6 @@ function handlePanelClick(layer, event) {
   try {
     if (layer.colorBy && layer.colorBy.mapping) {
       var cbv = props[layer.colorBy.prop];
-      if (layer.colorBy.custom && typeof MSCustomCols !== "undefined") {   // custom column (10/18): value from the custom-values table, not the tiles
-        var cvals = MSCustomCols.valuesFor(layer, MSCustomCols.cached(layer._layerDbId || layer.tableId) || layer.customValues, event.features[0]);
-        cbv = cvals ? cvals[layer.colorBy.prop] : null;
-      }
       var cbc = cbv != null ? layer.colorBy.mapping[String(cbv)] : null;
       if (cbc) pillStyle = " style=\"background-color:" + hexToRgba(cbc, 0.5) + ";border-color:" + cbc + "\"";
     }

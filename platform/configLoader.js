@@ -207,11 +207,7 @@ var ConfigLoader = (function () {
     // Mirrors resolve their DATA through the source layer regardless of source_type — a TILESET
     // mirror (AHM curr-builds) renders rowless from tiles but its table/data reads live on the
     // source's feature rows, same as geojson instances (viewerTable reads this first).
-    // 10/18: a Linked TILESET mirror (portalAdd stamps _msFromLayer; instanceOf is set only for
-    // live GeoJSON sources) resolves its data the same way — the owner's attribute window on the
-    // property map read the skinny tiles (4 columns) because this fell through to the mirror's
-    // own, rowless id. The Companion Columns Table is the source's store; this is its address.
-    leaf._dataLayerId = raw.instanceOf || raw._msFromLayer || row.id;
+    leaf._dataLayerId = raw.instanceOf || row.id;
     Object.keys(raw).forEach(function (k) {
       if (k !== "panel") leaf[k] = raw[k];
     });

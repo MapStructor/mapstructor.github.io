@@ -9023,7 +9023,6 @@
           if (cbt && cbt.prop) { if (![].slice.call(sel.options).some(function (o) { return o.value === cbt.prop; })) { var oc3 = document.createElement('option'); oc3.value = cbt.prop; oc3.textContent = cbt.prop; sel.appendChild(oc3); } sel.value = cbt.prop; info.textContent = cbt.mode === 'hex' ? "Using the column's own hex colors." : (Object.keys(cbt.mapping || {}).length + ' categories, one color each.'); }
           else { sel.value = ''; info.textContent = ''; }
           addPresenceOption(sel, node);   // + "Labeled vs unlabeled" (reflects saved presence mode)
-          ccFillSelects(node, sel);       // + this map's own columns (10/18) — and the Outline-by / Lighter-by selects
         }
       }
       return;
@@ -9075,7 +9074,6 @@
       // the Label-field dropdown gets the same columns ("label" = the feature's own Label field)
       fillLabelFieldSelect(node, sortedKeys);
       fillGroupBySelect(node, sortedKeys);
-      ccFillSelects(node, sel);   // a GeoJSON mirror's own columns drive Outline-by / Lighter-by too (10/18)
     } catch (e) {}
   }
   // "Treat as one" — drawn layers only for now (tileset tiles may not carry the column; the
@@ -9202,8 +9200,8 @@
     var cb = node.colorBy;
     if (cb && cb.mode === 'presence') return [{ label: 'Labeled', color: cb.present || '#3bb2d0' }, { label: 'Unlabeled', color: cb.absent || '#cccccc' }];
     if (cb && cb.mapping) {
-      var ks = Object.keys(cb.mapping), lbls = cb.labels || {};
-      var items = ks.slice(0, 12).map(function (k) { return { label: lbls[k] || ((k === ' ' || k === '') ? '(blank)' : k), color: cb.mapping[k] }; });   // cliff-ok: the legend appends "… +N more" right below, which announces it in the UI
+      var ks = Object.keys(cb.mapping);
+      var items = ks.slice(0, 12).map(function (k) { return { label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; });   // cliff-ok: the legend appends "… +N more" right below, which announces it in the UI
       if (ks.length > 12) items.push({ label: '… +' + (ks.length - 12) + ' more', color: 'transparent' });
       return items;
     }
@@ -9279,9 +9277,7 @@
       // controls — so a category past the cap is painted on the map with no row to change it.
       if (window.MSGuard) MSGuard.cliff('style-cats-cap', ks.length, STYLE_CATS_MAX,
         'categories past the first ' + STYLE_CATS_MAX + ' are drawn on the map but have no style row you can click');
-      // a custom column's definition may label its values (10/18): "Both" for the stored "both"
-      var lbls = cb.labels || {};
-      return ks.slice(0, STYLE_CATS_MAX).map(function (k) { return { key: k, label: lbls[k] || ((k === ' ' || k === '') ? '(blank)' : k), color: cb.mapping[k] }; });
+      return ks.slice(0, STYLE_CATS_MAX).map(function (k) { return { key: k, label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; });
     }
     return [];
   }
@@ -9293,9 +9289,6 @@
     var hidden = node.styleHidden || [];
     if (!hidden.length) return base;
     var cb = node.colorBy;
-    // a CUSTOM colour-by column is not in the tiles (10/18): the dim rides a by-key match built
-    // from the layer's custom values (twin in viewerTable.js reads the same seam)
-    if (cb && cb.custom && window.MSCustomCols) return MSCustomCols.hiddenOpacityExpr(node, MSCustomCols.cached(slugToLayerDbId[node.id]) || {}, hidden, base);
     if (cb && cb.mode === 'presence') {
       var f = ['to-string', ['get', cb.prop || 'label']], blank = ['any', ['==', f, ''], ['==', f, ' ']];
       return ['case', blank, (hidden.indexOf('__absent__') > -1 ? 0 : base), (hidden.indexOf('__present__') > -1 ? 0 : base)];
@@ -9323,11 +9316,6 @@
   }
   function toggleStyleCat(id, key, visible) {
     var node = findNodeById(layers, id); if (!node) return;
-    // a custom colour-by needs its values before the dim can be built by key — load, then re-enter
-    if (node.colorBy && node.colorBy.custom && window.MSCustomCols && !MSCustomCols.cached(slugToLayerDbId[id]) && slugToLayerDbId[id]) {
-      MSCustomCols.load(slugToLayerDbId[id]).then(function () { toggleStyleCat(id, key, visible); }, function () {});
-      return;
-    }
     node.styleHidden = node.styleHidden || [];
     var i = node.styleHidden.indexOf(key);
     if (visible) { if (i > -1) node.styleHidden.splice(i, 1); } else { if (i < 0) node.styleHidden.push(key); }
@@ -9415,10 +9403,6 @@
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
-    // one of THIS MAP's own columns (10/18): the mapping is the column's definition, the
-    // expression keys on the join column — no tiles sampling, no bake, any source type
-    var ccDef = prop && window.MSCustomCols ? MSCustomCols.defOf(node, prop) : null;
-    if (ccDef) { await ccColorBy(node, lid, ccDef); return; }
     // OUTLINE SPLITS colour by their PARENT's rows (owner 8/14, "that column has no values"):
     // the split owns no features by design — it draws the fill's edges — so value sampling and
     // the by-id categorical expression both read the FILL's data layer. The colour-by meta and
@@ -11107,13 +11091,6 @@
         '<select id="elp-colorby" class="ms-in"><option value="">Single color</option></select>' +
         '<div id="elp-colorby-info" class="ms-note"></div>' +
       '</div>' +
-      // (10/18) a second custom column lightens each feature's colour toward white by its value's
-      // "lighter %" — confidence as a lighter colour, not an opacity (owner 10/18)
-      '<div id="elp-lightenby-row" style="margin:0 0 8px;display:none;">' +
-        '<label class="ms-lbl" title="Each feature’s colour is mixed toward white by the “lighter %” its value has in the column’s definition">Lighter by your column</label>' +
-        '<select id="elp-lightenby" class="ms-in"><option value="">Off — one shade per colour</option></select>' +
-        '<div id="elp-lightenby-info" class="ms-note"></div>' +
-      '</div>' +
       // legend (experiment): show this layer's colors in an on-map box
       '<label id="elp-legend-row" class="ms-check" style="margin:2px 0 8px;display:block;"><input id="elp-legend-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show legend on the map</label>' +
       // style categories nested under the layer in the sidebar, each toggleable like a layer
@@ -11164,12 +11141,6 @@
         '<label class="ms-lbl" style="margin-top:2px;">Thickness by data column</label>' +
         '<select id="elp-thickby" class="ms-in"><option value="">Single thickness (slider above)</option></select>' +
         '<div id="elp-thickby-info" class="ms-note-accent"></div>' +
-      '</div>' +
-      // (10/18) outline colour + width per value of one of this map's own columns
-      '<div id="elp-outlineby-row" style="margin-top:4px;display:none;">' +
-        '<label class="ms-lbl" style="margin-top:2px;" title="Each feature’s outline colour and width come from its value in the column’s definition; the colour and width above are the outline for features without a value">Outline by your column</label>' +
-        '<select id="elp-outlineby" class="ms-in"><option value="">Single outline (colour + width above)</option></select>' +
-        '<div id="elp-outlineby-info" class="ms-note-accent"></div>' +
       '</div>' +
       '<button id="elp-split" class="ms-btn" style="margin-top:8px;">Split outline into its own layer</button>' +
       '</div>' +
@@ -11271,8 +11242,6 @@
     document.getElementById('elp-stylerows-on').addEventListener('change', function () { onToggleStyleRows(this.checked); });
     document.getElementById('elp-opacityby').addEventListener('change', function () { onStyleNumBy('opacity', this.value); });
     document.getElementById('elp-thickby').addEventListener('change', function () { onStyleNumBy('thickness', this.value); });
-    document.getElementById('elp-outlineby').addEventListener('change', function () { onOutlineBy(this.value); });
-    document.getElementById('elp-lightenby').addEventListener('change', function () { onLightenBy(this.value); });
     document.getElementById('elp-maplabels-on').addEventListener('change', onMapLabelsChange);
     document.getElementById('elp-maplabels-field').addEventListener('change', onMapLabelsChange);
     ['elp-lbl-color', 'elp-lbl-halo', 'elp-lbl-bold', 'elp-lbl-density'].forEach(function (id2) { document.getElementById(id2).addEventListener('change', onMapLabelsChange); });
@@ -11424,355 +11393,32 @@
     if (typeof refreshLayers === 'function') refreshLayers();
     showLayerPanel(activeLayerId);
   }
-  /* ── YOUR COLUMNS = the Linked Tileset Custom Columns Table (10/18) ─────────────────────────
-     Definitions live on this map's layer row (raw_config.customCols, typed; each value carries its
-     fill colour, outline colour + width, "lighter" percent, label and hidden flag); values live in
-     layer_overlay by join key (platform/customColumns.js). Three Style selects name a custom
-     column — Color by / Outline by / Lighter by — and applyCustomStyle() compiles the definition +
-     the values into the persisted paint and the layer's own hide-filter, the same way the panel's
-     colour-by has always persisted a match expression. The viewer and a downloaded copy render
-     that paint; nothing runs at view time. Works on ANY source type: the expressions key on the
-     feature id (or the natural key the Join column names), which is in every tile. */
-  function ccEligible(node) {
-    return !!(node && !node.outlineOf && node.type !== 'section' && node.type !== 'group' &&
-      (node.instanceOf || node._msFromLayer || isTilesetNode(node) || (window.MSCustomCols && MSCustomCols.defsOf(node).length)));
-  }
-  function ccDefs(node) { return window.MSCustomCols ? MSCustomCols.defsOf(node) : []; }
-  async function ccSaveDefs(node, lid, defs) {
-    node.customCols = defs;
-    node.overlayCols = defs.map(function (d) { return d.key; });   // the Portal 5b name list stays in step (GeoJSON merge path)
-    return await patchLayerConfig(lid, { customCols: defs, overlayCols: node.overlayCols });
-  }
-  async function ccAddColumn(node, lid, name) {
-    var defs = ccDefs(node).slice();
-    if (defs.some(function (d) { return d.key === name; })) return { error: { message: 'That column already exists.' } };
-    defs.push({ key: name, label: null, type: 'category', values: [], noValue: {} });
-    var r = await ccSaveDefs(node, lid, defs);
-    if (!r.error && activeLayerId === node.id) { ccRenderChips(node); populateColorBy(node); }
-    return r;
-  }
-  async function ccDropColumn(node, lid, key) {
-    var defs = ccDefs(node).filter(function (d) { return d.key !== key; });
-    var r = await ccSaveDefs(node, lid, defs); if (r.error) return r;
-    var r2 = await MSCustomCols.dropColumn(lid, key); if (r2.error) return r2;
-    var paint = JSON.parse(JSON.stringify(node.paint || {}));
-    var fallback = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
-    if (node.colorBy && node.colorBy.custom && node.colorBy.prop === key) { node.colorBy = null; paint[colorKeyFor(node.type)] = fallback; }
-    if (node.outlineBy && node.outlineBy.prop === key) { ccResetOutline(node, paint); node.outlineBy = null; }
-    if (node.lightenBy && node.lightenBy.prop === key) node.lightenBy = null;
-    node.paint = paint;
-    await applyCustomStyle(node);
-    if (activeLayerId === node.id) { _ccDefOpen = null; showLayerPanel(node.id); }
-    return r;
-  }
-  function ccResetOutline(node, paint) {   // back to the single outline the panel holds (captured when Outline-by was chosen)
-    var ob = node.outlineBy || {};
-    if (node.type === 'fill') { paint['fill-outline-color'] = ob.baseColor || '#000000'; paint['line-width'] = ob.baseWidth != null ? ob.baseWidth : FILL_BORDER_DEFAULT; }
-    else if (node.type === 'line') { paint['line-width'] = ob.baseWidth != null ? ob.baseWidth : 2; if (!(node.colorBy && node.colorBy.custom)) paint['line-color'] = ob.baseColor || paint['line-color'] || '#3bb2d0'; }
-    else { paint['circle-stroke-color'] = ob.baseColor || '#ffffff'; paint['circle-stroke-width'] = ob.baseWidth != null ? ob.baseWidth : 1.5; }
-  }
-  var _ccStyleT = {};
-  function scheduleCustomStyle(slug) {   // a cell edit in the table → one recompile after typing settles
-    clearTimeout(_ccStyleT[slug]);
-    _ccStyleT[slug] = setTimeout(function () { var n = findNodeById(layers, slug); if (n) applyCustomStyle(n); }, 700);
-  }
-  async function applyCustomStyle(node) {
-    if (!window.MSCustomCols || !node) return null;
-    var lid = slugToLayerDbId[node.id]; if (!lid) return null;
-    var values = MSCustomCols.cached(lid) || await MSCustomCols.load(lid);
-    var fallback = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
-    var ob = node.outlineBy || {};
-    var res = MSCustomCols.compile(node, values, {
-      color: fallback,
-      outline: ob.baseColor || outlineColorOf(node) || '#000000',
-      width: ob.baseWidth != null ? ob.baseWidth : (paintWidth(node.paint) != null ? paintWidth(node.paint) : FILL_BORDER_DEFAULT)
-    });
-    var paint = JSON.parse(JSON.stringify(node.paint || {}));
-    var key = colorKeyFor(node.type);
-    if (node.colorBy && node.colorBy.custom) {
-      paint[key] = res.paint[key];
-      if (node.outlineMatchFill && node.type === 'fill') paint['fill-outline-color'] = JSON.parse(JSON.stringify(paint[key]));
-    }
-    if (node.outlineBy && node.outlineBy.prop) Object.keys(res.paint).forEach(function (k) { if (k !== key) paint[k] = res.paint[k]; });
-    node.paint = paint;
-    node.filter = res.filter || null;
-    try {
-      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
-      var rc = (cur.data && cur.data.raw_config) || {};
-      if (node.colorBy) rc.colorBy = node.colorBy; else delete rc.colorBy;
-      if (node.outlineBy) rc.outlineBy = node.outlineBy; else delete rc.outlineBy;
-      if (node.lightenBy) rc.lightenBy = node.lightenBy; else delete rc.lightenBy;
-      if (node.filter) rc.filter = node.filter; else delete rc.filter;
-      rc.styleChangedAt = new Date().toISOString(); node.styleChangedAt = rc.styleChangedAt;
-      var r2 = await db.from('layers').update({ paint: paint, raw_config: rc }).eq('id', lid);
-      if (r2.error) throw new Error(r2.error.message);
-    } catch (e) { console.warn('custom style save failed', e); setStatus('Save failed'); return null; }
-    ccApplyLive(node, paint);
-    try { await syncMatchedOutline(node); } catch (eS) {}
-    rerender(); syncColorInputForColorBy(node);
-    try { renderLegend(); } catch (eL) {}
-    if (window.__msInjectStyleRows) window.__msInjectStyleRows();
-    return res;
-  }
-  function ccApplyLive(node, paint) {   // both swipe sides: paint keys, the stroke companion's lifecycle, and the own filter ANDed with the date
-    var d = editorCurrentDate();
-    [['left', (typeof beforeMap !== 'undefined' ? beforeMap : null)], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
-      var m = pair[1]; if (!m) return;
-      var id = node.id + '-' + pair[0], sid = node.id + '-stroke-' + pair[0], hid = node.id + '-highlighted-' + pair[0];
-      var ml = m.getLayer(id); if (!ml) return;
-      Object.keys(paint).forEach(function (k) { if (k.indexOf(ml.type + '-') === 0 && k !== 'fill-opacity' && k !== 'fill-outline-color') { try { m.setPaintProperty(id, k, paint[k]); } catch (e) {} } });
-      if (ml.type === 'fill') {
-        var wantStroke = fillStrokeWanted(paint);
-        try { m.setPaintProperty(id, 'fill-outline-color', (wantStroke || paint['line-opacity'] === 0) ? 'rgba(0,0,0,0)' : (paint['fill-outline-color'] || node.iconColor || '#3bb2d0')); } catch (e) {}
-        if (wantStroke && !m.getLayer(sid)) {
-          var sc2 = { id: sid, type: 'line', source: node.id + '-' + pair[0], paint: {}, layout: { 'line-cap': 'round', 'line-join': 'round' } };
-          if (node['source-layer']) sc2['source-layer'] = node['source-layer'];
-          try { addMapLayer(m, sc2, d); } catch (e) {}
-        }
-        if (!wantStroke && m.getLayer(sid)) { try { m.removeLayer(sid); } catch (e) {} }
-        if (m.getLayer(sid)) {
-          var lc2 = paint['fill-outline-color'];
-          if (typeof lc2 === 'string' && isTransparentColor(lc2)) lc2 = outlineColorOf(node) || '#000000';
-          if (lc2 != null) { try { m.setPaintProperty(sid, 'line-color', lc2); } catch (e) {} }
-          try { m.setPaintProperty(sid, 'line-width', paint['line-width'] != null ? paint['line-width'] : FILL_BORDER_DEFAULT); } catch (e) {}
-          if (paint['line-opacity'] != null) { try { m.setPaintProperty(sid, 'line-opacity', paint['line-opacity']); } catch (e) {} }
-        }
-      }
-      var dateF = (d && !node.timelineIgnore) ? msDateFilter('shape', d, false) : null;
-      var own = (node.customJson && node.customJson.filter) || node.filter || null;
-      var f = msLayerFilter(own, dateF);
-      [id, sid, hid].forEach(function (x) { try { if (m.getLayer(x)) m.setFilter(x, f); } catch (e) {} });
-    });
-  }
-  // the Style selects: "Color by" gains this map's own columns; "Outline by" + "Lighter by" list them
-  function ccFillSelects(node, colorSel) {
-    var defs = ccDefs(node);
-    if (colorSel) {
-      defs.forEach(function (d) {
-        if ([].slice.call(colorSel.options).some(function (o) { return o.value === d.key; })) return;
-        var o = document.createElement('option'); o.value = d.key; o.textContent = '★ ' + (d.label || d.key) + ' (your column)'; colorSel.appendChild(o);
-      });
-      if (node.colorBy && node.colorBy.custom) {
-        colorSel.value = node.colorBy.prop;
-        var info = document.getElementById('elp-colorby-info');
-        if (info) info.textContent = Object.keys(node.colorBy.mapping || {}).length + ' values of your column “' + node.colorBy.prop + '” — colours, labels and hidden values are set under “Your columns”.' + (node.lightenBy ? ' Lighter by “' + node.lightenBy.prop + '”.' : '');
-      }
-    }
-    [['elp-outlineby', 'outlineBy', 'Single outline (colour + width above)'], ['elp-lightenby', 'lightenBy', 'Off — one shade per colour']].forEach(function (spec) {
-      var row = document.getElementById(spec[0] + '-row'), s2 = document.getElementById(spec[0]); if (!row || !s2) return;
-      row.style.display = defs.length > 0 ? 'block' : 'none';
-      s2.innerHTML = '<option value="">' + spec[2] + '</option>';
-      defs.forEach(function (d) { var o = document.createElement('option'); o.value = d.key; o.textContent = '★ ' + (d.label || d.key); s2.appendChild(o); });
-      var saved = (node[spec[1]] && node[spec[1]].prop) || '';
-      s2.value = saved;
-      var inf = document.getElementById(spec[0] + '-info');
-      if (inf) inf.textContent = saved
-        ? (spec[1] === 'outlineBy' ? 'Each value’s outline colour and width come from the column’s definition; the controls above are the outline for features without a value.' : 'Each value’s “lighter %” comes from the column’s definition (0 = the full colour, 100 = white).')
-        : '';
-    });
-  }
-  async function onOutlineBy(prop) {
-    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node) return;
-    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
-    setStatus('Saving…');
-    if (!prop) {
-      if (node.outlineBy) { var p0 = JSON.parse(JSON.stringify(node.paint || {})); ccResetOutline(node, p0); node.paint = p0; node.outlineBy = null; }
-    } else {
-      var prev = node.outlineBy || {};
-      node.outlineBy = { prop: prop, baseColor: prev.baseColor || outlineColorOf(node) || '#000000', baseWidth: prev.baseWidth != null ? prev.baseWidth : (paintWidth(node.paint) != null ? paintWidth(node.paint) : FILL_BORDER_DEFAULT) };
-    }
-    var res = await applyCustomStyle(node);
-    if (res) { setStatus('Saved'); showLayerPanel(node.id); }
-  }
-  async function onLightenBy(prop) {
-    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node) return;
-    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
-    node.lightenBy = prop ? { prop: prop } : null;
-    setStatus('Saving…');
-    var res = await applyCustomStyle(node);
-    if (res) { setStatus('Saved'); showLayerPanel(node.id); }
-  }
-  // colour by one of this map's own columns: the mapping comes from the column's definition — a
-  // value with no colour yet takes one from the palette AND keeps it in the definition
-  async function ccColorBy(node, lid, def) {
-    var values = MSCustomCols.cached(lid) || await MSCustomCols.load(lid);
-    var vals = MSCustomCols.distinctValues(values, def.key);
-    (def.values || []).forEach(function (x) { if (x && x.v != null && vals.indexOf(String(x.v)) < 0) vals.push(String(x.v)); });
-    var defs = ccDefs(node).slice(), d2 = defs.filter(function (d) { return d.key === def.key; })[0] || def;
-    var mapping = {}, labels = {}, changed = false;
-    vals.forEach(function (v, i) {
-      var vd = MSCustomCols.valueDef(d2, v);
-      if (!vd) { vd = { v: v }; d2.values = (d2.values || []).concat([vd]); changed = true; }
-      if (vd.color == null || vd.color === '') { vd.color = COLORBY_PALETTE[i % COLORBY_PALETTE.length]; changed = true; }
-      mapping[v] = MSCustomCols.isNone(vd.color) ? 'rgba(0,0,0,0)' : vd.color;
-      if (vd.label) labels[v] = vd.label;
-    });
-    if (changed) await ccSaveDefs(node, lid, defs);
-    node.colorBy = { prop: def.key, mode: 'category', mapping: mapping, labels: labels, custom: true };
-    setStatus('Saving…');
-    var res = await applyCustomStyle(node);
-    if (!res) return;
-    var info = document.getElementById('elp-colorby-info');
-    if (info) info.textContent = vals.length + ' value' + (vals.length === 1 ? '' : 's') + ' of your column “' + def.key + '” — colours, labels and hidden values are set under “Your columns”.' + (node.lightenBy ? ' Lighter by “' + node.lightenBy.prop + '”.' : '');
-    ccRenderChips(node);
-    setStatus('Saved');
-  }
-  function ccSyncColorByFromDef(node, def) {   // the definition changed → the colour-by meta (legend, style rows, pills) follows it
-    if (!(node.colorBy && node.colorBy.custom && node.colorBy.prop === def.key)) return;
-    var mapping = {}, labels = {};
-    Object.keys(node.colorBy.mapping || {}).forEach(function (v) { mapping[v] = node.colorBy.mapping[v]; });
-    (def.values || []).forEach(function (vd) { if (vd && vd.v != null) { if (vd.color) mapping[String(vd.v)] = MSCustomCols.isNone(vd.color) ? 'rgba(0,0,0,0)' : vd.color; if (vd.label) labels[String(vd.v)] = vd.label; } });
-    node.colorBy.mapping = mapping; node.colorBy.labels = labels;
-  }
-  // ── the panel section: chips, the join column, the definition editor ──
-  var _ccDefOpen = null;
-  var CC_NOVALUE = '__novalue__';   // the "no value" row's data-v (a NUL char in an attribute comes back as U+FFFD)
-  function ccRenderChips(node) {
+  // ── Your columns (Map Portal 5b) — helpers for the panel section ──────────
+  function ovRenderChips(node) {
     var box = document.getElementById('elp-ov-chips'); if (!box) return;
-    if (!document.getElementById('elp-cc-css')) {
-      var st = document.createElement('style'); st.id = 'elp-cc-css';
-      st.textContent = '.elp-cc-chip{display:inline-block;margin:0 4px 4px 0;padding:2px 9px;background:#efeaf8;border:1px solid #d9cff1;border-radius:12px;font-size:11px;color:#4a3670;cursor:pointer;font-family:inherit;}' +
-        '.elp-cc-chip:hover{background:#e6dcf7;}.elp-cc-chip.on{background:#4a3670;color:#fff;border-color:#4a3670;}' +
-        '.elp-cc-val{border-top:1px solid #eee9f6;padding:5px 0;font-size:11.5px;}.elp-cc-val:first-child{border-top:0;}' +
-        '.elp-cc-val .r{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;margin-top:3px;}' +
-        '.elp-cc-val input[type=text],.elp-cc-val input[type=number]{font-size:11px;padding:2px 4px;border:1px solid #ddd;border-radius:3px;box-sizing:border-box;}' +
-        '.elp-cc-val input[type=color]{width:22px;height:20px;padding:0;border:1px solid #ccc;border-radius:3px;vertical-align:middle;background:#fff;}' +
-        '.elp-cc-val b{font-size:11.5px;color:#2b2540;}.elp-cc-val .k{color:#8a83a0;}';
-      document.head.appendChild(st);
-    }
-    var defs = ccDefs(node);
-    box.innerHTML = defs.length ? defs.map(function (d) {
-      var drives = [];
-      if (node.colorBy && node.colorBy.custom && node.colorBy.prop === d.key) drives.push('colour');
-      if (node.outlineBy && node.outlineBy.prop === d.key) drives.push('outline');
-      if (node.lightenBy && node.lightenBy.prop === d.key) drives.push('lighter');
-      return '<button type="button" class="elp-cc-chip' + (_ccDefOpen === d.key ? ' on' : '') + '" data-cc="' + attrEsc(d.key) + '" title="Edit this column’s values: colours, outlines, lighter %, labels, hidden">' + attrEsc(d.label || d.key) + (drives.length ? ' <span style="opacity:.75;">· ' + drives.join(', ') + '</span>' : '') + '</button>';
-    }).join('') : '<span style="color:#9a94ad;font-size:11px;">none yet — add one below, or “+ Column” in the attribute table</span>';
-    Array.prototype.forEach.call(box.querySelectorAll('button[data-cc]'), function (b) {
-      b.addEventListener('click', function () { var k = b.getAttribute('data-cc'); if (_ccDefOpen === k) { _ccDefOpen = null; ccRenderDef(node); ccRenderChips(node); } else ccOpenDef(node, k); });
-    });
+    var cols = node.overlayCols || [];
+    box.innerHTML = cols.length
+      ? cols.map(function (c) { return '<span style="display:inline-block;margin:0 4px 4px 0;padding:2px 9px;background:#efeaf8;border:1px solid #d9cff1;border-radius:12px;font-size:11px;color:#4a3670;">' + String(c).replace(/[<>&]/g, '') + '</span>'; }).join('')
+      : '<span style="color:#9a94ad;font-size:11px;">none yet</span>';
     var editBtn = document.getElementById('elp-ov-edit');
-    if (editBtn) editBtn.style.display = (defs.length && node.instanceOf && !isTilesetNode(node)) ? 'inline-block' : 'none';
-    var js = document.getElementById('elp-cc-join'), ji = document.getElementById('elp-cc-join-info');
-    if (js) {
-      var tk = ccTileKeys(node) || {}, cur = (window.MSCustomCols && MSCustomCols.joinOf(node)) || '';
-      var opts = ['<option value="">feature id (default)</option>'];
-      Object.keys(tk).filter(function (k) { return k !== 'id' && k !== 'DayStart' && k !== 'DayEnd'; }).sort().forEach(function (k) { opts.push('<option value="' + attrEsc(k) + '">' + attrEsc(k) + '</option>'); });
-      if (cur && !tk[cur]) opts.push('<option value="' + attrEsc(cur) + '">' + attrEsc(cur) + '</option>');
-      js.innerHTML = opts.join(''); js.value = cur;
-      if (ji) ji.textContent = cur ? 'Your values attach to features by their “' + cur + '” value (a column in the tiles).' : 'Your values attach to features by their id. Pick a tile column instead for a source whose tiles carry no ids.';
-    }
+    if (editBtn) editBtn.style.display = cols.length ? 'inline-block' : 'none';
   }
-  async function onCustomJoin(value) {
-    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node) return;
-    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
-    var vals = MSCustomCols.cached(lid) || await MSCustomCols.load(lid);
-    if (Object.keys(vals).length && !confirm('Changing the join column keeps the stored values but they will attach by the new key — values keyed the old way will no longer match. Continue?')) { ccRenderChips(node); return; }
-    node.customJoin = value || null;
-    setStatus('Saving…');
-    var r = await patchLayerConfig(lid, { customJoin: node.customJoin });
-    if (r.error) { setStatus('Save failed: ' + r.error.message); return; }
-    await applyCustomStyle(node);
-    ccRenderChips(node); setStatus('Saved');
-  }
-  function ccOpenDef(node, key) { _ccDefOpen = key; ccRenderChips(node); ccRenderDef(node); }
-  function ccRenderDef(node) {
-    var box = document.getElementById('elp-cc-def'); if (!box) return;
-    var def = _ccDefOpen && MSCustomCols.defOf(node, _ccDefOpen);
-    if (!def) { box.style.display = 'none'; box.innerHTML = ''; return; }
-    var lid = slugToLayerDbId[node.id];
-    var values = (window.MSCustomCols && MSCustomCols.cached(lid)) || {};
-    var vals = MSCustomCols.distinctValues(values, def.key);
-    (def.values || []).forEach(function (x) { if (x && x.v != null && vals.indexOf(String(x.v)) < 0) vals.push(String(x.v)); });
-    var counts = {}; Object.keys(values).forEach(function (k) { var v = values[k] ? values[k][def.key] : null; if (v != null && v !== '') counts[String(v)] = (counts[String(v)] || 0) + 1; });
-    var noVal = Object.keys(values).length - Object.keys(values).filter(function (k) { var v = values[k] ? values[k][def.key] : null; return v != null && v !== ''; }).length;
-    function colorCell(k, cur, allowNone) {
-      var hex = MSCustomCols.hexOf(cur) || '';
-      return '<span class="k">' + k + '</span> <input type="color" data-k="' + k + '-pick" value="' + (hex || '#888888') + '" title="pick"> ' +
-        '<input type="text" data-k="' + k + '" value="' + attrEsc(cur == null ? '' : cur) + '" placeholder="' + (allowNone ? 'hex / none / blank' : 'hex / blank') + '" style="width:74px;">';
-    }
-    function valRow(label, vdef, dataV) {
-      vdef = vdef || {};
-      return '<div class="elp-cc-val" data-v="' + attrEsc(dataV) + '">' +
-        '<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;"><b>' + label + '</b><span class="k">' + (dataV === CC_NOVALUE ? (noVal + ' feature' + (noVal === 1 ? '' : 's')) : ((counts[dataV] || 0) + ' feature' + (counts[dataV] === 1 ? '' : 's'))) + '</span></div>' +
-        '<div class="r"><span class="k">label</span> <input type="text" data-k="label" value="' + attrEsc(vdef.label || '') + '" placeholder="shown as" style="width:110px;">' +
-        ' <label style="display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" data-k="hidden"' + (vdef.hidden ? ' checked' : '') + ' style="margin:0;"> hidden</label></div>' +
-        '<div class="r">' + colorCell('fill', vdef.color, true) + '</div>' +
-        '<div class="r">' + colorCell('outline', vdef.lineColor, false) + ' <span class="k">width</span> <input type="number" data-k="lineWidth" min="0" max="20" step="0.5" value="' + attrEsc(vdef.lineWidth == null ? '' : vdef.lineWidth) + '" style="width:48px;">' +
-        ' <span class="k">lighter</span> <input type="number" data-k="lighten" min="0" max="100" step="5" value="' + attrEsc(vdef.lighten == null ? '' : vdef.lighten) + '" style="width:48px;">%</div>' +
-        '</div>';
-    }
-    box.style.display = 'block';
-    box.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><b style="color:#4a3670;">' + attrEsc(def.key) + '</b>' +
-      '<span><button type="button" id="elp-cc-save" class="ms-btn" style="padding:2px 9px;font-size:11px;">Save</button> <button type="button" id="elp-cc-del" class="ms-btn" style="padding:2px 9px;font-size:11px;background:#fdeeee;color:#a33;" title="Delete this column and its values">Delete</button></span></div>' +
-      '<div class="r" style="display:flex;gap:6px;align-items:center;margin-bottom:4px;font-size:11.5px;"><span class="k" style="color:#8a83a0;">shown as</span> <input id="elp-cc-label" type="text" value="' + attrEsc(def.label || '') + '" placeholder="' + attrEsc(def.key) + '" style="flex:1;min-width:0;font-size:11px;padding:2px 4px;border:1px solid #ddd;border-radius:3px;"></div>' +
-      '<div style="font-size:11px;color:#8a83a0;margin-bottom:4px;">Each value: its fill colour, outline colour + width, how much lighter (0 = full colour, 100 = white), a label, and whether features with it are hidden (not drawn, no popup). “No value” covers features without one.</div>' +
-      '<div style="max-height:260px;overflow:auto;">' +
-        vals.map(function (v) { return valRow(attrEsc(v), MSCustomCols.valueDef(def, v), v); }).join('') +
-        valRow('<i>no value</i>', def.noValue, CC_NOVALUE) +
-      '</div>' +
-      '<div class="r" style="display:flex;gap:6px;align-items:center;margin-top:6px;"><input id="elp-cc-newval" type="text" placeholder="add a value (e.g. Yes)" style="flex:1;min-width:0;font-size:11px;padding:2px 4px;border:1px solid #ddd;border-radius:3px;"><button type="button" id="elp-cc-addval" class="ms-btn" style="padding:2px 9px;font-size:11px;white-space:nowrap;">+ value</button></div>';
-    Array.prototype.forEach.call(box.querySelectorAll('input[type=color][data-k$="-pick"]'), function (pick) {
-      pick.addEventListener('input', function () { var t = pick.parentNode.querySelector('input[data-k="' + pick.getAttribute('data-k').replace(/-pick$/, '') + '"]'); if (t) t.value = pick.value; });
-    });
-    document.getElementById('elp-cc-save').addEventListener('click', function () { ccSaveDef(node); });
-    document.getElementById('elp-cc-del').addEventListener('click', async function () {
-      if (!confirm('Delete your column “' + def.key + '” and every value in it?\n\nThis cannot be undone.')) return;
-      setStatus('Deleting…');
-      var r = await ccDropColumn(node, lid, def.key);
-      setStatus(r && r.error ? 'Failed: ' + r.error.message : 'Deleted');
-    });
-    document.getElementById('elp-cc-addval').addEventListener('click', function () {
-      var inp = document.getElementById('elp-cc-newval'), v = (inp.value || '').trim(); if (!v) return;
-      var d = MSCustomCols.defOf(node, def.key); if (!d) return;
-      if (!MSCustomCols.valueDef(d, v)) d.values = (d.values || []).concat([{ v: v }]);
-      ccSaveDef(node, true).then(function () { ccRenderDef(node); });
-    });
-  }
-  async function ccSaveDef(node, keepOpen) {
-    var box = document.getElementById('elp-cc-def'); if (!box || !_ccDefOpen) return;
-    var lid = slugToLayerDbId[node.id]; if (!lid) return;
-    var defs = ccDefs(node).map(function (d) { return JSON.parse(JSON.stringify(d)); });
-    var def = defs.filter(function (d) { return d.key === _ccDefOpen; })[0]; if (!def) return;
-    var lbl = (document.getElementById('elp-cc-label') || {}).value; def.label = (lbl || '').trim() || null;
-    var byV = {}; (def.values || []).forEach(function (x) { if (x && x.v != null) byV[String(x.v)] = x; });
-    def.values = [];
-    Array.prototype.forEach.call(box.querySelectorAll('.elp-cc-val'), function (row) {
-      var v = row.getAttribute('data-v');
-      var o = {};
-      function g(k) { var el = row.querySelector('[data-k="' + k + '"]'); return el ? (el.type === 'checkbox' ? el.checked : el.value) : null; }
-      var label = (g('label') || '').trim(), fill = (g('fill') || '').trim(), line = (g('outline') || '').trim(), lw = g('lineWidth'), li = g('lighten'), hid = g('hidden');
-      if (label) o.label = label;
-      if (fill) o.color = MSCustomCols.isNone(fill) ? 'none' : (MSCustomCols.hexOf(fill) || fill);
-      if (line) o.lineColor = MSCustomCols.hexOf(line) || line;
-      if (lw !== '' && lw != null && !isNaN(Number(lw))) o.lineWidth = Number(lw);
-      if (li !== '' && li != null && !isNaN(Number(li))) o.lighten = Number(li);
-      if (hid) o.hidden = true;
-      if (v === CC_NOVALUE) def.noValue = o;
-      else { o.v = byV[v] && byV[v].v != null ? byV[v].v : v; def.values.push(o); }
-    });
-    setStatus('Saving…');
-    var r = await ccSaveDefs(node, lid, defs);
-    if (r.error) { setStatus('Save failed: ' + r.error.message); return; }
-    ccSyncColorByFromDef(node, def);
-    await applyCustomStyle(node);   // colours / outlines / hidden values → the persisted paint + filter
-    if (!keepOpen) _ccDefOpen = null;
-    ccRenderChips(node); ccRenderDef(node); populateColorBy(node);
-    setStatus('Saved');
-  }
-  function ovRenderChips(node) { ccRenderChips(node); }   // the Portal 5b name — one renderer now
   async function ovAddColumn() {
     var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node) return;
     var lid = slugToLayerDbId[node.id]; if (!lid) return;
     var inp = document.getElementById('elp-ov-newcol');
     var name = ((inp && inp.value) || '').trim().replace(/[^\w -]/g, '').slice(0, 40);
     if (!name) return;
-    if (/^(feature_id|msid|label|description|start_date|end_date|image_url|content_id|ms_dataset)$/i.test(name)) { setStatus('“' + name + '” is a built-in name — pick another'); return; }
+    var cols = (node.overlayCols || []).slice();
+    if (cols.indexOf(name) > -1) { setStatus('Column exists'); return; }
+    cols.push(name);
     setStatus('Saving…');
-    var r = await ccAddColumn(node, lid, name);
+    var r = await patchLayerConfig(lid, { overlayCols: cols });
     if (r.error) { setStatus('Save failed: ' + r.error.message); return; }
+    node.overlayCols = cols;
     if (inp) inp.value = '';
-    ccOpenDef(node, name);
+    ovRenderChips(node);
+    populateColorBy(node);   // the new column appears in every styling dropdown immediately
     setStatus('Saved');
   }
   async function ovToggleTable() {
@@ -11922,30 +11568,21 @@
       ovSec.id = 'elp-overlay-sec';
       ovSec.style.cssText = 'display:none;margin:8px 0;padding:8px 9px;background:#f7f5fc;border:1px solid #e2dbf3;border-radius:6px;font-size:12px;';
       ovSec.innerHTML = '<b style="font-size:12px;color:#4a3670;">Your columns</b>'
-        + '<div style="font-size:11px;color:#8a83a0;margin:2px 0 6px;">The source\'s data stays theirs — these columns are yours, saved on this map, stylable like any other. Values are typed in the attribute table (▦) or imported. Click a column to set its values\' colours, outlines and hidden state.</div>'
+        + '<div style="font-size:11px;color:#8a83a0;margin:2px 0 6px;">The source\'s data stays theirs — these columns are yours, saved on your map, stylable like any other.</div>'
         + '<div id="elp-ov-chips" style="margin-bottom:6px;"></div>'
-        + '<div id="elp-cc-def" style="display:none;margin:0 0 6px;border:1px solid #e2dbf3;border-radius:5px;background:#fff;padding:6px;"></div>'
         + '<div style="display:flex;gap:6px;"><input id="elp-ov-newcol" class="ms-in" placeholder="new column name" style="flex:1;min-width:0;">'
         + '<button id="elp-ov-add" class="ms-btn" style="white-space:nowrap;">+ Add</button></div>'
-        + '<div id="elp-cc-join-row" style="margin-top:6px;"><label class="ms-lbl" title="How your values find their features: the feature id, or a column that is in the tiles">Join column</label>'
-        + '<select id="elp-cc-join" class="ms-in"></select><div id="elp-cc-join-info" class="ms-note"></div></div>'
         + '<button id="elp-ov-edit" class="ms-btn" style="margin-top:6px;display:none;">✎ Edit values</button>'
         + '<div id="elp-ov-table" style="display:none;max-height:220px;overflow:auto;margin-top:6px;border:1px solid #e2dbf3;border-radius:5px;background:#fff;"></div>';
       var ss2 = document.getElementById('elp-style-section');
       if (ss2 && ss2.parentNode) ss2.parentNode.insertBefore(ovSec, ss2);
       document.getElementById('elp-ov-add').addEventListener('click', function () { ovAddColumn(); });
       document.getElementById('elp-ov-edit').addEventListener('click', function () { ovToggleTable(); });
-      document.getElementById('elp-cc-join').addEventListener('change', function () { onCustomJoin(this.value); });
     }
-    // any Linked mirror or tiled layer, and any layer that already defines custom columns (10/18)
-    var isLinkedMirror = ccEligible(node) && !node.styleLocked;
+    var isLinkedMirror = !!(node.instanceOf && !node.styleLocked);
     ovSec.style.display = isLinkedMirror ? 'block' : 'none';
     document.getElementById('elp-ov-table').style.display = 'none';
-    if (_ccDefOpen && !(node.customCols || []).some(function (d) { return d && d.key === _ccDefOpen; })) _ccDefOpen = null;   // switching layers closes the other layer's editor
-    if (isLinkedMirror) {
-      ccRenderChips(node); ccRenderDef(node);
-      try { if (window.MSCustomCols && slugToLayerDbId[node.id]) MSCustomCols.load(slugToLayerDbId[node.id]).then(function () { if (activeLayerId === node.id && _ccDefOpen) ccRenderDef(node); }); } catch (eCC) {}
-    } else { var dEl = document.getElementById('elp-cc-def'); if (dEl) { dEl.style.display = 'none'; dEl.innerHTML = ''; } }
+    if (isLinkedMirror) ovRenderChips(node);
     fillFastSection(node);   // Make Faster: the two per-layer scrub accelerators + their freshness
     fillDateSection(node);   // Timeline dates: async sample reveals the section for any layer with DB rows (incl. converted tilesets)
     document.getElementById('elp-zoom-info').textContent = fmtNodeZoom(node);
@@ -12183,14 +11820,7 @@
       // shimmer placeholder (7/29): a not-yet-fetched virtual row reads as LOADING, not broken.
       '@keyframes attrShimmer{0%{background-position:-160px 0;}100%{background-position:160px 0;}}' +
       '#editor-attr-table tr.attr-row-ghost td{padding:5px 7px;background-image:linear-gradient(90deg,#f0f0f0 25%,#e4e4e4 37%,#f0f0f0 63%);background-size:320px 100%;animation:attrShimmer 1.2s ease-in-out infinite;}' +
-      '#editor-attr-foot{padding:8px 16px;border-top:1px solid #cccccc;font-size:12px;color:#888888;}' +
-      // column KINDS (10/18): tile / source (companion) / yours (custom) badges + the join mark
-      '.attr-kind{display:inline-block;margin-left:5px;padding:0 5px;border-radius:8px;font-size:9.5px;font-weight:700;letter-spacing:.3px;vertical-align:1px;line-height:14px;}' +
-      '.attr-kind-tile{background:#dcebfa;color:#1f4f80;}.attr-kind-companion{background:#e9e7ef;color:#55506a;}.attr-kind-custom{background:#e6dcf7;color:#4a3670;}' +
-      '.attr-join{margin-left:4px;color:#ce5c00;font-size:11px;}' +
-      '#editor-attr-table th.attr-th-tile{background:#eef5fc;}#editor-attr-table th.attr-th-custom{background:#f4f0fb;}#editor-attr-table th.attr-th-companion{background:#f3f2f6;}' +
-      '#editor-attr-table td.attr-td-custom{background:#fbf9fe;}' +
-      '#editor-attr-table tbody tr.attr-row-sel td.attr-td-custom input{background:#fffdf2;border-color:#d9cff1;}';
+      '#editor-attr-foot{padding:8px 16px;border-top:1px solid #cccccc;font-size:12px;color:#888888;}';
     document.head.appendChild(st);
     var m = document.createElement('div'); m.id = 'editor-attr-modal';
     m.innerHTML =
@@ -12209,13 +11839,8 @@
           '<button id="editor-attr-addcol" title="Add a new (empty) column to this layer">+ Column</button>' +
           '<button id="editor-attr-delcol" title="Delete a column from every feature of this layer">&#8722; Column</button>' +
           '<button id="editor-attr-dups" title="Find identical or overlapping features — mark them in a column, or delete the extras">&#10697; Duplicates</button>' +
-          '<button id="editor-attr-cols" title="Show or hide columns in this table (saved per layer)">&#128065; Columns</button>' +
           '</span></span></span>' +
           '<span id="editor-attr-close" title="Close">&times;</span></div>' +
-        '<div id="editor-attr-cols-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#faf9fd;font-size:12.5px;">' +
-          '<div style="color:#8a86a0;margin-bottom:3px;">Untick a column to hide it here (the data stays). <span class="attr-kind attr-kind-tile">tiles</span> = in the vector tiles · <span class="attr-kind attr-kind-companion">source</span> = the source layer’s data, read-only · <span class="attr-kind attr-kind-custom">yours</span> = this map’s own column · <span class="attr-join">&#9939;</span> = the join column</div>' +
-          '<div id="attr-cols-list" style="max-height:120px;overflow:auto;"></div>' +
-        '</div>' +
         '<div id="editor-attr-addcol-panel" style="display:none;padding:6px 12px;border-bottom:1px solid #e4e0ee;background:#faf9fd;font-size:12.5px;">' +
           'New column <input id="attr-ac-name" placeholder="column name" style="font-size:12px;width:160px;">' +
           ' <button id="attr-ac-go" style="font-size:12px;padding:2px 10px;border:1px solid #a3c293;border-radius:4px;background:#eafaea;color:#2d7a2d;cursor:pointer;">Add</button>' +
@@ -12269,7 +11894,6 @@
     document.getElementById('editor-attr-addcol').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-addcol-panel'); });
     document.getElementById('editor-attr-delcol').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-delcol-panel', fillDelColSelect); });
     document.getElementById('editor-attr-dups').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-dups-panel', fillDupIdentity); });
-    document.getElementById('editor-attr-cols').addEventListener('click', function () { toggleAttrToolPanel('editor-attr-cols-panel', fillColsPanel); });
     document.getElementById('attr-ac-go').addEventListener('click', runAddColumn);
     document.getElementById('attr-dc-go').addEventListener('click', runDeleteColumn);
     document.getElementById('attr-dup-preview').addEventListener('click', runDupPreview);
@@ -12303,115 +11927,10 @@
       });
     });
   }
-  // ── column view (pin + order + hidden): persisted per layer in raw_config.attrView = {order:[keys], pinned:[keys], hidden:[keys]} ──
-  function attrColKey(c) { return c.kind === 'sel' ? '__sel' : (c.kind === 'custom' ? c.key : (c.kind === 'cc' ? 'cc:' + c.key : c.field)); }
-  var _attrColsAll = [];   // every column incl. the hidden ones (the Columns panel lists these; _attrCols is the visible set)
-  /* ── LINKED TILESET COLUMNS in the window (owner's vocabulary, 10/18–19) ─────────────────────
-     Three kinds, badged on the header: TILE (Linked Tileset Columns — what the renderer can read),
-     COMPANION (the source's attribute store, read-only from this map), CUSTOM (this map's own
-     Custom Columns Table — editable here even when the rest is read-only). The JOIN column is
-     marked: the feature id (an "id" column is added when the table has no msid), or the natural
-     key named by raw_config.customJoin. Definitions + values: platform/customColumns.js. */
-  var _attrCC = null;   // { node, lid: this map's row, values: {key: {col: v}} } while an eligible table is open
-  function ccTileKeys(node) {
-    var keys = null;
-    if (!node || !isTilesetNode(node)) return null;
-    [['left', (typeof beforeMap !== 'undefined' ? beforeMap : null)], ['right', (typeof afterMap !== 'undefined' ? afterMap : null)]].forEach(function (pair) {
-      var m = pair[1]; if (!m || keys) return;
-      try {
-        var fs = m.querySourceFeatures(node.id + '-' + pair[0], node['source-layer'] ? { sourceLayer: node['source-layer'] } : undefined) || [];
-        if (!fs.length) return;
-        keys = { id: 1 };
-        for (var i = 0; i < fs.length && i < 200; i++) Object.keys(fs[i].properties || {}).forEach(function (k) { keys[k] = 1; });
-      } catch (e) {}
-    });
-    if (!keys) {   // nothing loaded on screen: what every MapStructor bake writes, plus the colour-by column
-      keys = { id: 1, label: 1, DayStart: 1, DayEnd: 1 };
-      if (node.colorBy && node.colorBy.prop && !node.colorBy.custom) keys[node.colorBy.prop] = 1;
-      if (node.tilesLabelField) keys[node.tilesLabelField] = 1;
-    }
-    return keys;
-  }
-  function ccDecorate(node, rows) {
-    if (!node || !window.MSCustomCols) return;
-    var linked = !!(node.instanceOf || node._msFromLayer);
-    var defs = MSCustomCols.defsOf(node);
-    if (!linked && !defs.length) return;   // a plain own layer: no badges, no join mark — nothing here applies
-    var tileKeys = ccTileKeys(node);
-    var join = MSCustomCols.joinOf(node);
-    var hasMsid = _attrCols.some(function (c) { return c.kind === 'custom' && c.key === 'msid'; });
-    if (!join && !hasMsid && !_attrCols.some(function (c) { return c.kind === 'std' && c.field === 'feature_id'; })) {
-      _attrCols.splice(_attrCols[0] && _attrCols[0].kind === 'sel' ? 1 : 0, 0, { title: 'id', kind: 'std', field: 'feature_id', type: 'text', w: 90, locked: true, tip: 'The feature id — the join column' });
-    }
-    _attrCols.forEach(function (c) {
-      if (c.kind === 'sel') return;
-      var k = c.kind === 'custom' || c.kind === 'cc' ? c.key : c.field;
-      if (c.kind === 'cc') c.origin = 'custom';
-      else if (tileKeys && (tileKeys[k] || (k === 'feature_id') || (k === 'start_date' && tileKeys.DayStart) || (k === 'end_date' && tileKeys.DayEnd))) c.origin = 'tile';
-      else c.origin = linked ? 'companion' : 'own';
-      c.join = join ? (k === join) : (k === 'msid' || k === 'feature_id');
-    });
-    defs.forEach(function (d) {
-      if (!d || !d.key) return;
-      if (!_attrCols.some(function (c) { return c.kind === 'cc' && c.key === d.key; })) _attrCols.push({ title: d.label || d.key, kind: 'cc', key: d.key, type: 'text', w: 130, origin: 'custom', join: false });
-    });
-    ccJoinRows(node, rows);
-  }
-  function ccJoinRows(node, rows) {   // this map's custom values onto the rows, by join key
-    if (!node || !window.MSCustomCols || !rows) return;
-    var values = (_attrCC && _attrCC.values) || {};
-    rows.forEach(function (r) { if (!r) return; var k = MSCustomCols.rowKey(node, r); r._cc = (k != null && values[k]) || null; });
-  }
-  function ccBadge(c) {
-    if (!c || !c.origin || c.origin === 'own') return '';
-    var t = c.origin === 'tile' ? ['tiles', 'Linked Tileset Column — baked into the vector tiles, so the map can style by it directly']
-      : c.origin === 'companion' ? ['source', 'Linked Tileset Companion Column — the source layer’s own data, read-only from this map']
-      : ['yours', 'Linked Tileset Custom Column — this map’s own column, editable here, stylable like any other'];
-    return '<span class="attr-kind attr-kind-' + c.origin + '" title="' + attrEsc(t[1]) + '">' + t[0] + '</span>' +
-      (c.join ? '<span class="attr-join" title="Join column — the key that ties this map’s custom values to each feature">&#9939;</span>' : '');
-  }
-  async function saveAttrCCCell(fid, key, value) {
-    if (!_attrCC || !window.MSCustomCols) return;
-    var row = findAttrRow(fid);
-    var k = row ? MSCustomCols.rowKey(_attrCC.node, row) : null;
-    if (k == null) { setStatus('This row has no join key — nothing to attach the value to'); return; }
-    var v = String(value == null ? '' : value).trim();
-    var val = v === '' ? null : (/^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v);
-    setStatus('Saving…');
-    var r = await MSCustomCols.set(_attrCC.lid, k, key, val);
-    if (r.error) { setStatus('Save failed: ' + r.error.message); return; }
-    _attrCC.values[k] = MSCustomCols.cached(_attrCC.lid)[k];
-    row._cc = _attrCC.values[k];
-    setStatus('Saved');
-    scheduleCustomStyle(_attrCC.node.id);   // a value change may move a colour / outline / hide — recompile the persisted paint
-  }
-  function attrToggleColumn(key, show) {
-    var node = _attrSlug && findNodeById(layers, _attrSlug); if (!node) return;
-    node.attrView = node.attrView || {};
-    var hidden = (node.attrView.hidden || []).slice();
-    var i = hidden.indexOf(key);
-    if (show && i > -1) hidden.splice(i, 1);
-    if (!show && i < 0) hidden.push(key);
-    node.attrView.hidden = hidden;
-    _attrCols = _attrColsAll.filter(function (c) { return hidden.indexOf(attrColKey(c)) < 0; });
-    _attrSort = null;
-    buildAttrHead(); renderAttrBody(true); persistAttrView();
-  }
-  function fillColsPanel() {
-    var box = document.getElementById('attr-cols-list'); if (!box) return;
-    var node = _attrSlug && findNodeById(layers, _attrSlug);
-    var hidden = (node && node.attrView && node.attrView.hidden) || [];
-    box.innerHTML = _attrColsAll.filter(function (c) { return c.kind !== 'sel'; }).map(function (c) {
-      var k = attrColKey(c), on = hidden.indexOf(k) < 0;
-      return '<label style="display:inline-flex;align-items:center;gap:5px;margin:2px 10px 2px 0;white-space:nowrap;"><input type="checkbox" data-colkey="' + attrEsc(k) + '"' + (on ? ' checked' : '') + ' style="margin:0;"> <span>' + attrEsc(c.title) + '</span>' + ccBadge(c) + '</label>';
-    }).join('');
-    Array.prototype.forEach.call(box.querySelectorAll('input[data-colkey]'), function (cb) {
-      cb.addEventListener('change', function () { attrToggleColumn(cb.getAttribute('data-colkey'), cb.checked); });
-    });
-  }
-  function applyAttrView(node) {   // reorder _attrCols by the saved order + mark pinned (★ always first) + drop the hidden ones
-    var av = node && node.attrView;
-    if (!av) { _attrColsAll = _attrCols.slice(); return; }
+  // ── column view (pin + order): persisted per layer in raw_config.attrView = {order:[keys], pinned:[keys]} ──
+  function attrColKey(c) { return c.kind === 'sel' ? '__sel' : (c.kind === 'custom' ? c.key : c.field); }
+  function applyAttrView(node) {   // reorder _attrCols by the saved order + mark pinned (★ always first)
+    var av = node && node.attrView; if (!av) return;
     if (av.order && av.order.length) {
       var byKey = {}; _attrCols.forEach(function (c) { byKey[attrColKey(c)] = c; });
       var out = [];
@@ -12421,9 +11940,6 @@
       _attrCols = out;
     }
     (av.pinned || []).forEach(function (k) { _attrCols.forEach(function (c) { if (attrColKey(c) === k) c.pinned = true; }); });
-    _attrColsAll = _attrCols.slice();
-    var hidden = av.hidden || [];
-    if (hidden.length) _attrCols = _attrCols.filter(function (c) { return hidden.indexOf(attrColKey(c)) < 0; });
   }
   function attrStickyOffsets() {   // ★ + pinned columns freeze at a computed left; everything else scrolls under
     var left = 0;
@@ -12439,8 +11955,7 @@
     if (!node || !lid) return;
     var order = _attrCols.filter(function (c) { return c.kind !== 'sel'; }).map(attrColKey);
     var pinned = _attrCols.filter(function (c) { return c.pinned; }).map(attrColKey);
-    var hiddenCols = (node.attrView && node.attrView.hidden) || [];
-    node.attrView = { order: order, pinned: pinned, hidden: hiddenCols };
+    node.attrView = { order: order, pinned: pinned };
     clearTimeout(_attrViewSaveT);
     _attrViewSaveT = setTimeout(async function () {
       try {
@@ -12502,7 +12017,6 @@
      match. Without a seam that comparison is impossible, and "virtual mode shows fewer columns" was
      carried on the checklist for a day as a trade nobody had measured. It is not in the code:
      the sidecar stores every custom field and openProvider reads the schema. */
-  var ATTR_COL_CAP = 200;      // columns shown in the table (announced by orderAttrKeys's cliff when exceeded)
   var ATTR_LOAD_CAP = (typeof window !== 'undefined' && window.__msAttrLoadCap != null)
     ? window.__msAttrLoadCap : 100000;   // …instead of a full fetch; rendering is windowed
                                          // (MSAttrWindow) so DOM size never depends on row count
@@ -12536,7 +12050,6 @@
   var _attrDelegated = false;  // event-delegation wired once on tbody (so 18k+ rows don't each get listeners)
   function attrCellVal(r, c) {
     if (c.kind === 'sel') return _attrSel.indexOf(String(r.feature_id)) > -1 ? 0 : 1;   // selected sort to the top
-    if (c.kind === 'cc') return r._cc ? r._cc[c.key] : undefined;   // this map's custom column, joined by key
     return c.kind === 'custom' ? ((r.custom_fields || {})[c.key]) : r[c.field];
   }
   function attrDisp(r, c) { var v = attrCellVal(r, c); if (c.kind === 'date') return v ? String(v).slice(0, 10) : ''; return v == null ? '' : v; }
@@ -12636,7 +12149,7 @@
     ]);
     if (gen !== _attrLoadGen) return;
     var N = rc.attrParquetRows;
-    var keysS = orderAttrKeys(prov.customKeys.slice(), ATTR_COL_CAP);
+    var keysS = orderAttrKeys(prov.customKeys.slice(), 30);
     (function () { var xn = nodeByLayerDbId(lid) || findNodeById(layers, slug); (((xn || {}).extraColumns) || []).forEach(function (k) { if (keysS.indexOf(k) < 0) keysS.push(k); }); })();   // registered empty columns render too (+ Column tool)
     _attrRows = new Array(N);
     _attrSlug = slug; _attrById = {}; ensureAttrMapHover();
@@ -12649,7 +12162,6 @@
       { title: 'Notes', kind: 'std', field: 'description', type: 'text', w: 220 },
       { title: 'Page', kind: 'std', field: 'content_id', type: 'text', w: 90 }
     ].concat(keysS.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 130 }; }));
-    ccDecorate(findNodeById(layers, slug), null);   // kinds + custom columns; values join per page as rows arrive (fetchAttrPage)
     applyAttrView(nodeByLayerDbId(lid) || findNodeById(layers, slug));
     buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
     if (_attrWin) _attrWin.onMissing = fetchAttrPage;
@@ -12749,7 +12261,6 @@
             if (v.msDatasetFill) { rs[i].custom_fields = rs[i].custom_fields || {}; if (rs[i].custom_fields.ms_dataset == null) rs[i].custom_fields.ms_dataset = v.msDatasetFill; }
             _attrRows[s0 + i] = rs[i]; _attrById[String(rs[i].feature_id)] = rs[i];
           }
-          if (_attrCC) ccJoinRows(_attrCC.node, rs);   // this map's custom values join each page as it lands
           if (v.failed) { v.failed = false; updateAttrVirtualFoot(); }
           if (_attrWin) _attrWin.update();
         }, function (err) {   // failed page: auto-retry a few times with backoff, then surface it
@@ -12764,14 +12275,8 @@
   }
   async function openAttributeTable(slug) {
     var node = slug && findNodeById(layers, slug); if (!node) return;
-    // Mirrors read their SOURCE's rows — read-only from this placement; the source owns edits.
-    // 10/18: a Linked TILESET mirror carries _msFromLayer (instanceOf is set only for live GeoJSON
-    // sources), and it resolves the same way: the Companion Columns Table is the source's store.
-    // Before this the window fell through to the mirror's own rowless id and showed the tiles'
-    // four columns beside an empty space (owner: "Where did the columns go here?").
-    var ownLid = slugToLayerDbId[slug];
-    var srcLid = node.instanceOf || node._msFromLayer || null;
-    var lid = srcLid || ownLid;
+    // Mirrors read their SOURCE's rows (instanceOf) — read-only from this placement; the source owns edits.
+    var lid = node.instanceOf || slugToLayerDbId[slug];
     if (!lid) { setStatus('No stored data for this layer'); return; }
     injectAttrModal();
     var modal = document.getElementById('editor-attr-modal');
@@ -12781,27 +12286,17 @@
     var thead = document.getElementById('editor-attr-thead'), tbody = document.getElementById('editor-attr-tbody'), foot = document.getElementById('editor-attr-foot');
     thead.innerHTML = ''; tbody.innerHTML = '<tr><td style="padding:14px;color:#888888;">Loading…</td></tr>'; foot.textContent = '';
     modal.style.display = 'block';
-    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = !!srcLid; _attrReadonlyWhy = srcLid ? 'linked' : null; _attrVirtual = null;   // selection PERSISTS across open (map ⇄ table sync always) — rows render pre-starred; mirrors are read-only (their own custom columns stay editable)
+    _attrCustom = {}; _attrRows = []; _attrCols = []; _attrSort = null; _attrReadonly = !!node.instanceOf; _attrReadonlyWhy = node.instanceOf ? 'instance' : null; _attrVirtual = null;   // selection PERSISTS across open (map ⇄ table sync always) — rows render pre-starred; mirrors are read-only
     if (_attrWin) _attrWin.onMissing = null;   // virtual-mode page fetcher — re-attached only by openVirtualAttr
     // STREAMED load (7/15, after 78k rows hung the page): the FIRST page renders immediately — the
     // table is usable (sort/edit/drag/close) while the rest loads behind it. Closing the modal bumps
     // _attrLoadGen, which quietly aborts this loop.
     var gen = ++_attrLoadGen;
-    // the Custom Columns Table (10/18): this map's own columns on the layer, loaded up front so the
-    // first rendered page already carries them — linked mirrors and tilesets, and any layer that
-    // defines custom columns
-    _attrCC = null;
-    if (window.MSCustomCols && ownLid && (srcLid || isTilesetNode(node) || MSCustomCols.defsOf(node).length)) {
-      var ccVals = {};
-      try { ccVals = await MSCustomCols.load(ownLid, true); } catch (eCC) { ccVals = {}; }
-      if (gen !== _attrLoadGen) return;
-      _attrCC = { node: node, lid: ownLid, values: ccVals };
-    }
     var rows = [], total = 0, loadErr = null, streamedFirst = false;
     var buildTable = function (final) {   // columns + head + body from the rows loaded SO FAR (idempotent)
       var keysS = [];
       rows.forEach(function (r) { var cf = r.custom_fields; if (cf && typeof cf === 'object') { _attrCustom[r.feature_id] = cf; Object.keys(cf).forEach(function (k) { if (keysS.indexOf(k) < 0) keysS.push(k); }); } });
-      keysS = orderAttrKeys(keysS, ATTR_COL_CAP);   // 10/18: 30 → 200 — Natural Earth's 136 columns were being cut to 30 ("Where did the columns go?"); rendering is windowed, so width is not the cost
+      keysS = orderAttrKeys(keysS, 30);
       // registered-but-still-empty columns (the + Column tool): the layer says they exist, so
       // they render even though no row carries a value yet — otherwise an empty column would
       // vanish on every reload and "add column" would look broken until the first cell was filled
@@ -12816,7 +12311,6 @@
         { title: 'Notes', kind: 'std', field: 'description', type: 'text', w: 220 },
         { title: 'Page', kind: 'std', field: 'content_id', type: 'text', w: 90 }
       ].concat(keysS.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 130 }; }));
-      ccDecorate(findNodeById(layers, slug), rows);   // column kinds (tile / companion / custom), the join column, this map's custom columns + values
       applyAttrView(nodeByLayerDbId(lid) || findNodeById(layers, slug));
       buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
       var fEl2 = document.getElementById('editor-attr-foot');
@@ -12912,7 +12406,6 @@
       var tkeys = []; tfeats.forEach(function (r) { Object.keys(r.custom_fields).forEach(function (k) { if (tkeys.indexOf(k) < 0) tkeys.push(k); }); }); tkeys = orderAttrKeys(tkeys, 40);
       _attrRows = tfeats; _attrReadonly = true; _attrReadonlyWhy = 'tiles'; _attrSlug = slug; _attrById = {}; tfeats.forEach(function (r) { _attrById[String(r.feature_id)] = r; }); ensureAttrMapHover();
       _attrCols = [{ title: '\u2605', kind: 'sel', type: '', w: 30, tip: 'Selected features \u2014 click the star to select/deselect; sort this column to bring selected to the top' }].concat(tkeys.length ? tkeys.map(function (k) { return { title: k, kind: 'custom', key: k, type: 'text', w: 140 }; }) : [{ title: 'feature', kind: 'std', field: 'feature_id', type: 'text', w: 200 }]);
-      ccDecorate(findNodeById(layers, slug), tfeats);   // an external tileset's own custom columns ride beside its tile columns
       applyAttrView(findNodeById(layers, slug));
       buildAttrHead(); renderAttrBody(); updateAttrZoomBtn(); updateAttrDelBtn();
       foot.textContent = tfeats.length + ' feature' + (tfeats.length === 1 ? '' : 's') + ' from loaded tiles · read-only · pan/zoom to load more · click a row to highlight';
@@ -12931,8 +12424,7 @@
       var stick = c._left != null ? 'left:' + c._left + 'px;z-index:7;' : '';
       var pinCls = c.pinned ? ' on' : '';
       if (c.kind === 'sel') return '<th data-ci="' + i + '" class="attr-pin-th" style="width:' + c.w + 'px;padding:8px 2px;text-align:center;' + stick + '" title="' + attrEsc(c.tip || '') + '">' + c.title + arrow + '</th>';
-      var thCls = (c._left != null ? 'attr-pin-th ' : '') + (c.origin && c.origin !== 'own' ? 'attr-th-' + c.origin : '');
-      return '<th data-ci="' + i + '"' + (thCls.trim() ? ' class="' + thCls.trim() + '"' : '') + ' style="width:' + c.w + 'px;' + stick + '" title="' + attrEsc(c.tip || c.title) + '">' + attrEsc(c.title) + ccBadge(c) + arrow +
+      return '<th data-ci="' + i + '"' + (c._left != null ? ' class="attr-pin-th"' : '') + ' style="width:' + c.w + 'px;' + stick + '" title="' + attrEsc(c.title) + '">' + attrEsc(c.title) + arrow +
         '<span class="attr-pin' + pinCls + '" title="' + (c.pinned ? 'Unpin this column' : 'Pin — stays visible when scrolling') + '">&#128204;</span><span class="attr-rsz"></span></th>';
     }).join('') + '</tr>' +
       // pinned VIEW row: hovering a feature (map or table) shows its values here — no scrolling to find it
@@ -13039,7 +12531,6 @@
     var c = _attrCols[ci], dir = _attrSort.dir;
     if (_attrVirtual) {   // big-data table: the sort runs as SQL in the columnar engine (worker thread), pages refetch under the new order
       var v = _attrVirtual;
-      if (c.kind === 'cc') { setStatus('Your own columns are joined per page here — sort by them in the in-memory table (layers under 100,000 rows)'); _attrSort = null; return; }
       v.order = c.kind === 'sel' ? { selFids: _attrSel.slice(), dir: dir }
         : c.kind === 'custom' ? { custom: c.key, dir: dir }
           : { col: c.field, dir: dir };
@@ -13075,22 +12566,19 @@
     return '<tr data-fid="' + attrEsc(r.feature_id) + '"' + (isSel ? ' class="attr-row-sel"' : '') + '>' + _attrCols.map(function (c) {
       var stick = c._left != null ? ' class="attr-pin-cell" style="left:' + c._left + 'px;"' : '';
       if (c.kind === 'sel') return '<td class="attr-sel-cell' + (c._left != null ? ' attr-pin-cell' : '') + '"' + (c._left != null ? ' style="left:' + c._left + 'px;"' : '') + ' title="Select / deselect this feature"></td>';
-      var bind = c.kind === 'custom' ? 'data-fc="' + attrEsc(c.key) + '"' : (c.kind === 'cc' ? 'data-fcc="' + attrEsc(c.key) + '"' : 'data-f="' + attrEsc(c.field) + '"');
+      var bind = c.kind === 'custom' ? 'data-fc="' + attrEsc(c.key) + '"' : 'data-f="' + attrEsc(c.field) + '"';
       var v = attrEsc(attrDisp(r, c));
       // msid + ms_dataset are IDENTITY, never editable (owner 8/13: "extremely important") —
       // the server strips them from writes anyway; the UI must not pretend otherwise
-      var lockedCol = (c.kind === 'custom' && (c.key === 'msid' || c.key === 'ms_dataset')) || !!c.locked;
-      // this map's CUSTOM columns stay editable on a read-only (linked / folded / tiles) table — they are ours
-      var ro = c.kind === 'cc' ? !_attrCC : _attrReadonly;
-      var tdCls = c.kind === 'cc' ? ' attr-td-custom' : '';
-      if (ro || !isSel || lockedCol) return '<td' + (stick ? stick.replace('class="', 'class="' + tdCls.trim() + ' ') : (tdCls ? ' class="' + tdCls.trim() + '"' : '')) + '><span ' + bind + ' style="display:block;padding:5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (lockedCol ? 'color:#8a8499;' : '') + '"' + (lockedCol ? ' title="Identity column — read-only"' : '') + '>' + v + '</span></td>';
-      return '<td' + (stick ? stick.replace('class="', 'class="' + tdCls.trim() + ' ') : (tdCls ? ' class="' + tdCls.trim() + '"' : '')) + '><input ' + bind + ' type="' + c.type + '" value="' + v + '" /></td>';
+      var lockedCol = c.kind === 'custom' && (c.key === 'msid' || c.key === 'ms_dataset');
+      if (_attrReadonly || !isSel || lockedCol) return '<td' + stick + '><span ' + bind + ' style="display:block;padding:5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (lockedCol ? 'color:#8a8499;' : '') + '"' + (lockedCol ? ' title="Identity column — read-only"' : '') + '>' + v + '</span></td>';
+      return '<td' + stick + '><input ' + bind + ' type="' + c.type + '" value="' + v + '" /></td>';
     }).join('') + '</tr>';
   }
   // selection changed → any DOM row whose input-vs-text state no longer matches gets rebuilt
   // in place (cheap: only the rows that flipped)
   function refreshAttrRowEditability() {
-    if (_attrReadonly && !(_attrCC && _attrCols.some(function (c) { return c.kind === 'cc'; }))) return;   // read-only tables with custom columns still swap those cells to inputs
+    if (_attrReadonly) return;
     var tbody = document.getElementById('editor-attr-tbody'); if (!tbody) return;
     Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-fid]'), function (tr) {
       var fid = tr.getAttribute('data-fid');
@@ -13132,9 +12620,8 @@
   function wireAttrDelegation(tbody) {
     tbody.addEventListener('change', function (e) {   // edit a cell → persist
       var inp = e.target.closest('input'); if (!inp) return; var tr = inp.closest('tr[data-fid]'); if (!tr) return;
-      var fid = tr.getAttribute('data-fid'), std = inp.getAttribute('data-f'), cc = inp.getAttribute('data-fcc');
-      if (cc) saveAttrCCCell(fid, cc, inp.value);
-      else if (std) saveAttrCell(fid, std, inp.value); else saveAttrCustomCell(fid, inp.getAttribute('data-fc'), inp.value);
+      var fid = tr.getAttribute('data-fid'), std = inp.getAttribute('data-f');
+      if (std) saveAttrCell(fid, std, inp.value); else saveAttrCustomCell(fid, inp.getAttribute('data-fc'), inp.value);
     });
     tbody.addEventListener('click', function (e) {   // click a row → highlight its feature on the map (Ctrl/Cmd = add); editing a cell still works
       var tr = e.target.closest('tr[data-fid]'); if (!tr) return;
@@ -13174,8 +12661,8 @@
     if (sc) {
       var bits = [];
       if (_attrReadonlyWhy === 'folded') bits.push('📦 folded archive — read-only');
-      else if (_attrReadonlyWhy === 'instance' || _attrReadonlyWhy === 'linked') bits.push('🔗 linked — the source’s columns are read-only here; your own columns are editable');
-      else if (_attrReadonlyWhy === 'tiles') bits.push('🧩 external tiles — read-only' + (_attrCC ? '; your own columns are editable' : ''));
+      else if (_attrReadonlyWhy === 'instance') bits.push('🔗 instance — edit the source layer');
+      else if (_attrReadonlyWhy === 'tiles') bits.push('🧩 external tiles — read-only');
       if (_attrSel.length) bits.push(_attrSel.length + ' selected');
       sc.textContent = bits.join(' · ');
     }
@@ -13559,16 +13046,13 @@
   // everywhere a readonly table declines a tool.
   function attrReadonlyMsg() {
     if (_attrReadonlyWhy === 'folded') return 'This layer is FOLDED — its feature rows are archived, and the table shows the archive snapshot. Editing tools come back when it’s unfolded.';
-    if (_attrReadonlyWhy === 'instance' || _attrReadonlyWhy === 'linked') return 'This layer is linked — it mirrors its source layer, whose columns are read-only here. Your own columns (+ Column) are editable; open the SOURCE layer’s table to edit its data.';
+    if (_attrReadonlyWhy === 'instance') return 'This layer is a linked instance — it mirrors its source layer. Open the SOURCE layer’s table to edit.';
     if (_attrReadonlyWhy === 'tiles') return 'This layer’s features live inside external vector tiles, not the database — there are no rows to edit.';
     return 'This tool needs a database-backed layer you can edit';
   }
   function toggleAttrToolPanel(id, fillFn) {
-    // the Columns (show/hide) panel is a VIEW setting — fine on any table; + / − Column work on a
-    // read-only table when the table has a Custom Columns Table to add to (10/18)
-    var roOk = id === 'editor-attr-cols-panel' || (_attrCC && (id === 'editor-attr-addcol-panel' || id === 'editor-attr-delcol-panel'));
-    if ((!roOk && _attrReadonly) || !_attrSlug || !slugToLayerDbId[_attrSlug]) { setStatus(attrReadonlyMsg()); return; }
-    ['editor-attr-transfer-panel', 'editor-attr-addcol-panel', 'editor-attr-delcol-panel', 'editor-attr-dups-panel', 'editor-attr-cols-panel'].forEach(function (p) {
+    if (_attrReadonly || !_attrSlug || !slugToLayerDbId[_attrSlug]) { setStatus(attrReadonlyMsg()); return; }
+    ['editor-attr-transfer-panel', 'editor-attr-addcol-panel', 'editor-attr-delcol-panel', 'editor-attr-dups-panel'].forEach(function (p) {
       var el = document.getElementById(p); if (!el) return;
       el.style.display = (p === id && el.style.display === 'none') ? 'block' : 'none';
     });
@@ -13591,20 +13075,6 @@
     var have = attrCustomColKeys();
     if (have.indexOf(name) > -1) { st.textContent = 'That column already exists.'; return; }
     var node = findNodeById(layers, _attrSlug);
-    // a LINKED or tiled layer gets a CUSTOM column — this map's own, in its Custom Columns Table
-    // (the source's columns are not ours to add to; a tileset has no rows to carry one)
-    if (_attrCC && (_attrReadonly || isTilesetNode(node))) {
-      if (_attrCols.concat(_attrColsAll).some(function (c) { return c.kind === 'cc' && c.key === name; })) { st.textContent = 'That column already exists.'; return; }
-      st.textContent = 'Adding…';
-      var r0 = await ccAddColumn(node, lid, name);
-      if (r0 && r0.error) { st.textContent = 'Failed: ' + r0.error.message; return; }
-      _attrCols.push({ title: name, kind: 'cc', key: name, type: 'text', w: 130, origin: 'custom', join: false });
-      _attrColsAll = _attrColsAll.filter(function (c) { return !(c.kind === 'cc' && c.key === name); }).concat([_attrCols[_attrCols.length - 1]]);
-      buildAttrHead(); renderAttrBody(true);
-      st.textContent = 'Added as your own column — select a row and type into it; its values and colours are set in the layer panel under “Your columns”.';
-      document.getElementById('attr-ac-name').value = '';
-      return;
-    }
     node.extraColumns = (node.extraColumns || []).concat([name]);
     setStyleMetaRC(lid, 'extraColumns', node.extraColumns);
     _attrCols.push({ title: name, kind: 'custom', key: name, type: 'text', w: 130 });
@@ -13614,15 +13084,10 @@
   }
   function fillDelColSelect() {
     var s = document.getElementById('attr-dc-sel');
-    var opts = [];
-    // this map's own custom columns are always deletable here; the source's columns only when the table is ours
-    _attrColsAll.forEach(function (c) { if (c.kind === 'cc') opts.push('<option value="x:' + attrEsc(c.key) + '">' + attrEsc(c.title) + ' (your column)</option>'); });
-    if (!_attrReadonly) {
-      attrCustomColKeys().forEach(function (k) { opts.push('<option value="c:' + attrEsc(k) + '">' + attrEsc(k) + '</option>'); });
-      ATTR_BUILTIN_COLS.forEach(function (b) { opts.push('<option value="b:' + b[0] + '">' + b[1] + ' (clear values)</option>'); });
-    }
+    var opts = attrCustomColKeys().map(function (k) { return '<option value="c:' + attrEsc(k) + '">' + attrEsc(k) + '</option>'; });
+    ATTR_BUILTIN_COLS.forEach(function (b) { opts.push('<option value="b:' + b[0] + '">' + b[1] + ' (clear values)</option>'); });
     s.innerHTML = opts.join('');
-    document.getElementById('attr-dc-status').textContent = opts.length ? '' : 'Nothing here is yours to delete.';
+    document.getElementById('attr-dc-status').textContent = '';
   }
   async function runDeleteColumn() {
     var st = document.getElementById('attr-dc-status');
@@ -13630,19 +13095,6 @@
     var isCustom = sel.slice(0, 2) === 'c:', col = sel.slice(2);
     var lid = _attrSlug && slugToLayerDbId[_attrSlug]; if (!lid || !col) return;
     var node = findNodeById(layers, _attrSlug);
-    if (sel.slice(0, 2) === 'x:') {   // one of this map's CUSTOM columns: its definition + its values
-      if (!confirm('Delete your column “' + col + '” and every value in it?\n\nThis cannot be undone.')) return;
-      st.textContent = 'Deleting…';
-      try {
-        var rx = await ccDropColumn(node, lid, col);
-        if (rx && rx.error) throw new Error(rx.error.message);
-        _attrCols = _attrCols.filter(function (c) { return !(c.kind === 'cc' && c.key === col); });
-        _attrColsAll = _attrColsAll.filter(function (c) { return !(c.kind === 'cc' && c.key === col); });
-        buildAttrHead(); renderAttrBody(true); fillDelColSelect();
-        st.textContent = 'Removed.';
-      } catch (ex) { st.textContent = 'Failed: ' + ex.message; }
-      return;
-    }
     // a column that drives the layer's colours is not just data — deleting it beheads the styling
     var drives = node && node.colorBy && node.colorBy.prop === col;
     var msg = isCustom
@@ -14088,12 +13540,6 @@
     var _thExpr = (node.thicknessBy && node.paint && Array.isArray(node.paint[_tk2])) ? node.paint[_tk2] : null;
     // zoom-varied width (7/21): survives unrelated edits; moving the uniform width slider EXITS it
     var _wzExpr = (node.type === 'line' && node.paint && Array.isArray(node.paint['line-width']) && node.paint['line-width'][0] === 'interpolate') ? node.paint['line-width'] : null;
-    // outline by one of this map's own columns (10/18): the colour + width expressions survive
-    // unrelated edits; moving the outline colour or the width slider EXITS it (like colour-by)
-    var _obColorExpr = (node.outlineBy && node.paint && Array.isArray(node.paint['fill-outline-color'])) ? node.paint['fill-outline-color'] : null;
-    var _obWidthExpr = (node.outlineBy && node.paint && Array.isArray(node.paint['line-width'])) ? node.paint['line-width'] : null;
-    var _obStrokeColorExpr = (node.outlineBy && node.paint && Array.isArray(node.paint['circle-stroke-color'])) ? node.paint['circle-stroke-color'] : null;
-    var _obStrokeWidthExpr = (node.outlineBy && node.paint && Array.isArray(node.paint['circle-stroke-width'])) ? node.paint['circle-stroke-width'] : null;
     // (8/14) line-offset survives the rebuild — buildLayerPaint knows nothing about it
     var _loffPrev = (node.type === 'line' && node.paint && node.paint['line-offset'] != null) ? node.paint['line-offset'] : null;
     node.paint = buildLayerPaint(node.type, color, op, outline, outlineVis, width, radius);
@@ -14113,17 +13559,6 @@
       var _tbSel = document.getElementById('elp-thickby'); if (_tbSel) _tbSel.value = '';
       clearStyleMetaRC(slugToLayerDbId[node.id], 'thicknessBy');
     } else if (_thExpr) { node.paint[_tk2] = _thExpr; }
-    if ((field === 'outline' || field === 'width') && node.outlineBy) {
-      node.outlineBy = null;   // the person set one outline → back to a single outline (persisted below via saveLayerStyle + meta cleanup)
-      var _obSel = document.getElementById('elp-outlineby'); if (_obSel) _obSel.value = '';
-      var _obInfo = document.getElementById('elp-outlineby-info'); if (_obInfo) _obInfo.textContent = '';
-      clearStyleMetaRC(slugToLayerDbId[node.id], 'outlineBy');
-    } else if (node.outlineBy) {
-      if (_obColorExpr) node.paint['fill-outline-color'] = _obColorExpr;
-      if (_obWidthExpr) node.paint['line-width'] = _obWidthExpr;
-      if (_obStrokeColorExpr) node.paint['circle-stroke-color'] = _obStrokeColorExpr;
-      if (_obStrokeWidthExpr) node.paint['circle-stroke-width'] = _obStrokeWidthExpr;
-    }
     if (field === 'color' && node.colorBy) {
       node.colorBy = null;   // user chose one colour → back to single-color mode (persisted below via saveLayerStyle + meta cleanup)
       var _cbSel = document.getElementById('elp-colorby'); if (_cbSel) _cbSel.value = '';

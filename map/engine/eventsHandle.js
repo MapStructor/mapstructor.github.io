@@ -105,13 +105,7 @@ function setupLayerEventForMap(map, config, side) {
           var styleAttr = "";
           try {
             if (config.colorBy && config.colorBy.mapping) {
-              // a CUSTOM column (10/18) is not in the tiles — its value comes from the layer's
-              // custom-values table, keyed by the feature's join key
               var cbv = e.features[0].properties[config.colorBy.prop];
-              if (config.colorBy.custom && typeof MSCustomCols !== "undefined") {
-                var cvals = MSCustomCols.valuesFor(config, MSCustomCols.cached(config._layerDbId || config.tableId) || config.customValues, e.features[0]);
-                cbv = cvals ? cvals[config.colorBy.prop] : null;
-              }
               var cbc = cbv != null ? config.colorBy.mapping[String(cbv)] : null;
               if (cbc && typeof hexToRgba === "function") styleAttr = " style=\"background-color:" + hexToRgba(cbc, 0.5) + ";border-color:" + cbc + "\"";
             }

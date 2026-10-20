@@ -326,9 +326,7 @@
       var ks = Object.keys(cb.mapping);
       if (window.MSGuard) MSGuard.cliff("style-cats-cap", ks.length, STYLE_CATS_MAX,
         "categories past the first " + STYLE_CATS_MAX + " are drawn on the map but have no style row you can click");
-      // a custom column's definition may label its values (10/18): "Both" for the stored "both"
-      var lbls = cb.labels || {};
-      return ks.slice(0, STYLE_CATS_MAX).map(function (k) { return { key: k, label: lbls[k] || ((k === " " || k === "") ? "(blank)" : k), color: cb.mapping[k] }; });
+      return ks.slice(0, STYLE_CATS_MAX).map(function (k) { return { key: k, label: (k === " " || k === "") ? "(blank)" : k, color: cb.mapping[k] }; });
     }
     return [];
   }
@@ -340,9 +338,6 @@
     var hidden = node.styleHidden || [];
     if (!hidden.length) return base;
     var cb = node.colorBy;
-    // a CUSTOM colour-by column is not in the tiles (10/18): the dim rides a by-key match built
-    // from the layer's custom values (live: the loaded table; a standalone copy: node.customValues)
-    if (cb && cb.custom && window.MSCustomCols) return MSCustomCols.hiddenOpacityExpr(node, MSCustomCols.cached(node._layerDbId || node.tableId) || node.customValues, hidden, base);
     if (cb && cb.mode === "presence") {
       var f = ["to-string", ["get", cb.prop || "label"]], blank = ["any", ["==", f, ""], ["==", f, " "]];
       return ["case", blank, (hidden.indexOf("__absent__") > -1 ? 0 : base), (hidden.indexOf("__present__") > -1 ? 0 : base)];
@@ -433,15 +428,6 @@
       return;
     }
     injectStyleRows();
-    // custom colour-by layers need their values before a category toggle can dim by key (10/18):
-    // live = the table from Supabase; a standalone copy carries them on the node
-    try {
-      if (window.MSCustomCols) (function walk(a) { (a || []).forEach(function (n) {
-        if (n.children) { walk(n.children); return; }
-        if (n.customValues) MSCustomCols.seed(n._layerDbId || n.tableId || n.id, n.customValues);
-        else if (n.colorBy && n.colorBy.custom && !standalone() && (n._layerDbId || n.tableId)) MSCustomCols.load(n._layerDbId || n.tableId).catch(function () {});
-      }); })(allLayers());
-    } catch (eCC) {}
   })();
 
   window.MSViewerTable = { open: openList, close: close, injectStyleRows: injectStyleRows,

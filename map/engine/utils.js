@@ -64,10 +64,8 @@ function msLegacyToExpr(f) {
   if (!Array.isArray(f)) return null;
   var op = f[0];
   if (op === "all" || op === "any") { var parts = f.slice(1).map(msLegacyToExpr); return parts.every(Boolean) ? [op].concat(parts) : null; }
-  // "$id" is the legacy syntax's feature-id key (custom-column hide filters join on it, 10/18)
-  var key = f[1] === "$id" ? ["id"] : ["get", f[1]];
-  if (op === "in" || op === "!in") { var e = ["in", key, ["literal", f.slice(2)]]; return op === "in" ? e : ["!", e]; }
-  if (op === "==" || op === "!=" || op === "<" || op === "<=" || op === ">" || op === ">=") return [op, key, f[2]];
+  if (op === "in" || op === "!in") { var e = ["in", ["get", f[1]], ["literal", f.slice(2)]]; return op === "in" ? e : ["!", e]; }
+  if (op === "==" || op === "!=" || op === "<" || op === "<=" || op === ">" || op === ">=") return [op, ["get", f[1]], f[2]];
   return null;
 }
 function msLabelFilter(own, dateF) {
