@@ -117,7 +117,8 @@
     <script src="../platform/topbar.js?v=99f53c33"></script>
     <script src="../platform/bookmarks.js?v=f3ed1315"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
     <script src="../platform/portalAdd.js?v=cc6dc44d"></script>   <!-- Map Portal: sidebar window — add a bookmarked/own map into this one (All/Linked/Instance per layer) -->
-    <script src="../platform/overlay.js?v=2322d302"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
+    <script src="../platform/overlay.js?v=9ef160c7"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
+    <script src="../platform/customColumns.js?v=f9ca1bf0"></script>   <!-- Linked Tileset Custom Columns Table: this map's own columns on a layer, values by join key -->
     <script src="../platform/content.js?v=fdb5b648"></script>   <!-- content system: entries for a clicked feature (panel mode "entries"), entry + encyclopedia pages -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
@@ -169,7 +170,7 @@
     <!-- handle-mobile-devices.js is DELIBERATELY NOT LOADED here — see the note in index.html.
          It redirected every phone, and every window 670px or narrower, to "./mobile.html", which
          has never existed: the editor answered a 404 page instead of opening. -->
-    <script src="engine/utils.js?v=83957bd9"></script>
+    <script src="engine/utils.js?v=d7e69c40"></script>
     <script src="engine/index.js?v=82e05c05"></script>
 
     <!-- Google Analytics - driven by siteAnalytics.trackingId in header.js -->
@@ -423,7 +424,7 @@
     <script src="engine/infoPanel.js?v=a6172ab9"></script>
     <script src="engine/mapinit.js?v=573f5dc8"></script>
     <script src="engine/sliderpopups.js?v=ba8ab5a0"></script>
-    <script src="../platform/configLoader.js?v=35f2935a" onerror="void(0)"></script>
+    <script src="../platform/configLoader.js?v=9bac21dc" onerror="void(0)"></script>
     <script src="../platform/labels.js?v=ef0410a4" onerror="void(0)"></script>
     <script src="../platform/attrGrid.js?v=64ccee1b" onerror="void(0)"></script>
     <script src="../platform/bigtable.js?v=a23a97a5" onerror="void(0)"></script>   <!-- Big-data attribute tier: Parquet sidecar + DuckDB-WASM (vendored, lazy) -->
@@ -473,7 +474,7 @@
          Must load BEFORE editing.js. Removing this line degrades cleanly: every call site
          checks `window.MSGuard` and falls back to the plain call. -->
     <script src="../platform/guards.js?v=6e3e345a" onerror="void(0)"></script>
-    <script src="../platform/editing.js?v=a6d9847c" onerror="void(0)"></script>
+    <script src="../platform/editing.js?v=65365eb5" onerror="void(0)"></script>
 
     <!-- Save-to-account: anonymous maps live only at their URL; claim them via the shared MapAuth modal (dev plan Step 6 funnel).
          Sits just past the header's bottom edge (slight overlap for attention), clear of the ABOUT button. -->
