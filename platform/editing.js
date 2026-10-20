@@ -9023,6 +9023,7 @@
           if (cbt && cbt.prop) { if (![].slice.call(sel.options).some(function (o) { return o.value === cbt.prop; })) { var oc3 = document.createElement('option'); oc3.value = cbt.prop; oc3.textContent = cbt.prop; sel.appendChild(oc3); } sel.value = cbt.prop; info.textContent = cbt.mode === 'hex' ? "Using the column's own hex colors." : (Object.keys(cbt.mapping || {}).length + ' categories, one color each.'); }
           else { sel.value = ''; info.textContent = ''; }
           addPresenceOption(sel, node);   // + "Labeled vs unlabeled" (reflects saved presence mode)
+          ccColorOptions(node, sel, info);   // + this map's own columns (step 9) and the Random / By value block
         }
       }
       return;
@@ -9074,7 +9075,25 @@
       // the Label-field dropdown gets the same columns ("label" = the feature's own Label field)
       fillLabelFieldSelect(node, sortedKeys);
       fillGroupBySelect(node, sortedKeys);
+      ccColorOptions(node, sel, info);   // + this map's own columns (step 9) and the Random / By value block
     } catch (e) {}
+  }
+  // the Color by select lists this map's own columns (★) after the layer's; the saved pick is restored
+  function ccColorOptions(node, sel, info) {
+    if (sel && window.MSCustomCols) {
+      MSCustomCols.defsOf(node).forEach(function (d) {
+        if (!d || !d.key || [].slice.call(sel.options).some(function (o) { return o.value === d.key; })) return;
+        var o = document.createElement('option'); o.value = d.key; o.textContent = '★ ' + d.key + ' (your column)'; sel.appendChild(o);
+      });
+      if (node.colorBy && node.colorBy.custom && node.colorBy.prop) {
+        sel.value = node.colorBy.prop;
+        if (info) info.textContent = Object.keys(node.colorBy.mapping || {}).length + ' values of your column “' + node.colorBy.prop + '”, one colour each.';
+      }
+    }
+    if (node.colorBy && node.colorBy.custom && window.MSCustomCols && slugToLayerDbId[node.id] && !MSCustomCols.cached(slugToLayerDbId[node.id])) {
+      MSCustomCols.load(slugToLayerDbId[node.id]).then(function () { if (activeLayerId === node.id) renderColorByMode(node); }, function () {});
+    }
+    renderColorByMode(node);
   }
   // "Treat as one" — drawn layers only for now (tileset tiles may not carry the column; the
   // engine source / draw metas do). Same column list as labels/color-by, plus "label".
@@ -9409,6 +9428,9 @@
     // paint still persist on the OUTLINE's own row (it is the layer being styled).
     var dataNode = node.outlineOf ? (findNodeById(layers, node.outlineOf) || node) : node;
     var dataLid = dataNode === node ? lid : (slugToLayerDbId[dataNode.id] || lid);
+    // one of THIS MAP's own columns (step 9, 10/20): the values come from the Custom Columns
+    // Table and the expression keys on the join column — no tiles sampling, no bake
+    if (prop && window.MSCustomCols && MSCustomCols.defOf(node, prop)) { await ccColorBy(node, lid, prop); return; }
     var info = document.getElementById('elp-colorby-info');
     var key = colorKeyFor(node.type);
     var fallback = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
@@ -9473,13 +9495,15 @@
         // of things that match" — same philosophy as imports: no caps). The palette cycles;
         // telling adjacent things APART is the point, not unique hues. The only remaining bound
         // is TILECAT_BYID_CAP on unbaked tilesets (a paint-size guard with a Re-bake path out).
+        // By value colours already chosen for this column survive a re-pick (step 9)
+        var keep = (node.colorBy && node.colorBy.prop === prop && node.colorBy.pick === 'value' && node.colorBy.mapping) || null;
         var mapping = {};
         order.forEach(function (v, i) {
-          if (!allHex) { mapping[v] = COLORBY_PALETTE[i % COLORBY_PALETTE.length]; return; }
+          if (!allHex) { mapping[v] = (keep && keep[v]) || COLORBY_PALETTE[i % COLORBY_PALETTE.length]; return; }
           var s3 = String(v).trim();
           mapping[v] = s3.toLowerCase() === 'none' ? 'rgba(0,0,0,0)' : (looksHex(s3) ? normHex(s3) : s3);   // as-is: rgb() stays rgb()
         });
-        node.colorBy = { prop: prop, mode: allHex ? 'hex' : 'category', mapping: mapping };
+        node.colorBy = { prop: prop, mode: allHex ? 'hex' : 'category', mapping: mapping, pick: keep ? 'value' : 'random' };
         var expr = ['match', ['to-string', ['get', prop]]];
         order.forEach(function (v) { expr.push(v, mapping[v]); });
         expr.push(fallback);
@@ -9532,10 +9556,137 @@
       rerender();   // sidebar icon flips to/from the multicolor gradient (generateLayers reads node.colorBy)
       syncColorInputForColorBy(node);   // panel swatch ↔ multicolor strip
       renderLegend();   // legend swatches follow the new colors
+      renderColorByMode(node);   // Random / By value + the per-value swatches (step 9)
       setStatus('Saved');
       // NOTHING auto-bakes here (owner 8/13: "I'll rebake it myself, when I want") — unbaked
       // columns colour instantly via the by-id match above; a MANUAL Re-bake later compacts it.
     } catch (e) { console.warn('colorBy failed', e); setStatus('Save failed'); }
+  }
+  /* ── Color by: RANDOM vs BY VALUE (owner, step 9, 10/20) ─────────────────────────────────────
+     The mapping (value → colour) has always been the model the legend, the style categories and
+     the pills read; it was only ever dealt from the palette. Now the panel shows it: Random
+     re-deals the palette, By value lists every value with a swatch the owner edits. A column of
+     THIS MAP's own (the Custom Columns Table) colours the same way, with the expression keyed on
+     the join column, since its values are not in the tiles. Fill colour only (outline = step 10). */
+  function renderColorByMode(node) {
+    var box = document.getElementById('elp-colorby-mode'), list = document.getElementById('elp-colorby-values'); if (!box || !list) return;
+    var cb = node && node.colorBy;
+    var on = !!(cb && cb.mapping && cb.mode !== 'presence' && cb.mode !== 'hex');
+    box.style.display = on ? 'block' : 'none';
+    if (!on) { list.style.display = 'none'; list.innerHTML = ''; return; }
+    var pick = cb.pick === 'value' ? 'value' : 'random';
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="elp-cbmode"]'), function (r) { r.checked = r.value === pick; });
+    list.style.display = pick === 'value' ? 'block' : 'none';
+    if (pick !== 'value') { list.innerHTML = ''; return; }
+    var counts = {};
+    if (cb.custom && window.MSCustomCols) {   // how many features carry each value (from the loaded table)
+      var vals = MSCustomCols.cached(slugToLayerDbId[node.id]) || {};
+      Object.keys(vals).forEach(function (k) { var v = vals[k] ? vals[k][cb.prop] : null; if (v != null && v !== '') counts[String(v)] = (counts[String(v)] || 0) + 1; });
+    }
+    list.innerHTML = Object.keys(cb.mapping).map(function (v) {
+      var c = cb.mapping[v], hex = looksHex(c) ? normHex(c) : '#888888';
+      return '<div style="display:flex;align-items:center;gap:7px;margin:3px 0;">' +
+        '<input type="color" data-cbval="' + attrEsc(v) + '" value="' + hex + '" title="' + attrEsc(c) + '" style="width:30px;height:22px;padding:0;border:1px solid #bbbbbb;border-radius:3px;background:#fff;flex:0 0 auto;" />' +
+        '<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;" title="' + attrEsc(v) + '">' + attrEsc(v === '' || v === ' ' ? '(blank)' : v) + '</span>' +
+        (counts[v] != null ? '<span class="ms-note" style="margin:0;flex:0 0 auto;">' + counts[v] + '</span>' : '') +
+        '</div>';
+    }).join('');
+  }
+  async function onColorByMode(pick) {
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    if (pick === 'random') Object.keys(node.colorBy.mapping).forEach(function (v, i) { node.colorBy.mapping[v] = COLORBY_PALETTE[i % COLORBY_PALETTE.length]; });   // re-deal
+    node.colorBy.pick = pick === 'value' ? 'value' : 'random';
+    setStatus('Saving…');
+    await reapplyColorBy(node, lid);
+    renderColorByMode(node);
+  }
+  var _cbValT = null;
+  function onColorByValueColor(v, hex) {   // one swatch moved: the mapping changes now, the paint follows once the picker settles
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    node.colorBy.mapping[v] = hex; node.colorBy.pick = 'value';
+    clearTimeout(_cbValT);
+    _cbValT = setTimeout(function () { setStatus('Saving…'); reapplyColorBy(node, lid); }, 350);
+  }
+  // the expression for a column of this map's own: keyed on the join column, one pair per feature with a value
+  async function ccColorExpr(node, lid, cb, fallback) {
+    var values = MSCustomCols.cached(lid) || await MSCustomCols.load(lid);
+    var join = MSCustomCols.joinOf(node);
+    var e = ['match', join ? ['to-string', ['get', join]] : ['id']];
+    Object.keys(values).forEach(function (k) {
+      var v = values[k] ? values[k][cb.prop] : null; if (v == null || v === '') return;
+      var c = cb.mapping[String(v)]; if (!c) return;
+      e.push(join ? String(k) : Number(k), c);
+    });
+    if (e.length <= 2) return fallback;
+    e.push(fallback);
+    return e;
+  }
+  async function ccColorBy(node, lid, prop) {
+    var info = document.getElementById('elp-colorby-info');
+    setStatus('Saving…');
+    try {
+      var values = await MSCustomCols.load(lid, true);
+      var vals = MSCustomCols.distinctValues(values, prop);
+      if (!vals.length) { setStatus('No values in that column'); showToast('That column has no values yet'); return; }
+      var keep = (node.colorBy && node.colorBy.prop === prop && node.colorBy.mapping) || null;
+      var mapping = {};
+      vals.forEach(function (v, i) { mapping[v] = (keep && keep[v]) || COLORBY_PALETTE[i % COLORBY_PALETTE.length]; });
+      node.colorBy = { prop: prop, mode: 'category', mapping: mapping, custom: true, pick: (keep && node.colorBy.pick === 'value') ? 'value' : 'random' };
+      await reapplyColorBy(node, lid);
+      if (info) info.textContent = vals.length + ' value' + (vals.length === 1 ? '' : 's') + ' of your column “' + prop + '”, one colour each.';
+      renderColorByMode(node);
+    } catch (e) { console.warn('colorBy (your column) failed', e); setStatus('Save failed'); }
+  }
+  var _ccColorT = {};
+  function scheduleCcColorBy(node) {   // a value edited in the table → the colour-by follows (new values get a colour)
+    if (!node || !node.colorBy || !node.colorBy.custom) return;
+    clearTimeout(_ccColorT[node.id]);
+    _ccColorT[node.id] = setTimeout(function () { var lid = slugToLayerDbId[node.id]; if (lid) ccColorBy(node, lid, node.colorBy.prop); }, 700);
+  }
+  // rebuild the fill expression from the CURRENT mapping and persist it + apply it live
+  async function reapplyColorBy(node, lid) {
+    var cb = node.colorBy; if (!cb || !cb.prop || !cb.mapping) return;
+    var key = colorKeyFor(node.type);
+    var fallback = (node.iconColor && /^#[0-9a-fA-F]{6}$/.test(node.iconColor)) ? node.iconColor : '#3bb2d0';
+    var expr;
+    if (cb.custom && window.MSCustomCols) expr = await ccColorExpr(node, lid, cb, fallback);
+    else {
+      expr = ['match', ['to-string', ['get', cb.prop]]];
+      Object.keys(cb.mapping).forEach(function (v) { expr.push(v, cb.mapping[v]); });
+      expr.push(fallback);
+      if (isTilesetNode(node)) {   // same instant rule as onColorBy: unbaked columns ride a by-id match
+        var dataNode = node.outlineOf ? (findNodeById(layers, node.outlineOf) || node) : node;
+        var dataLid = dataNode === node ? lid : (slugToLayerDbId[dataNode.id] || lid);
+        var built = null; try { built = await buildTiledColorByExpr(node, dataLid, fallback); } catch (eB) {}
+        if (built && built !== 'toobig') expr = built;
+        if (!node.outlineOf) { try { expr = wrapTiledColorOverrides(await fetchTiledColorOverrides(lid), expr); } catch (eOv) {} }
+      }
+    }
+    var paint = JSON.parse(JSON.stringify(node.paint || {}));
+    paint[key] = expr;
+    if (node.outlineMatchFill && node.type === 'fill') paint['fill-outline-color'] = JSON.parse(JSON.stringify(expr));
+    node.paint = paint;
+    try {
+      var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+      var rc = (cur.data && cur.data.raw_config) || {};
+      rc.colorBy = node.colorBy;
+      rc.styleChangedAt = new Date().toISOString(); node.styleChangedAt = rc.styleChangedAt;
+      var r2 = await db.from('layers').update({ paint: paint, raw_config: rc }).eq('id', lid);
+      if (r2.error) throw new Error(r2.error.message);
+    } catch (e) { console.warn('colorBy save failed', e); setStatus('Save failed'); return; }
+    [[beforeMap, '-left'], [typeof afterMap !== 'undefined' ? afterMap : null, '-right']].forEach(function (ms) {
+      var m = ms[0]; if (!m) return;
+      try { if (m.getLayer(node.id + ms[1])) m.setPaintProperty(node.id + ms[1], key, paint[key]); } catch (e) {}
+      if (node.outlineMatchFill && node.type === 'fill') { try { if (m.getLayer(node.id + '-stroke' + ms[1])) m.setPaintProperty(node.id + '-stroke' + ms[1], 'line-color', paint['fill-outline-color']); } catch (e) {} }
+    });
+    try { await syncMatchedOutline(node); } catch (eS) {}
+    if (!isTilesetNode(node)) { try { await loadFeatures(); } catch (eL) {} }
+    rerender(); syncColorInputForColorBy(node);
+    try { renderLegend(); } catch (eLg) {}
+    if (window.__msInjectStyleRows) window.__msInjectStyleRows();
+    setStatus('Saved');
   }
   // A split-off outline layer set to "Match fill colors" re-takes its parent's colour value
   // whenever the parent's colours change (8/14) — paint + colorBy meta persisted on the OUTLINE's
@@ -11090,6 +11241,14 @@
         '<label class="ms-lbl">Color by data column</label>' +
         '<select id="elp-colorby" class="ms-in"><option value="">Single color</option></select>' +
         '<div id="elp-colorby-info" class="ms-note"></div>' +
+        // (10/20, owner, step 9) how the categories get their colours: Random = the palette deals
+        // them; By value = every value listed with its own swatch, edited right here — the legend
+        // and the style categories read the same colours
+        '<div id="elp-colorby-mode" style="display:none;margin:4px 0 6px;">' +
+          '<label class="ms-check" style="margin-right:12px;"><input type="radio" name="elp-cbmode" value="random" style="vertical-align:middle;margin:0 4px 0 0;" />Random</label>' +
+          '<label class="ms-check"><input type="radio" name="elp-cbmode" value="value" style="vertical-align:middle;margin:0 4px 0 0;" />By value</label>' +
+          '<div id="elp-colorby-values" style="display:none;max-height:230px;overflow:auto;margin-top:4px;padding:4px 6px;border:1px solid #e2e2e2;border-radius:5px;background:#fafafa;"></div>' +
+        '</div>' +
       '</div>' +
       // legend (experiment): show this layer's colors in an on-map box
       '<label id="elp-legend-row" class="ms-check" style="margin:2px 0 8px;display:block;"><input id="elp-legend-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show legend on the map</label>' +
@@ -11234,6 +11393,10 @@
     document.getElementById('elp-editoronly').addEventListener('change', function () { onEditorOnly(this.checked); });
     document.getElementById('elp-color').addEventListener('input', function () { onLayerStyle('color', this.value); });
     document.getElementById('elp-colorby').addEventListener('change', function () { onColorBy(this.value); });
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="elp-cbmode"]'), function (r) { r.addEventListener('change', function () { if (this.checked) onColorByMode(this.value); }); });
+    document.getElementById('elp-colorby-values').addEventListener('input', function (e) {
+      var sw = e.target && e.target.closest('input[data-cbval]'); if (sw) onColorByValueColor(sw.getAttribute('data-cbval'), sw.value);
+    });
     document.getElementById('elp-bin-present').addEventListener('input', livePresenceColors);   // live preview while dragging the picker
     document.getElementById('elp-bin-absent').addEventListener('input', livePresenceColors);
     document.getElementById('elp-bin-present').addEventListener('change', savePresenceColors);   // commit on release
@@ -12040,9 +12203,10 @@
     setStatus('Saving…');
     var r = await MSCustomCols.set(_attrCC.lid, k, key, val);
     if (r.error) { setStatus('Save failed: ' + r.error.message); return; }
-    _attrCC.values[k] = MSCustomCols.cached(_attrCC.lid)[k];
+    _attrCC.values[k] = MSCustomCols.cached(_attrCC.lid)[k] || null;
     row._cc = _attrCC.values[k];
     setStatus('Saved');
+    if (_attrCC.node.colorBy && _attrCC.node.colorBy.custom && _attrCC.node.colorBy.prop === key) scheduleCcColorBy(_attrCC.node);   // the colour-by follows the edited value
   }
   // the LIST of this map's own columns lives on the layer row (raw_config.customCols = [{key}]);
   // overlayCols (Portal 5b's name list) is kept in step for the GeoJSON merge path
