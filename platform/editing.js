@@ -11943,8 +11943,9 @@
       '#editor-attr-table th{box-sizing:border-box;position:sticky;top:0;background:#f2f2f2;text-align:left;padding:8px 18px 8px 10px;border-bottom:1px solid #cccccc;color:#555555;font-weight:600;white-space:nowrap;cursor:pointer;user-select:none;overflow:hidden;}' +
       '#editor-attr-table th:hover{background:#eaf0f6;}' +
       '#editor-attr-table th .attr-arrow{margin-left:5px;font-size:10px;color:#ce5c00;}' +
-      '#editor-attr-table th .attr-rsz{position:absolute;top:0;right:0;width:8px;height:100%;cursor:col-resize;}' +
+      '#editor-attr-table th .attr-rsz{position:absolute;top:0;right:0;width:10px;height:100%;cursor:col-resize;}' +
       '#editor-attr-table th .attr-rsz:hover{background:#b9c6d4;}' +
+      '#editor-attr-table th:last-child .attr-rsz{background:linear-gradient(90deg,transparent 40%,#c9c4d8 40%,#c9c4d8 60%,transparent 60%);}' +   // the last grip is always visible — it is the only way to widen the last column
       '#editor-attr-table td{padding:2px 6px;border-bottom:1px solid #f0f3f6;box-sizing:border-box;overflow:hidden;}' +
       '#editor-attr-table input{width:100%;box-sizing:border-box;border:1px solid transparent;border-radius:3px;padding:4px 6px;font-size:13px;background:transparent;color:#2b3a4a;}' +
       '#editor-attr-table input:hover{border-color:#d8d8d8;}' +
@@ -12867,7 +12868,12 @@
   }
   function applyAttrTableWidth() {   // table width = sum of column widths, so fixed layout honors each + the wrap scrolls horizontally
     var t = document.getElementById('editor-attr-table');
-    if (t) t.style.width = _attrCols.reduce(function (s, c) { return s + (c.w || 130); }, 0) + 'px';
+    if (t) {
+      t.style.width = _attrCols.reduce(function (s, c) { return s + (c.w || 130); }, 0) + 'px';
+      // slack after the LAST column (10/20, owner: "no way here to expand the last column"): its
+      // resize grip sat exactly on the table's right edge, under the vertical scrollbar
+      t.style.marginRight = '48px';
+    }
   }
   function startAttrColDrag(e, th, ci) {   // hold a header and drag it left/right to reorder the column
     if (e.target.classList.contains('attr-rsz') || e.target.classList.contains('attr-pin')) return;
