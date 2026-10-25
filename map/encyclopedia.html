@@ -39,7 +39,7 @@
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="../platform/auth.js?v=c3e839f1"></script>
-  <script src="../platform/content.js?v=fdb5b648"></script>
+  <script src="../platform/content.js?v=f268beef"></script>
 </head>
 <body>
   <nav>
@@ -56,13 +56,16 @@
   <footer><a href="../index.html">MapStructor</a></footer>
   <script>
     (async function () {
-      var q = new URLSearchParams(location.search), pid = (q.get('id') || '').trim();
+      // a standalone copy (download / showcase) carries the content as window.__msContent
+      // (project/contentData.js) and names its map there — no id in the address, no database
+      var st = window.__msContent || null;
+      var q = new URLSearchParams(location.search), pid = (q.get('id') || (st && st.map && st.map.id) || '').trim();
       var body = document.getElementById('body');
       if (!pid) { body.innerHTML = '<p class="empty">This page needs a map id.</p>'; return; }
-      var mapUrl = 'index.html?id=' + encodeURIComponent(pid);
+      var mapUrl = st ? 'index.html' : 'index.html?id=' + encodeURIComponent(pid);
       document.getElementById('nav-map').href = mapUrl; document.getElementById('crumb').href = mapUrl;
-      var proj = null;
-      try { var pr = await MapAuth.db.from('projects').select('id, name').eq('id', pid).maybeSingle(); proj = pr.data; } catch (e) {}
+      var proj = st ? st.map : null;
+      if (!proj && window.MapAuth && MapAuth.db) { try { var pr = await MapAuth.db.from('projects').select('id, name').eq('id', pid).maybeSingle(); proj = pr.data; } catch (e) {} }
       var mapName = (proj && proj.name) || 'Map';
       document.getElementById('crumb').textContent = mapName;
       document.title = 'Encyclopedia — ' + mapName;

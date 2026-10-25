@@ -27,7 +27,7 @@
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="../platform/auth.js?v=c3e839f1"></script>
-  <script src="../platform/content.js?v=fdb5b648"></script>
+  <script src="../platform/content.js?v=f268beef"></script>
 </head>
 <body>
   <nav>
@@ -43,17 +43,19 @@
   <script>
     (async function () {
       var q = new URLSearchParams(location.search);
-      var pid = (q.get('id') || '').trim(), slug = (q.get('entry') || '').trim();
+      // a standalone copy (download / showcase) carries the content as window.__msContent
+      // (project/contentData.js) and names its map there — no id in the address, no database
+      var st = window.__msContent || null;
+      var pid = (q.get('id') || (st && st.map && st.map.id) || '').trim(), slug = (q.get('entry') || '').trim();
       var sheet = document.getElementById('sheet'), status = document.getElementById('status');
       function fail(msg) { status.textContent = msg; }
       if (!pid || !slug) return fail('This page needs a map id and an entry.');
       MSContent.css();
-      var mapUrl = 'index.html?id=' + encodeURIComponent(pid);
+      var mapUrl = st ? 'index.html' : 'index.html?id=' + encodeURIComponent(pid);
       document.getElementById('nav-map').href = mapUrl;
       document.getElementById('nav-index').href = MSContent.indexUrl(pid);
-      var db = MapAuth.db;
-      var proj = null;
-      try { var pr = await db.from('projects').select('id, name').eq('id', pid).maybeSingle(); proj = pr.data; } catch (e) {}
+      var proj = st ? st.map : null;
+      if (!proj && window.MapAuth && MapAuth.db) { try { var pr = await MapAuth.db.from('projects').select('id, name').eq('id', pid).maybeSingle(); proj = pr.data; } catch (e) {} }
       var mapName = (proj && proj.name) || 'Map';
       var ml = document.getElementById('mapline');
       var a1 = document.createElement('a'); a1.href = mapUrl; a1.textContent = mapName; ml.appendChild(a1);

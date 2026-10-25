@@ -30,6 +30,7 @@
   // ── data ──────────────────────────────────────────────────────────────────
   var cache = { types: null, entriesByType: {}, links: null };
   function bundle() { return window.__msContent || null; }
+  function invalidate() { cache.types = null; cache.entriesByType = {}; cache.links = null; }   // the editor saved a type or an entry: the next click reads fresh
 
   async function types(projectId) {
     if (bundle()) return bundle().types || [];
@@ -98,12 +99,68 @@
     var c = enumColor(f, v);
     return '<span class="ms-ct-pill"' + (c ? ' style="background:' + esc(c) + '1f;border-color:' + esc(c) + ';color:' + esc(c) + '"' : '') + '>' + esc(enumLabel(f, v)) + '</span>';
   }
+  /* ── citations as footnotes (10/21) ─────────────────────────────────────────
+     On the entry page every web link inside an entry's text (richtext and list fields) becomes a
+     numbered note at the foot of the page: the link text stays in the sentence with a superscript
+     number, the address lives once in the "Sources" list — the same address always gets the same
+     number. A <p class="sources"> block inside a richtext (the import keeps the document's own
+     sources line inside the evidence) is folded into the notes rather than printed twice, and a
+     Sources field that is nothing but links is shown AS the notes list instead of as a section of
+     its own. Links to other entries (relative addresses) are not citations and stay as they are.
+     The info panel keeps inline links — there is no foot to a panel. */
+  function footnotes() {
+    var list = [], byHref = {}, seq = 0, cited = {};
+    function ref(href, text) {
+      var n = byHref[href];
+      if (!n) { n = list.length + 1; byHref[href] = n; list.push({ n: n, href: href, text: text, host: (href.match(/^https?:\/\/([^\/?#]+)/i) || [])[1] || '' }); }
+      return n;
+    }
+    var A = /<a\b([^>]*?)href=(?:"([^"]*)"|'([^']*)')([^>]*)>([\s\S]*?)<\/a>/gi;
+    // register every web link; `print` false = fold silently (the block is dropped from the page)
+    function fold(html, print) {
+      return String(html == null ? '' : html).replace(A, function (all, pre, h1, h2, post, inner) {
+        var href = h1 != null ? h1 : h2;
+        if (!/^https?:\/\//i.test(href || '')) return all;
+        var text = inner.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() || href;
+        var n = ref(href, text);
+        if (!print) return text;
+        seq++; cited[n] = true;
+        return text + '<sup class="ms-ct-fnref"><a href="#ms-fn-' + n + '" id="ms-fnref-' + seq + '" data-fn="' + n + '">' + n + '</a></sup>';
+      });
+    }
+    function rich(html) {   // a richtext value for the page: the document's own sources lines fold into the notes
+      var h = String(html == null ? '' : html).replace(/<p\b[^>]*class=(?:"[^"]*\bsources\b[^"]*"|'[^']*\bsources\b[^']*')[^>]*>([\s\S]*?)<\/p>/gi, function (all, inner) { fold(inner, false); return ''; });
+      return fold(h, true);
+    }
+    // true when a value is only a list of links (a "Sources: a; b." line) — the notes carry it
+    function linksOnly(html) {
+      var h = String(html == null ? '' : html);
+      if (!A.test(h)) { A.lastIndex = 0; return false; }
+      A.lastIndex = 0;
+      var rest = h.replace(A, '').replace(/<[^>]+>/g, '').replace(/&nbsp;|&amp;|&#\d+;/g, ' ').replace(/\bsources?\s*:?/i, '').replace(/[\s;:,.·—–-]+/g, '');
+      return rest === '';
+    }
+    function html(label) {
+      if (!list.length) return '';
+      return '<section class="ms-ct-sec ms-ct-notes"><h2>' + esc(label || 'Sources') + '</h2><ol class="ms-ct-fn">' + list.map(function (it) {
+        return '<li id="ms-fn-' + it.n + '"><a href="' + esc(it.href) + '" target="_blank" rel="noopener">' + esc(it.text) + '</a>' +
+          (it.host && it.host.toLowerCase() !== it.text.toLowerCase() ? ' <span class="ms-ct-dim">' + esc(it.host.replace(/^www\./, '')) + '</span>' : '') +
+          (cited[it.n] ? ' <a class="ms-ct-fnback" href="#" data-fn="' + it.n + '" title="Back to the text">↩</a>' : '') + '</li>';   // ↩ only where the text cites the note (a sources line alone has nowhere to go back to)
+      }).join('') + '</ol></section>';
+    }
+    return { fold: fold, rich: rich, linksOnly: linksOnly, html: html, count: function () { return list.length; } };
+  }
   function valueHtml(f, v, ctx) {
     if (v == null || v === '' || (Array.isArray(v) && !v.length)) return '';
+    var fn = ctx && ctx.fn;
     switch (f.kind) {
       case 'enum': return pill(f, v);
-      case 'list': return '<ul class="ms-ct-list">' + (Array.isArray(v) ? v : [v]).map(function (x) { return '<li>' + safeHtml(x) + '</li>'; }).join('') + '</ul>';
-      case 'richtext': return '<div class="ms-ct-rich">' + safeHtml(v) + '</div>';
+      case 'list': return '<ul class="ms-ct-list">' + (Array.isArray(v) ? v : [v]).map(function (x) { return '<li>' + (fn ? fn.fold(safeHtml(x), true) : safeHtml(x)) + '</li>'; }).join('') + '</ul>';
+      case 'richtext': {
+        if (fn && fn.linksOnly(v)) { fn.fold(safeHtml(v), false); return ''; }   // a bare sources line = the notes list, not a section
+        var rh = fn ? fn.rich(safeHtml(v)) : safeHtml(v);
+        return /\S/.test(rh.replace(/<[^>]+>/g, '')) ? '<div class="ms-ct-rich">' + rh + '</div>' : '';
+      }
       case 'url': return '<a href="' + esc(v) + '" target="_blank" rel="noopener">' + esc(v) + '</a>';
       case 'image': return '<img class="ms-ct-img" src="' + esc(v) + '" alt="">';
       case 'link': return ctx && ctx.linkHtml ? ctx.linkHtml(v) : esc(v);
@@ -132,12 +189,15 @@
   // the full page body (entry.html): everything the type shows on the page
   function renderPage(type, e, projectId, ctx) {
     var fields = (type && type.fields) || [];
+    ctx = ctx || {};
+    ctx.fn = footnotes();   // the page's citations, numbered in reading order (fields in the type's order)
     var pills = fields.filter(function (f) { return f.kind === 'enum' && showOn(f, 'page') && e.body && e.body[f.key] != null; })
       .map(function (f) { return pill(f, e.body[f.key]); }).join(' ');
+    var sourcesField = fields.filter(function (f) { return f.kind === 'richtext' && showOn(f, 'page') && /^sources?$/i.test(f.key); })[0];
     var parts = fields.filter(function (f) { return f.kind !== 'enum' && showOn(f, 'page'); }).map(function (f) {
       var h = valueHtml(f, e.body && e.body[f.key], ctx); if (!h) return '';
       return '<section class="ms-ct-sec"><h2>' + esc(f.label || f.key) + '</h2>' + h + '</section>';
-    }).join('');
+    }).join('') + ctx.fn.html(sourcesField ? (sourcesField.label || sourcesField.key) : 'Sources');
     return '<article class="ms-ct-article">' +
       '<p class="ms-ct-crumbs"><a href="' + esc(indexUrl(projectId)) + '">' + esc((ctx && ctx.indexLabel) || 'Encyclopedia') + '</a>' +
       (ctx && ctx.parent ? ' › <a href="' + esc(entryUrl(projectId, ctx.parent.slug)) + '">' + esc(ctx.parent.title) + '</a>' : '') + '</p>' +
@@ -164,8 +224,17 @@
       '.ms-ct-article h1{font-size:32px;line-height:1.15;margin:6px 0 10px;letter-spacing:-.01em}.ms-ct-article h2{font-size:15px;letter-spacing:.08em;text-transform:uppercase;color:#7c5cbf;margin:26px 0 8px;border-bottom:1px solid #e6e2f1;padding-bottom:6px}' +
       '.ms-ct-crumbs{font-size:13px;color:#6b6680}.ms-ct-crumbs a{color:#5b43a8;text-decoration:none}' +
       '.ms-ct-sec .ms-ct-list{font-size:15px}.ms-ct-sec .ms-ct-rich{font-size:15px}' +
-      '.ms-ct-kids{list-style:none;padding:0;margin:0}.ms-ct-kids li{padding:7px 0;border-bottom:1px solid #f0edf7;font-size:15px}.ms-ct-kids a{color:#5b43a8;font-weight:700;text-decoration:none}.ms-ct-dim{color:#6b6680}';
+      '.ms-ct-kids{list-style:none;padding:0;margin:0}.ms-ct-kids li{padding:7px 0;border-bottom:1px solid #f0edf7;font-size:15px}.ms-ct-kids a{color:#5b43a8;font-weight:700;text-decoration:none}.ms-ct-dim{color:#6b6680}' +
+      '.ms-ct-fnref{font-size:.72em;line-height:0;vertical-align:super;margin-left:1px}.ms-ct-fnref a{color:#5b43a8;text-decoration:none;font-weight:700;padding:0 1px}.ms-ct-fnref a:hover{text-decoration:underline}' +
+      '.ms-ct-fn{margin:4px 0 0 22px;padding:0;font-size:14px;line-height:1.5}.ms-ct-fn li{margin:5px 0;overflow-wrap:anywhere}.ms-ct-fn li:target{background:#f3f1f8}.ms-ct-fn a{color:#5b43a8}.ms-ct-fn .ms-ct-dim{font-size:12.5px;margin-left:4px}.ms-ct-fnback{text-decoration:none;margin-left:6px;color:#9a94b3}.ms-ct-fnback:hover{color:#5b43a8}';
     document.head.appendChild(s);
+    // the ↩ of a note goes back to the FIRST place in the text that cites it
+    document.addEventListener('click', function (ev) {
+      var a = ev.target && ev.target.closest ? ev.target.closest('a.ms-ct-fnback') : null; if (!a) return;
+      ev.preventDefault();
+      var ref = document.querySelector('sup.ms-ct-fnref a[data-fn="' + a.getAttribute('data-fn') + '"]');
+      if (ref) { ref.scrollIntoView({ block: 'center' }); try { ref.focus(); } catch (e) {} }
+    });
   }
 
   // ── the info-panel hook (engine/infoPanel.js, mode "entries") ─────────────
@@ -185,7 +254,7 @@
   }
 
   window.MSContent = {
-    mapId: mapId, types: types, entriesForType: entriesForType, entryBySlug: entryBySlug, entriesForKey: entriesForKey,
+    mapId: mapId, types: types, entriesForType: entriesForType, entryBySlug: entryBySlug, entriesForKey: entriesForKey, invalidate: invalidate,
     linksOf: linksOf, entriesById: entriesById, fieldOf: fieldOf, enumLabel: enumLabel, enumColor: enumColor,
     renderPanel: renderPanel, renderPage: renderPage, panelFor: panelFor, entryUrl: entryUrl, indexUrl: indexUrl, css: css, esc: esc, safeHtml: safeHtml
   };

@@ -2236,6 +2236,8 @@
     var epProps = featureProps(node) || {};
     // colorBy layers: the editable copy keeps the FEATURE's own category color (not the layer default)
     try { if (node.colorBy && node.colorBy.mapping) { var cbv2 = cbValueOf(row, node.colorBy.prop); var mc2 = cbv2 != null ? node.colorBy.mapping[String(cbv2)] : null; if (mc2) epProps.color = mc2; } } catch (e) {}
+    // outlineBy layers: the editable copy keeps the FEATURE's own outline colour + width (step 10)
+    try { var obp2 = obPropsFor(node, row); if (obp2) { if (obp2.outline) epProps.outline = obp2.outline; if (obp2.strokewidth != null) epProps.strokewidth = obp2.strokewidth; } } catch (e) {}
     try { draw.add({ type: 'Feature', id: drawId, geometry: geom, properties: epProps }); } catch (e) { setStatus('Edit failed'); return; }
     (_engineEditIds[node.id] = _engineEditIds[node.id] || []); if (_engineEditIds[node.id].indexOf(fid) < 0) _engineEditIds[node.id].push(fid);   // hide the TILE copy by its own id (folded: the artifact id)
     /* keyed by the MAP's id for this feature (the archive id on a folded layer, the row id on a
@@ -5826,6 +5828,13 @@
         });
       });
     }
+    if (!document.getElementById('editor-articles-btn')) {   // 📚 Articles (content system, 10/21): types + articles of this map, written here
+      var ab = document.createElement('button');
+      ab.id = 'editor-articles-btn'; ab.textContent = '📚 Articles'; ab.title = 'This map\'s content: the kinds of article (types, their fields) and the articles themselves';
+      var stb2 = document.getElementById('editor-settings');
+      if (stb2 && stb2.parentNode === left) left.insertBefore(ab, stb2); else left.appendChild(ab);
+      ab.addEventListener('click', openArticlesPanel);
+    }
     if (!document.getElementById('editor-guide-btn')) {   // Guide lives next to Settings (editor-only chrome, built here so the shared page markup stays viewer-identical)
       var gb = document.createElement('button');
       gb.id = 'editor-guide-btn'; gb.textContent = '📖 Guide'; gb.title = 'How to build a map — every panel and button explained';
@@ -7116,12 +7125,34 @@
     // the runtime paint's outline is BLANKED to transparent whenever a -stroke- companion owns the
     // border (any width ≠ 1) — pass the companion's real colour through, or every pulled-in draw
     // copy renders borderless (the 8/8 click-vanish's "just the border disappears" half)
-    if (ol != null && String(ol).replace(/\s+/g, '') === 'rgba(0,0,0,0)' && node && node.stroke && node.stroke['line-color']) ol = node.stroke['line-color'];
+    if (ol != null && String(ol).replace(/\s+/g, '') === 'rgba(0,0,0,0)' && node && node.stroke && typeof node.stroke['line-color'] === 'string') ol = node.stroke['line-color'];
     if (ol != null) p.outline = ol;
     if (paint['line-opacity'] != null) p.strokeopacity = paint['line-opacity'];
     var w = paintWidth(paint); if (w != null) p.strokewidth = w;
     if (paint['circle-radius'] != null) p.radius = paint['circle-radius'];
+    /* Outline by column (step 10): the paint then holds MATCH EXPRESSIONS, and the stroke companion's
+       line-color is one too — handed to a draw copy as `user_outline`, Mapbox cannot parse an array
+       as a colour and every repaint throws "reading 'r'" (populatePaintArrays), while the width is
+       simply missing (outline-by-drawn-gate, 10/21). A draw copy starts from the "(no value)" outline;
+       obPropsFor lays the feature's own value over it. */
+    if (node && node.outlineBy && node.outlineBy.mapping) { var fb = obFallbacks(node); p.outline = fb.color; p.strokewidth = fb.width; }
     return p;
+  }
+  // Outline by column: the outline colour + width of ONE feature from the mapping, for the draw copies
+  // (a feature pulled in for editing, a loadFeatures row). null = no outline-by, or no value for this
+  // feature → the caller keeps the fallback. A column in the rows reads custom_fields; one of this
+  // map's own reads the values table (cached since the panel compiled the paint).
+  function obPropsFor(node, row) {
+    var ob = node && node.outlineBy; if (!ob || !ob.prop || !ob.mapping || !row) return null;
+    var v = null;
+    if (ob.custom) {
+      var lid = slugToLayerDbId[node.id], vals = (window.MSCustomCols && lid) ? MSCustomCols.cached(lid) : null;
+      var k = vals ? MSCustomCols.rowKey(node, row) : null, r = k != null ? vals[k] : null;
+      v = r ? r[ob.prop] : null;
+    } else v = cbValueOf(row, ob.prop);
+    var m = (v != null && v !== '') ? ob.mapping[String(v)] : null; if (!m) return null;
+    var out = {}; if (m.color) out.outline = m.color; if (typeof m.width === 'number') out.strokewidth = m.width;
+    return out;
   }
   function fmtDist(km) {
     var m = km * 1000, mi = km * 0.621371;
@@ -7625,7 +7656,7 @@
 
     // map each drawn layer's db id → its style, + collect the geojson layers
     var dbColor = {}, dbOpacity = {}, dbOutline = {}, dbStrokeOp = {}, dbStrokeWidth = {}, dbRadius = {}, gjList = [];
-    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { /* paint's literal colour wins: an imported hollow fill (rgba(0,0,0,0)) must not fall back to the sidebar icon colour */ var pc0 = (n.paint && typeof n.paint[colorKeyFor(n.type)] === 'string') ? n.paint[colorKeyFor(n.type)] : null; dbColor[did] = pc0 || n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; var ol = paintOutline(n.paint); if (ol != null) dbOutline[did] = ol; if (n.paint && n.paint['line-opacity'] != null) dbStrokeOp[did] = n.paint['line-opacity']; var wd = paintWidth(n.paint); if (wd != null) dbStrokeWidth[did] = wd; if (n.paint && n.paint['circle-radius'] != null) dbRadius[did] = n.paint['circle-radius']; if (n.outlineSplit) dbStrokeOp[did] = 0; gjList.push({ slug: n.id, did: did }); } } if (n.children) walk(n.children); }); })(layers);
+    (function walk(arr) { (arr || []).forEach(function (n) { if (n.source_type === 'geojson-supabase') { var did = slugToLayerDbId[n.id]; if (did) { /* paint's literal colour wins: an imported hollow fill (rgba(0,0,0,0)) must not fall back to the sidebar icon colour */ var pc0 = (n.paint && typeof n.paint[colorKeyFor(n.type)] === 'string') ? n.paint[colorKeyFor(n.type)] : null; dbColor[did] = pc0 || n.iconColor || '#3bb2d0'; var op = paintOpacity(n.paint); if (op != null) dbOpacity[did] = op; var ol = paintOutline(n.paint); if (ol != null) dbOutline[did] = ol; if (n.paint && n.paint['line-opacity'] != null) dbStrokeOp[did] = n.paint['line-opacity']; var wd = paintWidth(n.paint); if (wd != null) dbStrokeWidth[did] = wd; if (n.outlineBy && n.outlineBy.mapping) { var obFb = obFallbacks(n); dbOutline[did] = obFb.color; dbStrokeWidth[did] = obFb.width; }   /* outline by column: the paint holds expressions — the draw copies start from the "(no value)" outline (step 10) */ if (n.paint && n.paint['circle-radius'] != null) dbRadius[did] = n.paint['circle-radius']; if (n.outlineSplit) dbStrokeOp[did] = 0; gjList.push({ slug: n.id, did: did }); } } if (n.children) walk(n.children); }); })(layers);
 
     // Classify by size: small layers edit in MapboxDraw; large ones (imported 10k+ datasets) render
     // via the engine like a tileset — MapboxDraw can't hold tens of thousands of features (it freezes).
@@ -7762,10 +7793,8 @@
       if (cbNode && cbNode.colorBy && cbNode.colorBy.nofill && cbNode.colorBy.nofill.length) {
         var nfv = cbValueOf(row, cbNode.colorBy.prop); if (nfv != null && cbNode.colorBy.nofill.indexOf(String(nfv)) > -1) props.opacity = 0;
       }
-      if (cbNode && cbNode.outlineBy && cbNode.outlineBy.mapping && !cbNode.outlineBy.custom) {
-        var obv = cbValueOf(row, cbNode.outlineBy.prop), obm = obv != null ? cbNode.outlineBy.mapping[String(obv)] : null;
-        if (obm) { if (obm.color) props.outline = obm.color; if (typeof obm.width === 'number') props.strokewidth = obm.width; }
-      }
+      var obm = obPropsFor(cbNode, row);   // a column in the rows or one of this map's own — one lookup (obPropsFor)
+      if (obm) { if (obm.outline) props.outline = obm.outline; if (obm.strokewidth != null) props.strokewidth = obm.strokewidth; }
       // UNIVERSAL STYLE COLUMNS: every feature carries ms_color / ms_linecolor / ms_opacity / ms_thickness —
       // when set they style THAT feature (trumping the layer style AND colour-by). Editable in the attribute table.
       if (row.custom_fields) {
@@ -8647,6 +8676,7 @@
     document.getElementById('efp-page-row').style.display = (pmode === 'drupal' || pmode === 'both') ? 'block' : 'none';
     var encProps = (hasEnc && meta.pageid) ? (function () { var ep = { name: meta.label || '' }; ep[(lnode.panel && lnode.panel.nidProp) || 'content_id'] = meta.pageid; return ep; })() : null;
     if (pmode === 'notes') showNotesPreview(lnode, { label: meta.label, notes: meta.notes, image_url: meta.image_url });
+    else if (pmode === 'entries') showEntriesPreview(lnode, Object.assign({ label: meta.label || '' }, meta.custom || {}));   // Articles: the feature's article, as the viewer shows it
     else if (pmode === 'drupal') { if (encProps) showEncyclopediaPreview(lnode, encProps); else hideEncPanel(); }
     else if (pmode === 'both') { showNotesPreview(lnode, { label: meta.label, notes: meta.notes, image_url: meta.image_url }); if (encProps) showEncyclopediaPreview(lnode, encProps, true); }   // title+notes, then append the Drupal page
     else hideEncPanel();
@@ -8763,6 +8793,27 @@
     if (typeof floatPanelToTop === 'function') { try { floatPanelToTop(divId); } catch (e) {} }
     $el.show();
     dockEditorIntoInfoPanel(divId);   // editor form now lives INSIDE the info panel, below the preview
+  }
+  // Articles mode (content system, 10/21): the SAME lookup the viewer runs (MSContent.panelFor on
+  // the layer's panel.entries) rendered into the same info-panel chrome, the editor form docked
+  // below. No article for this feature's key → an edit-only placeholder that says which key.
+  var _entReq = 0;
+  async function showEntriesPreview(node, props) {
+    var $ = window.$, divId = ensureEncPanelDiv(node); if (!divId || !$) return;
+    var $el = $('#' + divId), req = ++_entReq;
+    Array.prototype.forEach.call(document.querySelectorAll('#rightInfoBar .infoLayerElem'), function (el) { if (el.id !== divId) el.style.display = 'none'; });
+    $el.html('<p style="opacity:.6;">Looking up the article…</p>').show();
+    dockEditorIntoInfoPanel(divId);
+    var res = null;
+    try { if (window.MSContent) { MSContent.css(); res = await MSContent.panelFor(node, props); } } catch (e) { res = null; }
+    if (req !== _entReq) return;
+    if (res) $el.html(res.html);
+    else {
+      var cfg = (node.panel && node.panel.entries) || {}, kv = props[cfg.key || 'label'];
+      $el.html('<h3 style="opacity:.55;font-style:italic;font-weight:400;">' + (cfg.type ? ('(no article with key “' + attrEsc(kv == null ? '' : String(kv)) + '” — write one in 📚 Articles)') : '(pick a content type in the layer panel)') + '</h3>');
+    }
+    if (typeof floatPanelToTop === 'function') { try { floatPanelToTop(divId); } catch (e) {} }
+    $el.show();
   }
   function onFeatureField(field, value) {
     if (!selectedDrawId) return;
@@ -9044,6 +9095,7 @@
           ccColorOptions(node, sel, info);   // + this map's own columns (step 9) and the Random / By value block
         }
         fillOutlineBySelect(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));   // Outline by column (step 10): the tile columns + this map's own
+        node._entriesKeys = tcols.slice(); if (node.panel && node.panel.mode === 'entries') fillEntriesControls(node, tcols);   // Articles: the key select gets the tile columns
       }
       return;
     }
@@ -9093,6 +9145,7 @@
       fillMapLabelControls(node, sortedKeys);
       // the Label-field dropdown gets the same columns ("label" = the feature's own Label field)
       fillLabelFieldSelect(node, sortedKeys);
+      node._entriesKeys = sortedKeys.slice(); if (node.panel && node.panel.mode === 'entries') fillEntriesControls(node, sortedKeys);   // Articles: the key select gets the same columns
       fillGroupBySelect(node, sortedKeys);
       ccColorOptions(node, sel, info);   // + this map's own columns (step 9) and the Random / By value block
       fillOutlineBySelect(node, sortedKeys);   // Outline by column (step 10)
@@ -11512,7 +11565,16 @@
       '<div class="ms-note">Click any piece → <b>everything sharing this column\'s value lights up together</b> — e.g. a railroad stored as many segments highlights as ONE line. The data stays in pieces; only the experience is unified.</div></div>' +
       // panel-row + enc-row live INSIDE the Popups & info card (they're the info-panel + encyclopedia settings)
       '<div id="elp-panel-row" style="margin-top:8px;"><label class="ms-lbl">Info panel (on feature click)</label>' +
-      '<select id="elp-panel-mode" class="ms-in"><option value="notes">Title + notes</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
+      '<select id="elp-panel-mode" class="ms-in"><option value="notes">Title + notes</option><option value="entries">Articles (this map\'s content)</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
+      // ARTICLES (content system, 10/21): which content type holds this layer's articles and which
+      // feature property is the join (entries.key). Persisted as panel.entries = {type, key, project};
+      // the viewer's info panel (engine/infoPanel.js → platform/content.js) reads exactly this.
+      '<div id="elp-entries-row" style="display:none;margin-top:8px;"><label class="ms-lbl">Content type (the articles)</label>' +
+      '<select id="elp-entries-type" class="ms-in"><option value="">— pick a type —</option></select>' +
+      '<label class="ms-lbl" style="margin-top:6px;">Feature property that names the article (its key)</label>' +
+      '<select id="elp-entries-key" class="ms-in"><option value="label">label (the feature\'s own Label)</option></select>' +
+      '<div class="ms-note">Click a feature → the article whose key equals this property opens in the info panel. Types and articles are written in <b>📚 Articles</b> (top bar).</div>' +
+      '<button id="elp-entries-open" class="ms-btn" style="margin-top:6px;">📚 Open Articles</button></div>' +
       '<div id="elp-enc-row" style="margin-top:8px;"><label class="ms-lbl">Encyclopedia base URL</label>' +
       '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" class="ms-in" />' +
       '<div id="elp-nidprop-row" style="display:none;margin-top:6px;"><label class="ms-lbl">Page-ID property</label>' +
@@ -11771,6 +11833,9 @@
     document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
     document.getElementById('elp-nidprop').addEventListener('change', function () { onNidProp(this.value); });
     document.getElementById('elp-panel-mode').addEventListener('change', function () { onPanelMode(this.value); });
+    document.getElementById('elp-entries-type').addEventListener('change', function () { onEntriesBinding(); });
+    document.getElementById('elp-entries-key').addEventListener('change', function () { onEntriesBinding(); });
+    document.getElementById('elp-entries-open').addEventListener('click', function () { openArticlesPanel(); });
     document.getElementById('elp-src-apply').addEventListener('click', onApplySource);
     document.getElementById('elp-src-url').addEventListener('input', function () { document.getElementById('elp-src-zooms').style.display = (this.value.trim().indexOf('mapbox://') === 0) ? 'none' : 'block'; });
     document.getElementById('elp-hover').addEventListener('change', onInteraction);
@@ -11839,12 +11904,78 @@
     node.panel.mode = mode;
     if (window.renderRegistry) node.panel.render = (mode === 'notes') ? window.renderRegistry._notes : (window.renderRegistry[activeLayerId] || window.renderRegistry._default);
     document.getElementById('elp-enc-row').style.display = (mode === 'drupal' || mode === 'both') ? 'block' : 'none';   // toggle the encyclopedia URL field live
+    document.getElementById('elp-entries-row').style.display = mode === 'entries' ? 'block' : 'none';
+    if (mode === 'entries') { await fillEntriesControls(node); return onEntriesBinding(); }   // Articles: the binding is what gets saved (type + key beside the mode)
     setStatus('Saving…');
     try {
       var r = await patchLayerConfig(lid, { panel: { mode: mode } });   // merge-patch keeps panel's other keys
       if (r.error) throw new Error(r.error.message);
       setStatus('Info panel: ' + mode);
     } catch (e) { setStatus('Save failed'); }
+  }
+  /* ── ARTICLES on a layer (content system, 10/21) ─────────────────────────────
+     panel.entries = { type, key, project }: the content type whose articles this layer opens and
+     the feature property that carries the article's key. The two selects write it; the Articles
+     panel (platform/contentEditor.js) writes the same thing when a type is bound to a layer there. */
+  var _ctTypes = null;   // this map's content types, for the type select (refreshed by the Articles panel)
+  async function loadContentTypes(force) {
+    if (_ctTypes && !force) return _ctTypes;
+    try { var r = await db.from('content_types').select('id, slug, name, name_plural, layer_id, feature_key').eq('project_id', projectId).order('name'); _ctTypes = r.error ? [] : (r.data || []); }
+    catch (e) { _ctTypes = []; }
+    return _ctTypes;
+  }
+  async function fillEntriesControls(node, keys) {
+    var ts = document.getElementById('elp-entries-type'), ks = document.getElementById('elp-entries-key'); if (!ts || !ks) return;
+    var cur = (node.panel && node.panel.entries) || {};
+    var types = await loadContentTypes(true);
+    ts.innerHTML = '<option value="">— pick a type —</option>';
+    types.forEach(function (t) { var o = document.createElement('option'); o.value = t.id; o.textContent = t.name + (t.name_plural ? ' (' + t.name_plural + ')' : ''); ts.appendChild(o); });
+    // no type picked yet: a type already bound to THIS layer in Articles is the obvious one
+    var lid = slugToLayerDbId[node.id], bound = types.filter(function (t) { return t.layer_id && (t.layer_id === lid || t.layer_id === node._layerDbId || t.layer_id === node._dataLayerId); })[0];
+    ts.value = cur.type || (bound ? bound.id : '') || '';
+    if (!types.length) ts.innerHTML = '<option value="">No content types yet — open Articles to make one</option>';
+    if (keys) {   // the layer's columns, same list as the Label field (populate hands them over)
+      ks.innerHTML = '<option value="label">label (the feature\'s own Label)</option>';
+      keys.forEach(function (k) { if (k === 'label' || k === 'DayStart' || k === 'DayEnd') return; var o2 = document.createElement('option'); o2.value = k; o2.textContent = k; ks.appendChild(o2); });
+      ks.setAttribute('data-filled', '1');
+    }
+    var want = cur.key || (bound && bound.feature_key) || 'label';
+    if (![].slice.call(ks.options).some(function (o) { return o.value === want; })) { var o3 = document.createElement('option'); o3.value = want; o3.textContent = want; ks.appendChild(o3); }
+    ks.value = want;
+  }
+  async function onEntriesBinding() {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var type = document.getElementById('elp-entries-type').value || null, key = document.getElementById('elp-entries-key').value || 'label';
+    node.panel = node.panel || {}; node.panel.mode = 'entries';
+    node.panel.entries = { type: type, key: key, project: projectId };
+    setStatus('Saving…');
+    try {
+      var r = await patchLayerConfig(lid, { panel: { mode: 'entries', entries: node.panel.entries } });
+      if (r.error) throw new Error(r.error.message);
+      setStatus(type ? 'Info panel: articles' : 'Pick a content type — no article opens until one is chosen');
+      if (window.MSContent && MSContent.invalidate) MSContent.invalidate();
+    } catch (e) { setStatus('Save failed'); }
+  }
+  function openArticlesPanel() {
+    if (!window.MSContentEditor) { showToast('The Articles panel did not load (platform/contentEditor.js)'); return; }
+    MSContentEditor.open({
+      db: db, projectId: projectId,
+      layers: function () {   // the map's leaf layers, for binding a type to one
+        var out = []; (function w(a) { (a || []).forEach(function (n) { if (!n) return; if (n.children) { w(n.children); return; } var lid = slugToLayerDbId[n.id]; if (lid) out.push({ id: lid, slug: n.id, label: n.label || n.id }); }); })(layers); return out;
+      },
+      // a type bound to a layer there = that layer's panel opens its articles (the same binding the layer panel's selects write)
+      bindLayer: async function (layerDbId, typeId, key) {
+        var node = nodeByLayerDbId(layerDbId); if (!node) return;
+        node.panel = node.panel || {}; node.panel.mode = 'entries'; node.panel.entries = { type: typeId, key: key || 'label', project: projectId };
+        var r = await patchLayerConfig(layerDbId, { panel: { mode: 'entries', entries: node.panel.entries } });
+        if (r.error) throw new Error(r.error.message);
+        if (activeLayerId === node.id) { try { document.getElementById('elp-panel-mode').value = 'entries'; document.getElementById('elp-entries-row').style.display = 'block'; await fillEntriesControls(node); } catch (e) {} }
+      },
+      onChange: function () { _ctTypes = null; if (window.MSContent && MSContent.invalidate) MSContent.invalidate(); if (activeLayerId) { var n = findNodeById(layers, activeLayerId); if (n && n.panel && n.panel.mode === 'entries') fillEntriesControls(n); } },
+      status: setStatus, toast: showToast
+    });
   }
   // View/edit a tileset's source — repoint the URL (mapbox:// or a {z}/{x}/{y} worker/PMTiles template),
   // source-layer, and zoom range; persist to the layers table + re-render the layer on both maps.
@@ -12186,6 +12317,8 @@
     document.getElementById('elp-panel-row').style.display = canPanel ? 'block' : 'none';
     document.getElementById('elp-panel-mode').value = pmodeUI;
     document.getElementById('elp-enc-row').style.display = (canPanel && (pmodeUI === 'drupal' || pmodeUI === 'both')) ? 'block' : 'none';   // encyclopedia URL only when Drupal is part of the mode
+    document.getElementById('elp-entries-row').style.display = (canPanel && pmodeUI === 'entries') ? 'block' : 'none';   // Articles: type + key selects (filled with the layer's columns once populate knows them)
+    if (canPanel && pmodeUI === 'entries') fillEntriesControls(node, node._entriesKeys || null);
     document.getElementById('elp-encurl').value = (node.panel && node.panel.encyclopediaBase) || '';
     var isTsPanel = isTilesetNode(node);   // tilesets pick which property holds the page id; drawn layers always use content_id
     document.getElementById('elp-nidprop-row').style.display = (isTsPanel && (pmodeUI === 'drupal' || pmodeUI === 'both')) ? 'block' : 'none';
