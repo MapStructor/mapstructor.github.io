@@ -187,6 +187,13 @@ const STAMP = process.argv.includes("--stamp");
 const orphIdx = process.argv.indexOf("--orphans-out");
 const ORPH_OUT = orphIdx > -1 ? process.argv[orphIdx + 1] : null;
 
+/* 10/25: a clean bucket (0 orphans) wrote NO manifest, and the delete pass that reads it in the
+   same workflow command died on ENOENT — the Sunday sweep failed precisely when there was nothing
+   to do. An empty manifest (header only) is the honest record of a clean audit; write it always. */
+if (ORPH_OUT && !uniq.length) {
+  fs.writeFileSync(ORPH_OUT, `# R2 orphan manifest — ${new Date().toISOString().slice(0, 10)} · bucket ${BUCKET} · 0 objects (clean audit, nothing to delete)\n`);
+  console.log(`\norphan manifest written: ${ORPH_OUT} (0 keys — clean)`);
+}
 if (ORPH_OUT && uniq.length) {
   // group by project uuid (the first uuid in every key) so the owner reads a few blocks, not 100+ lines
   const groups = new Map();
@@ -230,7 +237,8 @@ if (STAMP && sweepable.length) {
 /* ── the delete pass (owner-approved manifest only) ────────────────────────── */
 const appIdx = process.argv.indexOf("--apply-orphans");
 const APPLY = appIdx > -1 ? process.argv[appIdx + 1] : null;
-if (APPLY) {
+if (APPLY && !fs.existsSync(APPLY)) console.log(`\n--apply-orphans: no manifest at ${APPLY} — nothing to delete.`);   // a missing file is "nothing approved", not a crash
+if (APPLY && fs.existsSync(APPLY)) {
   const man = fs.readFileSync(APPLY, "utf8").split("\n").filter((l) => l.includes("\t")).map((l) => l.split("\t")[0]);
   const cur = new Set(uniq.map((o) => o.key));
   const doomed = man.filter((k) => cur.has(k));
