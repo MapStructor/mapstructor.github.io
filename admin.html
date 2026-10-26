@@ -65,6 +65,17 @@
       <div id="reconcile-detail" style="display:none;margin-top:8px;font-size:13px;color:#4a4460;background:#f6f4fb;border:1px solid #e0d8f0;border-radius:6px;padding:8px 12px;"></div>
     </div>
 
+    <!-- Users (owner 10/25: "Add a button to see users in my admin page") — ms_admin_users(), admin-only
+         SECURITY DEFINER (sql/setup/admin-users-rpc.sql); loaded on demand, not at page open. -->
+    <h2>Users</h2>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+      <button id="users-btn" style="padding:7px 14px;border:1px solid #cdbff0;border-radius:6px;background:#f2ecff;color:#5b4b9a;font:600 13px 'Source Sans Pro',Arial,sans-serif;cursor:pointer;">👥 Show users</button>
+      <label id="users-filter-wrap" style="display:none;font-size:13px;color:#6b6680;cursor:pointer;"><input id="users-filter" type="checkbox" checked style="vertical-align:middle;margin:0 5px 0 0;" />Only accounts with an e-mail (hides anonymous editor sessions and harness accounts)</label>
+      <span id="users-out" style="font-size:13px;color:#6b6680;"></span>
+    </div>
+    <table id="users-table" style="display:none;margin-top:10px;"><thead id="users-head"><tr><th data-usort="username" data-label="Username">Username</th><th data-usort="email" data-label="E-mail">E-mail</th><th data-usort="subscription_tier" data-label="Plan">Plan</th><th data-usort="storage_used_bytes" data-label="Storage">Storage</th><th data-usort="maps" data-label="Maps">Maps</th><th data-usort="created_at" data-label="Created">Created</th><th data-usort="last_sign_in_at" data-label="Last seen">Last seen</th></tr></thead><tbody id="users-body"></tbody></table>
+    <div class="note" id="users-note" style="display:none;">The users table appears after you run <b>mapstructor_docs/sql/setup/admin-users-rpc.sql</b>.</div>
+
     <h2>Database &amp; infrastructure</h2>
     <div class="cards">
       <div class="stat"><div class="n" id="s-db">—</div><div class="l">Database size <span id="s-db-frac" style="font-weight:400;color:#9a93ad;"></span></div></div>
@@ -174,6 +185,48 @@
           } catch (e) { out.textContent = 'Reconcile failed: ' + (e && e.message || e); }
           rbtn.disabled = false;
         };
+
+        // Users → one RPC on demand (ms_admin_users), sortable like the other tables, with the
+        // anonymous editor sessions (no e-mail) folded away by default — they are most of the rows
+        (function () {
+          var btn = document.getElementById('users-btn'), out = document.getElementById('users-out'), tbl = document.getElementById('users-table'), body = document.getElementById('users-body');
+          var all = null, _uKey = 'last_sign_in_at', _uDir = -1;
+          var harness = function (u) { return /^zz[-_]|@example\.com$|^ms_cs_|yopmail|mapstructor-test\.invalid/i.test((u.username || '') + ' ' + (u.email || '')); };
+          var fmtB = function (b) { return (b == null || !Number(b)) ? '—' : window.MapStructorPricing.fmtBytes(Number(b)); };
+          var render = function () {
+            var onlyEmail = document.getElementById('users-filter').checked;
+            var rows = all.filter(function (u) { return !onlyEmail || (u.email && !harness(u)); });
+            rows.sort(function (a, b) {
+              var va = a[_uKey], vb = b[_uKey];
+              if (_uKey === 'storage_used_bytes' || _uKey === 'maps') { va = Number(va || 0); vb = Number(vb || 0); }
+              else { va = String(va || '').toLowerCase(); vb = String(vb || '').toLowerCase(); }
+              return (va < vb ? -1 : va > vb ? 1 : 0) * _uDir;
+            });
+            body.innerHTML = rows.map(function (u) {
+              return '<tr' + (u.is_admin ? ' style="font-weight:600;"' : '') + '><td>' + esc(u.username ? '@' + u.username : (u.display_name || '—')) + (u.is_admin ? ' <span style="font-size:11px;color:#7c5cbf;">ADMIN</span>' : '') + '</td><td>' + esc(u.email || '—') + '</td><td>' + esc(u.subscription_tier || 'free') + '</td><td>' + fmtB(u.storage_used_bytes) + '</td><td>' + Number(u.maps || 0) + '</td><td>' + fmtDate(u.created_at) + '</td><td>' + (u.last_sign_in_at ? fmtDate(u.last_sign_in_at) : 'never') + '</td></tr>';
+            }).join('') || '<tr><td colspan="7" style="color:#9a93ad;">No accounts match.</td></tr>';
+            Array.prototype.forEach.call(document.querySelectorAll('#users-head th[data-usort]'), function (th) { th.style.cursor = 'pointer'; th.textContent = th.getAttribute('data-label') + (th.getAttribute('data-usort') === _uKey ? (_uDir > 0 ? ' ▲' : ' ▼') : ''); });
+            var withEmail = all.filter(function (u) { return u.email && !harness(u); }).length, hn = all.filter(harness).length;
+            out.textContent = all.length + ' accounts · ' + withEmail + ' with an e-mail · ' + (all.length - withEmail - hn) + ' anonymous sessions · ' + hn + ' harness' + (onlyEmail ? ' — showing ' + rows.length : ' — showing all');
+          };
+          Array.prototype.forEach.call(document.querySelectorAll('#users-head th[data-usort]'), function (th) {
+            th.addEventListener('click', function () { var k = th.getAttribute('data-usort'); if (_uKey === k) _uDir = -_uDir; else { _uKey = k; _uDir = (k === 'storage_used_bytes' || k === 'maps' || k === 'created_at' || k === 'last_sign_in_at') ? -1 : 1; } if (all) render(); });
+          });
+          document.getElementById('users-filter').addEventListener('change', function () { if (all) render(); });
+          btn.onclick = async function () {
+            if (all) { tbl.style.display = tbl.style.display === 'none' ? 'table' : 'none'; btn.textContent = tbl.style.display === 'none' ? '👥 Show users' : '👥 Hide users'; return; }
+            btn.disabled = true; out.textContent = 'Loading…';
+            try {
+              var r = await db.rpc('ms_admin_users');
+              if (r.error) throw new Error(r.error.message);
+              all = r.data || [];
+              tbl.style.display = 'table'; document.getElementById('users-filter-wrap').style.display = 'inline';
+              btn.textContent = '👥 Hide users';
+              render();
+            } catch (e) { out.textContent = ''; document.getElementById('users-note').style.display = 'block'; document.getElementById('users-note').innerHTML = 'Could not load users: ' + esc(e && e.message || e) + ' — run <b>mapstructor_docs/sql/setup/admin-users-rpc.sql</b>.'; }
+            btn.disabled = false;
+          };
+        })();
 
         // maps
         var pr = await db.from('projects').select('id,name,user_id,is_public,updated_at,created_at');

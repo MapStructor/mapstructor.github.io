@@ -45,6 +45,12 @@ const PROJECT_ID = process.env.PROJECT_ID;
 const LAYER_ID = process.env.LAYER_ID;
 const MODE = (process.env.MODE || "retile").trim();
 const RAW_KEY = (process.env.RAW_KEY || "").trim();
+// fold-raw from a LOCAL FeatureCollection (10/26): scripts/gpkg-prepare.mjs converts a cloud-
+// imported GeoPackage with GDAL and runs this script once per table, pointing RAW_FILE at the
+// converted GeoJSON. SOURCE_BYTES = the uploaded package's size, counted toward r2_bytes on the
+// FIRST table only (siblings pass 0 — the file is one object on R2, however many layers it holds).
+const RAW_FILE = (process.env.RAW_FILE || "").trim();
+const SOURCE_BYTES = Number(process.env.SOURCE_BYTES || 0) || 0;
 const MAX_ZOOM = (process.env.MAX_ZOOM || "").trim();
 // Tile-level simplification (8/15). Raising the multiplier thins the low zooms, which is exactly
 // where a timeline scrub re-tessellates the whole country. tippecanoe simplifies the MAX zoom too
@@ -62,7 +68,7 @@ const FOLD = MODE === "fold-rows" || MODE === "fold-raw" || MODE === "fold-merge
 
 if (!KEY || !PROJECT_ID || !LAYER_ID) { console.error("need SUPABASE_SERVICE_KEY, PROJECT_ID, LAYER_ID"); process.exit(1); }
 if (!["retile", "fold-rows", "fold-raw", "fold-merge"].includes(MODE)) { console.error("bad MODE " + MODE); process.exit(1); }
-if (MODE === "fold-raw" && !RAW_KEY) { console.error("fold-raw needs RAW_KEY"); process.exit(1); }
+if (MODE === "fold-raw" && !RAW_KEY && !RAW_FILE) { console.error("fold-raw needs RAW_KEY (an R2 key) or RAW_FILE (a local GeoJSON)"); process.exit(1); }
 if (FOLD && !R2_ENDPOINT) { console.error("fold modes need R2_ACCOUNT_ID (+ key pair)"); process.exit(1); }
 
 const H = { apikey: KEY, Authorization: "Bearer " + KEY };
@@ -306,16 +312,30 @@ try {
       const out = execFileSync("aws", ["--endpoint-url", R2_ENDPOINT, "s3api", "head-object", "--bucket", R2_BUCKET, "--key", `tiles/${PROJECT_ID}/${LAYER_ID}.source.geojson`], { env: AWS_ENV, encoding: "utf8" });
       sourceBytes = JSON.parse(out).ContentLength || 0;
     } catch (e) {}
-  } else if (MODE === "fold-raw") {
-    console.log("Fetching source FC from R2: " + RAW_KEY);
-    let fr = null;
-    for (let a = 1; a <= 3 && !fr; a++) {
-      const r = await fetch(`${R2_PUBLIC}/${RAW_KEY}`, { cache: "no-store" });
-      if (r.ok) fr = await r.json();
-      else { console.warn("source fetch " + r.status + " (try " + a + ")"); await new Promise((rs) => setTimeout(rs, 3000)); }
+    // a cloud-imported GeoPackage is one object shared by every layer it produced — only the
+    // FIRST layer (the one whose id names the file) keeps counting it; siblings carry siblingOf
+    if (!sourceBytes && rc0.cloudImport && !rc0.siblingOf) {
+      try {
+        const out2 = execFileSync("aws", ["--endpoint-url", R2_ENDPOINT, "s3api", "head-object", "--bucket", R2_BUCKET, "--key", `tiles/${PROJECT_ID}/${LAYER_ID}.source.gpkg`], { env: AWS_ENV, encoding: "utf8" });
+        sourceBytes = JSON.parse(out2).ContentLength || 0;
+      } catch (e2) {}
     }
-    if (!fr || !fr.features || !fr.features.length) throw new Error("source FC unavailable or empty at " + RAW_KEY);
-    sourceBytes = JSON.stringify(fr).length;
+  } else if (MODE === "fold-raw") {
+    let fr = null;
+    if (RAW_FILE) {
+      console.log("Reading source FC from " + RAW_FILE + " (converted by gpkg-prepare)");
+      fr = JSON.parse(readFileSync(RAW_FILE, "utf8"));
+      sourceBytes = SOURCE_BYTES;
+    } else {
+      console.log("Fetching source FC from R2: " + RAW_KEY);
+      for (let a = 1; a <= 3 && !fr; a++) {
+        const r = await fetch(`${R2_PUBLIC}/${RAW_KEY}`, { cache: "no-store" });
+        if (r.ok) fr = await r.json();
+        else { console.warn("source fetch " + r.status + " (try " + a + ")"); await new Promise((rs) => setTimeout(rs, 3000)); }
+      }
+      if (fr) sourceBytes = JSON.stringify(fr).length;
+    }
+    if (!fr || !fr.features || !fr.features.length) throw new Error("source FC unavailable or empty at " + (RAW_FILE || RAW_KEY));
     rows = fr.features.map((f, i) => ({
       feature_id: i + 1,                                  // minted — tiles/sidecar/export all agree on it
       geom: f.geometry,

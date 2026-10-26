@@ -858,6 +858,8 @@
       "    <script src=\"project/renderRegistry.js\"></script>");
     html = html.replace(/^[ \t]*<script src="\.\.\/platform\/labels\.js[^"]*"[^>]*><\/script>.*$/m,
       "    <script src=\"project/labels.js\"></script>");
+    html = html.replace(/^[ \t]*<script src="\.\.\/platform\/legend\.js[^"]*"[^>]*><\/script>.*$/m,
+      "    <script src=\"project/legend.js\"></script>");   // the on-map legend (10/25) rides along like labels
     // this map's own columns (step 13): the engine reads their values through customColumns.js —
     // a project/ copy, seeded from the frozen config (no database in the copy)
     html = html.replace(/^[ \t]*<script src="\.\.\/platform\/customColumns\.js[^"]*"[^>]*><\/script>.*$/m,
@@ -1249,6 +1251,7 @@
         .replace("'DIN Pro Regular', 'Arial Unicode MS Regular'", "'Noto Sans Regular'");
     }
     zip.file("map/project/labels.js", labelsTxt);
+    zip.file("map/project/legend.js", await fetchText("../platform/legend.js"));   // the on-map legend (10/25): the copy draws it from the frozen config
 
     // 2b. baked instant-scrub rasters — the live page already loaded the configs (MSRasterScrub);
     // embed every level's PNGs and ship a project copy of rasterScrub.js that reads them locally

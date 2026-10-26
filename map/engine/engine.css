@@ -547,7 +547,8 @@ div.layer-list-row:hover {
   color: #20b2aa;
 }
 
-.tooltip {
+.tooltip,
+.tooltip-sb {   /* .tooltip-sb = the sidebar toggle's, same look (index.js simple_tooltip) */
   position: absolute;
   z-index: 999;
   left: -9999px;
@@ -557,7 +558,8 @@ div.layer-list-row:hover {
   width: 100px;
   text-align: center;
 }
-.tooltip p {
+.tooltip p,
+.tooltip-sb p {
   margin: 0;
   padding: 0;
   color: #fff;

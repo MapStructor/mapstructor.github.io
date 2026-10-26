@@ -2627,7 +2627,7 @@
           '<button data-type="section">Section</button>' +
           '<button data-type="divider" title="A plain text line you can drag between items (e.g. to delineate Raw Layers)">Divider</button></div></div>' +
         '<div class="esec"><div class="esec-h">Bring in</div><div class="erow">' +
-          '<button data-type="import" title="GeoJSON · KML · KMZ · Shapefile (.zip)">Import</button>' +
+          '<button data-type="import" title="GeoJSON · KML · KMZ · Shapefile (.zip) · GeoPackage (.gpkg)">Import</button>' +
           '<button data-type="tileset" title="PMTiles / XYZ vector tiles by URL">Tileset</button></div></div>' +
         '<div class="esec"><div class="esec-h">From another map</div><div class="erow">' +
           '<button data-type="portal" title="Add a bookmarked map into this one (All / Linked / Instance per layer)">⊞ Portal</button></div></div>' +
@@ -3046,8 +3046,8 @@
   function showImportForm() {
     var bar = addFormEl();   // #2: buttons stay visible
     bar.innerHTML =
-      '<div style="font-size:11px;color:#555555;margin-bottom:5px;">Import file(s) → new editable layer(s).<br>GeoJSON · KML · KMZ · Shapefile (.zip). <b>Select several at once</b> → they land in an "Untitled batch" folder.</div>' +
-      '<input id="editor-import-file" type="file" multiple accept=".geojson,.json,.kml,.kmz,.zip" style="width:100%;box-sizing:border-box;margin-bottom:6px;font-size:12px;" />' +
+      '<div style="font-size:11px;color:#555555;margin-bottom:5px;">Import file(s) → new editable layer(s).<br>GeoJSON · KML · KMZ · Shapefile (.zip) · GeoPackage (.gpkg — each table becomes a layer; over 24 MB it is converted in the cloud). <b>Select several at once</b> → they land in an "Untitled batch" folder.</div>' +
+      '<input id="editor-import-file" type="file" multiple accept=".geojson,.json,.kml,.kmz,.zip,.gpkg" style="width:100%;box-sizing:border-box;margin-bottom:6px;font-size:12px;" />' +
       '<div style="font-size:11px;color:#555555;margin:8px 0 3px;border-top:1px solid #e8e8e8;padding-top:6px;">&hellip;or from a URL — ArcGIS/ESRI service, Hub page, or .geojson<br><span style="color:#999999;font-size:10px;">(any size — large layers auto-convert to tiles for fast rendering)</span></div>' +
       '<input id="editor-import-url" type="text" placeholder="https://…/MapServer · hub.arcgis.com/maps/… · ….geojson" style="width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;" />' +
       '<select id="editor-import-svc-layer" style="display:none;width:100%;box-sizing:border-box;margin-bottom:5px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;"></select>' +
@@ -3360,12 +3360,12 @@
     if (!container) throw new Error('could not create a group for the KML folders');
     var ok = 0, failed = [];
     for (var i = 0; i < parts.length; i++) {
-      importStatus('Importing folder ' + (i + 1) + '/' + parts.length + ': ' + parts[i].name + '…');
+      importStatus('Importing part ' + (i + 1) + '/' + parts.length + ': ' + parts[i].name + '…');
       try { await importFeatureCollection(parts[i].fc, parts[i].name, container); ok++; }
-      catch (e) { console.warn('kml folder import failed', parts[i].name, e); failed.push(parts[i].name); }
+      catch (e) { console.warn('part import failed', parts[i].name, e); failed.push(parts[i].name); }
     }
     rerender();
-    setStatus('Imported ' + ok + ' of ' + parts.length + ' KML folders as separate layers' + (failed.length ? ' · failed: ' + failed.join(', ') : ''));
+    setStatus('Imported ' + ok + ' of ' + parts.length + ' parts as separate layers' + (failed.length ? ' · failed: ' + failed.join(', ') : ''));   // KML folders or GeoPackage tables
     return container;
   }
   // Parse ONE file by extension → FeatureCollection → import as layer(s). Throws on failure.
@@ -3418,6 +3418,18 @@
         var prjName = Object.keys(zf).filter(function (k) { return /\.prj$/i.test(k) && !/(^|\/)__MACOSX\//.test(k); })[0];
         if (prjName) fc.__msPrj = new TextDecoder().decode(zf[prjName]).trim();
       } catch (ePrj) { console.warn('could not read .prj', ePrj); }
+    }
+    else if (ext === 'gpkg') {
+      /* GEOPACKAGE (owner 10/26). Under the browser ceiling: sql.js reads the SQLite file here and
+         every feature table becomes a layer (several → a folder named after the file, like KML
+         folders). Over it: the package goes to the cloud in chunks and GDAL splits and bakes it
+         there (importGpkgCloud) — nothing heavy ever runs in a weak tab. */
+      if (file.size > GPKG_BROWSER_MAX_BYTES) return await importGpkgCloud(file, parent);
+      await loadScript('../platform/gpkg.js?v=' + Date.now());
+      var gparts = (await window.MSGpkg.readParts(file, { onProgress: importStatus })).filter(function (p) { return p.count; });
+      if (!gparts.length) throw new Error('no point, line or polygon features in this GeoPackage');
+      if (gparts.length > 1) return await importKmlFolders(gparts, stripExt(file.name), parent);   // one layer per table
+      fc = gparts[0].fc;
     }
     else if (ext === 'tif' || ext === 'tiff') throw new Error('GeoTIFF (raster) import is coming soon');
     else throw new Error('unsupported format .' + ext);
@@ -3789,6 +3801,131 @@
       return false;
     }
   }
+  /* ── GEOPACKAGE IN THE CLOUD (owner 10/26: "we need to add very large files … 200 MB … if it bogs
+     things down, maybe not have it dealt with in the browser"). The browser ceiling is sized for
+     a weak machine with an overloaded browser: sql.js holds the whole file in memory plus its
+     decoded features, so 24 MB (the shapefile streamer's own number) keeps that work under about
+     100 MB of tab memory. Above it NOTHING is parsed here: the file goes to R2 in 8 MB parts,
+     each retried on its own (bad internet costs a part, never the file), the Worker dispatches
+     the Action in mode fold-file, GDAL splits the package into one layer per table and the usual
+     fold bake runs for each. The layers are tiles + attribute sidecar — no feature rows — until
+     someone pulls features in to edit, so Postgres carries none of the weight. */
+  var GPKG_BROWSER_MAX_BYTES = 24 * 1024 * 1024;
+  var MPU_PART_BYTES = 8 * 1024 * 1024;        // R2 multipart: every part but the last ≥ 5 MB, all the same size
+  var MPU_PART_TIMEOUT_MS = 120000;            // a stalled part is abandoned and re-sent, not waited on forever
+  function workerBase() { return window.__msWorkerBase || FOLD_WORKER_BASE; }
+  // retry with backoff — the only defence that works on a bad connection is to try again, slowly
+  async function mpuRetry(fn, what) {
+    var delay = 1500;
+    for (var a = 1; ; a++) {
+      try { return await fn(); }
+      catch (e) {
+        if (a >= 7) throw new Error(what + ' failed after ' + a + ' tries: ' + ((e && e.message) || e));
+        await foldSleep(delay); delay = Math.min(delay * 2, 20000);
+      }
+    }
+  }
+  async function mpuCall(path, opts) {
+    var tok = (await db.auth.getSession()).data.session.access_token;
+    var ctl = new AbortController(); var tmr = setTimeout(function () { ctl.abort(); }, opts.timeout || 30000);
+    try {
+      var r = await fetch(workerBase() + path, { method: opts.method || 'POST', headers: Object.assign({ Authorization: 'Bearer ' + tok }, opts.json ? { 'Content-Type': 'application/json' } : {}), body: opts.json ? JSON.stringify(opts.json) : (opts.body || null), signal: ctl.signal });
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()).slice(0, 120));
+      return await r.json();
+    } finally { clearTimeout(tmr); }
+  }
+  // upload a File to R2 under key, in parts; onProgress(doneBytes, totalBytes)
+  async function mpuUpload(file, key, onProgress) {
+    var created = await mpuRetry(function () { return mpuCall('/mpu/create', { json: { key: key, contentType: file.type || 'application/octet-stream' } }); }, 'starting the upload');
+    var uploadId = created.uploadId, parts = [], n = Math.ceil(file.size / MPU_PART_BYTES);
+    try {
+      for (var i = 0; i < n; i++) {
+        var from = i * MPU_PART_BYTES, to = Math.min(from + MPU_PART_BYTES, file.size);
+        var blob = file.slice(from, to);
+        var got = await mpuRetry(function () { return mpuCall('/mpu/part?key=' + encodeURIComponent(key) + '&uploadId=' + encodeURIComponent(uploadId) + '&part=' + (i + 1), { method: 'PUT', body: blob, timeout: MPU_PART_TIMEOUT_MS }); }, 'part ' + (i + 1) + ' of ' + n);
+        parts.push({ partNumber: i + 1, etag: got.etag });
+        if (onProgress) onProgress(to, file.size);
+      }
+      return await mpuRetry(function () { return mpuCall('/mpu/complete', { json: { key: key, uploadId: uploadId, parts: parts } }); }, 'finishing the upload');
+    } catch (e) {
+      try { await mpuCall('/mpu/abort', { json: { key: key, uploadId: uploadId } }); } catch (eA) {}
+      throw e;
+    }
+  }
+  async function importGpkgCloud(file, parent) {
+    var mb = (file.size / 1048576).toFixed(0);
+    if (!CLOUD_FOLD_IMPORTS || window.__msForceRowImport) throw new Error('"' + file.name + '" is ' + mb + ' MB — over the ' + (GPKG_BROWSER_MAX_BYTES / 1048576) + ' MB browser limit, and the cloud import is switched off');
+    if (idsReady) { try { await idsReady; } catch (e) {} }
+    if (!loaded) throw new Error('still loading — try again');
+    var sId = null, gId = null;
+    if (parent && parent.type === 'group') { gId = parent._dbId; var ps = findParent(layers, parent); if (ps && ps.type === 'section') sId = ps._dbId; }
+    else if (parent && parent.type === 'section') { sId = parent._dbId; }
+    // the placeholder: one layer row the Action turns into the first table (and adds siblings beside)
+    var node = makeNode('layer', stripExt(file.name));
+    node.type = 'line'; node.iconType = TILESET_ICON.line || 'square';
+    var lrow = leafRow(node);
+    lrow.fold_state = 'folding';
+    lrow.raw_config = Object.assign({}, lrow.raw_config || {}, { cloudImport: { kind: 'gpkg', file: file.name, bytes: file.size, startedAt: new Date().toISOString() } });
+    importStatus('Preparing the cloud import of "' + file.name + '" (' + mb + ' MB)…');
+    var layerId = await insertOne('layers', lrow);
+    slugToLayerDbId[node.id] = layerId;
+    await insertOne('project_layers', { project_id: projectId, layer_id: layerId, sort_order: nextSort++, section_id: sId, group_id: gId });
+    node.fold_state = 'folding';
+    if (parent) { parent.children = parent.children || []; parent.children.push(node); parent.collapsed = false; parent.open = true; if (parent.type === 'group') node.topLayerClass = parent.id; }
+    else layers.push(node);
+    rerender();
+    var key = 'tiles/' + projectId + '/' + layerId + '.source.gpkg';
+    var undo = async function () {
+      try { await db.from('project_layers').delete().eq('project_id', projectId).eq('layer_id', layerId); } catch (e1) {}
+      try { await db.from('layers').delete().eq('id', layerId); } catch (e2) {}
+      delete slugToLayerDbId[node.id];
+      var arr = parent ? parent.children : layers; var at = arr ? arr.indexOf(node) : -1; if (at > -1) arr.splice(at, 1);
+      rerender();
+    };
+    try {
+      await mpuUpload(file, key, function (done, total) {
+        importStatus('Uploading "' + file.name + '" to the cloud — ' + Math.round(done / total * 100) + '% (' + (done / 1048576).toFixed(0) + ' of ' + (total / 1048576).toFixed(0) + ' MB)…');
+      });
+    } catch (eUp) {
+      await undo();
+      throw new Error('upload of "' + file.name + '" failed — ' + ((eUp && eUp.message) || eUp) + '. Nothing was imported; try again when the connection is steadier.');
+    }
+    try {
+      await mpuCall('/fold', { json: { projectId: projectId, layerId: layerId, mode: 'fold-file', rawKey: key } });
+    } catch (eF) {
+      try { var tokD = (await db.auth.getSession()).data.session.access_token; await fetch(workerBase() + '/upload/' + key, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tokD } }); } catch (eD) {}
+      await undo();
+      throw new Error('the cloud could not take "' + file.name + '" (' + ((eF && eF.message) || eF) + '). Nothing was imported.');
+    }
+    importStatus('"' + file.name + '" is uploaded (' + mb + ' MB). Converting it in the cloud — a few minutes; each table in the package becomes a layer here when it lands. This tab can be closed.');
+    ensurePmtSw();
+    pollFoldDone(node, layerId);
+    return [node];
+  }
+  // the Action made one layer per table: the first is the placeholder itself (applyFoldedRow),
+  // the rest are rows it inserted beside it — add them to the tree live and watch each one
+  async function addFoldedSiblings(node, row) {
+    try {
+      var ids = (row && row.raw_config && row.raw_config.siblings) || [];
+      if (!ids.length) return;
+      var known = {}; Object.keys(slugToLayerDbId).forEach(function (k) { known[slugToLayerDbId[k]] = k; });
+      var parent = findParent(layers, node), arr = parent ? (parent.children = parent.children || []) : layers;
+      var at = arr.indexOf(node), added = 0;
+      for (var i = 0; i < ids.length; i++) {
+        if (known[ids[i]]) continue;   // a reload already loaded it as a row of its own
+        var r = null; try { r = await db.from('layers').select('*').eq('id', ids[i]).single(); } catch (e) {}
+        if (!r || r.error || !r.data) continue;
+        var sib = makeNode('layer', r.data.name || 'layer');
+        sib.id = r.data.slug || sib.id; sib.type = r.data.type || 'line'; sib.iconType = TILESET_ICON[sib.type] || 'square'; if (r.data.color) sib.iconColor = r.data.color;
+        slugToLayerDbId[sib.id] = r.data.id;
+        arr.splice(at < 0 ? arr.length : at + 1 + added, 0, sib); added++;
+        if (parent && parent.type === 'group') sib.topLayerClass = parent.id;
+        if (r.data.fold_state === 'folded') applyFoldedRow(sib, r.data);
+        else { sib.fold_state = 'folding'; pollFoldDone(sib, r.data.id); }
+      }
+      if (added) rerender();
+    } catch (e) { console.warn('sibling layers from the cloud import could not be added live — reload to see them', e); }
+  }
   // watch the layer row until the Action stamps it (or leaves raw_config.foldError)
   // sinceStamp (8/16): for a RE-bake the layer is ALREADY fold_state 'folded' and stays that way,
   // so "folded" cannot mean "finished" — the first poll declared victory 8 seconds in and printed
@@ -3823,7 +3960,7 @@
       if (!r || r.error || !r.data) continue;
       var rc = r.data.raw_config || {};
       if (rc.foldError) { importStatus('Cloud fold failed for "' + (node.label || 'layer') + '": ' + rc.foldError + ' — delete the layer row or re-import.'); return; }
-      if (r.data.fold_state === 'folded' && (!sinceStamp || (rc.tilesGeneratedAt && rc.tilesGeneratedAt !== sinceStamp))) { applyFoldedRow(node, r.data); return; }
+      if (r.data.fold_state === 'folded' && (!sinceStamp || (rc.tilesGeneratedAt && rc.tilesGeneratedAt !== sinceStamp))) { applyFoldedRow(node, r.data); addFoldedSiblings(node, r.data); return; }
     }
     importStatus('Cloud fold is taking unusually long for "' + (node.label || 'layer') + '" — it finishes in the background; reload later to see it.');
   }
@@ -4692,6 +4829,21 @@
         '<label class="mss-lbl" style="margin-top:8px;">Logo link (URL)</label>' +
         '<input id="esp-logo-link" type="text" placeholder="https://…" class="mss-in" />' +
       '</div>' +
+      // ── PROJECTION (owner 10/25) — Equal Earth on Mapbox; copies and the showcase run MapLibre and stay Mercator ──
+      '<div class="mss-sectop">' +
+        MSEC('Projection') +
+        '<select id="esp-projection" class="mss-in"><option value="mercator">Mercator (default)</option><option value="equalEarth">Equal Earth</option></select>' +
+        '<div class="mss-note">Both sides of the swipe. Equal Earth shows true areas at world view; past about zoom 6 Mapbox draws Mercator again. Downloaded copies and the published showcase run on MapLibre, which has no Equal Earth — they stay Mercator.</div>' +
+      '</div>' +
+      // ── SIDEBAR (owner 10/25) — what visitors get; the editor always keeps its sidebar ──
+      '<div class="mss-sectop">' +
+        MSEC('Sidebar') +
+        '<label class="mss-check"><input id="esp-sb-hidden" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Hide the layers sidebar from visitors (no sidebar, no toggle)</label>' +
+        '<label class="mss-check" style="margin-top:6px;"><input id="esp-sb-startclosed" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Start closed</label>' +
+        '<label class="mss-check" style="margin-top:6px;"><input id="esp-sb-toggleonly" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Open and close only with its button (a click on the map leaves it alone)</label>' +
+        '<label class="mss-check" style="margin-top:6px;"><input id="esp-sb-padmap" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Keep the map centred beside the sidebar (the strip under the sidebar is not part of the frame)</label>' +
+        '<div class="mss-note">Applies to the published map, previews and copies. Here in the editor the sidebar stays; the button-only rule and the centring apply live.</div>' +
+      '</div>' +
       // ── MAP BUTTONS (8/27) — owner-defined links floating in the map's upper-right, e.g. the
       // encyclopedia. Rendered by the engine (msRenderMapButtons), so the published copy gets them.
       '<div class="mss-sectop">' +
@@ -4713,6 +4865,8 @@
     document.body.appendChild(p);
     document.getElementById('esp-close').addEventListener('click', function () { p.style.display = 'none'; });
     document.getElementById('esp-name').addEventListener('change', onSettingsName);
+    document.getElementById('esp-projection').addEventListener('change', function () { onProjection(this.value); });
+    ['esp-sb-hidden', 'esp-sb-startclosed', 'esp-sb-toggleonly', 'esp-sb-padmap'].forEach(function (id) { document.getElementById(id).addEventListener('change', onSidebarSetting); });
     document.getElementById('esp-setview').addEventListener('click', onSetDefaultView);
     document.getElementById('esp-thumb').addEventListener('click', onSetThumbnail);
     document.getElementById('esp-tl-start').addEventListener('change', onTimelineSave);
@@ -5226,12 +5380,12 @@
     setStatus('Saving…');
     try { var r = await patchProjectConfig({ timeline: { start: sd, end: ed } }); if (r.error) throw new Error(r.error.message); applyTimelineRange(sd, ed); setStatus('Timeline range saved'); } catch (e) { setStatus('Save failed'); }
   }
-  function fmtView(lat, lng, z) { return (lat != null && lng != null) ? ('Default: ' + Number(lat).toFixed(4) + ', ' + Number(lng).toFixed(4) + ' · z' + (z != null ? Number(z).toFixed(1) : '?')) : 'Default view not set'; }
+  function fmtView(lat, lng, z, fit) { if (fit) return 'Default: the whole world — every screen opens at its own fit'; return (lat != null && lng != null) ? ('Default: ' + Number(lat).toFixed(4) + ', ' + Number(lng).toFixed(4) + ' · z' + (z != null ? Number(z).toFixed(1) : '?')) : 'Default view not set'; }
   async function openSettingsPanel() {
     injectSettingsPanel();
     var p = document.getElementById('editor-settings-panel');
     if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
-    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); document.getElementById('esp-lock').checked = !!(r.data.raw_config && r.data.raw_config.editLock); _mapBtns = (r.data.raw_config && r.data.raw_config.customButtons || []).slice(); renderMapBtnList();
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom, r.data.raw_config && r.data.raw_config.viewFit); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); document.getElementById('esp-lock').checked = !!(r.data.raw_config && r.data.raw_config.editLock); _mapBtns = (r.data.raw_config && r.data.raw_config.customButtons || []).slice(); renderMapBtnList();
       /* The MSD Project row is shown ONLY to an admin, and its state read from the same row we
          already have — no extra round trip. Awaiting the admin check here rather than at inject
          time is deliberate: the panel is built once, and whether this user is an admin is not
@@ -5246,7 +5400,39 @@
         }
       } catch (eAdm) {}
     } } catch (e) {}
+    try { var ps = document.getElementById('esp-projection'); if (ps) ps.value = (r && r.data && r.data.raw_config && r.data.raw_config.projection) || 'mercator'; } catch (ePj) {}
+    try { var sbc = (r && r.data && r.data.raw_config && r.data.raw_config.sidebar) || {}; document.getElementById('esp-sb-hidden').checked = !!sbc.hidden; document.getElementById('esp-sb-startclosed').checked = !!sbc.startClosed; document.getElementById('esp-sb-toggleonly').checked = !!sbc.toggleOnly; document.getElementById('esp-sb-padmap').checked = !!sbc.padMap; } catch (eSb) {}
     p.style.display = 'block';
+  }
+  // Sidebar settings (10/25): raw_config.sidebar = { hidden, startClosed, toggleOnly } (absent = all off)
+  var _sbSaveT = null;
+  function onSidebarSetting() {
+    var s = { hidden: document.getElementById('esp-sb-hidden').checked, startClosed: document.getElementById('esp-sb-startclosed').checked, toggleOnly: document.getElementById('esp-sb-toggleonly').checked, padMap: document.getElementById('esp-sb-padmap').checked };
+    var any = s.hidden || s.startClosed || s.toggleOnly || s.padMap;
+    try { if (typeof mapConfig !== 'undefined') mapConfig.sidebar = any ? s : null; if (window.msApplySidebarSettings) window.msApplySidebarSettings(any ? s : null); } catch (e0) {}
+    // ONE save for a run of ticks (10/25): two quick ticks raced two patches and the first to land
+    // last won — the gate saw startClosed saved and toggleOnly lost
+    clearTimeout(_sbSaveT);
+    setStatus('Saving…');
+    _sbSaveT = setTimeout(async function () {
+      try {
+        var u = await patchProjectConfig({ sidebar: any ? s : null });   // null deletes the key
+        if (u.error) throw new Error(u.error.message);
+        setStatus('Sidebar settings saved');
+      } catch (e) { setStatus('Save failed'); showToast('Sidebar settings not saved: ' + (e && e.message)); }
+    }, 400);
+  }
+  // Projection (10/25): persisted beside customButtons in raw_config, applied to both maps now
+  async function onProjection(v) {
+    var want = (v === 'equalEarth') ? 'equalEarth' : 'mercator';
+    try { if (typeof mapConfig !== 'undefined') mapConfig.projection = want === 'mercator' ? null : want; } catch (e0) {}
+    var applied = (typeof msApplyProjection === 'function') ? msApplyProjection(want) : false;
+    setStatus('Saving…');
+    try {
+      var u = await patchProjectConfig({ projection: want === 'mercator' ? null : want });   // null deletes the key
+      if (u.error) throw new Error(u.error.message);
+      setStatus(applied ? ('Projection: ' + (want === 'equalEarth' ? 'Equal Earth' : 'Mercator')) : 'Projection saved — shown on Mapbox only');
+    } catch (e) { setStatus('Save failed'); showToast('Projection not saved: ' + (e && e.message)); }
   }
   /* Designating a map an MSD Project. The key lives in raw_config beside showcaseSlug — the
      projects table stays about projects, and nobody has to paste a migration. */
@@ -5446,8 +5632,19 @@
   async function onSetDefaultView() {
     if (!beforeMap) return;
     var c = beforeMap.getCenter(), z = beforeMap.getZoom(), b = beforeMap.getBearing();
+    /* THE WHOLE WORLD IS SAVED AS WHAT IT IS, NOT AS A NUMBER (owner 10/26, after the readout showed
+       the fault: a zoom is tied to the screen it was saved on — 1.60 was "the whole world" on one
+       window and "zoomed in, oval cut" on the owner's 1465-px one). On a world projection, saving
+       with the oval in frame stores raw_config.viewFit = true, and every screen opens at ITS fit
+       (sidebar padding included). A view saved zoomed into a region stays a number. */
+    var fit = (typeof msWorldFits === 'function') ? msWorldFits(beforeMap) : false;
     setStatus('Saving…');
-    try { var r = await db.from('projects').update({ center_lng: c.lng, center_lat: c.lat, zoom: z, bearing: b }).eq('id', projectId); if (r.error) throw new Error(r.error.message); document.getElementById('esp-viewinfo').textContent = fmtView(c.lat, c.lng, z); setStatus('Default view saved'); } catch (e) { setStatus('Save failed'); }
+    try {
+      var r = await db.from('projects').update({ center_lng: c.lng, center_lat: c.lat, zoom: z, bearing: b }).eq('id', projectId); if (r.error) throw new Error(r.error.message);
+      var r2 = await patchProjectConfig({ viewFit: fit ? true : null }); if (r2.error) throw new Error(r2.error.message);
+      if (typeof mapConfig !== 'undefined' && mapConfig) mapConfig.viewFit = fit;
+      document.getElementById('esp-viewinfo').textContent = fmtView(c.lat, c.lng, z, fit); setStatus(fit ? 'Default view saved: the whole world' : 'Default view saved');
+    } catch (e) { setStatus('Save failed'); }
   }
   // ── Maps (basemaps) editing — Slice 1: add / edit (name + mapbox style) / delete + default L/R, persisted
   //    to raw_config.baseMaps and re-rendered live. Maps are mutually exclusive (radio), so: sections yes,
@@ -5827,13 +6024,6 @@
           viewUrl: location.href.split('#')[0].split('?')[0].replace(/editor\.html$/, 'index.html') + '?id=' + projectId
         });
       });
-    }
-    if (!document.getElementById('editor-articles-btn')) {   // 📚 Articles (content system, 10/21): types + articles of this map, written here
-      var ab = document.createElement('button');
-      ab.id = 'editor-articles-btn'; ab.textContent = '📚 Articles'; ab.title = 'This map\'s content: the kinds of article (types, their fields) and the articles themselves';
-      var stb2 = document.getElementById('editor-settings');
-      if (stb2 && stb2.parentNode === left) left.insertBefore(ab, stb2); else left.appendChild(ab);
-      ab.addEventListener('click', openArticlesPanel);
     }
     if (!document.getElementById('editor-guide-btn')) {   // Guide lives next to Settings (editor-only chrome, built here so the shared page markup stays viewer-identical)
       var gb = document.createElement('button');
@@ -9288,39 +9478,95 @@
     } catch (e) { console.warn('presence colorBy failed', e); setStatus('Save failed'); }
   }
   // ── Legend (experiment, 7/20) — a small on-map box listing each legend-enabled layer's colors ──
-  function legendItemsFor(node) {
-    var cb = node.colorBy;
-    if (cb && cb.mode === 'presence') return [{ label: 'Labeled', color: cb.present || '#3bb2d0' }, { label: 'Unlabeled', color: cb.absent || '#cccccc' }];
-    if (cb && cb.mapping) {
-      var ks = Object.keys(cb.mapping);
-      var items = ks.slice(0, 12).map(function (k) { return { label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; });   // cliff-ok: the legend appends "… +N more" right below, which announces it in the UI
-      if (ks.length > 12) items.push({ label: '… +' + (ks.length - 12) + ' more', color: 'transparent' });
-      return items;
-    }
-    var key = colorKeyFor(node.type);
-    var col = (node.paint && typeof node.paint[key] === 'string' && node.paint[key]) || node.iconColor || '#3bb2d0';
-    return [{ label: node.label || 'Layer', color: col }];
+  // 10/25: the renderer moved to platform/legend.js (MSLegend) so the viewer and the copies draw
+  // the same legend; these two names stay for their callers here
+  function legendItemsFor(node) { return window.MSLegend ? MSLegend.itemsFor(node) : []; }
+  function renderLegend() { if (window.MSLegend) MSLegend.render(layers); }
+  window.__msRenderLegend = renderLegend;   // let visibility toggles refresh the legend
+  /* ── Legend customisation (owner 10/25) — legendOpts on the layer: a hierarchy (a value
+     "Parent: Child" becomes one cell of its parent's row, the children side by side under their
+     own labels — Dark / Medium / Light for Confirmed / Probable / Possible) and extra entries made
+     by hand (a cyan "Human Verified (currently none)"). Persisted in raw_config.legendOpts; the
+     renderer (legend.js) reads it on every surface. */
+  function legendOptsOf(node) { var o = node.legendOpts || {}; return { group: !!o.group, sep: (o.sep != null && String(o.sep) !== '') ? String(o.sep) : ':', extra: Array.isArray(o.extra) ? o.extra : [], title: o.title || '', subtitle: o.subtitle || '', hideTitle: !!o.hideTitle, hideChildren: !!o.hideChildren, parentField: o.parentField || '', parents: (o.parents && typeof o.parents === 'object') ? o.parents : null }; }
+  // the columns a parent can come from: this map's own columns when the colour is by one of them,
+  // the row columns of a drawn layer otherwise (tile columns carry no value pairs to read)
+  function legendParentFields(node) {
+    var cb = node.colorBy; if (!cb || !cb.prop) return [];
+    if (cb.custom) return (window.MSCustomCols ? MSCustomCols.defsOf(node) : []).map(function (d) { return d && d.key; }).filter(function (k) { return k && k !== cb.prop; });
+    if (isTilesetNode(node)) return [];
+    return (node._entriesKeys || []).filter(function (k) { return k !== cb.prop && k !== 'DayStart' && k !== 'DayEnd'; });
   }
-  function renderLegend() {
-    var box = document.getElementById('ms-legend');
-    if (!box) {
-      box = document.createElement('div'); box.id = 'ms-legend';
-      box.style.cssText = 'position:fixed;z-index:3980;bottom:80px;max-width:240px;max-height:42vh;overflow:auto;background:rgba(255,255,255,0.95);border:1px solid #c9bfe8;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.15);padding:8px 11px;font-family:"Source Sans Pro",Arial,sans-serif;font-size:12px;color:#2b3a4a;';
-      document.body.appendChild(box);
-    }
-    var on = [];
-    (function walk(arr) { (arr || []).forEach(function (n) { if (n.legend && n.checked !== false) on.push(n); if (n.children) walk(n.children); }); })(layers);
-    if (!on.length) { box.style.display = 'none'; return; }
-    var anchor = document.getElementById('layers-panel-content');   // dock to the sidebar's right edge, like the features list
-    box.style.left = Math.round((anchor ? anchor.getBoundingClientRect().right : 470) + 6) + 'px';
-    box.style.display = 'block';
-    box.innerHTML = '<div style="font-weight:700;margin-bottom:5px;">Legend</div>' + on.map(function (n) {
-      return '<div style="margin-bottom:7px;"><div style="font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + attrEsc(n.label || 'Layer') + '</div>' +
-        legendItemsFor(n).map(function (it) { return '<div style="display:flex;align-items:center;gap:6px;margin:1px 0;"><span style="display:inline-block;width:13px;height:13px;flex:0 0 auto;border:1px solid #999999;border-radius:2px;background:' + attrEsc(it.color) + ';"></span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + attrEsc(it.label) + '</span></div>'; }).join('') +
-      '</div>';
+  // value → parent, read from the data once (the viewer and the copies get the result, not the data)
+  async function legendParentsFor(node, field) {
+    var cb = node.colorBy, lid = slugToLayerDbId[node.id], tally = {};
+    var add = function (v, pv) { if (v == null || v === '' || pv == null || pv === '') return; var t = tally[String(v)] = tally[String(v)] || {}; t[String(pv)] = (t[String(pv)] || 0) + 1; };
+    if (cb.custom) { var vals = (window.MSCustomCols && lid) ? (MSCustomCols.cached(lid) || await MSCustomCols.load(lid)) : {}; Object.keys(vals || {}).forEach(function (k) { var r = vals[k] || {}; add(r[cb.prop], r[field]); }); }
+    else { var fr = await window.MSFetchRows(db, 'custom_fields, label, description, start_date, end_date, image_url', function (q) { return q.eq('layer_id', node.instanceOf || lid); }); (fr.rows || []).forEach(function (r) { add(cbValueOf(r, cb.prop), cbValueOf(r, field)); }); }
+    var out = {};
+    Object.keys(tally).forEach(function (v) { var best = null, n = -1; Object.keys(tally[v]).forEach(function (pv) { if (tally[v][pv] > n) { n = tally[v][pv]; best = pv; } }); if (best != null) out[v] = best; });
+    return out;
+  }
+  function renderLegendOptsUi(node) {
+    var wrap = document.getElementById('elp-legend-opts'); if (!wrap) return;
+    var on = !!(node && node.legend);
+    wrap.style.display = on ? 'block' : 'none';
+    if (!on) return;
+    var o = legendOptsOf(node), hasMapping = !!(node.colorBy && node.colorBy.mapping);
+    var ti = document.getElementById('elp-legend-title'), su = document.getElementById('elp-legend-subtitle');
+    if (document.activeElement !== ti) ti.value = o.title; if (document.activeElement !== su) su.value = o.subtitle;
+    ti.placeholder = node.label || 'Layer';
+    document.getElementById('elp-legend-group-row').style.display = hasMapping ? 'block' : 'none';
+    document.getElementById('elp-legend-group').checked = o.group;
+    document.getElementById('elp-legend-group-opts').style.display = (hasMapping && o.group) ? 'block' : 'none';
+    document.getElementById('elp-legend-sep').value = o.sep;
+    document.getElementById('elp-legend-hidechildren').checked = o.hideChildren;
+    document.getElementById('elp-legend-hidetitle').checked = o.hideTitle;
+    var ps = document.getElementById('elp-legend-parent');
+    ps.innerHTML = '<option value="">the text before the colon (“Parent: Child”)</option>';
+    legendParentFields(node).forEach(function (k) { var op = document.createElement('option'); op.value = k; op.textContent = (node.colorBy && node.colorBy.custom ? '★ ' : '') + k + ' (column)'; ps.appendChild(op); });
+    if (o.parentField && ![].slice.call(ps.options).some(function (x) { return x.value === o.parentField; })) { var op2 = document.createElement('option'); op2.value = o.parentField; op2.textContent = o.parentField + ' (column)'; ps.appendChild(op2); }
+    ps.value = o.parentField || '';
+    var list = document.getElementById('elp-legend-extra');
+    list.innerHTML = o.extra.map(function (x, i) {
+      return '<div style="display:flex;align-items:center;gap:6px;margin:3px 0;">' +
+        '<input type="color" data-lgx="' + i + '" data-lgf="color" value="' + attrEsc(looksHex(x.color) ? normHex(x.color) : '#00ffff') + '" title="entry colour" style="width:30px;height:22px;padding:0;border:1px solid #bbbbbb;border-radius:3px;background:#fff;flex:0 0 auto;" />' +
+        '<input type="text" data-lgx="' + i + '" data-lgf="label" class="ms-in" value="' + attrEsc(x.label || '') + '" placeholder="Label" style="flex:1;" />' +
+        '<button type="button" data-lgdel="' + i + '" class="ms-btn" title="Remove this entry" style="width:auto;padding:2px 7px;flex:0 0 auto;">✕</button></div>';
     }).join('');
   }
-  window.__msRenderLegend = renderLegend;   // let visibility toggles refresh the legend
+  var _lgSaveT = null;
+  function saveLegendOpts(node, now) {
+    var lid = slugToLayerDbId[node.id]; if (!lid) return;
+    renderLegend();
+    clearTimeout(_lgSaveT);
+    var go = function () { setStatus('Saving…'); saveSoft(patchLayerConfig(lid, { legendOpts: node.legendOpts }), 'saving the legend settings').then(function () { setStatus('Legend saved'); }, function () { setStatus('Save failed'); }); };
+    if (now) go(); else _lgSaveT = setTimeout(go, 400);
+  }
+  function onLegendOpt(field, raw) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var o = legendOptsOf(node);
+    if (field === 'group') o.group = !!raw;
+    else if (field === 'sep') o.sep = String(raw || '').trim() || ':';
+    else if (field === 'title') o.title = String(raw || '');
+    else if (field === 'subtitle') o.subtitle = String(raw || '');
+    else if (field === 'hideChildren') o.hideChildren = !!raw;
+    else if (field === 'hideTitle') o.hideTitle = !!raw;
+    else if (field === 'parentField') {
+      o.parentField = String(raw || ''); o.parents = null;
+      if (o.parentField) {   // read the data once, store the answer, then render + save
+        setStatus('Reading the parents…');
+        legendParentsFor(node, o.parentField).then(function (map) { var o2 = legendOptsOf(node); o2.parents = map; node.legendOpts = o2; renderLegendOptsUi(node); saveLegendOpts(node, true); }, function (e) { setStatus('Could not read the parents'); });
+      }
+    }
+    else if (field === 'extra-add') o.extra = o.extra.concat([{ color: '#00ffff', label: '' }]);
+    else if (field === 'extra-del') o.extra = o.extra.filter(function (_, i) { return i !== raw; });
+    else if (field === 'extra-color' || field === 'extra-label') { var x = o.extra[raw.i]; if (x) x[field === 'extra-color' ? 'color' : 'label'] = raw.value; }
+    node.legendOpts = { group: o.group, sep: o.sep, extra: o.extra, title: o.title, subtitle: o.subtitle, hideTitle: o.hideTitle, hideChildren: o.hideChildren, parentField: o.parentField, parents: o.parents };
+    if (['extra-label', 'sep', 'title', 'subtitle'].indexOf(field) < 0) renderLegendOptsUi(node);   // typing keeps its box
+    saveLegendOpts(node, field === 'group' || field === 'extra-add' || field === 'extra-del' || field === 'hideChildren' || field === 'hideTitle');
+  }
   async function onToggleLegend(on) {
     if (!activeLayerId) return;
     var node = findNodeById(layers, activeLayerId); if (!node) return;
@@ -9369,6 +9615,11 @@
       // controls — so a category past the cap is painted on the map with no row to change it.
       if (window.MSGuard) MSGuard.cliff('style-cats-cap', ks.length, STYLE_CATS_MAX,
         'categories past the first ' + STYLE_CATS_MAX + ' are drawn on the map but have no style row you can click');
+      // a value hidden on the map (Color by → hide) has no row here either (owner 10/25: "when I hide
+      // it in the map, it should not be visible in the legend / sidebar categories")
+      var hiddenVals = Array.isArray(cb.hidden) ? cb.hidden : [];
+      if (window.MSLegend) ks = MSLegend.orderedValues(cb);   // the Color by list's ↑↓ order (10/25)
+      ks = ks.filter(function (k) { return hiddenVals.indexOf(k) < 0; });
       return ks.slice(0, STYLE_CATS_MAX).map(function (k) { return { key: k, label: (k === ' ' || k === '') ? '(blank)' : k, color: cb.mapping[k] }; });
     }
     return [];
@@ -9674,10 +9925,15 @@
     // its colour for the pills and the legend
     var nofill = cb.nofill || [], fillOk = node.type === 'fill';
     var nofillCell = function (v, on) { return fillOk ? '<label class="ms-check" style="margin:0;flex:0 0 auto;font-size:11px;color:#8a83a0;" title="No fill: see-through, outline and hover stay"><input type="checkbox" data-cbnofill="' + attrEsc(v) + '"' + (on ? ' checked' : '') + ' style="vertical-align:middle;margin:0 3px 0 0;" />no fill</label>' : ''; };
-    list.innerHTML = Object.keys(cb.mapping).map(function (v) {
+    // the ORDER of this list is the order everywhere (owner 10/25): the legend and the sidebar's style
+    // rows follow it; ↑ ↓ move a value and persist colorBy.order (legend.js orderedValues is the one reader)
+    var ordered = window.MSLegend ? MSLegend.orderedValues(cb) : Object.keys(cb.mapping);
+    var arrow = function (v, dir, off) { return '<button type="button" data-cbmove="' + attrEsc(v) + '" data-dir="' + dir + '"' + (off ? ' disabled' : '') + ' title="Move ' + (dir < 0 ? 'up' : 'down') + '" style="flex:0 0 auto;width:18px;height:18px;padding:0;border:1px solid #d7d3e4;border-radius:3px;background:#f7f5fb;color:#5b4b9a;font-size:10px;line-height:1;cursor:pointer;' + (off ? 'opacity:.3;cursor:default;' : '') + '">' + (dir < 0 ? '▲' : '▼') + '</button>'; };
+    list.innerHTML = ordered.map(function (v, idx) {
       var c = cb.mapping[v], hex = looksHex(c) ? normHex(c) : '#888888', isHid = hidden.indexOf(v) > -1, isNf = nofill.indexOf(v) > -1;
       var swStyle = 'width:30px;height:22px;padding:0;border:1px ' + (isNf ? 'dashed' : 'solid') + ' #bbbbbb;border-radius:3px;flex:0 0 auto;' + (isNf ? 'opacity:.45;' : '');
-      return '<div style="display:flex;align-items:center;gap:7px;margin:3px 0;' + (isHid ? 'opacity:.55;' : '') + '">' +
+      return '<div style="display:flex;align-items:center;gap:5px;margin:3px 0;' + (isHid ? 'opacity:.55;' : '') + '">' +
+        arrow(v, -1, idx === 0) + arrow(v, 1, idx === ordered.length - 1) +
         (pick === 'value'
           ? '<input type="color" data-cbval="' + attrEsc(v) + '" value="' + hex + '" title="' + attrEsc(c) + (isNf ? ' (no fill)' : '') + '" style="' + swStyle + 'background:#fff;" />'
           : '<span style="display:inline-block;' + swStyle + 'background:' + attrEsc(c) + ';" title="' + attrEsc(c) + ' (Random — pick By value to edit)"></span>') +
@@ -9693,6 +9949,20 @@
         hideCell('id="elp-cbhide-novalue"', !!cb.hideNoValue) +
       '</div>';
   }
+  // ↑ ↓ on a value (10/25): colorBy.order is the explicit order; the list, the legend and the
+  // sidebar's style rows re-draw from it at once; the row's own paint does not change
+  async function onColorByMove(v, dir) {
+    var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var ordered = window.MSLegend ? MSLegend.orderedValues(node.colorBy) : Object.keys(node.colorBy.mapping);
+    var i = ordered.indexOf(v), j = i + dir; if (i < 0 || j < 0 || j >= ordered.length) return;
+    ordered.splice(i, 1); ordered.splice(j, 0, v);
+    node.colorBy.order = ordered;
+    renderColorByMode(node);
+    try { rerender(); renderLegend(); } catch (eO) {}
+    setStatus('Saving…');
+    try { await setStyleMetaRC(lid, 'colorBy', node.colorBy); setStatus('Order saved'); } catch (e) { setStatus('Save failed'); }
+  }
   async function onColorByHide(v, hidden) {   // a value's hide tick (step 11): a filter — not drawn, no hover, no popup
     var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
@@ -9702,6 +9972,7 @@
     setStatus('Saving…');
     await reapplyColorBy(node, lid);
     renderColorByMode(node);
+    try { rerender(); renderLegend(); } catch (eH) {}   // a hidden value leaves the sidebar's style rows and the legend (10/25)
   }
   async function onColorByNoFill(v, on) {   // a value's no-fill tick (step 10): see-through fill, everything else stays
     var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
@@ -9810,12 +10081,13 @@
       var vals = MSCustomCols.distinctValues(values, prop);
       if (!vals.length) { setStatus('No values in that column'); showToast('That column has no values yet'); return; }
       var keep = (node.colorBy && node.colorBy.prop === prop && node.colorBy.mapping) || null;
-      var keepNf = (keep && node.colorBy.nofill) || null, keepHid = (keep && node.colorBy.hidden) || null, keepNoV = !!(keep && node.colorBy.hideNoValue);
+      var keepNf = (keep && node.colorBy.nofill) || null, keepHid = (keep && node.colorBy.hidden) || null, keepNoV = !!(keep && node.colorBy.hideNoValue), keepOrder = (keep && node.colorBy.order) || null;
       var mapping = {};
       vals.forEach(function (v, i) { mapping[v] = (keep && keep[v]) || COLORBY_PALETTE[i % COLORBY_PALETTE.length]; });
       node.colorBy = { prop: prop, mode: 'category', mapping: mapping, custom: true, pick: (keep && node.colorBy.pick === 'value') ? 'value' : 'random' };
       // the same column re-applied (a value edited in the table) keeps its hide / no-fill choices
       if (keepHid && keepHid.length) node.colorBy.hidden = keepHid.filter(function (v) { return vals.indexOf(v) > -1; });
+      if (keepOrder && keepOrder.length) node.colorBy.order = keepOrder.filter(function (v) { return vals.indexOf(v) > -1; });   // the ↑↓ order survives a re-pick (10/25)
       if (keepNoV) node.colorBy.hideNoValue = true;
       if (keepNf && keepNf.length) node.colorBy.nofill = keepNf.filter(function (v) { return vals.indexOf(v) > -1; });
       await reapplyColorBy(node, lid);
@@ -11573,8 +11845,7 @@
       '<select id="elp-entries-type" class="ms-in"><option value="">— pick a type —</option></select>' +
       '<label class="ms-lbl" style="margin-top:6px;">Feature property that names the article (its key)</label>' +
       '<select id="elp-entries-key" class="ms-in"><option value="label">label (the feature\'s own Label)</option></select>' +
-      '<div class="ms-note">Click a feature → the article whose key equals this property opens in the info panel. Types and articles are written in <b>📚 Articles</b> (top bar).</div>' +
-      '<button id="elp-entries-open" class="ms-btn" style="margin-top:6px;">📚 Open Articles</button></div>' +
+      '<div class="ms-note">Click a feature → the article whose key equals this property opens in the info panel. Articles are written in the encyclopedia.</div></div>' +
       '<div id="elp-enc-row" style="margin-top:8px;"><label class="ms-lbl">Encyclopedia base URL</label>' +
       '<input id="elp-encurl" type="text" placeholder="https://…/encyclopedia" class="ms-in" />' +
       '<div id="elp-nidprop-row" style="display:none;margin-top:6px;"><label class="ms-lbl">Page-ID property</label>' +
@@ -11611,6 +11882,25 @@
       '</div>' +
       // legend (experiment): show this layer's colors in an on-map box
       '<label id="elp-legend-row" class="ms-check" style="margin:2px 0 8px;display:block;"><input id="elp-legend-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show legend on the map</label>' +
+      // legend customisation (owner 10/25): hierarchy + hand-made entries — see legend.js
+      '<div id="elp-legend-opts" style="display:none;margin:-4px 0 10px 18px;">' +
+        '<label class="ms-lbl">Title (blank = the layer\'s name)</label><input id="elp-legend-title" type="text" class="ms-in" placeholder="Home protection" />' +
+        '<label class="ms-check" style="margin-top:4px;"><input id="elp-legend-hidetitle" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Hide the title</label>' +
+        '<label class="ms-lbl" style="margin-top:6px;">Subtitle (optional)</label><input id="elp-legend-subtitle" type="text" class="ms-in" placeholder="e.g. by confidence of the finding" />' +
+        // (owner 10/25 asked "how do you know which are parents?") — by default the value itself
+        // says: the text before the colon. Or a column of the layer names the parent (Parent from).
+        '<div id="elp-legend-group-row" style="margin-top:8px;"><label class="ms-check"><input id="elp-legend-group" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Group by parent (one row per parent, its children side by side)</label>' +
+        '<div id="elp-legend-group-opts" style="display:none;margin:4px 0 0 18px;">' +
+          '<input id="elp-legend-sep" type="hidden" value=":" />' +
+          '<label class="ms-lbl">Parent from</label>' +
+          '<select id="elp-legend-parent" class="ms-in"><option value="">the text before the colon (“Parent: Child”)</option></select>' +
+          '<label class="ms-check" style="margin-top:6px;"><input id="elp-legend-hidechildren" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Hide the child names (the column headers)</label>' +
+        '</div></div>' +
+        '<label class="ms-lbl" style="margin-top:8px;">Extra legend entries (not from the data)</label>' +
+        '<div id="elp-legend-extra"></div>' +
+        '<button id="elp-legend-extra-add" type="button" class="ms-btn" style="margin-top:4px;">+ Entry</button>' +
+        '<div class="ms-note">An entry the legend should show although no feature has it yet — e.g. a cyan “Human Verified (currently none)”.</div>' +
+      '</div>' +
       // style categories nested under the layer in the sidebar, each toggleable like a layer
       '<label id="elp-stylerows-row" class="ms-check" style="margin:2px 0 8px;display:block;"><input id="elp-stylerows-on" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Show style categories under the layer</label>' +
       // ── FILL group: everything about the face of the feature, paired (7/8 layout pass) ──
@@ -11766,6 +12056,10 @@
     document.getElementById('elp-colorby-values').addEventListener('input', function (e) {
       var sw = e.target && e.target.closest('input[data-cbval]'); if (sw) onColorByValueColor(sw.getAttribute('data-cbval'), sw.value);
     });
+    document.getElementById('elp-colorby-values').addEventListener('click', function (e) {   // ↑ ↓ (10/25): the value order
+      var b = e.target && e.target.closest ? e.target.closest('button[data-cbmove]') : null; if (!b || b.disabled) return;
+      e.preventDefault(); onColorByMove(b.getAttribute('data-cbmove'), parseInt(b.getAttribute('data-dir'), 10));
+    });
     document.getElementById('elp-colorby-values').addEventListener('change', function (e) {   // the hide ticks (step 11) + the no-fill ticks (step 10)
       var t = e.target; if (!t || t.type !== 'checkbox') return;
       if (t.id === 'elp-cbhide-novalue') onColorByHideNoValue(t.checked);
@@ -11781,7 +12075,16 @@
     document.getElementById('elp-bin-absent').addEventListener('input', livePresenceColors);
     document.getElementById('elp-bin-present').addEventListener('change', savePresenceColors);   // commit on release
     document.getElementById('elp-bin-absent').addEventListener('change', savePresenceColors);
-    document.getElementById('elp-legend-on').addEventListener('change', function () { onToggleLegend(this.checked); });
+    document.getElementById('elp-legend-on').addEventListener('change', function () { onToggleLegend(this.checked); var n0 = activeLayerId && findNodeById(layers, activeLayerId); if (n0) renderLegendOptsUi(n0); });
+    document.getElementById('elp-legend-group').addEventListener('change', function () { onLegendOpt('group', this.checked); });
+    document.getElementById('elp-legend-title').addEventListener('input', function () { onLegendOpt('title', this.value); });
+    document.getElementById('elp-legend-subtitle').addEventListener('input', function () { onLegendOpt('subtitle', this.value); });
+    document.getElementById('elp-legend-parent').addEventListener('change', function () { onLegendOpt('parentField', this.value); });
+    document.getElementById('elp-legend-hidechildren').addEventListener('change', function () { onLegendOpt('hideChildren', this.checked); });
+    document.getElementById('elp-legend-hidetitle').addEventListener('change', function () { onLegendOpt('hideTitle', this.checked); });
+    document.getElementById('elp-legend-extra-add').addEventListener('click', function () { onLegendOpt('extra-add'); });
+    document.getElementById('elp-legend-extra').addEventListener('input', function (ev) { var t = ev.target; if (!t || !t.getAttribute('data-lgx')) return; onLegendOpt(t.getAttribute('data-lgf') === 'color' ? 'extra-color' : 'extra-label', { i: parseInt(t.getAttribute('data-lgx'), 10), value: t.value }); });
+    document.getElementById('elp-legend-extra').addEventListener('click', function (ev) { var b = ev.target && ev.target.closest ? ev.target.closest('[data-lgdel]') : null; if (b) onLegendOpt('extra-del', parseInt(b.getAttribute('data-lgdel'), 10)); });
     document.getElementById('elp-stylerows-on').addEventListener('change', function () { onToggleStyleRows(this.checked); });
     document.getElementById('elp-opacityby').addEventListener('change', function () { onStyleNumBy('opacity', this.value); });
     document.getElementById('elp-thickby').addEventListener('change', function () { onStyleNumBy('thickness', this.value); });
@@ -11835,7 +12138,6 @@
     document.getElementById('elp-panel-mode').addEventListener('change', function () { onPanelMode(this.value); });
     document.getElementById('elp-entries-type').addEventListener('change', function () { onEntriesBinding(); });
     document.getElementById('elp-entries-key').addEventListener('change', function () { onEntriesBinding(); });
-    document.getElementById('elp-entries-open').addEventListener('click', function () { openArticlesPanel(); });
     document.getElementById('elp-src-apply').addEventListener('click', onApplySource);
     document.getElementById('elp-src-url').addEventListener('input', function () { document.getElementById('elp-src-zooms').style.display = (this.value.trim().indexOf('mapbox://') === 0) ? 'none' : 'block'; });
     document.getElementById('elp-hover').addEventListener('change', onInteraction);
@@ -11916,7 +12218,7 @@
   /* ── ARTICLES on a layer (content system, 10/21) ─────────────────────────────
      panel.entries = { type, key, project }: the content type whose articles this layer opens and
      the feature property that carries the article's key. The two selects write it; the Articles
-     panel (platform/contentEditor.js) writes the same thing when a type is bound to a layer there. */
+     writing of articles happens in the encyclopedia (owner 10/25), not in the editor. */
   var _ctTypes = null;   // this map's content types, for the type select (refreshed by the Articles panel)
   async function loadContentTypes(force) {
     if (_ctTypes && !force) return _ctTypes;
@@ -11958,25 +12260,8 @@
       if (window.MSContent && MSContent.invalidate) MSContent.invalidate();
     } catch (e) { setStatus('Save failed'); }
   }
-  function openArticlesPanel() {
-    if (!window.MSContentEditor) { showToast('The Articles panel did not load (platform/contentEditor.js)'); return; }
-    MSContentEditor.open({
-      db: db, projectId: projectId,
-      layers: function () {   // the map's leaf layers, for binding a type to one
-        var out = []; (function w(a) { (a || []).forEach(function (n) { if (!n) return; if (n.children) { w(n.children); return; } var lid = slugToLayerDbId[n.id]; if (lid) out.push({ id: lid, slug: n.id, label: n.label || n.id }); }); })(layers); return out;
-      },
-      // a type bound to a layer there = that layer's panel opens its articles (the same binding the layer panel's selects write)
-      bindLayer: async function (layerDbId, typeId, key) {
-        var node = nodeByLayerDbId(layerDbId); if (!node) return;
-        node.panel = node.panel || {}; node.panel.mode = 'entries'; node.panel.entries = { type: typeId, key: key || 'label', project: projectId };
-        var r = await patchLayerConfig(layerDbId, { panel: { mode: 'entries', entries: node.panel.entries } });
-        if (r.error) throw new Error(r.error.message);
-        if (activeLayerId === node.id) { try { document.getElementById('elp-panel-mode').value = 'entries'; document.getElementById('elp-entries-row').style.display = 'block'; await fillEntriesControls(node); } catch (e) {} }
-      },
-      onChange: function () { _ctTypes = null; if (window.MSContent && MSContent.invalidate) MSContent.invalidate(); if (activeLayerId) { var n = findNodeById(layers, activeLayerId); if (n && n.panel && n.panel.mode === 'entries') fillEntriesControls(n); } },
-      status: setStatus, toast: showToast
-    });
-  }
+  // (10/25, owner: the 📚 Articles panel is gone — "We'll have it so people can update in the
+  // encyclopedia." The layer's binding to a content type stays here; the writing moves there.)
   // View/edit a tileset's source — repoint the URL (mapbox:// or a {z}/{x}/{y} worker/PMTiles template),
   // source-layer, and zoom range; persist to the layers table + re-render the layer on both maps.
   async function onApplySource() {
@@ -12251,6 +12536,7 @@
     try { if (window.MSDatasets) MSDatasets.onLayerPanel(node); } catch (eDs) {}
     document.getElementById('elp-color').value = color;
     var legOn = document.getElementById('elp-legend-on'); if (legOn) legOn.checked = !!node.legend;
+    try { renderLegendOptsUi(node); } catch (eLgo) {}
     var srOn = document.getElementById('elp-stylerows-on'); if (srOn) srOn.checked = !!node.styleRows;
     populateColorBy(node);   // "Color by data column" — drawn layers only (hidden otherwise)
     populateDefaults(node);  // "On by default" (expanded-by-default is container-only)

@@ -116,6 +116,156 @@ function msShowBasemapInfo(idx, anchor) {
 // Body-level FIXED, not inside a map container: the swipe compare plugin clips each map's container
 // at the divider, so anything mounted inside one is sliced in half (the master-tool-panel lesson).
 // Idempotent — projectLoader and the settings panel call it again whenever the list changes.
+// PROJECTION (owner 10/25: "Equal Earth"): mapConfig.projection = "equalEarth" | "mercator" (absent =
+// Mercator), a per-map setting from Map settings. Mapbox GL only — MapLibre has no Equal Earth, so a
+// MapLibre copy (downloads, the showcase) stays Mercator and says nothing. Applied to BOTH swipe maps
+// and re-applied after every style swap (a basemap change rebuilds the style).
+function msApplyProjection(name) {
+  var want = (typeof name === 'string' && name && name !== 'mercator') ? name : 'mercator';
+  if (typeof maplibregl !== 'undefined') return false;   // MapLibre: setProjection takes {type:'globe'} only — not this feature
+  var maps = [typeof beforeMap !== 'undefined' ? beforeMap : null, typeof afterMap !== 'undefined' ? afterMap : null];
+  var did = false;
+  maps.forEach(function (m) {
+    if (!m || typeof m.setProjection !== 'function') return;
+    try { m.setProjection(want); did = true; } catch (e) {}
+    msFitProjectionLimits(m, want);
+    if (!m.__msProjHook) {
+      m.__msProjHook = true;
+      m.on('style.load', function () { try { var p = (typeof mapConfig !== 'undefined' && mapConfig && mapConfig.projection) || 'mercator'; m.setProjection(p === 'mercator' ? 'mercator' : p); msFitProjectionLimits(m, p); } catch (e2) {} });
+      m.on('resize', function () { try { msFitProjectionLimits(m, (typeof mapConfig !== 'undefined' && mapConfig && mapConfig.projection) || 'mercator'); } catch (e3) {} });
+    }
+  });
+  return did;
+}
+/* THE WHOLE WORLD STAYS IN VIEW (owner 10/25: "the min should fit within the screen — it's weird to
+   zoom out or pan and the whole map moves out of view"). On a world projection the map is one
+   oval, so the floor is the zoom at which that oval just fits the container, and the camera is
+   boxed to the world so a pan cannot carry the oval off screen. Mapbox draws the world 512 px
+   wide at zoom 0; Equal Earth's oval is about 2.05 times wider than tall. Mercator gets its
+   limits back (no floor, no box). */
+function msFitProjectionLimits(m, proj) {
+  try {
+    if (!m || !m.getContainer) return;
+    if (!proj || proj === 'mercator') {
+      if (m.__msProjLimited) { m.__msProjLimited = false; m.setMinZoom(m.__msMinZoomBefore != null ? m.__msMinZoomBefore : null); m.setMaxBounds(null); }
+      return;
+    }
+    var c = m.getContainer(), W0 = c.clientWidth || 800, H0 = c.clientHeight || 500, W = W0, H = H0;
+    try { var pd = m.getPadding ? m.getPadding() : null; if (pd) { W -= (pd.left || 0) + (pd.right || 0); H -= (pd.top || 0) + (pd.bottom || 0); } } catch (ePd) {}   // the camera padding (sidebar) is not part of the frame
+    var aspect = proj === 'equalEarth' ? 2.05 : 2;   // world width ÷ height on the projection
+    var fitFor = function (w, h) { var zW = Math.log(w / 512) / Math.LN2, zH = Math.log((h * aspect) / 512) / Math.LN2; return Math.max(0, Math.round(Math.min(zW, zH) * 100) / 100); };
+    var floor = fitFor(W, H), floorFull = fitFor(W0, H0);
+    if (!m.__msProjLimited) { m.__msProjLimited = true; m.__msMinZoomBefore = m.getMinZoom(); }
+    window.__msSnapping = true;   // zoom changes made HERE (and the swipe's echo of them on the other map) are not the person's
+    m.setMinZoom(floor);
+    m.setMaxBounds(null);   // NO maxBounds here: on Equal Earth it broke the swipe's live sync near the world's edge (measured 10/25: the right map stopped following during a drag, 480 px apart, then snapped on release) — and it only boxed the centre anyway
+    if (m.getZoom() < floor) m.setZoom(floor);
+    window.__msSnapping = false;
+    /* A WORLD VIEW STAYS A WORLD VIEW (owner 10/25: "this is how the map appears when I open it";
+       10/26: the readout found the fault). The old rule — "a zoom within 0.06 of the full-canvas
+       fit means the whole world" — compared a saved NUMBER with THIS screen's fit, and the same
+       number (1.60) was "world" on a 2198-px window and "zoomed in, oval cut" on the owner's
+       1465-px one. Intent is now stored as intent: `mapConfig.viewFit` (Set current view as default
+       with the oval in frame, on a world projection) means the whole world, on every screen, and
+       the zoom is set to the fit of the frame as it is now — re-checked on every idle, so a late
+       padding, resize or saved view all settle to the same place. The person's own zoom (wheel,
+       buttons, double-click, zoom-to-layer, a place search — any zoom not made by this rule) ends
+       the fitting until they zoom back out to the floor. No viewFit = the saved zoom is honoured,
+       clamped at the floor only. */
+    var zBefore = m.getZoom(), snapped = false;
+    var wantFit = (typeof mapConfig !== 'undefined' && mapConfig && mapConfig.viewFit) && !m.__msUserZoomed;
+    if (wantFit && Math.abs(m.getZoom() - floor) > 0.005) { window.__msSnapping = true; m.setZoom(floor); window.__msSnapping = false; snapped = true; }
+    msProjReadout(m, { floor: floor, floorFull: floorFull, W0: W0, H0: H0, W: W, H: H, zBefore: zBefore, snapped: snapped });
+    msKeepWorldInView(m);   // and centred, now — not only after the next move
+    // the oval is kept in view by reading its own projected edges after every move and nudging the
+    // view back until it is covered or centred (a drag can push it out briefly; release pulls it back)
+    /* NOT while the person drags or wheels either map (measured 10/25): the swipe syncs the other
+       map with jumpTo on every move, whose moveend nudged THAT map back while the dragged one kept
+       going — 480 px apart until mouseup. A nudge happens only once the gesture ends. */
+    if (!m.__msKeepHook) {
+      m.__msKeepHook = true;
+      ['dragstart', 'zoomstart', 'rotatestart', 'pitchstart'].forEach(function (ev) { m.on(ev, function (e) { if (e && e.originalEvent) window.__msUserMoving = true; }); });
+      ['dragend', 'zoomend', 'rotateend', 'pitchend'].forEach(function (ev) { m.on(ev, function (e) { if (e && e.originalEvent) { window.__msUserMoving = false; msKeepWorldInView(m); } }); });
+      m.on('moveend', function () { msKeepWorldInView(m); });
+      // the person's own zoom (anything this rule did not do itself) ends the world fit; zooming back out to the floor restores it
+      m.on('zoomend', function () { try { if (window.__msSnapping) return; m.__msUserZoomed = m.getZoom() > m.getMinZoom() + 0.01; } catch (e5) {} });
+      /* THE GUARANTEE (owner 10/25: "a fundamental solution"). Boot is a race — the saved view, the
+         hash, the projection, the sidebar padding, late layout and the config each arrive in their
+         own order on each machine — so the fit is not applied once in sequence; it is an INVARIANT
+         re-checked every time the map goes idle: floor from the frame as it is now, a world view
+         snapped to it, the oval kept in view. Idempotent, so a settled map costs nothing. */
+      m.on('idle', function () { try { msFitProjectionLimits(m, (typeof mapConfig !== 'undefined' && mapConfig && mapConfig.projection) || 'mercator'); } catch (e4) {} });
+    }
+    msKeepWorldInView(m);
+  } catch (e) {}
+}
+// "Is the whole world in frame?" — true on a world projection at (or within a hair of) the fit zoom
+// of the frame as it is now. Set current view as default stores THIS as the intent, not the zoom.
+function msWorldFits(m) {
+  try {
+    var proj = (typeof mapConfig !== 'undefined' && mapConfig && mapConfig.projection) || 'mercator';
+    if (!m || proj === 'mercator' || !m.__msProjLimited) return false;
+    return m.getZoom() <= m.getMinZoom() + 0.05;
+  } catch (e) { return false; }
+}
+function msKeepWorldInView(m) {
+  try {
+    if (!m.__msProjLimited || m.__msKeeping || window.__msUserMoving) return;
+    var c = m.getContainer(), W = c.clientWidth, H = c.clientHeight;
+    // the frame = the canvas minus the camera padding (the sidebar strip, Map settings → Sidebar)
+    var pd = { left: 0, right: 0, top: 0, bottom: 0 }; try { pd = m.getPadding ? (m.getPadding() || pd) : pd; } catch (ePd) {}
+    var X0 = pd.left || 0, X1 = W - (pd.right || 0), Y0 = pd.top || 0, Y1 = H - (pd.bottom || 0);
+    var L = m.project([-180, 0]), R = m.project([180, 0]), T = m.project([0, 90]), B = m.project([0, -90]);
+    var dx = 0, dy = 0;
+    if (R.x - L.x <= (X1 - X0) + 1) dx = (L.x + R.x) / 2 - (X0 + X1) / 2;   // the oval is narrower than the frame: centre it
+    else if (L.x > X0) dx = L.x - X0; else if (R.x < X1) dx = R.x - X1;    // wider: no gap on either side
+    if (B.y - T.y <= (Y1 - Y0) + 1) dy = (T.y + B.y) / 2 - (Y0 + Y1) / 2;
+    else if (T.y > Y0) dy = T.y - Y0; else if (B.y < Y1) dy = B.y - Y1;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    m.__msKeeping = true;
+    var cx = (X0 + X1) / 2, cy = (Y0 + Y1) / 2;
+    m.jumpTo({ center: m.unproject([cx + dx, cy + dy]) });
+    m.__msKeeping = false;
+  } catch (e) { m.__msKeeping = false; }
+}
+/* READOUT (10/26, owner: the editor still opens with the world cut on their machine while every
+   headless run at their window size fits). Add `msdebug=1` to the address and a box in the top right
+   prints the numbers the fit rule reads — on this machine, on this open — instead of another guess:
+   the CSS viewport and pixel ratio, the canvas, the camera padding, zoom vs the two floors, the
+   oval's projected edges against the frame, the hash and the saved view, and every snap the rule
+   made. Off unless asked for; never shipped to a copy. */
+var __msProjLog = [];
+function msProjReadout(m, r) {
+  try {
+    if (!/msdebug=1/.test(location.search + location.hash)) return;
+    var z = m.getZoom();
+    if (r && r.snapped) __msProjLog.push('t+' + Math.round(performance.now()) + 'ms snap ' + r.zBefore.toFixed(3) + '→' + z.toFixed(3) + ' (floor ' + r.floor + ', full ' + r.floorFull + ')');
+    if (__msProjLog.length > 12) __msProjLog.shift();
+    var el = document.getElementById('ms-proj-readout');
+    if (!el) {
+      el = document.createElement('pre'); el.id = 'ms-proj-readout';
+      el.style.cssText = 'position:fixed;top:140px;right:12px;z-index:99999;background:rgba(0,0,0,.82);color:#9f9;font:11px/1.35 Consolas,monospace;padding:8px 10px;border-radius:6px;max-width:460px;white-space:pre-wrap;pointer-events:none;margin:0';
+      document.body.appendChild(el);
+    }
+    var pd = { left: 0, right: 0, top: 0, bottom: 0 }; try { pd = m.getPadding ? (m.getPadding() || pd) : pd; } catch (e1) {}
+    var c = m.getContainer(), W = c.clientWidth, H = c.clientHeight, cv = m.getCanvas();
+    var L = m.project([-180, 0]), R = m.project([180, 0]), T = m.project([0, 90]), B = m.project([0, -90]);
+    var X0 = pd.left || 0, X1 = W - (pd.right || 0);
+    var which = (typeof beforeMap !== 'undefined' && m === beforeMap) ? 'before(left)' : (typeof afterMap !== 'undefined' && m === afterMap) ? 'after(right)' : '?';
+    var saved = (typeof mapConfig !== 'undefined' && mapConfig) ? mapConfig : {};
+    var sb = window.__msSidebarCfg || null;
+    var cen = m.getCenter();
+    el.textContent =
+      'map ' + which + '  proj ' + ((m.getProjection && m.getProjection() || {}).name || '?') + '  dpr ' + window.devicePixelRatio + '\n' +
+      'window ' + window.innerWidth + '×' + window.innerHeight + '  container ' + W + '×' + H + '  canvas ' + (cv ? cv.width + '×' + cv.height : '?') + '\n' +
+      'padding L' + (pd.left || 0) + ' R' + (pd.right || 0) + ' T' + (pd.top || 0) + ' B' + (pd.bottom || 0) + '  frame x ' + X0 + '…' + X1 + ' (' + (X1 - X0) + ' wide)\n' +
+      'zoom ' + z.toFixed(3) + '  minZoom ' + m.getMinZoom().toFixed(3) + (r ? '  floor ' + r.floor + '  floorFull ' + r.floorFull + '  viewFit ' + !!(typeof mapConfig !== 'undefined' && mapConfig && mapConfig.viewFit) + '  userZoomed ' + !!m.__msUserZoomed : '') + '\n' +
+      'centre ' + cen.lng.toFixed(2) + ',' + cen.lat.toFixed(2) + '  oval x ' + Math.round(L.x) + '…' + Math.round(R.x) + ' (' + Math.round(R.x - L.x) + ' wide, ' + (R.x - L.x <= X1 - X0 + 1 ? 'fits' : 'CUT by ' + Math.round(R.x - L.x - (X1 - X0)) + 'px') + ')  y ' + Math.round(T.y) + '…' + Math.round(B.y) + '\n' +
+      'hash ' + (location.hash || '(none)') + '  saved zoom ' + (saved.zoom != null ? saved.zoom : saved.mapZoom != null ? saved.mapZoom : '?') + '  saved centre ' + JSON.stringify(saved.center || saved.mapCenter || null) + '\n' +
+      'sidebar cfg ' + JSON.stringify(sb) + '  open ' + (typeof layer_view_flag !== 'undefined' ? layer_view_flag : '?') + '  $(window).width() ' + (window.jQuery ? jQuery(window).width() : '?') + '  moving ' + !!window.__msUserMoving + '\n' +
+      'snaps (' + __msProjLog.length + '):\n' + (__msProjLog.join('\n') || '  none yet');
+  } catch (e) {}
+}
 function msRenderMapButtons() {
   var old = document.getElementById('ms-map-buttons'); if (old) old.remove();
   document.querySelectorAll('.ms-custom-mapbtn').forEach(function (e) { e.remove(); });

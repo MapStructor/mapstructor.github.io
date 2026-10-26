@@ -132,7 +132,7 @@
       href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v0.4.0/mapbox-gl-compare.css"
       type="text/css"
     />
-    <link href="engine/engine.css?v=bd333e02" rel="stylesheet" />
+    <link href="engine/engine.css?v=828b4eee" rel="stylesheet" />
     <!--
     <link
       rel="stylesheet"
@@ -174,7 +174,7 @@
          did not. Do not re-add it: the viewer renders on a phone, and a redirect to a page nobody
          guarantees exists is strictly worse than doing nothing. -->
     <script src="engine/utils.js?v=d7e69c40"></script>
-    <script src="engine/index.js?v=82e05c05"></script>
+    <script src="engine/index.js?v=6c3db717"></script>
 
     <!-- Google Analytics - driven by siteAnalytics.trackingId in header.js -->
     <!-- To revert: comment out NEW BLOCK below, uncomment OLD BLOCK below -->
@@ -381,7 +381,7 @@
     <!-- END TESTING -->
     <!-- <script src="js/lists/bounds.js"></script> -->
     <!-- <script src="js/lists/mapData.js"></script> -->
-    <script src="engine/generateMaps.js?v=983cf39e"></script>
+    <script src="engine/generateMaps.js?v=d807f5eb"></script>
     <script src="engine/refreshLayers.js?v=a837154f"></script>
     <script src="engine/addMapLayer.js?v=723fd0e2"></script>
     <script src="engine/eventsHandle.js?v=c3a4fdaa"></script>
@@ -397,17 +397,18 @@
          (MSGuard.warnOnce / .save / .cliff). Loaded FIRST so every later file can use it; every
          call site checks window.MSGuard, so removing this line degrades cleanly to silence. -->
     <script src="../platform/guards.js?v=6e3e345a" onerror="void(0)"></script>
-    <script src="engine/infoPanel.js?v=118ce949"></script>
-    <script src="engine/mapinit.js?v=573f5dc8"></script>
+    <script src="engine/infoPanel.js?v=08216329"></script>
+    <script src="engine/mapinit.js?v=06675388"></script>
     <script src="engine/sliderpopups.js?v=ba8ab5a0"></script>
     <script src="../platform/configLoader.js?v=9bac21dc" onerror="void(0)"></script>
     <script src="../platform/labels.js?v=ef0410a4" onerror="void(0)"></script>
+    <script src="../platform/legend.js?v=5583d0e4" onerror="void(0)"></script>   <!-- the on-map legend (legend: true + legendOpts per layer), one renderer for editor, viewer and copies -->
     <script src="../platform/groupView.js?v=b694ad82" onerror="void(0)"></script>   <!-- "treat as one" hover/click in VIEW mode -->
 
     <script src="../platform/renderRegistry.js?v=77ee026a" onerror="void(0)"></script>
     <script src="../platform/msdBadge.js?v=436b88fe" onerror="void(0)"></script>   <!-- MSD / MSD PROJECT mark, defined once; must load BEFORE projectLoader paints the header -->
-    <script src="../platform/projectLoader.js?v=fa8b8c56" onerror="void(0)"></script>
-    <script src="../platform/download.js?v=746c85ff" onerror="void(0)"></script>   <!-- Download whole project (sidebar button) -->
+    <script src="../platform/projectLoader.js?v=fc857ff2" onerror="void(0)"></script>
+    <script src="../platform/download.js?v=4cffd024" onerror="void(0)"></script>   <!-- Download whole project (sidebar button) -->
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js" onerror="void(0)"></script>   <!-- deck.gl: instant scrub without bakes (deckScrub.js); raster stays the fallback -->
     <script src="../platform/deckScrub.js?v=8e4bcad4" onerror="void(0)"></script>
     <script src="../platform/modalLock.js?v=42b76e71" onerror="void(0)"></script>   <!-- the ONE owner of the modal lock (counted holds); must load before merge/layerOrder/editing -->
@@ -415,7 +416,7 @@
     <script src="../platform/layerOrder.js?v=a363db8d" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
     <script src="../platform/rasterScrub.js?v=564f3212" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
     <script src="../platform/attrGrid.js?v=64ccee1b" onerror="void(0)"></script>   <!-- windowed table renderer (shared with the editor) -->
-    <script src="../platform/viewerTable.js?v=6f519828" onerror="void(0)"></script>   <!-- read-only attribute table in VIEW mode (per-row table icon) -->
+    <script src="../platform/viewerTable.js?v=09b2ab0a" onerror="void(0)"></script>   <!-- read-only attribute table in VIEW mode (per-row table icon) -->
     <script src="../platform/tables.js?v=7012604a" onerror="void(0)"></script>   <!-- Data tables + joins -->
     <script src="../platform/layerJson.js?v=8eb2830c" onerror="void(0)"></script>   <!-- { } per-layer JSON options -->
     <script>

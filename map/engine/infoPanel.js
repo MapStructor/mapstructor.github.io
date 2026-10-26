@@ -125,6 +125,8 @@ function infoPanelDefaultHandle() {
     return infoPanelClickFired[id];
   });
   if (!anyFired) {
+    // Map settings → Sidebar (10/25): "button only" and "hidden" leave the map click alone
+    if (window.__msSidebarToggleOnly || window.__msSidebarHidden) return;
     if ($("#view-hide-layer-panel").length > 0)
       $("#view-hide-layer-panel").trigger("click");
   }

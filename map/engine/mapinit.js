@@ -44,6 +44,10 @@ function initMaps() {
 	
 	beforeMap = new mapboxgl.Map(beforeMapConfig);
     afterMap = new mapboxgl.Map(afterMapConfig);
+    // the map's own projection (Map settings, 10/25): a static copy carries it in mapConfig; the
+    // platform pages apply it again once the project row is read (projectLoader)
+    try { if (mapConfig.projection && typeof msApplyProjection === 'function') msApplyProjection(mapConfig.projection); } catch (ePj) {}
+    try { if (mapConfig.sidebar && window.msApplySidebarSettings) window.msApplySidebarSettings(mapConfig.sidebar); } catch (eSb) {}   // a static copy: the sidebar settings (padding needs the maps, which now exist)
 
     map = new mapboxgl.Compare(beforeMap, afterMap, "#comparison-container", {
       // Set this to enable comparing two maps by mouse movement:

@@ -34,11 +34,11 @@ on:
         required: false
         default: ""
       mode:
-        description: "retile | fold-rows | fold-raw"
+        description: "retile | fold-rows | fold-raw | fold-merge | fold-file (a GeoPackage uploaded in chunks — GDAL splits it into layers, one bake each)"
         required: false
         default: "retile"
       raw_key:
-        description: "R2 key of the source FeatureCollection (fold-raw only)"
+        description: "R2 key of the source FeatureCollection (fold-raw) or package (fold-file)"
         required: false
         default: ""
 
@@ -81,7 +81,31 @@ jobs:
           npm install --no-save --silent puppeteer-core
           ls /usr/bin/google-chrome* 2>/dev/null || echo "no google-chrome on PATH — raster will be skipped"
 
+      # GeoPackage (and later any GDAL-readable upload): the package is one object on R2; GDAL
+      # converts each feature table, scripts/gpkg-prepare.mjs makes the layer rows and runs the
+      # bake below once per table. ogrinfo -json needs GDAL ≥ 3.7 (ubuntu-latest ships 3.8).
+      - name: Install GDAL (fold-file)
+        if: ${{ inputs.mode == 'fold-file' }}
+        run: |
+          sudo apt-get install -y -q gdal-bin
+          ogrinfo --version
+
+      - name: Split the uploaded package into layers and bake each (fold-file)
+        if: ${{ inputs.mode == 'fold-file' }}
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          LAYER_ID: ${{ inputs.layer_id }}
+          MAX_ZOOM: ${{ inputs.max_zoom }}
+          SIMPLIFY: ${{ inputs.simplification }}
+          RAW_KEY: ${{ inputs.raw_key }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_TILES_ACCESS_KEY_ID || secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_TILES_SECRET_ACCESS_KEY || secrets.R2_SECRET_ACCESS_KEY }}
+        run: node scripts/gpkg-prepare.mjs
+
       - name: Fetch, tile, bake artifacts, upload, stamp
+        if: ${{ inputs.mode != 'fold-file' }}
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           PROJECT_ID: ${{ inputs.project_id }}

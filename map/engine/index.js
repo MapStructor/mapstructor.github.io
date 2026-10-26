@@ -293,6 +293,45 @@ if (jQuery.browser.msie)
   
  
 
+  /* the toggle says what it does (owner 10/25): a tooltip that shows AT ONCE (no native delay),
+     follows the pointer while it hovers, and flips its text with the state — even mid-hover */
+  // plain and small, like a browser tooltip — only instant and following (owner 10/25: the engine's
+  // .tooltip look was "intense"; this one borrows nothing from it)
+  /* THE MAP'S OWN TOOLTIP, no special kind (owner 10/25). The map page has exactly one tooltip
+     mechanism for its controls: simple_tooltip() above — the blue box the layer rows' ℹ and
+     zoom-to icons use (engine.css .tooltip: grey frame, blue panel, white text), shown on
+     mouseover with a 200 ms fade, following the pointer, hidden on mouseout. The sidebar toggle
+     now goes through that same function; only its text changes with the state. (The top bar's
+     buttons are a different surface — plain browser `title` tooltips, with the browser's delay.) */
+  if (!document.getElementById("ms-sbtoggle-css")) $("<style id='ms-sbtoggle-css'>#view-hide-layer-panel{transition:background .12s,box-shadow .12s}#view-hide-layer-panel:hover{background:#7c5cbf !important;color:#fff !important;box-shadow:0 0 0 3px rgba(124,92,191,.35),0 2px 8px rgba(0,0,0,.25)}#view-hide-layer-panel:hover #dir-txt{color:#fff}</style>").appendTo("head");
+  $("#view-hide-layer-panel").attr("title", layer_view_flag ? "Close the layers sidebar" : "Open the layers sidebar");
+  simple_tooltip("#view-hide-layer-panel", "tooltip-sb");   // → #tooltip-sb0, styled by engine.css exactly like .tooltip
+  var msSidebarTip = function () { $("#tooltip-sb0 p").text(layer_view_flag ? "Close the layers sidebar" : "Open the layers sidebar"); };
+  /* KEEP THE MAP CENTRED BESIDE THE SIDEBAR (owner 10/25, Map settings → Sidebar): a camera padding
+     on the left while the sidebar is open, so the visible strip — not the whole canvas — is the
+     frame. The fit floor and the keep-in-view nudge read the padding (generateMaps.js). Eased
+     with the slide. Both swipe maps, every page, static copies too. */
+  window.msApplySidebarPadding = function (animate) {
+    var cfg = window.__msSidebarCfg || {};
+    var on = !!cfg.padMap && layer_view_flag && !window.__msSidebarHidden && $(window).width() > 637;
+    var pad = on ? 337 : 0, P = { left: pad, top: 0, right: 0, bottom: 0 };
+    var primary = typeof beforeMap !== "undefined" ? beforeMap : null, follower = typeof afterMap !== "undefined" ? afterMap : null;
+    if (!primary || !primary.easeTo) return;
+    try { if ((primary.getPadding().left || 0) === pad && (!follower || (follower.getPadding().left || 0) === pad)) return; } catch (e0) {}
+    /* The LEFT map eases its padding with the slide; the RIGHT map cannot ease its own — the swipe
+       re-syncs it with jumpTo on every move, which stops any animation of its own (measured 10/25:
+       the right map kept 337 after the sidebar closed). So the right map COPIES the left's padding
+       on every move of the ease, and once more at the end. */
+    var sync = function () { try { if (follower && follower.setPadding) follower.setPadding(primary.getPadding()); } catch (e1) {} };
+    var limits = function () { if (typeof msFitProjectionLimits !== "function") return; var proj = (typeof mapConfig !== "undefined" && mapConfig && mapConfig.projection) || "mercator"; [primary, follower].forEach(function (m) { try { if (m) msFitProjectionLimits(m, proj); } catch (e2) {} }); };
+    try {
+      if (animate) {
+        primary.on("move", sync);
+        primary.easeTo({ padding: P, duration: 500 });
+        setTimeout(function () { primary.off("move", sync); try { primary.setPadding(P); } catch (e3) {} sync(); limits(); }, 540);
+      } else { primary.setPadding(P); sync(); limits(); }
+    } catch (e) {}
+  };
   $("#view-hide-layer-panel").click(function () {
     if (layer_view_flag) {
       $("#studioMenu").animate({ "margin-left": "-337px" }, 500);
@@ -309,7 +348,30 @@ if (jQuery.browser.msie)
       $("#dir-txt").html("&#9204;");
       if (windoWidth > 637) $("#rightInfoBar").slideDown();
     }
+    msSidebarTip();
+    try { window.msApplySidebarPadding(true); } catch (ePad) {}
   });
+  /* SIDEBAR SETTINGS (owner 10/25) — per map, Map settings → Sidebar, mapConfig.sidebar =
+     { hidden, startClosed, toggleOnly }. hidden = no sidebar and no toggle for VISITORS (the editor
+     keeps its sidebar); startClosed = the viewer opens with it slid shut; toggleOnly = only the
+     button opens/closes it (a click on the map leaves it alone). Static copies carry it in
+     mapConfig at boot; the platform pages call this again once the project row is read. */
+  window.msApplySidebarSettings = function (s) {
+    s = s || {};
+    window.__msSidebarCfg = s;
+    window.__msSidebarToggleOnly = !!s.toggleOnly;
+    var editor = /editor\.html$/i.test(location.pathname);   // the editor keeps its sidebar; the camera padding applies everywhere
+    if (!editor && s.hidden) { $("#studioMenu, #view-hide-layer-panel, #mobi-hide-sidebar, #mobi-view-sidebar").hide(); window.__msSidebarHidden = true; }
+    else if (!editor && s.startClosed && layer_view_flag && !window.__msSidebarStartApplied) { window.__msSidebarStartApplied = true; $("#view-hide-layer-panel").trigger("click"); }
+    try { window.msApplySidebarPadding(false); } catch (ePad) {}
+  };
+  try { if (typeof mapConfig !== "undefined" && mapConfig && mapConfig.sidebar) window.msApplySidebarSettings(mapConfig.sidebar); } catch (eSb) {}
+
+  /* A CLICK ON EMPTY MAP TOGGLES THE LAYERS SIDEBAR — ONE owner: the engine's
+     registerInfoPanelClicks (infoPanel.js, 250 ms debounce, a dblclick cancels), bound on both
+     maps at first load. A second copy here (10/25, first cut) was dead code — the maps do not
+     exist yet when this block runs — and is gone. The engine's toggle honours Map settings →
+     Sidebar (button only / hidden) and, in the editor, Viewing mode. */
 
   $("#mobi-view-sidebar").click(function () {
     if (!layer_view_flag) {

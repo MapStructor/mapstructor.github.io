@@ -21,4 +21,5 @@ supabase/.temp/
 
 # wrangler dev leaves a local R2/KV simulator and caches here — machine state, not source
 worker/.wrangler/
+worker/.dev.vars
 test/wysiwyg/data/

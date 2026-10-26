@@ -303,6 +303,7 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     if (project.basemap_style != null) mapConfig.style = project.basemap_style;
     if (project.center_lng != null) mapConfig.center = [project.center_lng, project.center_lat];
     if (project.zoom != null) mapConfig.zoom = project.zoom;
+    mapConfig.viewFit = !!raw.viewFit;   // "the whole world" saved as intent (Set current view as default on a world projection) — the engine fits each screen
     // basemaps: a map's own saved set wins; maps that never customized them get the FREE defaults
     // (Esri satellite / OpenFreeMap streets — no token, no billing) instead of the static Mapbox pair
     if (raw.baseMaps) replaceArray(baseMaps, raw.baseMaps);
@@ -455,6 +456,16 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     try {
       if (typeof mapConfig !== "undefined") mapConfig.customButtons = raw.customButtons || [];
       if (window.msRenderMapButtons) window.msRenderMapButtons();
+    } catch (e) {}
+    // Projection (10/25): the same road — onto the global mapConfig (frozen into copies), applied live
+    try {
+      if (typeof mapConfig !== "undefined") mapConfig.projection = raw.projection || null;
+      if (typeof msApplyProjection === "function") msApplyProjection(raw.projection || "mercator");
+    } catch (e) {}
+    // Sidebar settings (10/25): hidden / start closed / button only — same road
+    try {
+      if (typeof mapConfig !== "undefined") mapConfig.sidebar = raw.sidebar || null;
+      if (window.msApplySidebarSettings) window.msApplySidebarSettings(raw.sidebar || null);
     } catch (e) {}
     // Feature: header is HIDDEN BY DEFAULT (the map pages set body.ms-no-header at parse so there's no
     // flash of the header on load). Resolve the real state NOW — header-on maps flip the moment the config

@@ -66,7 +66,37 @@ async function supabaseUser(env, req) {
 }
 
 var MAX_UPLOAD_BYTES = 95 * 1024 * 1024;   // Worker request-body ceiling is ~100 MB;
-// bigger archives use multipart via presigned S3 URLs — a later addition (README #3).
+// bigger files arrive in parts through /mpu/* (R2 multipart, 10/26) — see that route.
+
+/* May this caller write under tiles/<projectId>/ ? Owner-compare first (no extra round trip for
+   the common case), then the database's own predicate for invited editors.
+   AN INVITED EDITOR MAY PUBLISH — 9/3, the SAME fix the showcase branch got on 8/27, which was
+   never carried across to snapshots/ and tiles/. What that cost, measured on the Slater map: the
+   invited editor pressed Publish, the Postgres row was written (RLS lets an editor do that), and
+   BOTH R2 calls — the pre-delete and the PUT — came back 403 "not your project". The editor's own
+   console warned; the screen said "Published ✓". Viewers read the R2 copy first, so the public map
+   served the PREVIOUS publish for a week. One definition of "who may edit this map", asked of the
+   database, exactly like /article and the showcase branch — every route, one rule, no drift.
+   Returns true, or the Response to send instead. */
+async function tilesKeyWritable(env, req, user, projectId) {
+  try {
+    var pr = await fetch(env.SUPABASE_URL + "/rest/v1/projects?id=eq." + projectId + "&select=user_id", {
+      headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY }
+    });
+    var rows = pr.ok ? await pr.json() : [];
+    var mayWrite = rows.length > 0 && rows[0].user_id === user.id;
+    if (!mayWrite) {
+      var er2 = await fetch(env.SUPABASE_URL + "/rest/v1/rpc/ms_project_editor", {
+        method: "POST",
+        headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ pid: projectId })
+      });
+      mayWrite = er2.ok && (await er2.json()) === true;
+    }
+    if (!mayWrite) return new Response("not a map you can edit", { status: 403, headers: cors() });
+    return true;
+  } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
+}
 
 /* ── write-rate guard (launch item 8, 2026-07-30) ──────────────────────────────
    R2 is the one meter in the stack with NO hard spend ceiling — Class A writes are
@@ -640,13 +670,15 @@ export default {
       try { fb = await req.json(); } catch (e) { return new Response("bad json", { status: 400, headers: cors() }); }
       var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       var fMode = fb && fb.mode ? String(fb.mode) : "fold-raw";
+      // fold-file (10/26): a GeoPackage the editor uploaded in chunks (/mpu/*) — the Action
+      // converts it with GDAL, one layer per table. Same ownership rule, same key prefix rule.
       if (!fb || !UUID.test(fb.projectId || "") || !UUID.test(fb.layerId || "") ||
-          ["retile", "fold-rows", "fold-raw", "fold-merge"].indexOf(fMode) < 0) {
+          ["retile", "fold-rows", "fold-raw", "fold-merge", "fold-file"].indexOf(fMode) < 0) {
         return new Response("bad request", { status: 400, headers: cors() });
       }
       var fRawKey = fb.rawKey ? String(fb.rawKey) : "";
-      // fold-raw sources must live under the caller's own project prefix (no path games)
-      if (fMode === "fold-raw" && fRawKey.indexOf("tiles/" + fb.projectId + "/") !== 0) {
+      // fold-raw / fold-file sources must live under the caller's own project prefix (no path games)
+      if ((fMode === "fold-raw" || fMode === "fold-file") && fRawKey.indexOf("tiles/" + fb.projectId + "/") !== 0) {
         return new Response("rawKey must be under tiles/<projectId>/", { status: 400, headers: cors() });
       }
       try {
@@ -677,6 +709,66 @@ export default {
         return new Response(JSON.stringify({ ok: true, dispatched: fMode }), { status: 202, headers: cors({ "Content-Type": "application/json" }) });
       }
       return new Response("dispatch failed: " + gh.status + " " + (await gh.text()).slice(0, 200), { status: 502, headers: cors() });
+    }
+
+    /* ── chunked uploads (10/26): a big import source, in parts ─────────────────
+       PUT /upload is one request and the Worker's body ceiling is ~100 MB, so a 200 MB GeoPackage
+       could never arrive — and on a bad connection one lost packet would restart the whole file.
+       R2 multipart turns it into independent 8 MB parts the browser can retry one at a time:
+         POST /mpu/create            {key, contentType}            → {uploadId}
+         PUT  /mpu/part?key&uploadId&part=N   (body = the part)    → {partNumber, etag}
+         POST /mpu/complete          {key, uploadId, parts:[{partNumber, etag}]}
+         POST /mpu/abort             {key, uploadId}
+       Keys are pinned to import sources under the caller's own project — tiles/<pid>/<lid>.source.<ext>
+       — and every call passes the same guards as /upload: a user, the service ceiling, the write
+       rate (a part is one write), and ownership of <pid> by the database's own predicate. */
+    if (url.pathname.startsWith("/mpu/")) {
+      var mAct = url.pathname.slice(5);
+      if (["create", "part", "complete", "abort"].indexOf(mAct) < 0) return new Response("not found", { status: 404, headers: cors() });
+      var muser = await supabaseUser(env, req);
+      if (!muser || !muser.id) return new Response("auth required", { status: 401, headers: cors() });
+      var mbody = {};
+      if (mAct !== "part") { try { mbody = await req.json(); } catch (e) { return new Response("bad json", { status: 400, headers: cors() }); } }
+      var mkey = String((mAct === "part" ? url.searchParams.get("key") : mbody.key) || "");
+      var mkm = mkey.match(/^tiles\/([0-9a-f-]{36})\/[0-9a-f-]{36}\.source\.[a-z0-9]{1,8}$/);
+      if (!mkm) return new Response("key must be tiles/<projectId>/<layerId>.source.<ext>", { status: 400, headers: cors() });
+      var msvc = await serviceLocked(env);
+      if (msvc.locked) return new Response("MapStructor isn't accepting new data right now (" + (msvc.reason || "paused") + ").", { status: 503, headers: cors({ "Retry-After": "3600" }) });
+      var mhit = await rateCheckShared(env, req, WRITE_LIMIT_PER_MIN) || rateCheck(muser.id, WRITE_LIMIT_PER_MIN);
+      if (mhit.over) {
+        if (mhit.first) await noteRateTrip(env, muser, mhit, req, url);
+        return new Response("write rate limit", { status: 429, headers: cors({ "Retry-After": "60" }) });
+      }
+      var mown = await tilesKeyWritable(env, req, muser, mkm[1]);
+      if (mown !== true) return mown;
+      try {
+        if (mAct === "create") {
+          var mpu = await env.TILES.createMultipartUpload(mkey, {
+            httpMetadata: { contentType: String(mbody.contentType || "application/octet-stream") },
+            customMetadata: { uploadedBy: muser.id, at: new Date().toISOString() }
+          });
+          return new Response(JSON.stringify({ ok: true, key: mkey, uploadId: mpu.uploadId }), { headers: cors({ "Content-Type": "application/json" }) });
+        }
+        var mid = String((mAct === "part" ? url.searchParams.get("uploadId") : mbody.uploadId) || "");
+        if (!mid) return new Response("uploadId required", { status: 400, headers: cors() });
+        var mres = env.TILES.resumeMultipartUpload(mkey, mid);
+        if (mAct === "part") {
+          var mpn = parseInt(url.searchParams.get("part") || "0", 10);
+          if (!(mpn >= 1 && mpn <= 10000)) return new Response("part must be 1..10000", { status: 400, headers: cors() });
+          var mp = await mres.uploadPart(mpn, req.body);
+          return new Response(JSON.stringify({ ok: true, partNumber: mp.partNumber, etag: mp.etag }), { headers: cors({ "Content-Type": "application/json" }) });
+        }
+        if (mAct === "complete") {
+          var mparts = Array.isArray(mbody.parts) ? mbody.parts.map(function (p) { return { partNumber: Number(p.partNumber), etag: String(p.etag) }; }) : [];
+          if (!mparts.length) return new Response("parts required", { status: 400, headers: cors() });
+          var mobj = await mres.complete(mparts);
+          return new Response(JSON.stringify({ ok: true, key: mkey, size: mobj.size }), { headers: cors({ "Content-Type": "application/json" }) });
+        }
+        await mres.abort();
+        return new Response(JSON.stringify({ ok: true, aborted: mid }), { headers: cors({ "Content-Type": "application/json" }) });
+      } catch (eM) {
+        return new Response("multipart " + mAct + " failed: " + String(eM && eM.message || eM).slice(0, 200), { status: 500, headers: cors() });
+      }
     }
 
     /* ── writes (the chokepoint) ───────────────────────────────────────── */
@@ -758,32 +850,8 @@ export default {
           }
         } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
       } else if (tm) {
-        /* AN INVITED EDITOR MAY PUBLISH — 9/3, the SAME fix the showcase branch above got on 8/27,
-           which was never carried across to snapshots/ and tiles/. What that cost, measured on the
-           Slater map: the invited editor pressed Publish, the Postgres row was written (RLS lets an
-           editor do that), and BOTH R2 calls — the pre-delete and the PUT — came back 403 "not your
-           project". The editor's own console warned; the screen said "Published ✓". Viewers read the
-           R2 copy first, so the public map served the PREVIOUS publish for a week, missing a feature
-           the owner had added, and the only way to see it was to open the editor and sign in.
-           One definition of "who may edit this map", asked of the database, exactly like /article
-           and the showcase branch — three routes, one rule, no drift. Owner-compare stays as the
-           fast path so the common case costs no extra round trip. */
-        try {
-          var pr = await fetch(env.SUPABASE_URL + "/rest/v1/projects?id=eq." + tm[1] + "&select=user_id", {
-            headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY }
-          });
-          var rows = pr.ok ? await pr.json() : [];
-          var mayWrite = rows.length > 0 && rows[0].user_id === user.id;
-          if (!mayWrite) {
-            var er2 = await fetch(env.SUPABASE_URL + "/rest/v1/rpc/ms_project_editor", {
-              method: "POST",
-              headers: { Authorization: req.headers.get("Authorization"), apikey: env.SUPABASE_ANON_KEY, "Content-Type": "application/json" },
-              body: JSON.stringify({ pid: tm[1] })
-            });
-            mayWrite = er2.ok && (await er2.json()) === true;
-          }
-          if (!mayWrite) return new Response("not a map you can edit", { status: 403, headers: cors() });
-        } catch (e) { return new Response("ownership check failed", { status: 503, headers: cors() }); }
+        var tw = await tilesKeyWritable(env, req, user, tm[1]);   // ONE definition — /mpu/* asks the same question
+        if (tw !== true) return tw;
       } else if ((user.email || "").toLowerCase() !== ADMIN_EMAIL) {
         // site/, archives/, anything else = the public web surfaces — admin only
         return new Response("admin only", { status: 403, headers: cors() });

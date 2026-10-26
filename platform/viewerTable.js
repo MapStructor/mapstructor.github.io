@@ -323,7 +323,8 @@
     var cb = node.colorBy;
     if (cb && cb.mode === "presence") return [{ key: "__present__", label: "Labeled", color: cb.present || "#3bb2d0" }, { key: "__absent__", label: "Unlabeled", color: cb.absent || "#cccccc" }];
     if (cb && cb.mapping) {
-      var ks = Object.keys(cb.mapping);
+      var hiddenVals = Array.isArray(cb.hidden) ? cb.hidden : [];   // hidden on the map (Color by → hide) = no row (10/25)
+      var ks = (window.MSLegend ? MSLegend.orderedValues(cb) : Object.keys(cb.mapping)).filter(function (k) { return hiddenVals.indexOf(k) < 0; });   // the Color by list's ↑↓ order (10/25)
       if (window.MSGuard) MSGuard.cliff("style-cats-cap", ks.length, STYLE_CATS_MAX,
         "categories past the first " + STYLE_CATS_MAX + " are drawn on the map but have no style row you can click");
       return ks.slice(0, STYLE_CATS_MAX).map(function (k) { return { key: k, label: (k === " " || k === "") ? "(blank)" : k, color: cb.mapping[k] }; });
