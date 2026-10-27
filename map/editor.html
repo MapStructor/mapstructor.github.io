@@ -429,7 +429,7 @@
     <script src="../platform/legend.js?v=5583d0e4" onerror="void(0)"></script>   <!-- the on-map legend (legend: true + legendOpts per layer), one renderer for editor, viewer and copies -->
     <script src="../platform/attrGrid.js?v=64ccee1b" onerror="void(0)"></script>
     <script src="../platform/bigtable.js?v=a23a97a5" onerror="void(0)"></script>   <!-- Big-data attribute tier: Parquet sidecar + DuckDB-WASM (vendored, lazy) -->
-    <script src="../platform/foldRead.js?v=6f999f51" onerror="void(0)"></script>   <!-- one-feature reads from fold GeoParquet archives (range reads, shares bigtable's engine) -->
+    <script src="../platform/foldRead.js?v=b7db6d3a" onerror="void(0)"></script>   <!-- one-feature reads from fold GeoParquet archives (range reads, shares bigtable's engine) -->
     <script src="../platform/pricing.js?v=3f34a918" onerror="void(0)"></script>
     <script src="../platform/renderRegistry.js?v=77ee026a" onerror="void(0)"></script>
     <script src="../platform/msdBadge.js?v=436b88fe" onerror="void(0)"></script>   <!-- MSD / MSD PROJECT mark, defined once; must load BEFORE projectLoader paints the header -->
@@ -475,7 +475,7 @@
          Must load BEFORE editing.js. Removing this line degrades cleanly: every call site
          checks `window.MSGuard` and falls back to the plain call. -->
     <script src="../platform/guards.js?v=6e3e345a" onerror="void(0)"></script>
-    <script src="../platform/editing.js?v=39753830" onerror="void(0)"></script>
+    <script src="../platform/editing.js?v=b9e847ef" onerror="void(0)"></script>
 
     <!-- Save-to-account: anonymous maps live only at their URL; claim them via the shared MapAuth modal (dev plan Step 6 funnel).
          Sits just past the header's bottom edge (slight overlap for attention), clear of the ABOUT button. -->

@@ -11159,7 +11159,8 @@
         // the bake leaves (raw_config.columns) or, for layers baked before that stamp existed, from
         // the tile features already on the map. Applying here re-bakes in the cloud (applyDatesCloud).
         cloud = true;
-        keys = foldedColumns(node);
+        keys = await foldedColumns(node, lid);
+        if (gen !== _dateSecGen) return;
       }
       if (!keys.length) return;   // nothing to map → stay hidden
       keys = orderAttrKeys(keys, 40);
@@ -11177,9 +11178,21 @@
     } catch (e) {}
   }
   var FOLD_STD_PROPS = { feature_id: 1, label: 1, description: 1, start_date: 1, end_date: 1, content_id: 1, image_url: 1, DayStart: 1, DayEnd: 1, id: 1 };
-  function foldedColumns(node) {
+  async function foldedColumns(node, lid) {
     if (Array.isArray(node.columns) && node.columns.length) return node.columns.slice();
     var keys = [];
+    // layers baked before the column stamp (the owner's railway layer): the geo parquet's footer
+    // names the data columns — a few hundred KB read through the fold reader, no rows
+    try {
+      if (window.MSFoldRead && MSFoldRead.columns) {
+        var pqUrl = foldArtifactUrl(node, lid).replace(/\.geojson$/, '') + '.parquet';
+        var cols = await Promise.race([
+          MSFoldRead.columns(pqUrl, String(node.tilesGeneratedAt || node.attrParquetAt || '0')),
+          new Promise(function (_r, rej) { setTimeout(function () { rej(new Error('column read timed out')); }, 30000); })
+        ]);
+        if (cols && cols.length) return cols;
+      }
+    } catch (ePq) { console.warn('folded columns: parquet footer unavailable, trying the tiles', ePq); }
     try {
       var q = node['source-layer'] ? { sourceLayer: node['source-layer'] } : undefined;
       var fs = (typeof beforeMap !== 'undefined' && beforeMap) ? (beforeMap.querySourceFeatures(node.id + '-left', q) || []) : [];

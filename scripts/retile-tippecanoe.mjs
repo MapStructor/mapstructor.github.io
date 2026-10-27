@@ -545,7 +545,9 @@ try {
   rc.tiler = "tippecanoe";
   // the source columns this layer carries (10/27): a layer with no rows has nothing the editor
   // can sample, so the panel's Timeline-dates tool lists these
-  rc.columns = orderAttrKeys(custKeys);
+  const colKeys = [];
+  for (const r of rows) if (r.custom_fields) for (const k of Object.keys(r.custom_fields)) if (!colKeys.includes(k)) colKeys.push(k);
+  rc.columns = orderAttrKeys(colKeys);
 
   /* ── 4b. INSTANT-SCRUB RASTER (8/16) ────────────────────────────────────────
      Without this the timeline drag falls back to a per-feature opacity expression re-evaluated

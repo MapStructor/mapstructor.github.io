@@ -171,5 +171,13 @@
     return { id: id != null ? id : featureId, properties: props, geometry: wkbToGeoJSON(geomBytes) };
   }
 
-  window.MSFoldRead = { feature: feature, wkbToGeoJSON: wkbToGeoJSON };
+  /* The DATA columns of a folded layer, from the geo parquet's footer (10/27: the panel's
+     Timeline-dates tool needs the column names of a layer that has no rows; layers baked before
+     raw_config.columns existed have them only here — the tiles are skinny). Names only, no rows. */
+  async function columns(geoUrl, ver) {
+    var a = await openArchive(geoUrl, ver);
+    var STD = { feature_id: 1, label: 1, description: 1, start_date: 1, end_date: 1, content_id: 1, image_url: 1 };
+    return a.fields.map(function (f) { return f.name; }).filter(function (n) { return !GEOM_NAMES[n] && !STD[n] && n.indexOf('ms_') !== 0; });
+  }
+  window.MSFoldRead = { feature: feature, columns: columns, wkbToGeoJSON: wkbToGeoJSON };
 })();
