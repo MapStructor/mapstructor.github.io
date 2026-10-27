@@ -3354,7 +3354,100 @@
     return parts.length >= 2 ? parts : null;
   }
   // Multi-folder KML → one layer per folder, grouped under the file name. NEVER merged.
+  /* ── WHICH COLUMNS HOLD THE DATES? (owner 10/27) ─────────────────────────────────────────
+     Every import asks, before anything is saved: for each layer the file will make, which column
+     is the start and which is the end — or "No date or slider fields". The owner chose asking
+     over guessing ("recognise start_date on its own — bad idea"): a guessed column silently
+     decides what the timeline shows, and the person who imported the file is the one who knows.
+     The answer rides on each FeatureCollection as fc.__msDateMap ({start:{col}|null, end:{col}|
+     null} or {none:true}); rows get Start/End from it as they are written, and a cloud fold gets
+     it as raw_config.dateMap so the Action bakes the same dates (retile-tippecanoe applyDateMap).
+     Gates run under WebDriver and answer "no dates" unless they set window.__msImportDatesAuto
+     (false = show the real question; an object = use it for every layer). */
+  var DATE_START_GUESS = /^(start_date|daystart|start|begin|begins|from|founded|established|built|opened|opening|since|year|date)$/i;
+  var DATE_END_GUESS = /^(end_date|dayend|end|ends|to|until|closed|closing|abandoned|dissolved|removed)$/i;
+  var IMPORT_DATES_INFO = 'The timeline slider shows and hides features by date, so it needs to know which columns say when each thing began and ended. No dates? Choose “No date or slider fields” and everything stays on the map at every year — like a very committed fossil.';
+  function fcKeys(fc, limit) {
+    var keys = [], feats = (fc && fc.features) || [];
+    for (var i = 0; i < feats.length && i < (limit || 300); i++) {
+      var p = feats[i] && feats[i].properties; if (!p) continue;
+      Object.keys(p).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); });
+    }
+    return keys;
+  }
+  // parts: [{name, keys}] → Promise<{byName: {name: dateMap}, none: bool}>
+  function askImportDates(parts) {
+    parts = (parts || []).filter(function (p) { return p && p.keys && p.keys.length; });
+    var byName = {}, none = { none: true };
+    if (!parts.length) return Promise.resolve({ byName: byName, none: true });
+    if (navigator.webdriver && window.__msImportDatesAuto !== false) {
+      var auto = window.__msImportDatesAuto && typeof window.__msImportDatesAuto === 'object' ? window.__msImportDatesAuto : null;
+      parts.forEach(function (p) {
+        var dm = none;
+        if (auto) { dm = { start: auto.start && p.keys.indexOf(auto.start) > -1 ? { col: auto.start } : null, end: auto.end && p.keys.indexOf(auto.end) > -1 ? { col: auto.end } : null }; if (!dm.start && !dm.end) dm = none; }
+        byName[p.name] = dm;
+      });
+      return Promise.resolve({ byName: byName, none: !auto });
+    }
+    return new Promise(function (resolve) {
+      var old = document.getElementById('ms-dates-ask'); if (old) old.remove();
+      var wrap = document.createElement('div'); wrap.id = 'ms-dates-ask';
+      wrap.setAttribute('style', 'position:fixed;inset:0;z-index:6500;background:rgba(20,16,40,.45);display:flex;align-items:center;justify-content:center;');
+      var sel = function (side, i, keys) {
+        var guess = side === 'start' ? DATE_START_GUESS : DATE_END_GUESS, hit = keys.filter(function (k) { return guess.test(k); })[0] || '';
+        return '<select data-side="' + side + '" data-part="' + i + '" class="ms-in" style="width:100%;">' +
+          '<option value="">— none —</option>' + keys.map(function (k) { return '<option value="' + attrEsc(k) + '"' + (k === hit ? ' selected' : '') + '>' + attrEsc(k) + '</option>'; }).join('') + '</select>';
+      };
+      wrap.innerHTML = '<div style="background:#fff;color:#2a2340;border-radius:10px;max-width:540px;width:calc(100% - 32px);max-height:85vh;overflow:auto;padding:18px 20px 16px;box-shadow:0 12px 40px rgba(0,0,0,.35);">' +
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><h3 style="margin:0;font-size:17px;flex:1;">Which columns hold the dates?</h3>' +
+        '<button id="ms-dates-info-btn" type="button" title="What is this for?" aria-label="What is this for?" style="width:24px;height:24px;border-radius:50%;border:1px solid #8a86a0;background:#fff;color:#5b458f;font-weight:700;font-family:Georgia,serif;cursor:pointer;">i</button></div>' +
+        '<div id="ms-dates-info" style="display:none;font-size:13px;color:#4a4560;background:#f3f0fa;border-radius:6px;padding:8px 10px;margin:6px 0 8px;">' + IMPORT_DATES_INFO + '</div>' +
+        parts.map(function (p, i) {
+          return '<div class="ms-dates-part" style="border-top:1px solid #e6e2f0;padding:9px 0 6px;">' +
+            '<div style="font-weight:700;font-size:13.5px;margin-bottom:5px;">' + attrEsc(p.name) + ' <span style="font-weight:400;color:#8a86a0;">· ' + p.keys.length + ' column' + (p.keys.length === 1 ? '' : 's') + '</span></div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+            '<label style="font-size:12px;color:#4a4560;">Start date<br>' + sel('start', i, p.keys) + '</label>' +
+            '<label style="font-size:12px;color:#4a4560;">End date<br>' + sel('end', i, p.keys) + '</label></div></div>';
+        }).join('') +
+        '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;"><button id="ms-dates-use" type="button" class="ms-btn" style="flex:1;min-width:150px;">Use these columns</button>' +
+        '<button id="ms-dates-none" type="button" class="ms-btn" style="flex:1;min-width:150px;background:#eceaf3;color:#2a2340;">No date or slider fields</button></div></div>';
+      document.body.appendChild(wrap);
+      var useBtn = wrap.querySelector('#ms-dates-use');
+      var refresh = function () { var any = false; Array.prototype.forEach.call(wrap.querySelectorAll('select'), function (s) { if (s.value) any = true; }); useBtn.disabled = !any; useBtn.style.opacity = any ? '' : '.5'; };
+      wrap.addEventListener('change', refresh); refresh();
+      wrap.querySelector('#ms-dates-info-btn').addEventListener('click', function () { var d = wrap.querySelector('#ms-dates-info'); d.style.display = d.style.display === 'none' ? '' : 'none'; });
+      var finish = function (useCols) {
+        parts.forEach(function (p, i) {
+          if (!useCols) { byName[p.name] = none; return; }
+          var s = wrap.querySelector('select[data-side="start"][data-part="' + i + '"]'), e = wrap.querySelector('select[data-side="end"][data-part="' + i + '"]');
+          var dm = { start: s && s.value ? { col: s.value } : null, end: e && e.value ? { col: e.value } : null };
+          byName[p.name] = (dm.start || dm.end) ? dm : none;
+        });
+        wrap.remove();
+        resolve({ byName: byName, none: !useCols });
+      };
+      useBtn.addEventListener('click', function () { if (!useBtn.disabled) finish(true); });
+      wrap.querySelector('#ms-dates-none').addEventListener('click', function () { finish(false); });
+    });
+  }
+  // the Start/End a feature gets from its own columns under a mapping (null when unmapped or unreadable)
+  function datesFromProps(props, dm) {
+    var out = { start_date: null, end_date: null };
+    if (!dm || dm.none || !props) return out;
+    if (dm.start) out.start_date = dm.start.fixed ? parseLooseDate(dm.start.fixed, false) : (dm.start.col ? parseLooseDate(props[dm.start.col], false) : null);
+    if (dm.end) out.end_date = dm.end.fixed ? parseLooseDate(dm.end.fixed, true) : (dm.end.col ? parseLooseDate(props[dm.end.col], true) : null);
+    return out;
+  }
+  function describeDateMap(dm) {
+    if (!dm || dm.none || (!dm.start && !dm.end)) return 'no timeline dates';
+    var one = function (m) { return !m ? '—' : m.fixed ? m.fixed : m.col; };
+    return 'Start from ' + one(dm.start) + ', End from ' + one(dm.end);
+  }
+  var _importDateMap = null;   // the mapping the rows being written right now get (set per FeatureCollection)
   async function importKmlFolders(parts, fileName, parent) {
+    // one question for the whole file — every table/folder at once, not a popup per layer
+    var ask = await askImportDates(parts.map(function (p) { return { name: p.name, keys: fcKeys(p.fc) }; }));
+    parts.forEach(function (p) { p.fc.__msDateMap = ask.byName[p.name] || { none: true }; });
     var container = (parent && parent.type === 'group') ? parent   // already in a batch group → add layers here (no nested group)
       : await addItem('group', fileName || 'Imported KML', (parent && parent.type === 'section') ? parent : null);
     if (!container) throw new Error('could not create a group for the KML folders');
@@ -3474,6 +3567,7 @@
     if (!fields.length || !recLen) return null;
     return {
       count: count,
+      fields: fields.map(function (f) { return f.name; }),   // known before any record is read — the import-time dates question needs only names
       read: function (i) {
         var at = headerLen + i * recLen;
         if (i >= count || at + recLen > buf.byteLength) return null;
@@ -3560,6 +3654,7 @@
   }
   // Insert one more chunk into the layers the FIRST chunk created.
   async function appendImportChunk(made, fc, state) {
+    _importDateMap = fc.__msDateMap || null;
     var norm = await normalizeImportFC(fc);
     for (var i = 0; i < norm.kinds.length; i++) {
       var kind = norm.kinds[i], node = null;
@@ -3591,6 +3686,9 @@
     var prj = part.prj ? new TextDecoder().decode(part.prj).trim() : null;
     var cur = shpCursor(part.shp);
     var expect = dbf ? dbf.count : 0;
+    // the dates question comes from the .dbf's field table — known before a single record is read
+    var askS = await askImportDates([{ name: baseName, keys: dbf ? dbf.fields : [] }]);
+    var dmS = askS.byName[baseName] || { none: true };
     var made = null, idx = 0, chunk = [], chunkVerts = 0;
     var state = { verts: 0, feats: 0, skipped: 0, bounds: null };
     var grow = function (b) {
@@ -3604,6 +3702,7 @@
       if (!chunk.length) return;
       var fcC = { type: 'FeatureCollection', features: chunk };
       if (prj) fcC.__msPrj = prj;
+      fcC.__msDateMap = dmS;
       if (!made) {
         made = (await importFeatureCollection(fcC, baseName, parent)) || [];
         if (!made.length) throw new Error('could not create the layer');
@@ -3860,12 +3959,21 @@
     var sId = null, gId = null;
     if (parent && parent.type === 'group') { gId = parent._dbId; var ps = findParent(layers, parent); if (ps && ps.type === 'section') sId = ps._dbId; }
     else if (parent && parent.type === 'section') { sId = parent._dbId; }
+    // the dates question first — the column names come from the package's own schema pages (a few
+    // KB read from the file), so even a 200 MB package that never enters this tab gets asked
+    var dateMaps = null;
+    try {
+      await loadScript('../platform/gpkg.js?v=' + Date.now());
+      var schema = await window.MSGpkg.readSchema(file);
+      if (schema && schema.length) { var askG = await askImportDates(schema.map(function (t) { return { name: t.table, keys: t.keys }; })); dateMaps = askG.byName; }
+    } catch (eSch) { console.warn('gpkg schema read failed — dates can be set from the layer panel after it lands', eSch); }
+    if (!dateMaps) importStatus('Could not read the column names of "' + file.name + '" here — set its timeline dates from the layer panel once it lands.');
     // the placeholder: one layer row the Action turns into the first table (and adds siblings beside)
     var node = makeNode('layer', stripExt(file.name));
     node.type = 'line'; node.iconType = TILESET_ICON.line || 'square';
     var lrow = leafRow(node);
     lrow.fold_state = 'folding';
-    lrow.raw_config = Object.assign({}, lrow.raw_config || {}, { cloudImport: { kind: 'gpkg', file: file.name, bytes: file.size, startedAt: new Date().toISOString() } });
+    lrow.raw_config = Object.assign({}, lrow.raw_config || {}, { cloudImport: { kind: 'gpkg', file: file.name, bytes: file.size, startedAt: new Date().toISOString() }, dateMaps: dateMaps || null });
     importStatus('Preparing the cloud import of "' + file.name + '" (' + mb + ' MB)…');
     var layerId = await insertOne('layers', lrow);
     slugToLayerDbId[node.id] = layerId;
@@ -4195,6 +4303,9 @@
     if (typeof layers === 'undefined') return;
     if (idsReady) { try { await idsReady; } catch (e) {} }
     if (!loaded) { importStatus('Still loading — try again'); return; }
+    // the safety net: any path that reaches here without having asked (URL imports, drops) asks now
+    if (!('__msDateMap' in fc)) { var askF = await askImportDates([{ name: baseName, keys: fcKeys(fc) }]); fc.__msDateMap = askF.byName[baseName] || { none: true }; }
+    _importDateMap = fc.__msDateMap || null;
     var _norm = await normalizeImportFC(fc);
     var groups = _norm.groups, kinds = _norm.kinds;
     var total = kinds.reduce(function (n, k) { return n + groups[k].length; }, 0);
@@ -4219,6 +4330,8 @@
         var wantsFold = CLOUD_FOLD_IMPORTS && !window.__msForceRowImport &&
           (groups[type].length > FOLD_RAW_MIN || importGeomBytes(groups[type]) > FOLD_BYTES_MIN);
         var lrow = leafRow(node); if (wantsFold) lrow.fold_state = 'folding';
+        // the column mapping rides on the row: a cloud fold bakes from it, and the panel shows it
+        if (_importDateMap && !_importDateMap.none) { lrow.raw_config = Object.assign({}, lrow.raw_config || {}, { dateMap: _importDateMap }); node.dateMap = _importDateMap; }   // a loaded leaf inherits this from raw_config; a node made here must be told
         var layerId = await insertOne('layers', lrow);
         slugToLayerDbId[node.id] = layerId;
         await insertOne('project_layers', { project_id: projectId, layer_id: layerId, sort_order: nextSort++, section_id: sId, group_id: gId });
@@ -4234,7 +4347,7 @@
         // bigger file just means the saving underneath it runs longer.
         try {
           var pvRows = groups[type].map(function (f) {
-            return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), custom_fields: importCustomFields(f.properties) };
+            return Object.assign({ layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), custom_fields: importCustomFields(f.properties) }, datesFromProps(f.properties, _importDateMap));
           });
           var pv = (typeof ConfigLoader !== 'undefined' && ConfigLoader.leafFromRow)
             ? ConfigLoader.leafFromRow(Object.assign({}, lrow, { id: layerId }), null, pvRows) : null;
@@ -4413,7 +4526,7 @@
       while (i < feats.length) {
         var take = 0, bsum = 0;
         while (take < Math.min(feats.length - i, BATCH) && (take === 0 || bsum + szOf[i + take] <= BYTE_CAP)) { bsum += szOf[i + take]; take++; }
-        var rows = feats.slice(i, i + take).map(function (f) { return { layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), start_date: null, end_date: null, custom_fields: importCustomFields(f.properties) }; });
+        var rows = feats.slice(i, i + take).map(function (f) { return Object.assign({ layer_id: layerId, geom: f.geometry, label: importLabel(f.properties), custom_fields: importCustomFields(f.properties) }, datesFromProps(f.properties, _importDateMap)); });
         var r = await db.from('features_data').insert(rows).select('feature_id');
         if (r.error) {
           okStreak = 0;
@@ -11037,18 +11150,64 @@
     if (tools) tools.style.display = '';
     try {
       var r = await db.from('features').select('custom_fields').eq('layer_id', lid).limit(60);
-      if (gen !== _dateSecGen || r.error || !r.data || !r.data.length) return;   // stale pick / no rows → stay hidden
-      var keys = [];
-      r.data.forEach(function (row) { var cf = row.custom_fields; if (cf && typeof cf === 'object') Object.keys(cf).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); }); });
+      if (gen !== _dateSecGen || r.error) return;   // stale pick
+      var keys = [], cloud = false;
+      if (r.data && r.data.length) {
+        r.data.forEach(function (row) { var cf = row.custom_fields; if (cf && typeof cf === 'object') Object.keys(cf).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); }); });
+      } else if (node.fold_state === 'folded') {
+        // NO ROWS (10/27): a cloud-folded layer is tiles + sidecar. Its columns come from the stamp
+        // the bake leaves (raw_config.columns) or, for layers baked before that stamp existed, from
+        // the tile features already on the map. Applying here re-bakes in the cloud (applyDatesCloud).
+        cloud = true;
+        keys = foldedColumns(node);
+      }
+      if (!keys.length) return;   // nothing to map → stay hidden
       keys = orderAttrKeys(keys, 40);
-      ['elp-date-start-col', 'elp-date-end-col'].forEach(function (id2) {
-        var sel = document.getElementById(id2); if (!sel) return;
+      var cur = (node.dateMap && !node.dateMap.none) ? node.dateMap : null;
+      [['elp-date-start-col', 'start'], ['elp-date-end-col', 'end']].forEach(function (pair) {
+        var sel = document.getElementById(pair[0]); if (!sel) return;
         sel.innerHTML = '<option value="">— don\'t change —</option><option value="__fixed">⏱ One fixed date for all…</option>' +
           keys.map(function (k) { return '<option value="c:' + attrEsc(k) + '">' + attrEsc(k) + '</option>'; }).join('');
+        var m = cur && cur[pair[1]]; if (m && m.col && keys.indexOf(m.col) > -1) sel.value = 'c:' + m.col;   // show the mapping in force
       });
       ['elp-date-start-fixed', 'elp-date-end-fixed'].forEach(function (id2) { var el2 = document.getElementById(id2); if (el2) el2.style.display = 'none'; });
+      var ab = document.getElementById('elp-dates-apply');
+      if (ab) { ab.textContent = cloud ? 'Apply and re-bake in the cloud' : 'Apply to all features'; ab.setAttribute('data-cloud', cloud ? '1' : ''); }
       sec.style.display = '';
     } catch (e) {}
+  }
+  var FOLD_STD_PROPS = { feature_id: 1, label: 1, description: 1, start_date: 1, end_date: 1, content_id: 1, image_url: 1, DayStart: 1, DayEnd: 1, id: 1 };
+  function foldedColumns(node) {
+    if (Array.isArray(node.columns) && node.columns.length) return node.columns.slice();
+    var keys = [];
+    try {
+      var q = node['source-layer'] ? { sourceLayer: node['source-layer'] } : undefined;
+      var fs = (typeof beforeMap !== 'undefined' && beforeMap) ? (beforeMap.querySourceFeatures(node.id + '-left', q) || []) : [];
+      for (var i = 0; i < fs.length && i < 400; i++) { var p = fs[i].properties || {}; Object.keys(p).forEach(function (k) { if (!FOLD_STD_PROPS[k] && k.indexOf('ms_') !== 0 && keys.indexOf(k) < 0) keys.push(k); }); }
+    } catch (e) {}
+    return keys;
+  }
+  // The cloud half of the Timeline-dates tool (10/27): a folded layer has no rows to write, so the
+  // mapping is stamped on the layer and the Action re-bakes from its kept source — a GeoPackage
+  // import re-runs fold-file on the package (every table of it), anything else re-runs fold-merge
+  // on the current artifact. The tab watches the bake land exactly like an import.
+  async function applyDatesCloud(lid, node, start, end) {
+    var name = node.label || 'layer';
+    var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+    if (cur.error) throw new Error(cur.error.message);
+    var rcR = (cur.data && cur.data.raw_config) || {};
+    var dm = { start: start, end: end }, startedAt = new Date().toISOString();
+    await patchLayerConfig(lid, { dateMap: dm, rebakeStartedAt: startedAt });
+    node.dateMap = dm; node.rebakeStartedAt = startedAt;
+    var phId = rcR.siblingOf || lid;
+    var body = rcR.cloudImport
+      ? { projectId: projectId, layerId: phId, mode: 'fold-file', rawKey: 'tiles/' + projectId + '/' + phId + '.source.gpkg' }
+      : { projectId: projectId, layerId: lid, mode: 'fold-merge' };
+    await mpuCall('/fold', { json: body });
+    ensurePmtSw();
+    msProgress('Re-baking "' + name + '" in the cloud with ' + describeDateMap(dm) + ' — a few minutes' + (rcR.cloudImport && rcR.siblings && rcR.siblings.length ? ' (every table of its package re-bakes)' : '') + '. This tab can be closed; the map updates itself when the new tiles land.');
+    setStatus('Re-baking in the cloud');
+    pollFoldDone(node, lid, rcR.tilesGeneratedAt || null, startedAt);
   }
   // Core date-writer — shared by the style-panel "Timeline dates" tool AND the attr-table
   // "Transfer column → Start/End". start/end each = {col:'<custom key>'} | {fixed:'YYYY-MM-DD'} | null.
@@ -11484,7 +11643,16 @@
     var start = pick('elp-date-start-col', 'elp-date-start-fixed'), end = pick('elp-date-end-col', 'elp-date-end-fixed');
     if (!start && !end) { setStatus('Pick a column (or fixed date) first'); return; }
     var btn = document.getElementById('elp-dates-apply'); if (btn) btn.disabled = true;
-    try { await applyDatesToLayer(lid, activeLayerId, node, start, end); }
+    try {
+      if (btn && btn.getAttribute('data-cloud') === '1') await applyDatesCloud(lid, node, start, end);
+      else {
+        await applyDatesToLayer(lid, activeLayerId, node, start, end);
+        // remember the mapping on the layer, so the panel shows what is in force and a later cloud
+        // fold (fold-merge) re-reads the same columns
+        var dmR = { start: start, end: end }; node.dateMap = dmR;
+        try { await patchLayerConfig(lid, { dateMap: dmR }); } catch (eDm) { console.warn('could not stamp dateMap', eDm); }
+      }
+    }
     catch (e) { console.warn('apply dates failed', e); msProgress(''); setStatus('Dates failed: ' + e.message); }
     finally { if (btn) btn.disabled = false; }
   }

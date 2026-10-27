@@ -131,6 +131,49 @@ async function supaUpload(path, bytes, contentType) {
   if (!up.ok) throw new Error("upload " + path + " failed: " + up.status + " " + (await up.text()).slice(0, 300));
 }
 
+/* ── TIMELINE DATES FROM A COLUMN (owner 10/27). A layer's raw_config.dateMap says which source
+      column holds each feature's start and end ({start:{col}|{fixed:'YYYY-MM-DD'}|null, end:…} or
+      {none:true}). The editor asks at import time; the panel's Timeline-dates tool sets it later
+      for layers that have no rows. parseLooseDate is a MIRROR of editing.js parseLooseDate —
+      the same strings must read the same way whether the browser or the Action parses them. ── */
+function parseLooseDate(v, isEnd) {
+  if (v == null) return null;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString().slice(0, 10);
+  v = String(v).trim();
+  if (v.length > 1 && v.charAt(0) === '"' && v.charAt(v.length - 1) === '"') v = v.slice(1, -1).trim();
+  if (!v || v === "0" || /^(none|null|n\/a)$/i.test(v)) return null;
+  if (/^\d{3,4}$/.test(v)) { const y = ("0000" + v).slice(-4); return isEnd ? y + "-12-31" : y + "-01-01"; }
+  const mc = /^(\d{4})(\d{2})(\d{2})$/.exec(v) || /^(\d{4})(\d{2})$/.exec(v);
+  if (mc) {
+    const Y = +mc[1]; if (Y >= 9999) return null;
+    let Mo = +(mc[2] || 0), Da = +(mc[3] || 0); const p2 = (n) => ("0" + n).slice(-2);
+    if (Mo < 1 || Mo > 12) Mo = isEnd ? 12 : 1;
+    if (Da < 1 || Da > 31) Da = isEnd ? new Date(Y, Mo, 0).getDate() : 1;
+    return mc[1] + "-" + p2(Mo) + "-" + p2(Da);
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) { return +v.slice(0, 4) >= 9999 ? null : v.slice(0, 10); }
+  if (/^-?\d{9,}$/.test(v)) {
+    const n = Number(v); if (!isFinite(n)) return null;
+    for (const t of [n, n * 1000]) { const de = new Date(t); if (isNaN(de.getTime())) continue; const yr = de.getUTCFullYear(); if (yr >= 1 && yr <= 9998) return de.toISOString().slice(0, 10); }
+    return null;
+  }
+  const d = new Date(v); if (isNaN(d.getTime())) return null;
+  const yr = d.getFullYear(); if (yr >= 9999 || yr < 1) return null;
+  return yr + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+}
+function applyDateMap(rows, dm) {
+  if (!dm || dm.none || (!dm.start && !dm.end)) return 0;
+  const one = (r, side, isEnd) => {
+    const m = dm[side]; if (!m) return;
+    if (m.fixed) { r[isEnd ? "end_date" : "start_date"] = parseLooseDate(m.fixed, isEnd); return; }
+    if (m.col) { const cf = r.custom_fields || {}; r[isEnd ? "end_date" : "start_date"] = parseLooseDate(cf[m.col], isEnd); }
+  };
+  let n = 0;
+  for (const r of rows) { one(r, "start", false); one(r, "end", true); if (r.start_date || r.end_date) n++; }
+  console.log("timeline dates from columns: start " + (dm.start ? (dm.start.col || "fixed " + dm.start.fixed) : "—") + " · end " + (dm.end ? (dm.end.col || "fixed " + dm.end.fixed) : "—") + " → " + nfmt(n) + " of " + nfmt(rows.length) + " features dated");
+  return n;
+}
+
 /* ── import-path mirrors (editing.js) — fold-raw must shape data EXACTLY like a live import ── */
 const LABEL_KEYS = ["name", "Name", "NAME", "label", "Label", "LABEL", "title", "Title", "TITLE"];
 function importLabelKey(props) {
@@ -280,6 +323,9 @@ try {
       byId.set(String(row.feature_id), row);
       return row;
     });
+    // the column mapping re-reads the ARTIFACT rows' dates from their columns; delta rows (merged
+    // below) keep the dates a person set on them by hand
+    applyDateMap(rows, rc0.dateMap);
     // delta rows (keyset) — only rows MARKED ms_foldsrc merge; anything else is left untouched
     //
     // FILTER SERVER-SIDE (8/16). This query used to say "only marked rows merge" in a comment and
@@ -352,6 +398,7 @@ try {
       description: null, start_date: null, end_date: null, content_id: null, image_url: null,
       custom_fields: importCustomFields(f.properties),
     }));
+    applyDateMap(rows, rc0.dateMap);
   } else {
     console.log("Fetching features for layer " + LAYER_ID + " (keyset, adaptive)…");
     // ADAPTIVE PAGES (8/15). A fixed 1000-row page assumes rows are small. The owner's AtlasHCB
@@ -464,17 +511,18 @@ try {
   // copy is a convenience (pmt-sw reads R2 first and never fails over from a good R2 read), so
   // ANY failure to write it goes R2-only. A non-fold still throws: R2 may not be there to carry it.
   async function supaDual(pathTail, bytes, contentType) {
-    try { await supaUpload(pathTail, bytes, contentType); }
+    try { await supaUpload(pathTail, bytes, contentType); return true; }
     catch (e) {
       if (!FOLD) throw e;
       console.warn("Supabase dual refused " + pathTail + " (" + (bytes.length / 1048576).toFixed(1) + " MB: " + errText(e) + ") — R2-only; clearing the stale dual");
       await rest(`/storage/v1/object/${BUCKET}/${pathTail}`, { method: "DELETE" }).catch(() => {});
+      return false;
     }
   }
   if (r2ok) r2del(pmKey, true); else if (FOLD) throw new Error("fold needs R2 credentials");
-  await supaDual(`${PROJECT_ID}/${LAYER_ID}.pmtiles`, pmBytes, "application/octet-stream");
+  const pmDual = await supaDual(`${PROJECT_ID}/${LAYER_ID}.pmtiles`, pmBytes, "application/octet-stream");
   if (r2ok) r2put(pmKey, "layer.pmtiles", "application/octet-stream", FOLD);
-  console.log("tiles uploaded (" + (r2ok ? "Supabase + R2" : "Supabase only — no R2 creds") + ")");
+  console.log("tiles uploaded (" + (r2ok ? (pmDual ? "Supabase + R2" : "R2 only — the Supabase copy was refused") : "Supabase only — no R2 creds") + ")");
 
   if (FOLD) {
     r2del(attrKey, true);
@@ -495,6 +543,9 @@ try {
   rc.tilesFeatureCount = rows.length;                                        // dirty-tracking stamps (7/21):
   rc.tilesMaxFid = rows.reduce((m, r) => (Number(r.feature_id) > m ? Number(r.feature_id) : m), 0) || null;   // without these Publish silently re-baked in-browser
   rc.tiler = "tippecanoe";
+  // the source columns this layer carries (10/27): a layer with no rows has nothing the editor
+  // can sample, so the panel's Timeline-dates tool lists these
+  rc.columns = orderAttrKeys(custKeys);
 
   /* ── 4b. INSTANT-SCRUB RASTER (8/16) ────────────────────────────────────────
      Without this the timeline drag falls back to a per-feature opacity expression re-evaluated

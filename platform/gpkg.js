@@ -137,5 +137,76 @@
     } finally { try { db.close(); } catch (e) {} }
   }
 
-  window.MSGpkg = { readParts: readParts, decodeGeometry: decodeGeometry, SQLJS_BASE: SQLJS_BASE };
+  /* ── readSchema(file) → [{name, table, keys, geom}] WITHOUT reading the file (owner 10/27: the
+     import must ask which columns hold the dates — for a 200 MB package too, which never enters
+     this tab). SQLite keeps every CREATE TABLE statement in its schema b-tree starting at page 1,
+     so the table names and column names are in the first page (or the few pages it points at).
+     sql.js cannot open a prefix of a file (it validates every root page against the page count),
+     so this walks the schema b-tree by hand: page header → cell pointers → record → the sql text.
+     A CREATE TABLE statement always fits in one cell for a feature table (no overflow handling). */
+  var GEOM_TYPES = /^(GEOMETRY|POINT|LINESTRING|POLYGON|MULTIPOINT|MULTILINESTRING|MULTIPOLYGON|GEOMETRYCOLLECTION|CURVE|SURFACE)/i;
+  async function readSchema(file) {
+    async function bytes(off, len) { return new Uint8Array(await file.slice(off, off + len).arrayBuffer()); }
+    var hdr = await bytes(0, 100);
+    if (String.fromCharCode.apply(null, hdr.subarray(0, 15)) !== 'SQLite format 3') throw new Error('not a SQLite file');
+    var ps = (hdr[16] << 8) | hdr[17]; if (ps === 1) ps = 65536;
+    var usable = ps - hdr[20];
+    function varint(b, o) { var v = 0, i = 0; for (; i < 9; i++) { var c = b[o + i]; if (i < 8) { v = v * 128 + (c & 0x7f); if (!(c & 0x80)) { i++; break; } } else { v = v * 256 + c; i++; } } return [v, o + i]; }
+    function u16(b, o) { return (b[o] << 8) | b[o + 1]; }
+    function u32(b, o) { return ((b[o] << 24) >>> 0) + (b[o + 1] << 16) + (b[o + 2] << 8) + b[o + 3]; }
+    var rows = [], dec = new TextDecoder();
+    async function walk(no, depth) {
+      if (depth > 8) return;
+      var p = await bytes((no - 1) * ps, ps), h = no === 1 ? 100 : 0, type = p[h];
+      var ncell = u16(p, h + 3), ptrs = h + (type === 5 || type === 2 ? 12 : 8);
+      if (type === 5) { for (var i = 0; i < ncell; i++) await walk(u32(p, u16(p, ptrs + 2 * i)), depth + 1); await walk(u32(p, h + 8), depth + 1); return; }
+      if (type !== 13) return;
+      for (var c = 0; c < ncell; c++) {
+        var off = u16(p, ptrs + 2 * c);
+        var pl = varint(p, off), plen = pl[0]; var ro = varint(p, pl[1]); off = ro[1];
+        var maxLocal = usable - 35, minLocal = Math.floor((usable - 12) * 32 / 255) - 23, local = plen;
+        if (plen > maxLocal) { local = minLocal + ((plen - minLocal) % (usable - 4)); if (local > maxLocal) local = minLocal; }
+        var rec = p.subarray(off, off + local);
+        var hl = varint(rec, 0), hlen = hl[0], ho = hl[1], types = [];
+        while (ho < hlen) { var tv = varint(rec, ho); types.push(tv[0]); ho = tv[1]; }
+        var vo = hlen, vals = [];
+        for (var t = 0; t < types.length; t++) {
+          var st = types[t], len = 0, v = null;
+          if (st >= 1 && st <= 6) { len = [1, 2, 3, 4, 6, 8][st - 1]; v = 0; for (var k = 0; k < Math.min(len, 6); k++) v = v * 256 + rec[vo + k]; }
+          else if (st === 7) len = 8;
+          else if (st === 8) v = 0; else if (st === 9) v = 1;
+          else if (st >= 12) { len = Math.floor((st - 12) / 2); v = st % 2 ? dec.decode(rec.subarray(vo, vo + len)) : null; }
+          vals.push(v); vo += len;
+        }
+        rows.push({ type: vals[0], name: vals[1], sql: vals[4] });
+      }
+    }
+    await walk(1, 0);
+    var out = [];
+    rows.forEach(function (r) {
+      if (r.type !== 'table' || !r.sql || /^(gpkg_|sqlite_|rtree_)/i.test(r.name || '')) return;
+      var body = r.sql.slice(r.sql.indexOf('(') + 1, r.sql.lastIndexOf(')'));
+      var parts = [], depth = 0, cur = '', inq = null;
+      for (var i = 0; i < body.length; i++) {
+        var ch = body[i];
+        if (inq) { cur += ch; if (ch === inq) inq = null; continue; }
+        if (ch === '"' || ch === "'" || ch === '`' || ch === '[') { inq = ch === '[' ? ']' : ch; cur += ch; continue; }
+        if (ch === '(') depth++; if (ch === ')') depth--;
+        if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; } else cur += ch;
+      }
+      if (cur.trim()) parts.push(cur);
+      var cols = [], geoms = [];
+      parts.forEach(function (pt) {
+        var s = pt.trim(); if (/^(CONSTRAINT|PRIMARY|FOREIGN|UNIQUE|CHECK)\b/i.test(s)) return;
+        var m = /^("([^"]*)"|'([^']*)'|`([^`]*)`|\[([^\]]*)\]|([A-Za-z_][\w$]*))\s*([\s\S]*)$/.exec(s); if (!m) return;
+        var name = m[2] != null ? m[2] : m[3] != null ? m[3] : m[4] != null ? m[4] : m[5] != null ? m[5] : m[6], rest = m[7] || '';
+        if (/PRIMARY\s+KEY/i.test(rest)) return;
+        if (GEOM_TYPES.test(rest.trim())) geoms.push(name); else cols.push(name);
+      });
+      if (geoms.length) out.push({ name: r.name, table: r.name, keys: cols, geom: geoms[0] });
+    });
+    return out;
+  }
+
+  window.MSGpkg = { readParts: readParts, readSchema: readSchema, decodeGeometry: decodeGeometry, SQLJS_BASE: SQLJS_BASE };
 })();

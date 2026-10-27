@@ -97,7 +97,7 @@ try {
     const file = `gpkg-out/${i}.geojson`;
     execFileSync("ogr2ogr", ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-dim", "XY", "-skipfailures", "-lco", "RFC7946=NO", "-lco", "WRITE_BBOX=NO", "-lco", "ID_FIELD=", file, "source.gpkg", t.name], { stdio: ["ignore", "inherit", "inherit"] });
     const kind = kindOf((t.geometryFields[0] || {}).type);
-    if (kind) { outputs.push({ name: t.name, kind, file }); return; }
+    if (kind) { outputs.push({ name: t.name, table: t.name, kind, file }); return; }
     // mixed or undeclared geometry: split by kind, one layer per kind, named like the browser does
     const fc = JSON.parse(readFileSync(file, "utf8"));
     const by = { circle: [], line: [], fill: [] };
@@ -106,7 +106,7 @@ try {
     kinds.forEach((k) => {
       const kf = `gpkg-out/${i}-${k}.geojson`;
       writeFileSync(kf, JSON.stringify({ type: "FeatureCollection", features: by[k] }));
-      outputs.push({ name: kinds.length > 1 ? t.name + " (" + KIND_LABEL[k] + ")" : t.name, kind: k, file: kf });
+      outputs.push({ name: kinds.length > 1 ? t.name + " (" + KIND_LABEL[k] + ")" : t.name, table: t.name, kind: k, file: kf });
     });
   });
   if (!outputs.length) throw new Error("no point, line or polygon features in the package");
@@ -117,8 +117,17 @@ try {
   const link = (await (await rest(`/rest/v1/project_layers?project_id=eq.${PROJECT_ID}&layer_id=eq.${LAYER_ID}&select=sort_order,section_id,group_id`)).json())[0] || {};
   const rc0 = ph.raw_config || {};
   const first = outputs[0];
-  const phPatch = { type: first.kind, raw_config: { ...rc0 }, fold_state: "folding" };
+  // a re-bake of an already-folded layer (the panel's Timeline dates) keeps rendering its current
+  // tiles meanwhile — only a first run / failed run is "folding"
+  const phPatch = { type: first.kind, raw_config: { ...rc0 }, fold_state: ph.fold_state === "folded" ? "folded" : "folding" };
   delete phPatch.raw_config.foldError;   // a RETRY starts clean (the editor re-dispatches on the same package)
+  // TIMELINE DATES (10/27): the editor asked, per table, which columns hold start/end — stored on
+  // the placeholder as raw_config.dateMaps[table]. Each layer row gets its own flat dateMap (what
+  // the bake reads), and a row that ALREADY has one keeps it: the panel's later choice outranks the
+  // import-time one.
+  const dateMaps = (rc0.dateMaps && typeof rc0.dateMaps === "object") ? rc0.dateMaps : {};
+  const dmFor = (o) => dateMaps[o.table] || dateMaps[o.name] || null;
+  if (!phPatch.raw_config.dateMap && dmFor(first)) phPatch.raw_config.dateMap = dmFor(first);
   if (outputs.length > 1) phPatch.name = first.name;   // one table keeps the file's name; several take their table names
   // A retry of the same package must not grow a second set of siblings: reuse the rows a previous
   // run inserted (rc.siblings, in table order) and only insert the ones that are missing.
@@ -130,6 +139,7 @@ try {
       const old = (await (await rest(`/rest/v1/layers?id=eq.${prior[i - 1]}&select=id,raw_config`)).json())[0];
       if (old) {
         const orc = { ...(old.raw_config || {}) }; delete orc.foldError;
+        if (!orc.dateMap && dmFor(o)) orc.dateMap = dmFor(o);
         await rest(`/rest/v1/layers?id=eq.${old.id}`, { method: "PATCH", headers: { "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify({ name: o.name, type: o.kind, fold_state: "folding", raw_config: orc }) });
         siblingIds.push(old.id);
         console.log("sibling layer " + old.id + " ← " + o.name + " (" + o.kind + ", reused from the previous run)");
@@ -142,7 +152,7 @@ try {
       user_id: ph.user_id, fold_state: "folding", enabled_by_default: true,
       source_type: null, paint: ph.paint, layout: ph.layout,
       hover: ph.hover, hover_paint: ph.hover_paint, click: ph.click, popup_style: ph.popup_style, popup_prop: ph.popup_prop,
-      raw_config: { cloudImport: rc0.cloudImport || null, siblingOf: LAYER_ID },
+      raw_config: { cloudImport: rc0.cloudImport || null, siblingOf: LAYER_ID, dateMap: dmFor(o) },
     };
     const ins = await (await rest(`/rest/v1/layers`, { method: "POST", headers: { "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(row) })).json();
     const sid = ins[0] && ins[0].id; if (!sid) throw new Error("sibling layer insert returned no id");
