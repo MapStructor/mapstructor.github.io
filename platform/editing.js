@@ -3932,9 +3932,28 @@
   // «"US_AtlasHCB_StateTerr" is ready — 220 features» while tippecanoe was still compiling (owner:
   // "Does this mean it's done? I refreshed, and it didn't bake"). Pass the tilesGeneratedAt that was
   // on the row at dispatch time and completion becomes "the stamp CHANGED", which is the real event.
+  // ONE watch per layer (10/27): a reload could start two watches for the same row (the folding
+  // resume + a re-bake resume), and the second one's "STILL RE-BAKING" line overwrote the first
+  // one's failure message seconds after it appeared — found by gate G7.
+  var _foldWatching = {};
   async function pollFoldDone(node, layerId, sinceStamp, startedAt) {
+    if (_foldWatching[layerId]) return;
+    _foldWatching[layerId] = true;
+    try { await pollFoldDoneRun(node, layerId, sinceStamp, startedAt); }
+    finally { delete _foldWatching[layerId]; }
+  }
+  function foldFailedMessage(node, rc) {
+    var canRetry = rc.cloudImport && !rc.siblingOf;
+    return 'Cloud conversion failed for "' + (node.label || 'layer') + '": ' + rc.foldError
+      + (canRetry ? ' — click the red cloud on the layer to retry WITHOUT uploading again (the file is still in the cloud), or delete the layer.' : ' — delete the layer row or re-import.');
+  }
+  async function pollFoldDoneRun(node, layerId, sinceStamp, startedAt) {
     var POLL_MS = 8000, MAX = 90;   // ~12 min ceiling — a cold Action run compiles tippecanoe (~3-4 min)
     var t0 = Date.now();
+    // a watch resumed for a layer already known to have failed says so at once — the progress
+    // line below would overwrite the failure for 8 s and read as "still running"
+    // (a loaded leaf inherits its raw_config keys, so foldError / cloudImport / siblingOf are on the node)
+    if (node.foldError) { updateFoldingRow(node); importStatus(foldFailedMessage(node, { foldError: node.foldError, cloudImport: node.cloudImport, siblingOf: node.siblingOf })); return; }
     for (var i = 0; i < MAX; i++) {
       // say so where progress is always said (owner 8/7) — the import step-checklist, which is
       // where every other stage of the upload reported itself. A reload resumes this watch
@@ -3959,7 +3978,16 @@
       try { r = await db.from('layers').select('*').eq('id', layerId).single(); } catch (e) { continue; }
       if (!r || r.error || !r.data) continue;
       var rc = r.data.raw_config || {};
-      if (rc.foldError) { importStatus('Cloud fold failed for "' + (node.label || 'layer') + '": ' + rc.foldError + ' — delete the layer row or re-import.'); return; }
+      if (rc.foldError) {
+        // 10/27: the 127 MB railway package failed AFTER its upload and bake (an upload to the
+        // tiles mirror dropped). "re-import" meant pushing 127 MB up again on whatever connection
+        // the person has; the package is still in the cloud, so the retry re-runs only the cloud
+        // half (retryCloudFold, from the red cloud badge on the layer row).
+        node.foldError = rc.foldError; node.cloudImport = rc.cloudImport || null; node.siblingOf = rc.siblingOf || null;
+        updateFoldingRow(node);
+        importStatus(foldFailedMessage(node, rc));
+        return;
+      }
       if (r.data.fold_state === 'folded' && (!sinceStamp || (rc.tilesGeneratedAt && rc.tilesGeneratedAt !== sinceStamp))) { applyFoldedRow(node, r.data); addFoldedSiblings(node, r.data); return; }
     }
     importStatus('Cloud fold is taking unusually long for "' + (node.label || 'layer') + '" — it finishes in the background; reload later to see it.');
@@ -11659,12 +11687,58 @@
       if (!badge) {
         badge = document.createElement('span');
         badge.className = 'ms-folding-badge';
-        badge.title = 'Processing in the cloud — this layer is being folded to cloud storage';
-        badge.innerHTML = '<i class="fas fa-cloud-arrow-up"></i>';
-        badge.setAttribute('style', 'display:inline-block;margin-left:5px;font-size:10px;color:#b98317;vertical-align:middle;cursor:default;');
         if (lbl) lbl.appendChild(badge); else row.appendChild(badge);
       }
+      // 10/27: a failed cloud import turns the badge red and makes it the retry control — the
+      // uploaded package is still in the cloud, so the retry costs no upload (retryCloudFold).
+      var failed = !!node.foldError, lid = slugToLayerDbId[node.id];
+      badge.title = failed ? 'Cloud conversion failed: ' + node.foldError + '\nClick to retry without uploading again' : 'Processing in the cloud — this layer is being folded to cloud storage';
+      badge.innerHTML = '<i class="fas ' + (failed ? 'fa-cloud-bolt' : 'fa-cloud-arrow-up') + '"></i>';
+      badge.setAttribute('style', 'display:inline-block;margin-left:5px;font-size:10px;color:' + (failed ? '#c0392b' : '#b98317') + ';vertical-align:middle;cursor:' + (failed ? 'pointer' : 'default') + ';');
+      badge.onclick = failed && lid ? function (ev) { ev.preventDefault(); ev.stopPropagation(); retryCloudFold(node, lid); } : null;
     } else if (badge) badge.remove();
+  }
+  // re-run ONLY the cloud half of a chunked import: the package is still at its source key on R2
+  // (the editor deletes it only when the upload itself failed), so no bytes leave this machine.
+  // The Action re-reads the package, reuses the sibling rows it made last time, and the watch
+  // below picks the result up live like a first run.
+  async function retryCloudFold(node, layerId) {
+    var key = 'tiles/' + projectId + '/' + layerId + '.source.gpkg', name = node.label || 'layer';
+    if (node.__msRetrying) return; node.__msRetrying = true;
+    importStatus('Retrying the cloud conversion of "' + name + '" from the copy already in the cloud…');
+    try {
+      // a definite 404 means the package is gone (re-import is the only way); a network failure
+      // here proves nothing, so the Action gets to say "source package unavailable" itself
+      try {
+        var probe = await fetch('https://tiles.mapstructor.com/' + key, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+        if (probe.status === 404) throw new Error('the uploaded package is no longer in the cloud — re-import the file');
+      } catch (eP) { if (/no longer in the cloud/.test(String(eP && eP.message))) throw eP; }
+      var cur = await db.from('layers').select('raw_config').eq('id', layerId).single();
+      var rc = (cur.data && cur.data.raw_config) || {}; delete rc.foldError;
+      var up = await db.from('layers').update({ raw_config: rc, fold_state: 'folding' }).eq('id', layerId);
+      if (up.error) throw new Error(up.error.message);
+      await mpuCall('/fold', { json: { projectId: projectId, layerId: layerId, mode: 'fold-file', rawKey: key } });
+      delete node.foldError; node.fold_state = 'folding'; updateFoldingRow(node);
+      // siblings from the previous run restart their watches too (the Action re-bakes every table)
+      var sibs = rc.siblings || [];
+      for (var si = 0; si < sibs.length; si++) {
+        var sid = sibs[si];
+        // clear the sibling's own stale error first — its watch would read it on the first poll
+        try {
+          var sc = await db.from('layers').select('raw_config').eq('id', sid).single();
+          var src = (sc.data && sc.data.raw_config) || {}; delete src.foldError;
+          await db.from('layers').update({ raw_config: src, fold_state: 'folding' }).eq('id', sid);
+        } catch (eS) {}
+        var slug = null; Object.keys(slugToLayerDbId).forEach(function (k) { if (slugToLayerDbId[k] === sid) slug = k; });
+        var sn = slug ? findNodeById(layers, slug) : null;
+        if (sn) { delete sn.foldError; sn.fold_state = 'folding'; updateFoldingRow(sn); pollFoldDone(sn, sid); }
+      }
+      importStatus('"' + name + '" is converting in the cloud again — a few minutes; this tab can be closed.');
+      ensurePmtSw();
+      pollFoldDone(node, layerId, null, new Date().toISOString());
+    } catch (e) {
+      importStatus('Retry failed for "' + name + '": ' + ((e && e.message) || e));
+    } finally { node.__msRetrying = false; }
   }
   async function onEditorOnly(on) {
     if (!activeLayerId) return;

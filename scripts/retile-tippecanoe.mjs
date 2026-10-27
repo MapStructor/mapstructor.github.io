@@ -208,6 +208,15 @@ function buildExportFC(rows, attrView) {
 }
 
 /* ── on failure: leave a readable trace on the layer so the importing client can react ── */
+// undici hides the real reason one level down: "fetch failed" + cause {code: ECONNRESET, …}.
+// The layer row (and the person reading it) gets the cause, not the wrapper.
+function errText(e) {
+  if (!e) return String(e);
+  let s = e.message || String(e);
+  const c = e.cause;
+  if (c) s += " (" + [c.code, c.message].filter(Boolean).join(": ") + ")";
+  return s;
+}
 async function stampFailure(msg) {
   try {
     const cur = await (await rest(`/rest/v1/layers?id=eq.${LAYER_ID}&select=raw_config`)).json();
@@ -448,11 +457,17 @@ try {
   // Big folds can exceed the Supabase bucket's per-object cap (413 killed the 78k-row C6
   // folds, 7/30). R2 is the authoritative store — on 413 the dual goes R2-ONLY: DELETE the
   // stale Supabase copy so the fallback path 404s instead of quietly serving pre-fold tiles.
+  // 10/27: the 413 rule was not enough. A 390.9 MB railway archive (240,935 lines, z15) never got
+  // a status at all — Supabase dropped the connection mid-body and undici reported only "fetch
+  // failed", which this re-threw, so a SUCCESSFUL seven-minute bake died at its first upload and
+  // the layer showed «fetch failed — delete the layer row or re-import». In a fold the Supabase
+  // copy is a convenience (pmt-sw reads R2 first and never fails over from a good R2 read), so
+  // ANY failure to write it goes R2-only. A non-fold still throws: R2 may not be there to carry it.
   async function supaDual(pathTail, bytes, contentType) {
     try { await supaUpload(pathTail, bytes, contentType); }
     catch (e) {
-      if (!(FOLD && /413|too large/i.test(String(e.message || e)))) throw e;
-      console.warn("Supabase dual refused " + pathTail + " (bucket size cap) — R2-only; clearing the stale dual");
+      if (!FOLD) throw e;
+      console.warn("Supabase dual refused " + pathTail + " (" + (bytes.length / 1048576).toFixed(1) + " MB: " + errText(e) + ") — R2-only; clearing the stale dual");
       await rest(`/storage/v1/object/${BUCKET}/${pathTail}`, { method: "DELETE" }).catch(() => {});
     }
   }
@@ -562,7 +577,7 @@ try {
     ? `layer FOLDED — ${nfmt(rows.length)} features, r2_bytes ${nfmt(pmBytes.length + attrBytes + geoBytes + (exportBytes ? exportBytes.length : 0) + sourceBytes)}.`
     : "layer re-pointed — done. Viewers pick up the new archive within a minute (service-worker ETag revalidation).");
 } catch (e) {
-  console.error("FAILED: " + (e && e.message ? e.message : e));
-  await stampFailure(e && e.message ? e.message : String(e));
+  console.error("FAILED: " + errText(e));
+  await stampFailure(errText(e));
   process.exit(1);
 }

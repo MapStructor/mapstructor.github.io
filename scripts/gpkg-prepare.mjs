@@ -43,6 +43,14 @@ async function rest(path, opts = {}) {
   if (!r.ok) throw new Error(`${opts.method || "GET"} ${path} → ${r.status} ${(await r.text()).slice(0, 200)}`);
   return r;
 }
+// undici hides the real reason one level down ("fetch failed" + cause) — surface the cause
+function errText(e) {
+  if (!e) return String(e);
+  let s = e.message || String(e);
+  const c = e.cause;
+  if (c) s += " (" + [c.code, c.message].filter(Boolean).join(": ") + ")";
+  return s;
+}
 async function stampFailure(msg) {
   try {
     const cur = await (await rest(`/rest/v1/layers?id=eq.${LAYER_ID}&select=raw_config`)).json();
@@ -109,11 +117,25 @@ try {
   const link = (await (await rest(`/rest/v1/project_layers?project_id=eq.${PROJECT_ID}&layer_id=eq.${LAYER_ID}&select=sort_order,section_id,group_id`)).json())[0] || {};
   const rc0 = ph.raw_config || {};
   const first = outputs[0];
-  const phPatch = { type: first.kind, raw_config: { ...rc0 } };
+  const phPatch = { type: first.kind, raw_config: { ...rc0 }, fold_state: "folding" };
+  delete phPatch.raw_config.foldError;   // a RETRY starts clean (the editor re-dispatches on the same package)
   if (outputs.length > 1) phPatch.name = first.name;   // one table keeps the file's name; several take their table names
+  // A retry of the same package must not grow a second set of siblings: reuse the rows a previous
+  // run inserted (rc.siblings, in table order) and only insert the ones that are missing.
+  const prior = Array.isArray(rc0.siblings) ? rc0.siblings : [];
   const siblingIds = [];
   for (let i = 1; i < outputs.length; i++) {
     const o = outputs[i];
+    if (prior[i - 1]) {
+      const old = (await (await rest(`/rest/v1/layers?id=eq.${prior[i - 1]}&select=id,raw_config`)).json())[0];
+      if (old) {
+        const orc = { ...(old.raw_config || {}) }; delete orc.foldError;
+        await rest(`/rest/v1/layers?id=eq.${old.id}`, { method: "PATCH", headers: { "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify({ name: o.name, type: o.kind, fold_state: "folding", raw_config: orc }) });
+        siblingIds.push(old.id);
+        console.log("sibling layer " + old.id + " ← " + o.name + " (" + o.kind + ", reused from the previous run)");
+        continue;
+      }
+    }
     const row = {
       slug: "new-" + Date.now().toString(36) + randomUUID().slice(0, 3),   // the editor's uid() shape
       name: o.name, type: o.kind, color: LAYER_COLORS[i % LAYER_COLORS.length],
@@ -146,6 +168,6 @@ try {
   console.log("\nall " + outputs.length + " layer(s) baked from " + RAW_KEY);
 } catch (e) {
   console.error("gpkg-prepare failed:", e && e.stack || e);
-  await stampFailure((e && e.message) || String(e));
+  await stampFailure(errText(e));
   process.exit(1);
 }
