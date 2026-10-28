@@ -197,6 +197,7 @@ function setupLayerEventForMap(map, config, side) {
 
     function clickHandle(event) {
       if (msLockInert(config)) return;   // 8/29: locked = inert in the editor; 10/20: Linked mirrors are not locked (see msLockInert)
+      if (window.__msEmbed && window.__msEmbed.on && window.__msEmbed.info === false) return;   // embed info=no (10/27): no click pill either; hover stays
       if (!config.click) { closeInfo(); return; }   // #12: click-popup toggled off live
       const clickedId = event.features?.[0]?.id;
       if (clickedId == null) return;

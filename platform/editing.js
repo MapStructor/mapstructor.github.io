@@ -2645,7 +2645,8 @@
       '</div></div>' +
         '<div class="esec"><div class="esec-h">Send out</div><div class="erow">' +
           '<button data-type="export" title="Export layers as files">Layer</button>' +
-          '<button data-type="download" title="A self-contained static copy of this whole map">⬇ Whole project</button></div></div>' +
+          '<button data-type="download" title="A self-contained static copy of this whole map">⬇ Whole project</button>' +
+          '<button data-type="embed" title="The snippet that puts this map inside another website">Embed</button></div></div>' +
       '</div>' +
       '</div>' +
       '<div id="editor-add-form"></div>' +
@@ -2669,7 +2670,7 @@
     bar.querySelectorAll('#editor-add-buttons button[data-type]').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'portal') { if (window.MSPortalAdd) MSPortalAdd.open(); return; }
       if (t === 'merge') { if (window.MSMerge) MSMerge.open(); return; }
       if (t === 'download') { var dl = document.getElementById('msdl-open'); if (dl) dl.click(); return; }   // same dialog as the sidebar button — one implementation
-      markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
+      markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'embed') showEmbedForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
     var msEl = document.getElementById('ms-map-size');
     if (msEl) msEl.addEventListener('click', function () { refreshMapSize(true); });
     /* AFTER FIRST IDLE. It is a readout — nothing on the map waits for it — and at boot it was
@@ -2782,6 +2783,49 @@
   function closeAddForm() { var f = document.getElementById('editor-add-form'); if (f) f.innerHTML = ''; markAddActive(null); }
   // ── export: a layer's saved features → downloadable GeoJSON (the inverse of Import; works for drawn
   //    layers AND tileset layers whose features live in `features`, e.g. Current buildings = 18k rows). ──
+  /* ── EMBED (owner 10/27): the snippet that puts this map inside another website. Yes/No per piece
+     — header, sidebar, info panel, timeline — written into the address as words, so the same
+     choices can be flipped by hand in the code. The embedded map is the published copy when the
+     map has a public address, else the platform viewer. An "Open ↗" button over the embedded map
+     opens the full map in a new tab (the engine adds it whenever it runs inside a frame). ── */
+  async function showEmbedForm() {
+    var f = document.getElementById('editor-add-form'); if (!f) return;
+    var base = location.origin + '/map/index.html?id=' + encodeURIComponent(projectId), mapTitle = 'Map';
+    try { var sr = await db.from('projects').select('name, raw_config').eq('id', projectId).single(); if (sr.data && sr.data.name) mapTitle = sr.data.name; var slugE = sr.data && sr.data.raw_config && sr.data.raw_config.showcaseSlug; if (typeof slugE === 'string' && /^[a-z0-9_-]+$/i.test(slugE)) base = 'https://mapstructor.com/' + slugE + '/map/'; } catch (eS) {}
+    var yn = function (id, label, title) {
+      return '<label class="ms-check" style="display:flex;align-items:center;gap:8px;margin:4px 0;" title="' + title + '"><span style="flex:1;">' + label + '</span>' +
+        '<select id="' + id + '" class="mss-in" style="flex:0 0 72px;padding:3px 6px;"><option value="yes">Yes</option><option value="no">No</option></select></label>';
+    };
+    f.innerHTML = '<div class="esec"><div class="esec-h">Embed this map</div>' +
+      '<div class="mss-note" style="margin:0 0 6px;">Paste the code into any web page. Each piece is a Yes/No you can also change in the code.</div>' +
+      yn('emb-header', 'Header (title, About, buttons)', 'The map\'s own header strip') +
+      yn('emb-sidebar', 'Sidebar (layers, basemaps)', 'The layer panel and its toggle') +
+      yn('emb-info', 'Info panel (click a feature)', 'Clicking a feature opens its article / notes; hover highlighting stays either way') +
+      yn('emb-timeline', 'Timeline', 'The slider and the date') +
+      '<div style="display:flex;gap:8px;margin:8px 0 4px;"><label style="flex:1;font-size:12px;">Width<input id="emb-w" type="text" class="mss-in" value="100%" style="margin-top:2px;"></label><label style="flex:1;font-size:12px;">Height<input id="emb-h" type="text" class="mss-in" value="600" style="margin-top:2px;"></label></div>' +
+      '<textarea id="emb-code" class="mss-in" rows="5" readonly style="font:12px/1.4 Consolas,Menlo,monospace;margin-top:6px;white-space:pre-wrap;"></textarea>' +
+      '<div class="erow" style="margin-top:6px;"><button id="emb-copy">Copy code</button><a id="emb-try" href="#" target="_blank" rel="noopener" style="font-size:12px;align-self:center;">Try it on the test page ↗</a></div>' +
+      '<div class="mss-note">Embedded, the map shows an <b>Open ↗</b> button in its top-right that opens the full map in a new tab.</div></div>';
+    function build() {
+      var p = [];
+      ['header', 'sidebar', 'info', 'timeline'].forEach(function (k) { p.push(k + '=' + (document.getElementById('emb-' + k).value === 'no' ? 'no' : 'yes')); });
+      var url = base + (base.indexOf('?') > -1 ? '&' : '?') + 'embed=1&' + p.join('&');
+      var wv = (document.getElementById('emb-w').value || '100%').trim(), hv = (document.getElementById('emb-h').value || '600').trim();
+      var wAttr = /^\d+$/.test(wv) ? wv : null, hAttr = /^\d+$/.test(hv) ? hv : null;
+      var style = 'border:0;' + (wAttr ? '' : 'width:' + wv.replace(/"/g, '') + ';') + (hAttr ? '' : 'height:' + hv.replace(/"/g, '') + ';');
+      var code = '<iframe src="' + url + '"' + (wAttr ? ' width="' + wAttr + '"' : '') + (hAttr ? ' height="' + hAttr + '"' : '') + ' style="' + style + '" title="' + String(mapTitle).replace(/"/g, '&quot;') + '" allow="fullscreen" loading="lazy"></iframe>';
+      document.getElementById('emb-code').value = code;
+      document.getElementById('emb-try').href = location.origin + '/test/embed/?src=' + encodeURIComponent(url);
+    }
+    ['emb-header', 'emb-sidebar', 'emb-info', 'emb-timeline', 'emb-w', 'emb-h'].forEach(function (id) { document.getElementById(id).addEventListener('change', build); document.getElementById(id).addEventListener('input', build); });
+    document.getElementById('emb-copy').addEventListener('click', function () {
+      var ta = document.getElementById('emb-code'); ta.select();
+      var ok = false; try { ok = document.execCommand('copy'); } catch (eC) {}
+      if (navigator.clipboard) { navigator.clipboard.writeText(ta.value).then(function () { setStatus('Embed code copied'); }, function () { setStatus(ok ? 'Embed code copied' : 'Select the code and copy it'); }); }
+      else setStatus(ok ? 'Embed code copied' : 'Select the code and copy it');
+    });
+    build();
+  }
   function showExportForm() {
     var bar = addFormEl();   // #2: buttons stay visible
     var opts = '';
@@ -10975,6 +11019,22 @@
       var out = await MSTileGen.bakeScrubRaster(db, projectId, { id: lid, name: node.label, type: node.type },
         function (m) { say(m); msProgress(m); });
       if (out === -1) setStatus('This layer can’t take a snapshot');
+      else if (!out && node.fold_state === 'folded') {
+        // 10/27 (owner: "Nothing to bake" on the railway layer): a folded layer's features live in
+        // the cloud, so the cloud bakes its snapshot — one more re-bake, with the raster switched on
+        var cur = await db.from('layers').select('raw_config').eq('id', lid).single();
+        var rcS = (cur.data && cur.data.raw_config) || {}, phS = rcS.siblingOf || lid, startedS = new Date().toISOString();
+        await patchLayerConfig(lid, { fast: { raster: true, deck: keepDeck }, rebakeStartedAt: startedS });
+        node.fast = { raster: true, deck: keepDeck }; node.rebakeStartedAt = startedS;
+        var bodyS = rcS.cloudImport
+          ? { projectId: projectId, layerId: phS, mode: 'fold-file', rawKey: 'tiles/' + projectId + '/' + phS + '.source.gpkg', scrubRaster: true }
+          : { projectId: projectId, layerId: lid, mode: 'fold-merge', scrubRaster: true };
+        await mpuCall('/fold', { json: bodyS });
+        ensurePmtSw();
+        say('Baking the snapshot in the cloud, together with the tiles — a few minutes. This tab can be closed; the map updates itself when it lands.');
+        setStatus('Snapshot baking in the cloud');
+        pollFoldDone(node, lid, rcS.tilesGeneratedAt || null, startedS);
+      }
       else if (!out) { say('Nothing to bake — this layer has no features of its own.'); setStatus('Nothing to bake'); }
       else {
         node.rasterYears = out;

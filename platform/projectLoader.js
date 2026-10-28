@@ -66,7 +66,9 @@ window.msApplyHeaderFeature = function (visible, projectName) {
     var isEditor = /editor\.html/i.test(location.pathname);
     brand.querySelector("#about-info").style.display = (hasAbout || isEditor) ? "block" : "none";
   } catch (e) {}
-  document.body.classList.toggle("ms-no-header", visible === false);
+  // an embed whose snippet said header=no keeps it hidden whatever the map's own setting (10/27)
+  var embedNoHeader = !!(window.__msEmbed && window.__msEmbed.on && window.__msEmbed.header === false);
+  document.body.classList.toggle("ms-no-header", visible === false || embedNoHeader);
   // custom map buttons render differently per header state (header row vs floating) — re-render on toggle
   try { if (window.msRenderMapButtons) window.msRenderMapButtons(); } catch (e) {}
   setTimeout(function () {   // the map containers changed height — re-measure both swipe sides + re-seat any header-relative chrome (editor tool dock, save callout)

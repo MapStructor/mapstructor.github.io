@@ -41,6 +41,10 @@ on:
         description: "R2 key of the source FeatureCollection (fold-raw) or package (fold-file)"
         required: false
         default: ""
+      scrub_raster:
+        description: "1 = also bake the instant-scrub raster snapshot (Make Faster) — the cloud bakes it for layers that have no rows of their own"
+        required: false
+        default: ""
 
 # two dispatches for the same layer would race on the same storage keys + layer row
 concurrency:
@@ -102,6 +106,7 @@ jobs:
           MAX_ZOOM: ${{ inputs.max_zoom }}
           SIMPLIFY: ${{ inputs.simplification }}
           RAW_KEY: ${{ inputs.raw_key }}
+          SCRUB_RASTER: ${{ inputs.scrub_raster }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_TILES_ACCESS_KEY_ID || secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_TILES_SECRET_ACCESS_KEY || secrets.R2_SECRET_ACCESS_KEY }}
@@ -117,6 +122,7 @@ jobs:
           MODE: ${{ inputs.mode }}
           SIMPLIFY: ${{ inputs.simplification }}
           RAW_KEY: ${{ inputs.raw_key }}
+          SCRUB_RASTER: ${{ inputs.scrub_raster }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_TILES_ACCESS_KEY_ID || secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_TILES_SECRET_ACCESS_KEY || secrets.R2_SECRET_ACCESS_KEY }}

@@ -133,6 +133,7 @@ function infoPanelDefaultHandle() {
 }
 
 function handlePanelClick(layer, event) {
+  if (window.__msEmbed && window.__msEmbed.on && window.__msEmbed.info === false) return;   // the embed snippet said info=no (10/27): clicks open nothing
   if (infoPanelClickFired[layer.id]) return;
   infoPanelClickFired[layer.id] = true;
   setTimeout(function() { infoPanelClickFired[layer.id] = false; }, 300);

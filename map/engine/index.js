@@ -218,7 +218,7 @@ if (jQuery.browser.msie)
   var _bootDate = Math.round(sliderMiddle);
   window.__msDate = _bootDate;
   // a copy that was saved with its timeline off says so before the engine boots (mapData.js)
-  if (window.__msTimelineHidden && typeof msSetTimelineHidden === "function") { try { msSetTimelineHidden(true); } catch (eTH) {} }
+  if ((window.__msTimelineHidden || (window.__msEmbed && window.__msEmbed.on && window.__msEmbed.timeline === false)) && typeof msSetTimelineHidden === "function") { try { msSetTimelineHidden(true); } catch (eTH) {} }
   $("#date").text(moment.unix(_bootDate).format("DD MMM YYYY"));
   // …and if the layers were already added (a local/standalone build loads its style before ready,
   // so they were — see getDate() in mapinit.js), apply that date NOW. Belt-and-braces for the same
@@ -363,11 +363,12 @@ if (jQuery.browser.msie)
     window.__msSidebarCfg = s;
     window.__msSidebarToggleOnly = !!s.toggleOnly;
     var editor = /editor\.html$/i.test(location.pathname);   // the editor keeps its sidebar; the camera padding applies everywhere
-    if (!editor && s.hidden) { $("#studioMenu, #view-hide-layer-panel, #mobi-hide-sidebar, #mobi-view-sidebar").hide(); window.__msSidebarHidden = true; }
+    var embedNoSidebar = !!(window.__msEmbed && window.__msEmbed.on && window.__msEmbed.sidebar === false);   // the embed snippet said sidebar=no (10/27)
+    if (!editor && (s.hidden || embedNoSidebar)) { $("#studioMenu, #view-hide-layer-panel, #mobi-hide-sidebar, #mobi-view-sidebar").hide(); window.__msSidebarHidden = true; }
     else if (!editor && s.startClosed && layer_view_flag && !window.__msSidebarStartApplied) { window.__msSidebarStartApplied = true; $("#view-hide-layer-panel").trigger("click"); }
     try { window.msApplySidebarPadding(false); } catch (ePad) {}
   };
-  try { if (typeof mapConfig !== "undefined" && mapConfig && mapConfig.sidebar) window.msApplySidebarSettings(mapConfig.sidebar); } catch (eSb) {}
+  try { if ((typeof mapConfig !== "undefined" && mapConfig && mapConfig.sidebar) || (window.__msEmbed && window.__msEmbed.on && window.__msEmbed.sidebar === false)) window.msApplySidebarSettings((typeof mapConfig !== "undefined" && mapConfig && mapConfig.sidebar) || {}); } catch (eSb) {}
 
   /* A CLICK ON EMPTY MAP TOGGLES THE LAYERS SIDEBAR — ONE owner: the engine's
      registerInfoPanelClicks (infoPanel.js, 250 ms debounce, a dblclick cancels), bound on both

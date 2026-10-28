@@ -314,6 +314,45 @@ function msRenderMapButtons() {
   document.body.appendChild(wrap);
 }
 try { window.msRenderMapButtons = msRenderMapButtons; } catch (e) {}
+/* EMBEDDED (owner 10/27): when the map runs inside another page's <iframe>, an "Open ↗" button
+   floats over the map's top-right and opens the full map in a new tab. Nothing else changes;
+   the full map is one click away whatever the host page did to the frame's size. */
+/* EMBED OPTIONS (owner 10/27: "turn things on and off in the embed code … a simple Yes/No for each").
+   The embed snippet's address carries them: ?embed=1&header=no&sidebar=no&info=no&timeline=no.
+   Each is yes unless the address says no. Read once, at parse time, so the page never flashes the
+   thing it is about to hide; applied where each piece is owned (header: projectLoader's class,
+   sidebar: msApplySidebarSettings, info panel: the click handlers, timeline: msSetTimelineHidden). */
+function msEmbedOptions() {
+  if (window.__msEmbed) return window.__msEmbed;
+  var q; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
+  var framed = false; try { framed = window.self !== window.top; } catch (e2) { framed = true; }
+  var on = !!(q && q.has('embed')) || framed;
+  var yn = function (k) { if (!q || !q.has(k)) return true; return !/^(no|n|0|false|off|hide|hidden)$/i.test(String(q.get(k)).trim()); };
+  var o = { on: on, framed: framed, header: yn('header'), sidebar: yn('sidebar'), info: yn('info'), timeline: yn('timeline') };
+  window.__msEmbed = o;
+  if (o.on && !o.header) { try { document.body.classList.add('ms-no-header'); } catch (e3) {} }
+  return o;
+}
+try { msEmbedOptions(); } catch (e) {}
+// the full map's own address: the embed switches stripped
+function msEmbedFullUrl() {
+  try { var u = new URL(location.href); ['embed', 'header', 'sidebar', 'info', 'timeline'].forEach(function (k) { u.searchParams.delete(k); }); return u.href; } catch (e) { return location.href; }
+}
+function msRenderEmbedOpen() {
+  var framed = false; try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  var old = document.getElementById('ms-embed-open');
+  if (!framed) { if (old) old.remove(); return; }
+  var mapEl = document.querySelector('.map') || document.getElementById('beforeMap') || document.body;
+  var top = 12; try { top = Math.max(8, mapEl.getBoundingClientRect().top + 12); } catch (e) {}
+  var a = old || document.createElement('a');
+  a.id = 'ms-embed-open'; a.href = msEmbedFullUrl(); a.target = '_blank'; a.rel = 'noopener'; a.title = 'Open the full map in a new tab';
+  a.textContent = 'Open ↗';
+  a.style.cssText = 'position:fixed;top:' + top + 'px;right:14px;z-index:1200;display:inline-block;color:black;text-align:center;padding:8px 12px;text-decoration:none;' +
+    'font-size:14px;line-height:20px;border-radius:4px;border:solid black;font-weight:bold;font-family:Arial;background:rgba(255,255,255,0.95);cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25);';
+  if (!old) document.body.appendChild(a);
+}
+try { window.msRenderEmbedOpen = msRenderEmbedOpen; } catch (e) {}
+try { setTimeout(msRenderEmbedOpen, 400); window.addEventListener('resize', function () { try { msRenderEmbedOpen(); } catch (e) {} }); } catch (e) {}   // cliff-ok: a beat for the header/topbar to settle; re-measured on resize
 // at boot: static copies carry customButtons inline in mapData.js; platform pages re-call after config load
 try { setTimeout(msRenderMapButtons, 300); } catch (e) {}   // cliff-ok: a beat for the topbar to mount; re-called on config load anyway
 

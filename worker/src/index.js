@@ -799,7 +799,7 @@ export default {
         },
         body: JSON.stringify({
           ref: "master",
-          inputs: { project_id: fb.projectId, layer_id: fb.layerId, mode: fMode, raw_key: fRawKey, max_zoom: fb.maxZoom ? String(fb.maxZoom) : "" }
+          inputs: { project_id: fb.projectId, layer_id: fb.layerId, mode: fMode, raw_key: fRawKey, max_zoom: fb.maxZoom ? String(fb.maxZoom) : "", scrub_raster: fb.scrubRaster ? "1" : "" }   // scrubRaster (10/27): Make Faster → Bake snapshot for a layer with no rows — the cloud bakes it with the tiles
         })
       });
       if (gh.status === 204) {
