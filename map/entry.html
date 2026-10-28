@@ -12,8 +12,10 @@
     :root { --p: #7c5cbf; --p-dark: #6246a8; }
     body { font-family: 'Source Sans Pro', 'Helvetica Neue', Arial, sans-serif; background: #f0eaff; color: #1e1b2e; min-height: 100vh; }
     nav { position: fixed; top: 0; right: 0; display: flex; align-items: center; gap: 4px; padding: 16px clamp(16px, 4vw, 40px); z-index: 20; }
-    nav a { color: #6e6585; text-decoration: none; font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 6px; white-space: nowrap; }
-    nav a:hover { color: var(--p); }
+    /* the same button the map header wears (engine .header-btn) — owner 10/27: "Make the map button here the
+       same type of button we have on the map headers" */
+    nav a { display: inline-block; color: #000; text-align: center; padding: 10px; text-decoration: none; font-size: 15px; line-height: 25px; border-radius: 4px; border: solid #000; font-weight: bold; font-family: Arial, sans-serif; background: rgba(255,255,255,0.95); white-space: nowrap; }
+    nav a:hover { background: #f3effd; }
     main { max-width: 880px; margin: 0 auto; padding: clamp(64px, 9vw, 96px) clamp(16px, 4vw, 40px) 60px; }
     .sheet { background: #fff; border: 1px solid rgba(124,92,191,0.18); border-radius: 14px; }
     .ms-ct-article { max-width: none; }
@@ -27,13 +29,12 @@
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="../platform/auth.js?v=c3e839f1"></script>
-  <script src="../platform/content.js?v=f268beef"></script>
+  <script src="../platform/content.js?v=0a9f8f2f"></script>
 </head>
 <body>
   <nav>
-    <a href="../index.html">Home</a>
     <a id="nav-map" href="#">Map</a>
-    <a id="nav-index" href="#">Encyclopedia</a>
+    <a id="nav-index" href="#">Resource</a>
   </nav>
   <main>
     <div class="mapline" id="mapline"></div>
@@ -46,21 +47,30 @@
       // a standalone copy (download / showcase) carries the content as window.__msContent
       // (project/contentData.js) and names its map there — no id in the address, no database
       var st = window.__msContent || null;
-      var pid = (q.get('id') || (st && st.map && st.map.id) || '').trim(), slug = (q.get('entry') || '').trim();
+      // the entry comes from ?entry=<slug>, or — on the public site, where the Worker serves this
+      // page at /<map>/resource/<entry> — from window.__msEntrySlug, which the Worker injects
+      // (10/27 address convention: /<map>/map and /<map>/resource).
+      var pid = (q.get('id') || (st && st.map && st.map.id) || '').trim(), slug = (q.get('entry') || window.__msEntrySlug || '').trim();
       var sheet = document.getElementById('sheet'), status = document.getElementById('status');
       function fail(msg) { status.textContent = msg; }
       if (!pid || !slug) return fail('This page needs a map id and an entry.');
       MSContent.css();
-      var mapUrl = st ? 'index.html' : 'index.html?id=' + encodeURIComponent(pid);
+      var mapUrl = st ? (window.__msMapUrl || 'index.html') : 'index.html?id=' + encodeURIComponent(pid);   // a copy's resource/ pages name the map one folder over
       document.getElementById('nav-map').href = mapUrl;
       document.getElementById('nav-index').href = MSContent.indexUrl(pid);
-      var proj = st ? st.map : null;
-      if (!proj && window.MapAuth && MapAuth.db) { try { var pr = await MapAuth.db.from('projects').select('id, name').eq('id', pid).maybeSingle(); proj = pr.data; } catch (e) {} }
+      var proj = await MSContent.project(pid);
       var mapName = (proj && proj.name) || 'Map';
+      var resName = await MSContent.resourceName(pid);   // the map's own word for these pages
+      document.getElementById('nav-index').textContent = resName;
+      var vet = await MSContent.vetting(pid);
       var ml = document.getElementById('mapline');
+      // the owner's vetting notice (10/27): "Help Us Vet!" + About above the article — this is
+      // where the info panel's tooltip sends people ("click Read More, then Help Us Vet")
+      var bar = MSContent.topBar(vet);
+      if (bar) { var tb = document.createElement('div'); tb.innerHTML = bar; while (tb.firstChild) ml.parentNode.insertBefore(tb.firstChild, ml); }
       var a1 = document.createElement('a'); a1.href = mapUrl; a1.textContent = mapName; ml.appendChild(a1);
       var sep = document.createElement('span'); sep.textContent = '·'; ml.appendChild(sep);
-      var a2 = document.createElement('a'); a2.href = MSContent.indexUrl(pid); a2.textContent = 'Encyclopedia'; ml.appendChild(a2);
+      var a2 = document.createElement('a'); a2.href = MSContent.indexUrl(pid); a2.textContent = resName; ml.appendChild(a2);
 
       var e = await MSContent.entryBySlug(pid, slug);
       if (!e) return fail('No entry called “' + slug + '” on this map.');
@@ -76,9 +86,9 @@
       var childType = children.length ? types.filter(function (t) { return t.id === children[0].type_id; })[0] : null;
       document.title = e.title + ' — ' + mapName;
       sheet.innerHTML = MSContent.renderPage(type, e, pid, {
-        parent: parent, children: children,
+        parent: parent, children: children, vet: vet,
         childrenLabel: childType ? (childType.name_plural || childType.name) : 'Within',
-        indexLabel: 'Encyclopedia',
+        indexLabel: resName,
         linkHtml: function (v) { var t = (parent && parent.slug === v) ? parent.title : v; return '<a href="' + MSContent.esc(MSContent.entryUrl(pid, v)) + '">' + MSContent.esc(t) + '</a>'; }
       });
       var open = document.createElement('p'); open.style.margin = '0 16px 20px';

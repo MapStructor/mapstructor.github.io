@@ -417,6 +417,10 @@ button.active {
 
 /* ── Footer ───────────────────────────────────────────────────────────────── */
 
+/* the timeline switched off (raw_config.timelineHidden / window.__msTimelineHidden, 10/27): no bar,
+   no date box, the map takes the space */
+body.ms-no-timeline #footer, body.ms-no-timeline #datepanel { display: none; }
+body.ms-no-timeline .map { bottom: 0; }
 #footer {
   position: absolute;
   bottom: 0px;

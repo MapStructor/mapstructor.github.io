@@ -328,9 +328,25 @@ function zoomToLayer(label, _retry) {
 
 // TIME LAYER FILTERING
 
+/* HIDE THE TIMELINE (owner 10/27: "Add the option to disable and hide the timeline"). A map with no
+   dates needs no slider: one switch removes the bar and the date box, gives the map the space, and
+   drops every layer's date filter exactly as timelineIgnore does — every feature always shows.
+   The platform sets it from raw_config.timelineHidden (viewer and editor, live from the settings
+   checkbox); a copy sets window.__msTimelineHidden in mapData.js before the engine boots. */
+function msSetTimelineHidden(on) {
+  window.__msTimelineHidden = !!on;
+  try { document.body.classList.toggle("ms-no-timeline", !!on); } catch (e) {}
+  try {
+    if (typeof changeDate === "function" && typeof beforeMap !== "undefined" && beforeMap && typeof flatLayers === "function" && typeof layers !== "undefined" && flatLayers(layers).length) {
+      changeDate(window.__msDate || Math.round(typeof sliderMiddle === "number" ? sliderMiddle : Date.now() / 1000));
+    }
+  } catch (e) {}
+  try { [typeof beforeMap !== "undefined" ? beforeMap : null, typeof afterMap !== "undefined" ? afterMap : null].forEach(function (m) { if (m && m.resize) setTimeout(function () { m.resize(); }, 60); }); } catch (e) {}
+}
+try { window.msSetTimelineHidden = msSetTimelineHidden; } catch (e) {}
 function changeDate(unixDate) {
   var date = parseInt(moment.unix(unixDate).format("YYYYMMDD"));
-  var dateFilter = msDateFilter("shape", date, false);   // utils.js owns the rule — see msDateFilter
+  var dateFilter = window.__msTimelineHidden ? null : msDateFilter("shape", date, false);   // utils.js owns the rule — see msDateFilter; a hidden timeline filters nothing
   
 
   //LAYERS FOR FILTERING
@@ -354,7 +370,7 @@ function changeDate(unixDate) {
     });
     // 7/21: LABELS follow the slider too — coalesce keeps dateless anchors (group/point anchors carry
     // no Day props) always visible, while tile-riding labels hide with their features
-    const lblF = msLabelFilter(ownF, msDateFilter("label", date, layer.timelineIgnore));
+    const lblF = msLabelFilter(ownF, msDateFilter("label", date, layer.timelineIgnore || !!window.__msTimelineHidden));
     // companions-ok: -edited- is filtered by editing.js applyEditedOverlayDayFilter, which patches
     // changeDate and paintDate. Editor-only, and it must not be filtered twice.
     ["-label-"].forEach(sfx => {
@@ -415,7 +431,7 @@ function _dpTargets() {
   // paint path, unchanged. Empty/absent set = this function behaves as it always did.
   var owned = window.__msScrubOwned || null;
   flatLayers(layers).forEach(function (layer) {
-    if (layer.timelineIgnore) return;   // 7/21: always-show layers never dim during a scrub either
+    if (layer.timelineIgnore || window.__msTimelineHidden) return;   // 7/21: always-show layers never dim during a scrub either (nor anything when the timeline is off)
     if (owned && owned[layer.id]) return;
     // a layer switched OFF in the sidebar is visibility:none — wrapping its paint per tick is pure
     // waste (measured 8/17: 740 setPaintProperty calls per drag on invisible layers alone)

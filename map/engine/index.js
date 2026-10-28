@@ -217,6 +217,8 @@ if (jQuery.browser.msie)
   // parity check is for.
   var _bootDate = Math.round(sliderMiddle);
   window.__msDate = _bootDate;
+  // a copy that was saved with its timeline off says so before the engine boots (mapData.js)
+  if (window.__msTimelineHidden && typeof msSetTimelineHidden === "function") { try { msSetTimelineHidden(true); } catch (eTH) {} }
   $("#date").text(moment.unix(_bootDate).format("DD MMM YYYY"));
   // …and if the layers were already added (a local/standalone build loads its style before ready,
   // so they were — see getDate() in mapinit.js), apply that date NOW. Belt-and-braces for the same

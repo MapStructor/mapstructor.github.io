@@ -657,6 +657,17 @@
       '<div class="msq-row"><select id="msq-clear-layer" class="msq-in"></select><select id="msq-clear-col" class="msq-in"><option value="">— column —</option></select><button id="msq-clear-go" class="msq-btn" style="border-color:#e0b9b9;background:#ffefef;color:#8f3d3d;">Clear all values</button></div>' +
       '<div class="msq-note">Empties <b>every</b> value in the chosen column of <b>this</b> layer — a standard field (label / description / Start / End) goes blank; a data column is removed. Modifies the layer in place, <b>no undo</b>. If the column is drawn on the map (labels) or drives the timeline (dates), re-bake to update the tiles (the Timeline-dates “Apply” auto-rebakes, or Publish); reopen the attribute table to see it cleared there. Needs <b>query-ops-setup.sql</b> (v7).</div>' +
       "</div>" +
+      // CONCATENATE (owner 10/27: "a concatenate operation section, where I can choose fields, type
+      // custom text parts, and then execute/preview")
+      '<div class="msq-sec"><h4>Concatenate into a column</h4>' +
+      '<div class="msq-row"><select id="msq-cat-layer" class="msq-in"></select></div>' +
+      '<div id="msq-cat-parts" class="msq-row" style="gap:4px;"></div>' +
+      '<div class="msq-row"><button id="msq-cat-addf" class="msq-btn">+ field</button><button id="msq-cat-addt" class="msq-btn">+ text</button><span id="msq-cat-expr" class="msq-note" style="flex:1;"></span></div>' +
+      '<div class="msq-row"><span style="font-size:12.5px;color:#6a6390;">Write to</span><select id="msq-cat-target" class="msq-in" style="flex:0 1 220px;"><option value="label">the Label</option><option value="col">a column of this map</option></select><input id="msq-cat-col" class="msq-in" placeholder="column name, e.g. full_label" style="display:none;"></div>' +
+      '<div class="msq-row"><button id="msq-cat-preview" class="msq-btn">Preview</button><button id="msq-cat-go" class="msq-btn msq-go" disabled>Execute</button></div>' +
+      '<div id="msq-cat-out" class="msq-stats"></div>' +
+      '<div class="msq-note">Builds one text per feature from fields and typed text, in order — e.g. <b>label</b> + “, ” + <b>admin</b>. Preview shows the first rows and changes nothing. Execute writes every feature. A <b>Linked</b> layer\'s own label belongs to its source, so there the result goes into a column of this map (and can become the label field). On a tiled layer a changed label reaches the map after a re-bake.</div>' +
+      "</div>" +
       '<div class="msq-sec"><h4>Merge complete lines per company, per era</h4>' +
       '<div class="msq-row"><select id="msq-op-layer" class="msq-in"></select><select id="msq-op-key" class="msq-in"></select></div>' +
       '<div class="msq-row"><input id="msq-op-only" class="msq-in" placeholder="only this name (optional — cheap single-company test)"></div>' +
@@ -720,6 +731,18 @@
     el.querySelector("#msq-clear-go").addEventListener("click", onClearColumn);
     el.querySelector("#msq-del").addEventListener("click", onDelLayer);
     el.querySelector("#msq-op-layer").addEventListener("change", fillOpKeys);
+    // concatenate wiring
+    el.querySelector("#msq-cat-layer").addEventListener("change", function () { catLayerChanged(true); });
+    el.querySelector("#msq-cat-addf").addEventListener("click", function () { catAddPart("field"); });
+    el.querySelector("#msq-cat-addt").addEventListener("click", function () { catAddPart("text"); });
+    el.querySelector("#msq-cat-target").addEventListener("change", catTargetChanged);
+    // the column NAME is not part of the recipe — typing it must not grey Execute again (owner 10/27,
+    // twice: "Can I not execute?" / "This is not working"); Execute itself refuses an empty name
+    el.querySelector("#msq-cat-parts").addEventListener("input", catExprChanged);
+    el.querySelector("#msq-cat-parts").addEventListener("change", catExprChanged);
+    el.querySelector("#msq-cat-parts").addEventListener("click", function (e) { var b = e.target.closest && e.target.closest("button[data-rm]"); if (b) { b.parentNode.remove(); catExprChanged(); } });
+    el.querySelector("#msq-cat-preview").addEventListener("click", onCatPreview);
+    el.querySelector("#msq-cat-go").addEventListener("click", onCatExecute);
     el.querySelector("#msq-op-dry").addEventListener("click", onOpDry);
     el.querySelector("#msq-op-apply").addEventListener("click", onOpApply);
     // sql wiring
@@ -740,7 +763,7 @@
     var ls = [];
     try { ls = await projectLayers(); } catch (e) {}
     var opts = '<option value="">— layer —</option>' + ls.map(function (l) { return '<option value="' + l.id + '">' + (l.name || "layer") + "</option>"; }).join("");
-    ["msq-dup-layer", "msq-op-layer", "msq-sql-layer", "msq-js-layer", "msq-split-layer", "msq-clear-layer"].forEach(function (id) {
+    ["msq-dup-layer", "msq-op-layer", "msq-sql-layer", "msq-js-layer", "msq-split-layer", "msq-clear-layer", "msq-cat-layer"].forEach(function (id) {
       var s = document.getElementById(id);
       if (!s) return;
       var v = s.value;
@@ -765,6 +788,191 @@
       ksel.innerHTML = ks.map(function (k) { return '<option value="' + k + '">key: ' + k + "</option>"; }).join("");
     } catch (e) { ksel.innerHTML = "<option value='label'>key: label</option>"; }
   }
+  /* ── CONCATENATE (10/27) — fields + typed text → the label, or a column of this map ───────
+     Where the rows live decides everything: an own-rows layer reads and writes features; a
+     Linked layer (raw_config._msFromLayer) reads its SOURCE's rows and writes this map's
+     layer_overlay (the Linked Tileset Custom Columns Table) keyed like the rest of that table;
+     a folded layer reads its export file. One value builder, one preview, one execute. */
+  var _cat = { lid: null, src: null, linked: false, folded: false, keys: [], joinCol: null, preview: null };
+  async function catLayerInfo(lid) {
+    var r = await db().from("layers").select("id, raw_config, fold_state, popup_prop").eq("id", lid).single();
+    if (r.error || !r.data) throw new Error("layer not found");
+    var rc = r.data.raw_config || {};
+    return { lid: lid, src: rc._msFromLayer || rc.instanceOf || null, linked: !!(rc._msFromLayer || rc.instanceOf), folded: r.data.fold_state === "folded", customCols: (rc.customCols || []).map(function (d) { return d.key; }), joinCol: (typeof rc.customJoin === "string" && rc.customJoin.trim()) ? rc.customJoin.trim() : null, columns: rc.columns || null, popupProp: r.data.popup_prop || null };
+  }
+  async function catKeys(info) {
+    var ks = [];
+    try { ks = await layerKeys(info.src || info.lid); } catch (e) { ks = ["label"]; }
+    if (ks.length <= 1 && info.columns && info.columns.length) ks = ["label"].concat(info.columns);
+    if (ks.indexOf("label") < 0) ks.unshift("label");
+    info.customCols.forEach(function (c) { if (ks.indexOf("yours:" + c) < 0) ks.push("yours:" + c); });
+    return ks;
+  }
+  function catFieldOptions(sel) {
+    var v = sel.value;
+    sel.innerHTML = _cat.keys.map(function (k) { return '<option value="' + k.replace(/"/g, "&quot;") + '">' + (k.indexOf("yours:") === 0 ? k.slice(6) + " (yours)" : k) + "</option>"; }).join("");
+    if (v && _cat.keys.indexOf(v) > -1) sel.value = v;
+  }
+  function catAddPart(kind, preset) {
+    var box = document.getElementById("msq-cat-parts");
+    var span = document.createElement("span"); span.className = "msq-part"; span.setAttribute("data-kind", kind);
+    span.style.cssText = "display:inline-flex;align-items:center;gap:2px;border:1px solid #d9d3ea;border-radius:6px;padding:2px 2px 2px 6px;background:" + (kind === "field" ? "#f3effd" : "#fff");
+    if (kind === "field") { var sel = document.createElement("select"); sel.className = "msq-in"; sel.style.cssText = "padding:4px 24px 4px 6px;min-width:90px;flex:0 0 auto;"; span.appendChild(sel); catFieldOptions(sel); if (preset) sel.value = preset; }
+    else { var inp = document.createElement("input"); inp.className = "msq-in"; inp.style.cssText = "padding:4px 6px;width:70px;min-width:40px;flex:0 0 auto;"; inp.placeholder = "text"; inp.value = preset || ""; span.appendChild(inp); }
+    var rm = document.createElement("button"); rm.type = "button"; rm.setAttribute("data-rm", "1"); rm.textContent = "×"; rm.title = "remove"; rm.style.cssText = "border:0;background:transparent;color:#8a86a0;font-size:14px;cursor:pointer;padding:0 4px;";
+    span.appendChild(rm); box.appendChild(span);
+    catExprChanged();
+  }
+  function catParts() {
+    return Array.prototype.map.call(document.querySelectorAll("#msq-cat-parts .msq-part"), function (s) {
+      return s.getAttribute("data-kind") === "field" ? { field: s.querySelector("select").value } : { text: s.querySelector("input").value };
+    });
+  }
+  function catExprText(parts) { return parts.map(function (p) { return p.field != null ? (p.field.indexOf("yours:") === 0 ? p.field.slice(6) : p.field) : JSON.stringify(p.text); }).join(" + "); }
+  function catExprChanged() {
+    var ex = document.getElementById("msq-cat-expr"); if (ex) ex.textContent = catExprText(catParts());
+    var go = document.getElementById("msq-cat-go"); if (go) go.disabled = true;   // a changed recipe must be previewed again
+  }
+  function catTargetChanged() {
+    var t = document.getElementById("msq-cat-target").value;
+    var colEl = document.getElementById("msq-cat-col");
+    colEl.style.display = t === "col" ? "" : "none";
+    if (t === "col" && !colEl.value.trim()) colEl.value = "full_label";   // a name to start from — Execute needs one (owner 10/27: "Can I not execute?")
+    document.getElementById("msq-cat-go").disabled = true;
+  }
+  async function catLayerChanged(reset) {
+    var lid = document.getElementById("msq-cat-layer").value;
+    var box = document.getElementById("msq-cat-parts"), out = document.getElementById("msq-cat-out");
+    document.getElementById("msq-cat-go").disabled = true;
+    if (!lid) { box.innerHTML = ""; out.innerHTML = ""; return; }
+    status("Reading the layer's columns…");
+    try {
+      var info = await catLayerInfo(lid);
+      _cat = { lid: lid, src: info.src, linked: info.linked, folded: info.folded, keys: [], joinCol: info.joinCol, customCols: info.customCols, preview: null };
+      _cat.keys = await catKeys(info);
+      var tsel = document.getElementById("msq-cat-target"), lblOpt = tsel.querySelector('option[value="label"]');
+      lblOpt.disabled = info.linked; lblOpt.textContent = info.linked ? "the Label (belongs to the source — not here)" : "the Label";
+      if (info.linked) tsel.value = "col";
+      catTargetChanged();
+      if (reset || !box.children.length) {
+        box.innerHTML = "";
+        catAddPart("field", "label"); catAddPart("text", ", ");
+        var second = _cat.keys.filter(function (k) { return k !== "label" && k.indexOf("yours:") !== 0; })[0];
+        if (second) catAddPart("field", second);
+      } else Array.prototype.forEach.call(box.querySelectorAll("select"), catFieldOptions);
+      out.innerHTML = "";
+      status(info.linked ? "Linked layer: reads the source's columns, writes a column of this map." : "");
+    } catch (e) { status("Could not read the layer: " + e.message); }
+  }
+  // rows as {key, label, props}: own rows (keyset, no geometry), else the folded export file
+  async function catReadRows(info, limit, onProgress) {
+    var rid = info.src || info.lid, rows = [], lastFid = null, size = Math.min(1000, limit || 1000);
+    for (;;) {
+      var qb = db().from("features").select("feature_id, label, custom_fields").eq("layer_id", rid);
+      if (lastFid !== null) qb = qb.gt("feature_id", lastFid);
+      var r = await qb.order("feature_id").limit(size);
+      if (r.error) throw new Error(r.error.message);
+      (r.data || []).forEach(function (f) { var p = Object.assign({ label: f.label }, f.custom_fields || {}); rows.push({ fid: f.feature_id, label: f.label, props: p, cf: f.custom_fields || {} }); });
+      if (onProgress) onProgress(rows.length);
+      if (!r.data || r.data.length < size || (limit && rows.length >= limit)) break;
+      lastFid = r.data[r.data.length - 1].feature_id;
+    }
+    if (!rows.length) {   // no rows: a folded layer's export carries the same properties
+      var fc = await fetchLayerFC(rid, status);
+      (fc.features || []).slice(0, limit || undefined).forEach(function (f) { var p = f.properties || {}; rows.push({ fid: f.id != null ? f.id : p.feature_id, label: p.label, props: p, cf: p }); });
+    }
+    if (info.linked || info.customCols.length) {   // this map's own column values ride along as yours:<col>
+      var vals = window.MSCustomCols ? (MSCustomCols.cached(info.lid) || await MSCustomCols.load(info.lid)) : {};
+      rows.forEach(function (row) { var k = info.joinCol ? row.props[info.joinCol] : row.fid; var own = (k != null && vals[String(k)]) || {}; Object.keys(own).forEach(function (c) { row.props["yours:" + c] = own[c]; }); row.key = k; });
+    } else rows.forEach(function (row) { row.key = row.fid; });
+    return rows;
+  }
+  function catValue(parts, props) {
+    return parts.map(function (p) { if (p.text != null) return p.text; var v = props[p.field]; return v == null ? "" : String(v); }).join("");
+  }
+  OPS.concat = {
+    name: "concat",
+    desc: "Builds one text per feature from fields and typed text (in order) and writes it to the label, or to a column of this map (Linked layers: always a column — their label belongs to the source).",
+    params: { layer: "uuid", parts: "[{field}|{text}] in order", target: "'label' | 'col'", col: "column name when target is col" },
+    dryRun: async function (p, status) {
+      var info = await catLayerInfo(p.layer); info.customCols = info.customCols || [];
+      var rows = await catReadRows(info, 12);
+      return { linked: info.linked, sample: rows.map(function (r) { return { key: r.key, before: r.label, after: catValue(p.parts, r.props) }; }) };
+    },
+    apply: async function (p, status) {
+      status = status || function () {};
+      var info = await catLayerInfo(p.layer); info.customCols = info.customCols || [];
+      if (p.target === "label" && info.linked) throw new Error("a Linked layer's label belongs to its source — write to a column of this map instead");
+      if (p.target === "col" && !/^[A-Za-z_][\w ]{0,60}$/.test(p.col || "")) throw new Error("give the column a name (letters, digits, _)");
+      var rows = await catReadRows(info, 0, function (n) { status("Reading… " + nfmt(n) + " features"); });
+      if (!rows.length) throw new Error("the layer has no features");
+      var n = 0;
+      if (p.target === "col" && (info.linked || info.folded)) {
+        // this map's own column: layer_overlay in batches + the column's definition on the layer row
+        var patch = {};
+        rows.forEach(function (r) { if (r.key == null) return; patch[String(r.key)] = {}; patch[String(r.key)][p.col] = catValue(p.parts, r.props); n++; });
+        status("Writing " + nfmt(n) + " values to column “" + p.col + "”…");
+        var wr = await MSCustomCols.setMany(p.layer, patch);
+        if (wr && wr.error) throw new Error(wr.error.message);
+        if (info.customCols.indexOf(p.col) < 0) {
+          var defs = info.customCols.concat([p.col]).map(function (k) { return { key: k }; });
+          var pr = await db().rpc("ms_patch_layer_config", { p_id: p.layer, p_patch: { customCols: defs, overlayCols: defs.map(function (d) { return d.key; }) } });
+          if (pr.error) throw new Error(pr.error.message);
+          // the LIVE layer must know its new column too (owner 10/27: picked it as the label field,
+          // nothing showed) — the popup reads a "yours" column only when the layer lists it
+          try {
+            (function walk(arr) { (arr || []).forEach(function (n) { if (!n) return; if (n.children) { walk(n.children); return; } if (n._layerDbId === p.layer || n.tableId === p.layer || (window.slugToLayerDbId && window.slugToLayerDbId[n.id] === p.layer)) { n.customCols = defs.slice(); n.overlayCols = defs.map(function (d) { return d.key; }); } }); })(typeof layers !== "undefined" ? layers : null);
+          } catch (eN) {}
+        }
+      } else {
+        // own rows: label or custom_fields, one row at a time, ten in flight
+        var i = 0, inFlight = [];
+        async function one(r) {
+          var v = catValue(p.parts, r.props), upd;
+          if (p.target === "label") upd = { label: v };
+          else { var cf = Object.assign({}, r.cf); cf[p.col] = v; upd = { custom_fields: cf }; }
+          var u = await db().from("features").update(upd).eq("feature_id", r.fid);
+          if (u.error) throw new Error(u.error.message);
+          n++;
+        }
+        while (i < rows.length) {
+          inFlight = rows.slice(i, i + 10).map(one); i += 10;
+          await Promise.all(inFlight);
+          if (i % 200 === 0 || i >= rows.length) status("Writing… " + nfmt(Math.min(i, rows.length)) + " of " + nfmt(rows.length));
+        }
+      }
+      return { written: n, target: p.target === "label" ? "label" : p.col, linked: info.linked, folded: info.folded };
+    }
+  };
+  function catParams() {
+    return { layer: document.getElementById("msq-cat-layer").value, parts: catParts(), target: document.getElementById("msq-cat-target").value, col: document.getElementById("msq-cat-col").value.trim() };
+  }
+  async function onCatPreview() {
+    var p = catParams(), out = document.getElementById("msq-cat-out");
+    if (!p.layer) { status("Pick a layer."); return; }
+    if (!p.parts.some(function (x) { return x.field != null; })) { status("Add at least one field."); return; }
+    status("Preview — reading the first rows…");
+    try {
+      var r = await MSOps.dryRun("concat", p, status);
+      out.innerHTML = "<div class='msq-note' style='margin-bottom:4px'><b>" + esc(catExprText(p.parts)) + "</b> → " + (p.target === "label" ? "the Label" : "column “" + esc(p.col || "…") + "”") + "</div>" +
+        "<table style='border-collapse:collapse;font-size:12.5px;width:100%'><tr><th style='text-align:left;padding:3px 6px;color:#6a6390'>now (label)</th><th style='text-align:left;padding:3px 6px;color:#6a6390'>after</th></tr>" +
+        r.sample.map(function (s) { return "<tr><td style='padding:3px 6px;border-top:1px solid #eee'>" + esc(s.before == null ? "" : s.before) + "</td><td style='padding:3px 6px;border-top:1px solid #eee'><b>" + esc(s.after) + "</b></td></tr>"; }).join("") + "</table>";
+      document.getElementById("msq-cat-go").disabled = !r.sample.length;
+      status(!r.sample.length ? "That layer has no features." : "Preview only — nothing written. Execute when it looks right.");
+    } catch (e) { status("Preview failed: " + e.message); }
+  }
+  async function onCatExecute() {
+    var p = catParams();
+    if (p.target === "col" && !p.col) { status("Name the column first."); return; }
+    if (!confirm("Write “" + catExprText(p.parts) + "” to " + (p.target === "label" ? "the LABEL of every feature" : "column “" + p.col + "” of every feature") + "? No undo.")) return;
+    var btn = document.getElementById("msq-cat-go"); btn.disabled = true;
+    try {
+      var r = await MSOps.run("concat", p, status);
+      status("Done ✓ — " + nfmt(r.written) + " features written to " + (r.target === "label" ? "the label" : "“" + r.target + "”") + ". " + (r.target !== "label" ? "To show it on the map, pick it as the Label field in the layer panel (Info). " : "") + (r.folded && r.target === "label" ? "Re-bake to see it on the map." : ""));
+      pushHist("Operations", "CONCAT " + catExprText(p.parts) + " → " + (r.target === "label" ? "label" : r.target) + " (" + nfmt(r.written) + ")");
+    } catch (e) { status("Execute failed: " + e.message); btn.disabled = false; }
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[<>&"]/g, function (c) { return ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c]; }); }
   // ── Split a layer into "labeled" + "unlabeled" by a column's presence ──
   async function fillSplitCols() {
     var lsel = document.getElementById("msq-split-layer"), csel = document.getElementById("msq-split-col");

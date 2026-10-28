@@ -177,7 +177,7 @@
   async function columns(geoUrl, ver) {
     var a = await openArchive(geoUrl, ver);
     var STD = { feature_id: 1, label: 1, description: 1, start_date: 1, end_date: 1, content_id: 1, image_url: 1 };
-    return a.fields.map(function (f) { return f.name; }).filter(function (n) { return !GEOM_NAMES[n] && !STD[n] && n.indexOf('ms_') !== 0; });
+    return a.fields.map(function (f) { return f.name; }).filter(function (n) { return !GEOM_NAMES[n] && !STD[n] && n.indexOf('ms_') !== 0 && !/^ogc_fid$/i.test(n); });   // OGC_FID is GDAL's own row number, not a column of the data
   }
   window.MSFoldRead = { feature: feature, columns: columns, wkbToGeoJSON: wkbToGeoJSON };
 })();

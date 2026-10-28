@@ -4959,6 +4959,9 @@
         '<input id="esp-tl-end" type="date" class="mss-in" />' +
         '<div class="mss-note">Start/end of the bottom timeline slider — type a date or pick one (down to the day).</div>' +
         '<label class="mss-check" style="margin-top:6px;"><input id="esp-tl-today" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />End at today (updates each visit)</label>' +
+        // 10/27 (owner): a map without dates needs no slider at all
+        '<label class="mss-check" style="margin-top:10px;"><input id="esp-tl-hide" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Hide the timeline — no slider, no date; every feature always shows</label>' +
+        '<div class="mss-note">For a map without dates. Applies here, in the published map and in copies.</div>' +
       '</div>' +
       // ── HEADER ──
       '<div class="mss-sectop">' +
@@ -4993,6 +4996,11 @@
         '<input id="esp-btn-label" type="text" placeholder="Label — e.g. Encyclopedia" class="mss-in" style="margin-top:4px;" />' +
         '<input id="esp-btn-url" type="text" placeholder="https://…" class="mss-in" style="margin-top:4px;" />' +
         '<button id="esp-btn-add" class="mss-btn" style="margin-top:4px;">+ Add button</button>' +
+        '<button id="esp-btn-resource" class="mss-btn" style="margin-top:4px;margin-left:6px;" title="A button to this map\'s own resource (encyclopedia) page — no address to type; it follows the map wherever it is served">+ Resource button</button>' +
+        // 10/27 (owner): the word for the map's resource pages — "Resource", "Encyclopedia", … — is the map's choice
+        '<label class="mss-lbl" style="margin-top:10px;">What this map calls its resource pages</label>' +
+        '<input id="esp-resource-name" type="text" placeholder="Resource" class="mss-in" />' +
+        '<div class="mss-note">The pages\' title ("&lt;map name&gt;: Resource"), their links and the new button\'s name. The address stays /resource.</div>' +
         '<div class="mss-note">Shows in the map\'s upper-right — here, for visitors, and on the published copy. Opens in a new tab.</div>' +
       '</div>' +
       '<div class="mss-note" style="margin-top:12px;">To edit the <b>About</b> text, click the <b>ABOUT</b> button (header) or the sidebar <b>About</b> link and edit the popup directly.</div>' +
@@ -5010,6 +5018,12 @@
     ['esp-sb-hidden', 'esp-sb-startclosed', 'esp-sb-toggleonly', 'esp-sb-padmap'].forEach(function (id) { document.getElementById(id).addEventListener('change', onSidebarSetting); });
     document.getElementById('esp-setview').addEventListener('click', onSetDefaultView);
     document.getElementById('esp-thumb').addEventListener('click', onSetThumbnail);
+    document.getElementById('esp-tl-hide').addEventListener('change', async function () {
+      var on = this.checked;
+      try { if (typeof msSetTimelineHidden === 'function') msSetTimelineHidden(on); } catch (eTH) {}
+      setStatus('Saving…');
+      try { var rT = await patchProjectConfig({ timelineHidden: on ? true : null }); if (rT.error) throw new Error(rT.error.message); setStatus(on ? 'Timeline hidden' : 'Timeline shown'); } catch (e) { setStatus('Save failed'); }
+    });
     document.getElementById('esp-tl-start').addEventListener('change', onTimelineSave);
     document.getElementById('esp-tl-end').addEventListener('change', onTimelineSave);
     document.getElementById('esp-tl-today').addEventListener('change', function () { document.getElementById('esp-tl-end').disabled = this.checked; onTimelineSave(); });
@@ -5019,6 +5033,17 @@
     document.getElementById('esp-logo-file').addEventListener('change', onLogoFile);
     document.getElementById('esp-logo-link').addEventListener('change', onLogoLink);
     document.getElementById('esp-btn-add').addEventListener('click', onMapButtonAdd);
+    document.getElementById('esp-resource-name').addEventListener('change', async function () {
+      var nm = this.value.trim();
+      setStatus('Saving…');
+      try { var rN = await patchProjectConfig({ resourceName: nm || null }); if (rN.error) throw new Error(rN.error.message); setStatus(nm ? 'Resource pages are now called “' + nm + '”' : 'Resource pages use the default name'); } catch (e) { setStatus('Save failed'); }
+    });
+    document.getElementById('esp-btn-resource').addEventListener('click', function () {
+      if (_mapBtns.some(function (b) { return b.url === '__resource'; })) { setStatus('The Resource button is already there'); return; }
+      _mapBtns.push({ label: (document.getElementById('esp-btn-label').value || '').trim() || (document.getElementById('esp-resource-name').value || '').trim() || 'Resource', url: '__resource' });
+      document.getElementById('esp-btn-label').value = '';
+      saveMapButtons();
+    });
     // Sharing (who can see the map) moved to its own 🔗 Share panel in the top bar — see platform/share.js.
   }
   // ── The per-layer copy engine (extracted 8/5 — Map Portal plan step 3). Copies ONE bundle
@@ -5526,7 +5551,7 @@
     injectSettingsPanel();
     var p = document.getElementById('editor-settings-panel');
     if (p.style.display === 'block') { p.style.display = 'none'; return; }   // ⚙ toggles
-    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom, r.data.raw_config && r.data.raw_config.viewFit); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); document.getElementById('esp-lock').checked = !!(r.data.raw_config && r.data.raw_config.editLock); _mapBtns = (r.data.raw_config && r.data.raw_config.customButtons || []).slice(); renderMapBtnList();
+    try { var r = await db.from('projects').select('name, center_lng, center_lat, zoom, raw_config').eq('id', projectId).single(); if (r.data) { document.getElementById('esp-name').value = r.data.name || ''; document.getElementById('esp-viewinfo').textContent = fmtView(r.data.center_lat, r.data.center_lng, r.data.zoom, r.data.raw_config && r.data.raw_config.viewFit); var tl = r.data.raw_config && r.data.raw_config.timeline; document.getElementById('esp-tl-start').value = (tl && tl.start) || ''; var todayEnd = !!(tl && tl.end === 'today'); document.getElementById('esp-tl-today').checked = todayEnd; document.getElementById('esp-tl-end').disabled = todayEnd; document.getElementById('esp-tl-end').value = todayEnd ? '' : ((tl && tl.end) || ''); document.getElementById('esp-tl-hide').checked = !!(r.data.raw_config && r.data.raw_config.timelineHidden); document.getElementById('esp-resource-name').value = (r.data.raw_config && r.data.raw_config.resourceName) || ''; document.getElementById('esp-logo-link').value = (r.data.raw_config && r.data.raw_config.headerLink) || ''; document.getElementById('esp-feat-header').checked = !!(r.data.raw_config && r.data.raw_config.features && r.data.raw_config.features.header === true); document.getElementById('esp-lock').checked = !!(r.data.raw_config && r.data.raw_config.editLock); _mapBtns = (r.data.raw_config && r.data.raw_config.customButtons || []).slice(); renderMapBtnList();
       /* The MSD Project row is shown ONLY to an admin, and its state read from the same row we
          already have — no extra round trip. Awaiting the admin check here rather than at inject
          time is deliberate: the panel is built once, and whether this user is an admin is not
@@ -5741,8 +5766,16 @@
     _mapBtns.forEach(function (b, i) {
       var row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px;border:1px solid #e2e0ea;border-radius:6px;margin-bottom:4px;font-size:12px;';
-      var s = document.createElement('span'); s.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      s.innerHTML = '<b>' + String(b.label).replace(/</g, '&lt;') + '</b> <span style="color:#9a93ad;">' + String(b.url).replace(/</g, '&lt;') + '</span>';
+      var s = document.createElement('span'); s.style.cssText = 'flex:1;display:flex;align-items:center;gap:6px;overflow:hidden;min-width:0;';
+      // the name is editable in place (owner 10/27: "I should be able to choose the name of the button")
+      var nm = document.createElement('input'); nm.type = 'text'; nm.value = b.label; nm.title = 'Rename this button';
+      nm.style.cssText = 'flex:0 1 120px;min-width:60px;font:inherit;font-weight:700;padding:2px 4px;border:1px solid transparent;border-radius:4px;background:transparent;';
+      nm.addEventListener('focus', function () { nm.style.borderColor = '#b9aee0'; nm.style.background = '#fff'; });
+      nm.addEventListener('blur', function () { nm.style.borderColor = 'transparent'; nm.style.background = 'transparent'; });
+      nm.addEventListener('change', function () { var v = nm.value.trim(); if (!v) { nm.value = b.label; return; } b.label = v; saveMapButtons(); });
+      var u = document.createElement('span'); u.style.cssText = 'color:#9a93ad;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      u.textContent = b.url === '__resource' ? "this map's resource page" : String(b.url);
+      s.appendChild(nm); s.appendChild(u);
       var x = document.createElement('button'); x.textContent = '×'; x.title = 'Remove this button';
       x.style.cssText = 'border:none;background:none;color:#b4453a;cursor:pointer;font-size:15px;line-height:1;padding:0 2px;';
       x.addEventListener('click', function () { _mapBtns.splice(i, 1); saveMapButtons(); });
@@ -5760,7 +5793,11 @@
     var lb = (document.getElementById('esp-btn-label').value || '').trim();
     var url = (document.getElementById('esp-btn-url').value || '').trim();
     if (!lb || !url) { setStatus('A button needs both a label and a URL'); return; }
-    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;   // people type bare domains; javascript: and friends never pass
+    // a relative address (../resource/, encyclopedia.html?id=…) stays relative — it travels with the
+    // copy (owner 10/27: "I'll need to be able to use a relative link"); a bare domain gets https://;
+    // javascript: and friends never pass
+    var relative = /^(\.{0,2}\/|[\w.-]+\.html(\?|#|$))/i.test(url);
+    if (!relative && !/^https?:\/\//i.test(url)) url = 'https://' + url;
     _mapBtns.push({ label: lb, url: url });
     document.getElementById('esp-btn-label').value = ''; document.getElementById('esp-btn-url').value = '';
     saveMapButtons();
@@ -11162,7 +11199,12 @@
         keys = await foldedColumns(node, lid);
         if (gen !== _dateSecGen) return;
       }
-      if (!keys.length) return;   // nothing to map → stay hidden
+      // 10/27 (owner: "it should never be hidden now, right?"): the section always shows for a layer;
+      // with no column names it says so instead of vanishing (fixed dates still work)
+      var noteEl = document.getElementById('elp-dates-nocols');
+      if (!noteEl) { noteEl = document.createElement('div'); noteEl.id = 'elp-dates-nocols'; noteEl.className = 'ms-note'; var toolsEl = document.getElementById('elp-dates-tools'); if (toolsEl) toolsEl.insertBefore(noteEl, toolsEl.firstChild); }
+      noteEl.style.display = keys.length ? 'none' : '';
+      noteEl.textContent = keys.length ? '' : (cloud ? 'This layer\'s column names could not be read (an older cloud bake) — re-bake it once from the layer panel, or use a fixed date.' : 'This layer has no data columns to map — only a fixed date can be applied.');
       keys = orderAttrKeys(keys, 40);
       var cur = (node.dateMap && !node.dateMap.none) ? node.dateMap : null;
       [['elp-date-start-col', 'start'], ['elp-date-end-col', 'end']].forEach(function (pair) {

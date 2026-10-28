@@ -55,6 +55,52 @@
     cache.entriesByType[typeId] = out;
     return out;
   }
+  /* ── the map's own settings the content pages need (10/27) ──────────────────────────────
+     raw_config.about (the map's About text, same as the map header's ABOUT) and
+     raw_config.vetting = { pill, tip, help } — the owner's "Unvetted by human" notice: `pill` is
+     the words on every entry that no human has vetted (an entry with body.vetted === true shows
+     none), `tip` its tooltip, `help` where "Help Us Vet!" leads. A frozen copy carries the same
+     under window.__msContent.map.raw_config. */
+  var _proj = {};
+  async function project(projectId) {
+    if (bundle()) { var bm = bundle().map || {}; return { id: bm.id, name: bm.name, raw_config: bm.raw_config || {} }; }
+    if (_proj[projectId]) return _proj[projectId];
+    var d = db(); if (!d) return { id: projectId, name: null, raw_config: {} };
+    var r = await d.from('projects').select('id, name, raw_config').eq('id', projectId).maybeSingle();
+    var p = (!r.error && r.data) ? { id: r.data.id, name: r.data.name, raw_config: r.data.raw_config || {} } : { id: projectId, name: null, raw_config: {} };
+    _proj[projectId] = p;
+    return p;
+  }
+  // what this map calls its resource pages — "Resource", "Encyclopedia", … (raw_config.resourceName,
+  // owner 10/27). The address stays /resource; only the word people see changes.
+  async function resourceName(projectId) {
+    var p = await project(projectId), n = p.raw_config && p.raw_config.resourceName;
+    return (typeof n === 'string' && n.trim()) ? n.trim() : 'Resource';
+  }
+  async function vetting(projectId) {
+    var p = await project(projectId), v = p.raw_config && p.raw_config.vetting;
+    if (!v || typeof v !== 'object' || !v.pill) return null;
+    // help = a web address, or "entry:<slug>" = a page of this map's own encyclopedia (resolves
+    // to the right address on the platform, in a copy and on the public site alike)
+    var help = v.help ? String(v.help) : '';
+    if (/^entry:/i.test(help)) help = entryUrl(projectId, help.slice(6).trim());
+    return { pill: String(v.pill), tip: v.tip ? String(v.tip) : '', help: help, about: (p.raw_config && p.raw_config.about) || '' };
+  }
+  function vetPill(vet, e) {
+    if (!vet || !vet.pill) return '';
+    if (e && e.body && e.body.vetted === true) return '';
+    return '<span class="ms-ct-pill ms-ct-vet"' + (vet.tip ? ' title="' + esc(vet.tip) + '"' : '') + '>' + esc(vet.pill) + '</span>';
+  }
+  // the bar at the top of the encyclopedia and entry pages: "Help Us Vet!" (when it has somewhere
+  // to go) and About (when the map has an About text) — one definition for both pages
+  function topBar(vet) {
+    if (!vet) return '';
+    var h = '';
+    if (vet.help) h += '<a class="ms-ct-vetbtn" href="' + esc(vet.help) + '">Help Us Vet!</a>';   // same tab — pages of the resource never open new tabs (owner 10/27)
+    if (vet.about) h += '<button type="button" class="ms-ct-aboutbtn" onclick="var a=this.parentNode.nextElementSibling;if(a){a.style.display=a.style.display===\'none\'?\'\':\'none\';}">About</button>';
+    if (!h) return '';
+    return '<div class="ms-ct-topbar">' + h + '</div>' + (vet.about ? '<div class="ms-ct-about" style="display:none;">' + safeHtml(vet.about) + '</div>' : '');
+  }
   async function entryBySlug(projectId, slug) {
     if (bundle()) return (bundle().entries || []).find(function (e) { return e.slug === slug; }) || null;
     var d = db(); if (!d) return null;
@@ -172,10 +218,10 @@
   function indexUrl(projectId) { return window.__msContentIndex || ('encyclopedia.html?id=' + encodeURIComponent(projectId)); }
 
   // the info panel: title, enum pills, summary, the panel-facing fields, then Read more
-  function renderPanel(type, e, projectId) {
+  function renderPanel(type, e, projectId, vet) {
     var fields = (type && type.fields) || [];
     var pills = fields.filter(function (f) { return f.kind === 'enum' && showOn(f, 'panel') && e.body && e.body[f.key] != null; })
-      .map(function (f) { return pill(f, e.body[f.key]); }).join(' ');
+      .map(function (f) { return pill(f, e.body[f.key]); }).concat([vetPill(vet, e)]).filter(Boolean).join(' ');
     var rest = fields.filter(function (f) { return f.kind !== 'enum' && f.kind !== 'link' && showOn(f, 'panel'); })
       .map(function (f) { var h = valueHtml(f, e.body && e.body[f.key]); return h ? '<div class="ms-ct-field"><div class="ms-ct-lbl">' + esc(f.label || f.key) + '</div>' + h + '</div>' : ''; }).join('');
     return '<div class="ms-ct-panel">' +
@@ -192,14 +238,14 @@
     ctx = ctx || {};
     ctx.fn = footnotes();   // the page's citations, numbered in reading order (fields in the type's order)
     var pills = fields.filter(function (f) { return f.kind === 'enum' && showOn(f, 'page') && e.body && e.body[f.key] != null; })
-      .map(function (f) { return pill(f, e.body[f.key]); }).join(' ');
+      .map(function (f) { return pill(f, e.body[f.key]); }).concat([vetPill(ctx.vet, e)]).filter(Boolean).join(' ');
     var sourcesField = fields.filter(function (f) { return f.kind === 'richtext' && showOn(f, 'page') && /^sources?$/i.test(f.key); })[0];
     var parts = fields.filter(function (f) { return f.kind !== 'enum' && showOn(f, 'page'); }).map(function (f) {
       var h = valueHtml(f, e.body && e.body[f.key], ctx); if (!h) return '';
       return '<section class="ms-ct-sec"><h2>' + esc(f.label || f.key) + '</h2>' + h + '</section>';
     }).join('') + ctx.fn.html(sourcesField ? (sourcesField.label || sourcesField.key) : 'Sources');
     return '<article class="ms-ct-article">' +
-      '<p class="ms-ct-crumbs"><a href="' + esc(indexUrl(projectId)) + '">' + esc((ctx && ctx.indexLabel) || 'Encyclopedia') + '</a>' +
+      '<p class="ms-ct-crumbs"><a href="' + esc(indexUrl(projectId)) + '">' + esc((ctx && ctx.indexLabel) || 'Resource') + '</a>' +
       (ctx && ctx.parent ? ' › <a href="' + esc(entryUrl(projectId, ctx.parent.slug)) + '">' + esc(ctx.parent.title) + '</a>' : '') + '</p>' +
       '<h1>' + esc(e.title) + '</h1>' +
       (pills ? '<div class="ms-ct-pills">' + pills + '</div>' : '') +
@@ -215,6 +261,13 @@
     s.textContent =
       '.ms-ct-pills{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 8px}' +
       '.ms-ct-pill{display:inline-block;padding:3px 9px;border:1px solid #9a94b3;border-radius:999px;background:#f3f1f8;color:#4a3f66;font:700 11px/1.3 "Source Sans Pro",Arial,sans-serif;letter-spacing:.03em}' +
+      // the vetting notice (10/27): amber so it reads as a status, not one of the data's own pills; the tooltip explains
+      '.ms-ct-pill.ms-ct-vet{background:#fff4d6;border-color:#d9a21b;color:#7a5a00;cursor:help}' +
+      '.ms-ct-topbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 14px}' +
+      '.ms-ct-vetbtn{display:inline-block;text-decoration:none;font:800 15px/1.2 "Source Sans Pro",Arial,sans-serif;letter-spacing:.02em;padding:11px 20px;border-radius:9px;background:#d9a21b;color:#2a1f00;box-shadow:0 2px 0 #a67a0b}' +
+      '.ms-ct-vetbtn:hover{background:#e8b22b}' +
+      '.ms-ct-aboutbtn{font:700 13px/1.2 "Source Sans Pro",Arial,sans-serif;padding:10px 16px;border-radius:9px;border:1px solid rgba(124,92,191,.35);background:#fff;color:#6246a8;cursor:pointer}' +
+      '.ms-ct-about{background:#fff;border:1px solid rgba(124,92,191,.18);border-radius:12px;padding:16px 18px;margin:0 0 16px;font-size:15px;line-height:1.55;color:#2b2540}' +
       '.ms-ct-summary{font-size:14px;line-height:1.5}.ms-ct-lead{font-size:18px;line-height:1.5;color:#2b2540}' +
       '.ms-ct-field{margin:8px 0}.ms-ct-lbl{font:700 11px "Source Sans Pro",Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#7c5cbf;margin-bottom:2px}' +
       '.ms-ct-list{margin:4px 0 4px 18px;padding:0;font-size:13px;line-height:1.45}.ms-ct-list li{margin:5px 0}' +
@@ -250,11 +303,13 @@
     var type = ts.filter(function (t) { return t.id === cfg.type; })[0] || null;
     css();
     hits.sort(function (a, b) { return a.title.localeCompare(b.title); });
-    return { html: hits.map(function (e) { return renderPanel(type, e, projectId); }).join('<hr class="ms-ct-sep"/>'), title: hits.length === 1 ? hits[0].title : (props[keyProp] + ' — ' + hits.length + ' entries') };
+    var vet = null; try { vet = await vetting(projectId); } catch (eV) {}
+    return { html: hits.map(function (e) { return renderPanel(type, e, projectId, vet); }).join('<hr class="ms-ct-sep"/>'), title: hits.length === 1 ? hits[0].title : (props[keyProp] + ' — ' + hits.length + ' entries') };
   }
 
   window.MSContent = {
     mapId: mapId, types: types, entriesForType: entriesForType, entryBySlug: entryBySlug, entriesForKey: entriesForKey, invalidate: invalidate,
+    project: project, vetting: vetting, vetPill: vetPill, topBar: topBar, resourceName: resourceName,
     linksOf: linksOf, entriesById: entriesById, fieldOf: fieldOf, enumLabel: enumLabel, enumColor: enumColor,
     renderPanel: renderPanel, renderPage: renderPage, panelFor: panelFor, entryUrl: entryUrl, indexUrl: indexUrl, css: css, esc: esc, safeHtml: safeHtml
   };

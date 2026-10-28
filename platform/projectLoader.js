@@ -375,6 +375,18 @@ window.msApplyHeaderFeature = function (visible, projectName) {
         }, 400);
       })();
     }
+    // Timeline OFF (raw_config.timelineHidden, 10/27): no slider, no date, every feature shows —
+    // the engine's msSetTimelineHidden is the one owner; polled like the range above
+    if (raw.timelineHidden) {
+      (function () {
+        var tries = 0;
+        var iv = setInterval(function () {
+          var ok = false;
+          try { if (typeof msSetTimelineHidden === "function" && typeof beforeMap !== "undefined" && beforeMap) { msSetTimelineHidden(true); ok = true; } } catch (err) {}
+          if (ok || ++tries > 25) clearInterval(iv);
+        }, 400);
+      })();
+    }
     // Layer/group ℹ popups + the About modal, saved by the editor's in-place popup editing. The engine only
     // opens a modal when modal_header_text[id] is set — the editor loads these in loadProjectChrome(), but the
     // viewer never did, so saved info modals showed NOTHING in view. Load them here.

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Embed test — MapStructor</title>
+  <style>
+    /* test/embed — a page that embeds a MapStructor map the way any other website would (owner
+       10/27: "We need to be able to embed maps … Let's make a test page for this. Have text in the
+       page, with an embed, with an embed text field where I can enter in the embed text and it will
+       update the embed."). Paste any embed code below; the iframe is rebuilt from it. */
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Georgia, 'Times New Roman', serif; color: #1e1b2e; background: #fbfaf7; }
+    main { max-width: 860px; margin: 0 auto; padding: 40px 20px 80px; }
+    h1 { font-size: 34px; margin: 0 0 6px; }
+    .sub { color: #6e6585; font-family: Arial, sans-serif; font-size: 14px; margin: 0 0 28px; }
+    p { font-size: 17px; line-height: 1.6; }
+    .embed { margin: 28px 0; border: 1px solid #ddd7ea; border-radius: 8px; overflow: hidden; background: #fff; }
+    .embed iframe { display: block; width: 100%; border: 0; }
+    .tools { font-family: Arial, sans-serif; background: #f0eaff; border: 1px solid #d9d0f2; border-radius: 8px; padding: 14px 16px; margin: 20px 0; }
+    .tools label { display: block; font-size: 13px; font-weight: 700; color: #5b458f; margin-bottom: 6px; }
+    textarea { width: 100%; min-height: 120px; font: 13px/1.4 Consolas, Menlo, monospace; padding: 10px; border: 1px solid #b9aee0; border-radius: 6px; resize: vertical; }
+    .note { font-size: 12.5px; color: #6e6585; margin-top: 6px; }
+    .note.err { color: #a33; }
+    .meta { font-family: Arial, sans-serif; font-size: 12px; color: #9490a8; padding: 6px 10px; border-top: 1px solid #eee8f8; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>A page with a map in it</h1>
+    <p class="sub">test/embed — how a MapStructor map looks inside somebody else's page</p>
+
+    <p>This page stands in for any website that wants to show a MapStructor map: a blog post, a
+      museum's site, a school's resource page. The paragraph you are reading is the page's own text;
+      the map below is MapStructor's, placed here with an embed snippet exactly as a site owner would
+      paste it. Nothing on this page talks to MapStructor's database. The map inside the frame is the
+      published copy, so it behaves here exactly as it does at its own address.</p>
+
+    <div class="embed" id="embed-box">
+      <iframe id="embed-frame" src="https://mapstructor.com/personal_home_protection/map/" height="620" title="Personal Home Protection Rights" allow="fullscreen" loading="lazy"></iframe>
+      <div class="meta" id="embed-meta"></div>
+    </div>
+
+    <p>Text continues after the map, the way an article would: a caption, a paragraph that refers
+      to what the reader just looked at, a link onward. The point of the test is to see how the frame
+      sits inside flowing text — its height, its edges, whether the map's own header and side panel
+      make sense at this size, and whether the controls still work with the page scrolling around it.</p>
+
+    <div class="tools">
+      <label for="embed-code">Embed code — paste any <code>&lt;iframe …&gt;</code> here and the map above updates</label>
+      <textarea id="embed-code" spellcheck="false"></textarea>
+      <div class="note" id="embed-note">Only the iframe's own attributes are used (src, width, height, style, allow, title, loading). Scripts and everything else are ignored.</div>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      var frame = document.getElementById('embed-frame'), box = document.getElementById('embed-box');
+      var code = document.getElementById('embed-code'), note = document.getElementById('embed-note'), meta = document.getElementById('embed-meta');
+      var KEEP = ['src', 'width', 'height', 'style', 'allow', 'allowfullscreen', 'title', 'loading', 'referrerpolicy'];
+      function describe(f) {
+        meta.textContent = f.getAttribute('src') + ' · ' + (f.getAttribute('width') || '100%') + ' × ' + (f.getAttribute('height') || 'auto');
+      }
+      function snippetFor(f) {
+        var parts = KEEP.filter(function (a) { return f.hasAttribute(a); }).map(function (a) { var v = f.getAttribute(a); return v === '' ? a : a + '="' + v.replace(/"/g, '&quot;') + '"'; });
+        return '<iframe ' + parts.join(' ') + '></iframe>';
+      }
+      function apply(text) {
+        var doc; try { doc = new DOMParser().parseFromString(String(text || ''), 'text/html'); } catch (e) { doc = null; }
+        var src = doc ? doc.querySelector('iframe') : null;
+        if (!src || !src.getAttribute('src')) { note.textContent = 'No <iframe src="…"> found in that code — the map above is unchanged.'; note.className = 'note err'; return; }
+        var f = document.createElement('iframe');
+        KEEP.forEach(function (a) { if (src.hasAttribute(a)) f.setAttribute(a, src.getAttribute(a)); });
+        if (!f.hasAttribute('title')) f.setAttribute('title', 'Embedded map');
+        f.id = 'embed-frame';
+        box.replaceChild(f, frame); frame = f;
+        describe(f);
+        note.textContent = 'Updated — the map above is now this embed.'; note.className = 'note';
+      }
+      code.value = snippetFor(frame);
+      describe(frame);
+      var t = null;
+      code.addEventListener('input', function () { clearTimeout(t); t = setTimeout(function () { apply(code.value); }, 400); });
+    })();
+  </script>
+</body>
+</html>

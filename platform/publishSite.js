@@ -144,6 +144,7 @@
       var rel = null;
       if (n.indexOf("map/") === 0) rel = n.slice(4);
       else if (n.indexOf("images/") === 0) rel = n;            // → maps/<slug>/images/…
+      else if (n.indexOf("resource/") === 0) rel = n;          // → maps/<slug>/resource/… (the encyclopedia pages, 10/27 convention)
       else continue;                                           // start-map.bat, serve-map.py, other_data/ — not web surface
       var bytes = await f.async("uint8array");
       if (rel === "index.html") {

@@ -271,6 +271,13 @@ function msRenderMapButtons() {
   document.querySelectorAll('.ms-custom-mapbtn').forEach(function (e) { e.remove(); });
   var btns = (typeof mapConfig !== 'undefined' && mapConfig && mapConfig.customButtons) || [];
   btns = btns.filter(function (b) { return b && b.label && b.url; });
+  // "__resource" = this map's own resource (encyclopedia) page, wherever the map is served: the
+  // platform page carries the map id; a copy sets window.__msContentIndex (10/27 address convention)
+  btns = btns.map(function (b) {
+    if (b.url !== '__resource') return b;
+    var pid = (typeof platformProjectId !== 'undefined' && platformProjectId) || window.platformProjectId || (mapConfig && mapConfig.projectId) || '';
+    return { label: b.label, url: window.__msContentIndex || ('encyclopedia.html' + (pid ? '?id=' + encodeURIComponent(pid) : '')) };
+  });
   if (!btns.length) return;
   /* HEADER VISIBLE → these are header buttons, full stop (8/27, owner: "needs to have same styling
      as About button" — v1 floated its own pill over the header and sat ON the About button). The

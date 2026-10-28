@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Encyclopedia — MapStructor</title>
+  <title>Resource — MapStructor</title>
   <link rel="icon" href="../images/logo-transparent.png">
   <style>
     /* A map's encyclopedia: every entry of every content type, grouped the way the type's first
@@ -13,8 +13,10 @@
     :root { --p: #7c5cbf; --p-dark: #6246a8; }
     body { font-family: 'Source Sans Pro', 'Helvetica Neue', Arial, sans-serif; background: #f0eaff; color: #1e1b2e; min-height: 100vh; }
     nav { position: fixed; top: 0; right: 0; display: flex; align-items: center; gap: 4px; padding: 16px clamp(16px, 4vw, 40px); z-index: 20; }
-    nav a { color: #6e6585; text-decoration: none; font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 6px; white-space: nowrap; }
-    nav a:hover { color: var(--p); }
+    /* the same button the map header wears (engine .header-btn) — owner 10/27: "Make the map button here the
+       same type of button we have on the map headers" */
+    nav a { display: inline-block; color: #000; text-align: center; padding: 10px; text-decoration: none; font-size: 15px; line-height: 25px; border-radius: 4px; border: solid #000; font-weight: bold; font-family: Arial, sans-serif; background: rgba(255,255,255,0.95); white-space: nowrap; }
+    nav a:hover { background: #f3effd; }
     main { max-width: 960px; margin: 0 auto; padding: clamp(64px, 9vw, 96px) clamp(16px, 4vw, 40px) 60px; }
     .crumb { color: #9490a8; font-size: 13px; text-decoration: none; }
     h1 { margin-top: 8px; font-size: clamp(26px, 4.5vw, 38px); font-weight: 800; letter-spacing: -0.02em; }
@@ -39,16 +41,15 @@
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="../platform/auth.js?v=c3e839f1"></script>
-  <script src="../platform/content.js?v=f268beef"></script>
+  <script src="../platform/content.js?v=0a9f8f2f"></script>
 </head>
 <body>
   <nav>
-    <a href="../index.html">Home</a>
     <a id="nav-map" href="#">Map</a>
   </nav>
   <main>
     <a class="crumb" id="crumb" href="#">Map</a>
-    <h1 id="title">Encyclopedia</h1>
+    <h1 id="title">Resource</h1>
     <p class="sub" id="sub">Every entry on this map.</p>
     <div class="tools"><input id="q" type="search" placeholder="Filter by name…" autocomplete="off"><span class="n" id="n"></span></div>
     <div id="body"><p class="empty">Loading…</p></div>
@@ -62,13 +63,20 @@
       var q = new URLSearchParams(location.search), pid = (q.get('id') || (st && st.map && st.map.id) || '').trim();
       var body = document.getElementById('body');
       if (!pid) { body.innerHTML = '<p class="empty">This page needs a map id.</p>'; return; }
-      var mapUrl = st ? 'index.html' : 'index.html?id=' + encodeURIComponent(pid);
+      var mapUrl = st ? (window.__msMapUrl || 'index.html') : 'index.html?id=' + encodeURIComponent(pid);   // a copy's resource/ pages name the map one folder over
       document.getElementById('nav-map').href = mapUrl; document.getElementById('crumb').href = mapUrl;
-      var proj = st ? st.map : null;
-      if (!proj && window.MapAuth && MapAuth.db) { try { var pr = await MapAuth.db.from('projects').select('id, name').eq('id', pid).maybeSingle(); proj = pr.data; } catch (e) {} }
+      var proj = await MSContent.project(pid);
       var mapName = (proj && proj.name) || 'Map';
       document.getElementById('crumb').textContent = mapName;
-      document.title = 'Encyclopedia — ' + mapName;
+      // the page is named after its map (owner 10/27): "Personal Home Protection Rights: Resource"
+      var resName = await MSContent.resourceName(pid);   // "Resource", "Encyclopedia", … — the map's own word for these pages
+      document.title = mapName + ': ' + resName;
+      document.getElementById('title').textContent = mapName + ': ' + resName;
+      // the owner's vetting notice (10/27): "Help Us Vet!" + About at the top, above the title
+      MSContent.css();
+      var vet = await MSContent.vetting(pid);
+      var bar = MSContent.topBar(vet);
+      if (bar) { var tb = document.createElement('div'); tb.innerHTML = bar; var h1 = document.getElementById('title'); while (tb.firstChild) h1.parentNode.insertBefore(tb.firstChild, h1); }
       var types = await MSContent.types(pid);
       if (!types.length) { body.innerHTML = '<p class="empty">This map has no encyclopedia yet.</p>'; return; }
       body.innerHTML = '';

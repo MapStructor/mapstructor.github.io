@@ -6,7 +6,7 @@ function addMapLayer(map, layerConfig, date) {
   // 7/21: timelineIgnore layers never take the date filter — they always show everything
   // 10/18: a layer's OWN filter (config `filter`, legacy syntax) is ANDed with the date filter,
   // not replaced by it — see msLayerFilter in utils.js
-  const dateF = (date && !layerConfig.timelineIgnore) ? ["all", ["<=", "DayStart", date], [">=", "DayEnd", date]] : null;
+  const dateF = (date && !layerConfig.timelineIgnore && !window.__msTimelineHidden) ? ["all", ["<=", "DayStart", date], [">=", "DayEnd", date]] : null;   // a hidden timeline filters nothing (10/27)
   // a filter in the layer's Custom JSON (raw_config.customJson.filter, the panel's { } JSON tab) is
   // the same thing as an own filter — honoured here at add time, not only when layerJson re-applies
   const own = (layerConfig.customJson && layerConfig.customJson.filter) || layerConfig.filter || null;

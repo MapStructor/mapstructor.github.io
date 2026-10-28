@@ -300,6 +300,120 @@ async function noteRateTrip(env, user, hit, req, url) {
   console.warn("write-rate guard tripped: user " + user.id + " at " + hit.count + "/min on " + url.pathname);
 }
 
+/* ── SHOWCASE ADDRESSES (10/27) ──────────────────────────────────────────────────────────────
+   One pure rule set for every public-showcase address, so it can be tested without a Worker:
+     showcasePlan(pathname, search) → null (not a showcase address)
+                                    | { redirect: "/…" }
+                                    | { slug, keys: [R2 keys to try in order], entry?, canon? }
+   The CONVENTION: /<slug>/map/ is the map, /<slug>/resource/ the encyclopedia, /<slug>/resource/
+   <entry> one article (file-like, no trailing slash, so the page's relative assets still resolve).
+   Two stored layouts are understood: the publish button's (maps/<slug>/index.html + resource/…)
+   and the hand-built one (maps/<slug>/map/index.html) — every lookup lists both. The legacy
+   /maps/<slug>/… page addresses redirect to the convention; their assets keep serving in place.
+   RESERVED first segments can never be a showcase — a slug named "map" would shadow the
+   platform's own /map/ pages. publishSite / the slug binding must refuse these. */
+var SHOWCASE_RESERVED = { maps: 1, map: 1, platform: 1, images: 1, engine: 1, ames: 1, r2: 1, upload: 1, mpu: 1, fold: 1, health: 1, business: 1, api: 1, admin: 1, portal: 1, dashboard: 1, test: 1, tools: 1, scripts: 1, secrets: 1, site: 1, u: 1, docs: 1, data: 1, tiles: 1, article: 1, articles: 1, auth: 1, login: 1, account: 1, pricing: 1, services: 1, about: 1, terms: 1, privacy: 1, report: 1, worker: 1, workers: 1, static: 1, assets: 1, cdn: 1, index: 1 };
+function showcasePlan(pathname, search) {
+  var seg = pathname.split("/").filter(Boolean).map(function (s) { try { return decodeURIComponent(s); } catch (e) { return s; } });
+  if (!seg.length || seg.some(function (s) { return s === ".." || s === "."; })) return null;
+  var qs = new URLSearchParams(search || "");
+  var entryQ = (qs.get("entry") || "").trim();
+  var enc = function (s) { return encodeURIComponent(s); };
+  var slug, rest;
+  if (seg[0] === "maps") {
+    // legacy addresses: pages redirect to the convention, assets keep serving
+    if (!seg[1]) return null;
+    slug = seg[1]; rest = seg.slice(2).join("/");
+    if (!/^[a-z0-9_-]+$/i.test(slug) || SHOWCASE_RESERVED[slug.toLowerCase()]) return null;
+    if (!rest || rest === "index.html" || rest === "map" || rest === "map/index.html") return { redirect: "/" + slug + "/map/" };
+    if (rest === "encyclopedia.html" || rest === "map/encyclopedia.html" || rest === "resource" || rest === "resource/index.html") return { redirect: "/" + slug + "/resource/" };
+    if (rest === "entry.html" || rest === "map/entry.html" || rest === "resource/entry.html") return { redirect: "/" + slug + "/resource/" + (entryQ ? enc(entryQ) : "") };
+    if (rest.split("/").pop().indexOf(".") < 0) return { redirect: "/" + slug + "/" + rest + "/" };   // a bare folder under the old address: the slash form
+    return { slug: slug, keys: ["maps/" + slug + "/" + rest] };
+  }
+  slug = seg[0]; rest = seg.slice(1);
+  if (!/^[a-z0-9_-]+$/i.test(slug) || SHOWCASE_RESERVED[slug.toLowerCase()]) return null;
+  var slashed = pathname.length > 1 && pathname.charAt(pathname.length - 1) === "/";
+  var base = "maps/" + slug + "/";
+  if (!rest.length) return { redirect: "/" + slug + "/map/" };
+  var r = rest.slice(1).join("/");
+  if (rest[0] === "map") {
+    // the publish button's root index.html is the map; a hand-built copy's root index.html is only
+    // a refresh stub pointing at map/index.html — serveShowcase tells them apart (mapIndex)
+    if (!r) return slashed ? { slug: slug, keys: [base + "index.html", base + "map/index.html"], mapIndex: true } : { redirect: "/" + slug + "/map/" };
+    if (r === "index.html" || r === "map/index.html") return { redirect: "/" + slug + "/map/" };
+    if (r === "encyclopedia.html") return { redirect: "/" + slug + "/resource/" };
+    if (r === "entry.html") return { redirect: "/" + slug + "/resource/" + (entryQ ? enc(entryQ) : "") };
+    return { slug: slug, keys: [base + r, base + "map/" + r] };
+  }
+  if (rest[0] === "resource") {
+    if (!r) return slashed ? { slug: slug, keys: [base + "resource/index.html", base + "encyclopedia.html", base + "map/encyclopedia.html"] } : { redirect: "/" + slug + "/resource/" };
+    if (r === "index.html" || r === "encyclopedia.html") return { redirect: "/" + slug + "/resource/" };
+    if (r === "entry.html") {
+      // the query form: a NEW page (reads the injected slug) is sent to the pretty address; an OLD
+      // frozen page (reads only ?entry=) is served as it is — canon says which, after the read
+      if (!entryQ) return { redirect: "/" + slug + "/resource/" };
+      return { slug: slug, keys: [base + "resource/entry.html", base + "entry.html", base + "map/entry.html"], canon: "/" + slug + "/resource/" + enc(entryQ), entryQuery: entryQ };
+    }
+    if (r.split("/").pop().indexOf(".") > -1) return { slug: slug, keys: [base + "resource/" + r, base + r, base + "map/" + r] };   // assets beside the resource pages
+    if (slashed) return { redirect: "/" + slug + "/resource/" + r.split("/").map(enc).join("/") };
+    return { slug: slug, keys: [base + "resource/entry.html", base + "entry.html", base + "map/entry.html"], entry: r };
+  }
+  r = rest.join("/");
+  if (r.split("/").pop().indexOf(".") < 0) return slashed ? { slug: slug, keys: [base + r + "/index.html", base + "map/" + r + "/index.html"] } : { redirect: "/" + slug + "/" + r + "/" };
+  return { slug: slug, keys: [base + r, base + "map/" + r] };   // images/, data/, project/… at the copy root — both layouts
+}
+// serve the first key that exists; Range honoured (the copies' PMTiles are range-read);
+// entry pages get the entry slug injected (new pages) or are sent to the query form (old pages)
+async function serveShowcase(env, req, plan) {
+  var srange = req.headers.get("Range"), sobj = null, key = null;
+  for (var i = 0; i < plan.keys.length && !sobj; i++) {
+    key = plan.keys[i];
+    if (srange) {
+      var sm = srange.match(/bytes=(\d+)-(\d+)?/);
+      if (!sm) return new Response("bad range", { status: 416, headers: cors() });
+      var soff = parseInt(sm[1], 10);
+      sobj = await env.TILES.get(key, { range: sm[2] ? { offset: soff, length: parseInt(sm[2], 10) - soff + 1 } : { offset: soff } });
+    } else sobj = await env.TILES.get(key);
+  }
+  if (!sobj) return null;
+  var sh = cors({ "Accept-Ranges": "bytes", "Cache-Control": "public, max-age=300" });
+  if (sobj.httpMetadata && sobj.httpMetadata.contentType) sh["Content-Type"] = sobj.httpMetadata.contentType;
+  sh["ETag"] = sobj.httpEtag;
+  if (plan.mapIndex && key === plan.keys[0]) {
+    // a showcase can hold BOTH layouts (the 10/20 CLI publish left map/index.html; the publish
+    // button writes the real map at the root). The root file wins unless it is the refresh stub.
+    var ih = await sobj.text();
+    if (/http-equiv="refresh"[^>]*url=map\/index\.html/i.test(ih)) {
+      var hand = await env.TILES.get(plan.keys[1]);
+      if (hand) { sobj = hand; ih = await hand.text(); sh["ETag"] = hand.httpEtag; }
+    }
+    sh["Content-Type"] = "text/html; charset=utf-8";
+    return new Response(ih, { headers: sh });
+  }
+  if (plan.entry || plan.canon) {
+    var html = await sobj.text();
+    var isNew = html.indexOf("__msEntrySlug") > -1;
+    if (plan.canon) {   // /…/resource/entry.html?entry=x
+      if (isNew) return new Response(null, { status: 301, headers: cors({ "Location": plan.canon, "Cache-Control": "public, max-age=300" }) });
+      sh["Cache-Control"] = "public, max-age=300"; sh["Content-Type"] = "text/html; charset=utf-8";
+      return new Response(html, { headers: sh });
+    }
+    if (!isNew) return new Response(null, { status: 302, headers: cors({ "Location": "/" + plan.slug + "/resource/entry.html?entry=" + encodeURIComponent(plan.entry), "Cache-Control": "no-store" }) });
+    var tag = "<script>window.__msEntrySlug=" + JSON.stringify(plan.entry) + ";</script>";
+    html = html.indexOf("</head>") > -1 ? html.replace("</head>", tag + "</head>") : tag + html;
+    sh["Content-Type"] = "text/html; charset=utf-8";
+    return new Response(html, { headers: sh });
+  }
+  if (srange && sobj.range) {
+    var send = sobj.range.offset + (sobj.range.length != null ? sobj.range.length : sobj.size - sobj.range.offset) - 1;
+    sh["Content-Range"] = "bytes " + sobj.range.offset + "-" + send + "/" + sobj.size;
+    return new Response(sobj.body, { status: 206, headers: sh });
+  }
+  return new Response(sobj.body, { headers: sh });
+}
+export { showcasePlan, SHOWCASE_RESERVED };
+
 export default {
   async fetch(req, env) {
     var url = new URL(req.url);
@@ -432,40 +546,23 @@ export default {
     }
 
     /* ── showcase static serving ───────────────────────────────────────── */
-    // /maps/* = frozen public showcases stored in R2 under the same prefix
-    // (e.g. /maps/railways/). At domain-flip time a route sends
-    // mapstructor.com/maps/* here while the rest of the site serves from Pages.
+    // Frozen public showcases live in R2 under maps/<slug>/ and are served at the ADDRESS
+    // CONVENTION of 10/27 (owner): mapstructor.com/<slug>/map is the map, /<slug>/resource is its
+    // encyclopedia, /<slug>/resource/<entry> one article. A route per published slug
+    // (mapstructor.com/<slug>/*) brings those requests here; the old /maps/<slug>/… addresses
+    // are routed here too and redirect. showcasePlan() is the one rule set (unit-tested) — see it
+    // for the two stored layouts it understands.
     // REVERT RULE (owner requirement): every showcase deploy ships a dated zip
     // to archives/ — and once the mapstructor-showcases repo exists, git is the
     // source of truth with an auto-sync Action. Never overwrite without one.
-    if (req.method === "GET" && url.pathname.startsWith("/maps/")) {
-      var mpath = decodeURIComponent(url.pathname.slice(1));   // "maps/railways/..."
-      if (mpath.includes("..")) return new Response("bad path", { status: 400, headers: cors() });
-      if (mpath.endsWith("/")) mpath += "index.html";
-      var last = mpath.split("/").pop();
-      if (!last.includes(".")) {
-        // extensionless directory hit — redirect to the slash form so relative URLs resolve
-        return new Response(null, { status: 301, headers: cors({ "Location": url.pathname + "/" }) });
+    if (req.method === "GET" || req.method === "HEAD") {
+      var splan = showcasePlan(url.pathname, url.search);
+      if (splan && splan.redirect) return new Response(null, { status: 301, headers: cors({ "Location": splan.redirect, "Cache-Control": "public, max-age=300" }) });
+      if (splan && splan.keys) {
+        var sres = await serveShowcase(env, req, splan);
+        if (sres) return sres;
+        return new Response("not found", { status: 404, headers: cors() });
       }
-      var srange = req.headers.get("Range"), sobj;
-      if (srange) {
-        var sm = srange.match(/bytes=(\d+)-(\d+)?/);
-        if (!sm) return new Response("bad range", { status: 416, headers: cors() });
-        var soff = parseInt(sm[1], 10);
-        sobj = await env.TILES.get(mpath, { range: sm[2] ? { offset: soff, length: parseInt(sm[2], 10) - soff + 1 } : { offset: soff } });
-      } else {
-        sobj = await env.TILES.get(mpath);
-      }
-      if (!sobj) return new Response("not found", { status: 404, headers: cors() });
-      var sh = cors({ "Accept-Ranges": "bytes", "Cache-Control": "public, max-age=300" });
-      if (sobj.httpMetadata && sobj.httpMetadata.contentType) sh["Content-Type"] = sobj.httpMetadata.contentType;
-      sh["ETag"] = sobj.httpEtag;
-      if (srange && sobj.range) {
-        var send = sobj.range.offset + (sobj.range.length != null ? sobj.range.length : sobj.size - sobj.range.offset) - 1;
-        sh["Content-Range"] = "bytes " + sobj.range.offset + "-" + send + "/" + sobj.size;
-        return new Response(sobj.body, { status: 206, headers: sh });
-      }
-      return new Response(sobj.body, { headers: sh });
     }
 
     /* ── reads ─────────────────────────────────────────────────────────── */
