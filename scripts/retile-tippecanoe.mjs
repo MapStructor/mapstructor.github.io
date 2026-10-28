@@ -166,7 +166,13 @@ function applyDateMap(rows, dm) {
   const one = (r, side, isEnd) => {
     const m = dm[side]; if (!m) return;
     if (m.fixed) { r[isEnd ? "end_date" : "start_date"] = parseLooseDate(m.fixed, isEnd); return; }
-    if (m.col) { const cf = r.custom_fields || {}; r[isEnd ? "end_date" : "start_date"] = parseLooseDate(cf[m.col], isEnd); }
+    if (m.col) {
+      const cf = r.custom_fields || {};
+      // either spelling: a mapping saved while the old `_src` suffix existed still finds the column
+      const base = m.col.replace(/_src\d*$/, "");
+      const v = cf[m.col] != null ? cf[m.col] : (cf[base] != null ? cf[base] : cf[base + "_src"]);
+      r[isEnd ? "end_date" : "start_date"] = parseLooseDate(v, isEnd);
+    }
   };
   let n = 0;
   for (const r of rows) { one(r, "start", false); one(r, "end", true); if (r.start_date || r.end_date) n++; }
@@ -227,17 +233,17 @@ function buildExportFC(rows, attrView) {
     // The platform keys keep their names (merges and tables read them); a colliding SOURCE key is
     // carried under a suffix so nothing is dropped. The database and the attribute sidecar keep
     // the original name either way — this rename exists only inside the fold artifacts.
+    // 10/27 (owner: "You should never, ever rename columns unless I explicitly ask you to"): the
+    // person's column keeps its EXACT name and value. When it collides with a platform column
+    // (case-insensitively — GDAL/DuckDB would die on the duplicate), the PLATFORM's copy is the one
+    // left out of this file: its value still lives where the platform reads it (the tiles'
+    // DayStart/DayEnd, the sidecar's standard columns). The 8/15 `_src` suffix is gone.
     if (r.custom_fields && typeof r.custom_fields === "object") {
-      const lower = new Set(Object.keys(raw).map((k) => k.toLowerCase()));
       for (const k of Object.keys(r.custom_fields)) {
-        let key = k;
-        if (lower.has(k.toLowerCase())) {
-          let n = 1;
-          while (lower.has((k + "_src" + (n > 1 ? n : "")).toLowerCase())) n++;
-          key = k + "_src" + (n > 1 ? n : "");
-          if (!exportRenames[k]) exportRenames[k] = key;
+        for (const pk of Object.keys(raw)) {
+          if (pk !== k && pk.toLowerCase() === k.toLowerCase() && pk !== "feature_id") { delete raw[pk]; if (!exportRenames[pk]) exportRenames[pk] = "(platform copy dropped — the source column " + k + " keeps its name)"; }
         }
-        if (!(key in raw)) { raw[key] = r.custom_fields[k]; lower.add(key.toLowerCase()); }
+        raw[k] = r.custom_fields[k];
       }
     }
     const props = { feature_id: raw.feature_id };
@@ -246,7 +252,7 @@ function buildExportFC(rows, attrView) {
     return { type: "Feature", id: r.feature_id, geometry: r.geom, properties: props };
   });
   const rn = Object.keys(exportRenames);
-  if (rn.length) console.log("export: renamed " + rn.length + " colliding source column(s) — " + rn.map((k) => k + " -> " + exportRenames[k]).join(", "));
+  if (rn.length) console.log("export: " + rn.length + " platform column(s) left out of the export file because a source column has the same name — " + rn.map((k) => k + ": " + exportRenames[k]).join(", "));
   return { type: "FeatureCollection", features: feats };
 }
 
@@ -312,7 +318,9 @@ try {
     const byId = new Map();
     rows = afc.features.map((f) => {
       const p = f.properties || {}, cf = {};
-      for (const k of Object.keys(p)) if (!STDK[k]) cf[k] = p[k];
+      // artifacts written before 10/27 carried a colliding source column as <name>_src; the person's
+      // name comes back here, so nothing downstream ever sees the suffix again
+      for (const k of Object.keys(p)) if (!STDK[k]) { const m = /^(.+?)_src\d*$/.exec(k); cf[(m && STDK[m[1]]) ? m[1] : k] = p[k]; }
       const row = {
         feature_id: f.id != null ? f.id : p.feature_id, geom: f.geometry,
         label: p.label != null ? p.label : null, description: p.description != null ? p.description : null,

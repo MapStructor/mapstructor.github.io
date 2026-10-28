@@ -77,6 +77,8 @@
         describe(f);
         note.textContent = 'Updated — the map above is now this embed.'; note.className = 'note';
       }
+      // ?src=<address> (the editor's "Try it on the test page" link) embeds that address first
+      try { var want = new URLSearchParams(location.search).get('src'); if (want && /^https?:\/\//i.test(want)) { frame.setAttribute('src', want); } } catch (e) {}
       code.value = snippetFor(frame);
       describe(frame);
       var t = null;
