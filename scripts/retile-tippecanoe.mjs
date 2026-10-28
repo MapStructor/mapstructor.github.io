@@ -170,7 +170,11 @@ function applyDateMap(rows, dm) {
       const cf = r.custom_fields || {};
       // either spelling: a mapping saved while the old `_src` suffix existed still finds the column
       const base = m.col.replace(/_src\d*$/, "");
-      const v = cf[m.col] != null ? cf[m.col] : (cf[base] != null ? cf[base] : cf[base + "_src"]);
+      let v = cf[m.col] != null ? cf[m.col] : (cf[base] != null ? cf[base] : cf[base + "_src"]);
+      // a source column named like the platform's own (start_date / end_date) lives in the row
+      // itself once a bake has run (the export keeps the person's name — never renamed), so a
+      // re-bake must read it from there rather than wipe the date with "column not found"
+      if (v == null && (base === "start_date" || base === "end_date") && r[base] != null) v = r[base];
       r[isEnd ? "end_date" : "start_date"] = parseLooseDate(v, isEnd);
     }
   };
@@ -555,6 +559,9 @@ try {
   // can sample, so the panel's Timeline-dates tool lists these
   const colKeys = [];
   for (const r of rows) if (r.custom_fields) for (const k of Object.keys(r.custom_fields)) if (!colKeys.includes(k)) colKeys.push(k);
+  // a date column that shares the platform's name is carried in the row itself (never renamed) —
+  // still a column the person can pick
+  if (rc0.dateMap && !rc0.dateMap.none) ["start", "end"].forEach((side) => { const m = rc0.dateMap[side]; if (m && m.col) { const b = m.col.replace(/_src\d*$/, ""); if (!colKeys.includes(b)) colKeys.push(b); } });
   rc.columns = orderAttrKeys(colKeys);
 
   /* ── 4b. INSTANT-SCRUB RASTER (8/16) ────────────────────────────────────────
