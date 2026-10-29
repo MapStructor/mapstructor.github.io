@@ -10066,8 +10066,10 @@
           mapping[v] = s3.toLowerCase() === 'none' ? 'rgba(0,0,0,0)' : (looksHex(s3) ? normHex(s3) : s3);   // as-is: rgb() stays rgb()
         });
         var keepNf = (node.colorBy && node.colorBy.prop === prop && node.colorBy.nofill) || null;   // no-fill ticks survive a re-pick of the same column
+        var keepVM2 = (node.colorBy && node.colorBy.prop === prop && node.colorBy.valueMapping) || null;   // and the By-value colours kept aside under Random (10/28)
         node.colorBy = { prop: prop, mode: allHex ? 'hex' : 'category', mapping: mapping, pick: keep ? 'value' : 'random' };
         if (keepNf && keepNf.length) node.colorBy.nofill = keepNf;
+        if (keepVM2) node.colorBy.valueMapping = keepVM2;
         var expr = ['match', ['to-string', ['get', prop]]];
         order.forEach(function (v) { expr.push(v, cbColorOf(node.colorBy, v)); });
         expr.push(fallback);
@@ -10284,7 +10286,16 @@
   async function onColorByMode(pick) {
     var node = activeLayerId && findNodeById(layers, activeLayerId); if (!node || !node.colorBy || !node.colorBy.mapping) return;
     var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
-    if (pick === 'random') Object.keys(node.colorBy.mapping).forEach(function (v, i) { node.colorBy.mapping[v] = COLORBY_PALETTE[i % COLORBY_PALETTE.length]; });   // re-deal
+    // THE BY-VALUE COLOURS SURVIVE A CLICK ON RANDOM (owner 10/28, after one stray click re-dealt
+    // the property map's eleven swatches: "when I swapped back, it should have restored the
+    // coloring that was there"). Random keeps the chosen colours aside (colorBy.valueMapping, saved
+    // with the rest) and deals the palette over the live mapping; By value puts them back.
+    if (pick === 'random') {
+      if (node.colorBy.pick !== 'random') node.colorBy.valueMapping = Object.assign({}, node.colorBy.mapping);
+      Object.keys(node.colorBy.mapping).forEach(function (v, i) { node.colorBy.mapping[v] = COLORBY_PALETTE[i % COLORBY_PALETTE.length]; });   // re-deal
+    } else if (node.colorBy.valueMapping) {
+      Object.keys(node.colorBy.mapping).forEach(function (v) { if (node.colorBy.valueMapping[v]) node.colorBy.mapping[v] = node.colorBy.valueMapping[v]; });
+    }
     node.colorBy.pick = pick === 'value' ? 'value' : 'random';
     setStatus('Saving…');
     await reapplyColorBy(node, lid);
@@ -10312,9 +10323,11 @@
       if (!vals.length) { setStatus('No values in that column'); showToast('That column has no values yet'); return; }
       var keep = (node.colorBy && node.colorBy.prop === prop && node.colorBy.mapping) || null;
       var keepNf = (keep && node.colorBy.nofill) || null, keepHid = (keep && node.colorBy.hidden) || null, keepNoV = !!(keep && node.colorBy.hideNoValue), keepOrder = (keep && node.colorBy.order) || null;
+      var keepVM = (keep && node.colorBy.valueMapping) || null;   // the By-value colours kept aside while Random is on (10/28) ride through a re-pick too
       var mapping = {};
       vals.forEach(function (v, i) { mapping[v] = (keep && keep[v]) || COLORBY_PALETTE[i % COLORBY_PALETTE.length]; });
       node.colorBy = { prop: prop, mode: 'category', mapping: mapping, custom: true, pick: (keep && node.colorBy.pick === 'value') ? 'value' : 'random' };
+      if (keepVM) node.colorBy.valueMapping = keepVM;
       // the same column re-applied (a value edited in the table) keeps its hide / no-fill choices
       if (keepHid && keepHid.length) node.colorBy.hidden = keepHid.filter(function (v) { return vals.indexOf(v) > -1; });
       if (keepOrder && keepOrder.length) node.colorBy.order = keepOrder.filter(function (v) { return vals.indexOf(v) > -1; });   // the ↑↓ order survives a re-pick (10/25)
