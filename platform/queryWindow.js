@@ -90,7 +90,12 @@
       if (lq.data && lq.data.fold_state === "folded") {
         status("Fetching the layer's data file…");
         var rc0 = lq.data.raw_config || {};
-        var rres = await fetch("https://tiles.mapstructor.com/tiles/" + pid() + "/" + lid + ".geojson?v=" + encodeURIComponent(rc0.tilesGeneratedAt || rc0.attrParquetAt || "0"), { cache: "no-store" });
+        // C7 (10/27 fix): a pointer copy's artifacts live at the SOURCE layer's keys — parquet_key
+        // says where (editing.js foldArtifactUrl does the same). Building the address from THIS
+        // map's id gave a 404 on every copied folded layer (owner's SVG export, 10/27).
+        var pk = lq.data.parquet_key;
+        var base0 = (pk && /\.parquet$/.test(String(pk))) ? String(pk).replace(/\.parquet$/, "") : "tiles/" + pid() + "/" + lid;
+        var rres = await fetch("https://tiles.mapstructor.com/" + base0 + ".geojson?v=" + encodeURIComponent(rc0.tilesGeneratedAt || rc0.attrParquetAt || "0"), { cache: "no-store" });
         if (!rres.ok) throw new Error("the layer's data file is unavailable (HTTP " + rres.status + ")");
         var rfc = await rres.json();
         if (rfc && rfc.type === "FeatureCollection") return rfc;

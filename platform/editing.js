@@ -2646,7 +2646,8 @@
         '<div class="esec"><div class="esec-h">Send out</div><div class="erow">' +
           '<button data-type="export" title="Export layers as files">Layer</button>' +
           '<button data-type="download" title="A self-contained static copy of this whole map">⬇ Whole project</button>' +
-          '<button data-type="embed" title="The snippet that puts this map inside another website">Embed</button></div></div>' +
+          '<button data-type="embed" title="The snippet that puts this map inside another website">Embed</button>' +
+          '<button data-type="svg" title="A still picture of the map\'s layers in Equal Earth or Mercator — for an article, a poster, the resource page">SVG</button></div></div>' +
       '</div>' +
       '</div>' +
       '<div id="editor-add-form"></div>' +
@@ -2670,6 +2671,7 @@
     bar.querySelectorAll('#editor-add-buttons button[data-type]').forEach(function (b) { b.addEventListener('click', function () { var t = b.getAttribute('data-type'); if (t === 'portal') { if (window.MSPortalAdd) MSPortalAdd.open(); return; }
       if (t === 'merge') { if (window.MSMerge) MSMerge.open(); return; }
       if (t === 'download') { var dl = document.getElementById('msdl-open'); if (dl) dl.click(); return; }   // same dialog as the sidebar button — one implementation
+      if (t === 'svg') { markAddActive(t); loadScript('../platform/svgExport.js?v=' + Date.now()).then(function () { if (window.MSSvgExport) MSSvgExport.open(); }, function () { setStatus('The SVG exporter could not load'); }); return; }
       markAddActive(t); if (t === 'tileset') showTilesetForm(); else if (t === 'import') showImportForm(); else if (t === 'export') showExportForm(); else if (t === 'embed') showEmbedForm(); else if (t === 'mbtoken') showMapboxTokenForm(); else if (t === 'mbtileset') showMapboxTilesetForm(); else showForm(t); }); });
     var msEl = document.getElementById('ms-map-size');
     if (msEl) msEl.addEventListener('click', function () { refreshMapSize(true); });
@@ -6450,6 +6452,10 @@
       '#editor-operate-buttons .erow button{min-width:31%;}' +
       '#editor-add-form{margin-top:6px;}' +
       '#editor-add-bar input,#editor-add-bar select{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 6px;border:1px solid #bbbbbb;border-radius:4px;font-size:12px;}' +
+      // a tick box is not a text field: the 100% width above shoved it to the far right with its
+      // label wrapping underneath (owner 10/27, the SVG form: "Styling is a mess here")
+      '#editor-add-bar input[type="checkbox"],#editor-add-bar input[type="radio"]{width:auto;margin:0 5px 0 0;padding:0;vertical-align:middle;}' +
+      '#editor-add-bar label.mss-check{display:flex;align-items:center;gap:0;margin-bottom:4px;}' +
       '#editor-save-status{font-size:11px;color:#888888;padding:2px 6px;min-height:13px;}' +
       /* EDIT ⇄ VIEW mode bar (8/28): sticky at the very top of the sidebar (#studioMenu is the
          scroll container). The mode button's label is the ACTION it performs — in edit mode it
@@ -9508,6 +9514,7 @@
         }
         fillOutlineBySelect(node, tcols.filter(function (k) { return k !== 'DayStart' && k !== 'DayEnd'; }));   // Outline by column (step 10): the tile columns + this map's own
         node._entriesKeys = tcols.slice(); if (node.panel && node.panel.mode === 'entries') fillEntriesControls(node, tcols);   // Articles: the key select gets the tile columns
+        if (node.id === activeLayerId) fillPanelColorControls(node, tcols);   // the panel-colour column list too (10/28)
       }
       return;
     }
@@ -9558,6 +9565,7 @@
       // the Label-field dropdown gets the same columns ("label" = the feature's own Label field)
       fillLabelFieldSelect(node, sortedKeys);
       node._entriesKeys = sortedKeys.slice(); if (node.panel && node.panel.mode === 'entries') fillEntriesControls(node, sortedKeys);   // Articles: the key select gets the same columns
+      if (node.id === activeLayerId) fillPanelColorControls(node, sortedKeys);   // the panel-colour column list too (10/28)
       fillGroupBySelect(node, sortedKeys);
       ccColorOptions(node, sel, info);   // + this map's own columns (step 9) and the Random / By value block
       fillOutlineBySelect(node, sortedKeys);   // Outline by column (step 10)
@@ -12194,7 +12202,15 @@
       '<div class="ms-note">Click any piece → <b>everything sharing this column\'s value lights up together</b> — e.g. a railroad stored as many segments highlights as ONE line. The data stays in pieces; only the experience is unified.</div></div>' +
       // panel-row + enc-row live INSIDE the Popups & info card (they're the info-panel + encyclopedia settings)
       '<div id="elp-panel-row" style="margin-top:8px;"><label class="ms-lbl">Info panel (on feature click)</label>' +
-      '<select id="elp-panel-mode" class="ms-in"><option value="notes">Title + notes</option><option value="entries">Articles (this map\'s content)</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select></div>' +
+      '<select id="elp-panel-mode" class="ms-in"><option value="notes">Title + notes</option><option value="entries">Articles (this map\'s content)</option><option value="drupal">Drupal / encyclopedia</option><option value="both">Both</option></select>' +
+      // THE PANEL'S COLOUR (owner 10/28): one colour for the layer, the clicked feature's own colour,
+      // or a colour held in a column. raw_config.panelColor = {mode, field}; the one colour is
+      // layers.panel_color as before. engine/infoPanel.js msPanelColorFor applies it per click.
+      '<label class="ms-lbl" style="margin-top:8px;">Panel colour</label>' +
+      '<label class="ms-check" style="margin-bottom:3px;"><input id="elp-pc-feature" type="checkbox" style="vertical-align:middle;margin:0 5px 0 0;" />Match the clicked feature\'s colour (from Colour by)</label>' +
+      '<div id="elp-pc-single-row" style="display:flex;align-items:center;gap:8px;margin:2px 0 4px;"><input id="elp-pc-single" type="color" value="#3bb2d0" style="width:36px;height:26px;padding:0;border:1px solid #bbb;border-radius:4px;background:#fff;" /><span class="ms-note" style="margin:0;">One colour for every feature of this layer</span></div>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin:2px 0 0;"><select id="elp-pc-field" class="ms-in" style="margin:0;"><option value="">— or a colour from a column —</option></select></div>' +
+      '<div class="ms-note">A column value that is not a colour (hex, rgb(), or a CSS colour name) falls back to the one colour.</div></div>' +
       // ARTICLES (content system, 10/21): which content type holds this layer's articles and which
       // feature property is the join (entries.key). Persisted as panel.entries = {type, key, project};
       // the viewer's info panel (engine/infoPanel.js → platform/content.js) reads exactly this.
@@ -12493,6 +12509,9 @@
     document.getElementById('elp-encurl').addEventListener('change', function () { onEncUrl(this.value); });
     document.getElementById('elp-nidprop').addEventListener('change', function () { onNidProp(this.value); });
     document.getElementById('elp-panel-mode').addEventListener('change', function () { onPanelMode(this.value); });
+    document.getElementById('elp-pc-feature').addEventListener('change', function () { onPanelColor('feature'); });
+    document.getElementById('elp-pc-single').addEventListener('change', function () { onPanelColor('single'); });
+    document.getElementById('elp-pc-field').addEventListener('change', function () { onPanelColor('field'); });
     document.getElementById('elp-entries-type').addEventListener('change', function () { onEntriesBinding(); });
     document.getElementById('elp-entries-key').addEventListener('change', function () { onEntriesBinding(); });
     document.getElementById('elp-src-apply').addEventListener('click', onApplySource);
@@ -12554,6 +12573,42 @@
     setStatus('Saving…');
     try { var r = await db.from('layers').update({ content_id_prop: prop }).eq('id', lid); if (r.error) throw new Error(r.error.message); setStatus('Saved'); }
     catch (e) { setStatus('Save failed'); }
+  }
+  /* the panel's colour (10/28): the checkbox wins, then a column, else the one colour */
+  function fillPanelColorControls(node, keys) {
+    var cb = document.getElementById('elp-pc-feature'), one = document.getElementById('elp-pc-single'), fs = document.getElementById('elp-pc-field'); if (!cb || !one || !fs) return;
+    var pc = node.panelColor || {};
+    cb.checked = pc.mode === 'feature';
+    var c = (node.panel && node.panel.color) || node.iconColor || '#3bb2d0'; if (/^#[0-9a-f]{6}$/i.test(c)) one.value = c;
+    var cols = (keys || node._entriesKeys || []).slice();
+    ((node.customCols) || []).forEach(function (d) { if (d && d.key && cols.indexOf(d.key) < 0) cols.push(d.key); });
+    fs.innerHTML = '<option value="">— or a colour from a column —</option>';
+    cols.forEach(function (k) { if (k === 'DayStart' || k === 'DayEnd') return; var o = document.createElement('option'); o.value = k; o.textContent = k; fs.appendChild(o); });
+    if (pc.mode === 'field' && pc.field && ![].slice.call(fs.options).some(function (o) { return o.value === pc.field; })) { var o2 = document.createElement('option'); o2.value = pc.field; o2.textContent = pc.field; fs.appendChild(o2); }
+    fs.value = pc.mode === 'field' ? (pc.field || '') : '';
+    fs.disabled = cb.checked; one.disabled = cb.checked;
+  }
+  async function onPanelColor(which) {
+    if (!activeLayerId) return;
+    var node = findNodeById(layers, activeLayerId); if (!node) return;
+    var lid = slugToLayerDbId[activeLayerId]; if (!lid) return;
+    var cb = document.getElementById('elp-pc-feature'), one = document.getElementById('elp-pc-single'), fs = document.getElementById('elp-pc-field');
+    if (which === 'feature' && cb.checked) fs.value = '';
+    if (which === 'field' && fs.value) cb.checked = false;
+    var mode = cb.checked ? 'feature' : (fs.value ? 'field' : 'single');
+    fs.disabled = cb.checked; one.disabled = cb.checked;
+    node.panelColor = { mode: mode, field: mode === 'field' ? fs.value : null };
+    node.panel = node.panel || {}; node.panel.color = one.value;
+    setStatus('Saving…');
+    try {
+      var r = await patchLayerConfig(lid, { panelColor: node.panelColor });
+      if (r.error) throw new Error(r.error.message);
+      var r2 = await db.from('layers').update({ panel_color: one.value }).eq('id', lid);
+      if (r2.error) throw new Error(r2.error.message);
+      // the open panel follows at once; the next click recolours for the feature anyway
+      try { if (window.infoPanelState && infoPanelState[node.id]) { infoPanelState[node.id].color = null; if (typeof msApplyPanelColor === 'function') msApplyPanelColor(node, null); } } catch (eP) {}
+      setStatus('Panel colour: ' + (mode === 'feature' ? "the feature's colour" : mode === 'field' ? 'from ' + fs.value : one.value));
+    } catch (e) { setStatus('Save failed'); }
   }
   async function onPanelMode(mode) {   // per-layer info-panel mode: notes / drupal / both → persisted in raw_config.panel.mode (configLoader reads it)
     if (!activeLayerId) return;
@@ -12959,6 +13014,7 @@
     var pmodeUI = (node.panel && node.panel.mode) || ((node.panel && node.panel.encyclopediaBase) ? 'drupal' : 'notes');
     document.getElementById('elp-panel-row').style.display = canPanel ? 'block' : 'none';
     document.getElementById('elp-panel-mode').value = pmodeUI;
+    fillPanelColorControls(node, node._entriesKeys || null);   // the panel's colour: one / the feature's / a column (10/28)
     document.getElementById('elp-enc-row').style.display = (canPanel && (pmodeUI === 'drupal' || pmodeUI === 'both')) ? 'block' : 'none';   // encyclopedia URL only when Drupal is part of the mode
     document.getElementById('elp-entries-row').style.display = (canPanel && pmodeUI === 'entries') ? 'block' : 'none';   // Articles: type + key selects (filled with the layer's columns once populate knows them)
     if (canPanel && pmodeUI === 'entries') fillEntriesControls(node, node._entriesKeys || null);

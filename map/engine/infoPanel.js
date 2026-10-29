@@ -18,22 +18,12 @@ function setupInfoPanels() {
     var $div = $("<div>").addClass("infoLayerElem").attr("id", divId);
     $("#rightInfoBar").append($div);
 
-    // Inject color styles for this layer's panel and popup
+    // Inject color styles for this layer's panel and popup. The colour is recomputed on every
+    // click (msPanelColorFor): the layer's one colour, the clicked feature's colour-by colour, or a
+    // colour held in one of the feature's columns (owner 10/28, "two options in the panel… a third
+    // to relate to a field").
     var popupClass = "infoPanelPopUp-" + layer.id;
-    $("<style>")
-      .text(
-        "#" + divId + ", ." + popupClass + " {" +
-        "  background-color: " + hexToRgba(panel.color, 0.5) + ";" +
-        "  border-color: " + panel.color + ";" +
-        "}" +
-        // pills match the legacy .infoLayer*PopUp box model exactly (2px solid border, 5px padding
-        // all round) — only the colour is per-layer
-        "." + popupClass + " {" +
-        "  border: solid " + panel.color + " 2px;" +
-        "  padding: 5px;" +
-        "}"
-      )
-      .appendTo("head");
+    var $style = $("<style>").text(msPanelColorCss(divId, popupClass, panel.color)).appendTo("head");
 
     // Create floating map popups (small label that appears on the map at click point)
     var afterPopup  = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 5 });
@@ -46,6 +36,8 @@ function setupInfoPanels() {
       popupClass: popupClass,
       afterPopup: afterPopup,
       beforePopup: beforePopup,
+      $style: $style,
+      color: panel.color,
     };
 
     infoPanelClickFired[layer.id] = false;
@@ -120,6 +112,59 @@ function registerInfoPanelClicks() {
   });
 }
 
+/* ── THE PANEL'S COLOUR (10/28) ──────────────────────────────────────────────────────────────
+   raw_config.panelColor = { mode: "single" | "feature" | "field", field } on the layer (the viewer
+   and a copy read it off the node like every other raw_config key):
+     single  — the layer's one colour (layers.panel_color), the 7/1 rule, the default
+     feature — the clicked feature's colour from the colour-by mapping (what it is painted with)
+     field   — a colour written in one of the feature's own columns (hex / rgb / a CSS colour
+               name); anything that is not a colour falls back to the layer's one colour
+   The style element is rewritten per click, so the frame, the bubble and the pills all follow. */
+function msPanelColorCss(divId, popupClass, color) {
+  return "#" + divId + ", ." + popupClass + " {" +
+    "  background-color: " + hexToRgba(color, 0.5) + ";" +
+    "  border-color: " + color + ";" +
+    "}" +
+    // pills match the legacy .infoLayer*PopUp box model exactly (2px solid border, 5px padding
+    // all round) — only the colour is per-layer
+    "." + popupClass + " {" +
+    "  border: solid " + color + " 2px;" +
+    "  padding: 5px;" +
+    "}";
+}
+function msIsCssColor(v) {
+  if (typeof v !== "string" || !v.trim()) return false;
+  if (/^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v.trim())) return true;
+  try { var s = new Option().style; s.color = ""; s.color = v.trim(); return s.color !== ""; } catch (e) { return false; }
+}
+function msPanelColorFor(layer, feature) {
+  var base = (layer.panel && layer.panel.color) || layer.iconColor || "#3bb2d0";
+  var pc = layer.panelColor || {};
+  try {
+    if (pc.mode === "feature" && layer.colorBy && layer.colorBy.mapping && feature) {
+      var cbv = (typeof msColorByValue === "function") ? msColorByValue(layer, feature) : (feature.properties || {})[layer.colorBy.prop];
+      var cbc = cbv != null ? layer.colorBy.mapping[String(cbv)] : null;
+      if (cbc && msIsCssColor(cbc)) return cbc;
+    }
+    if (pc.mode === "field" && pc.field && feature) {
+      var v = null;
+      if (typeof window !== "undefined" && window.MSCustomCols && (layer.customCols || []).some(function (d) { return d && d.key === pc.field; })) {
+        var lid = layer._layerDbId || layer.tableId; v = MSCustomCols.valueOf(layer, lid, feature, pc.field);
+      } else v = (feature.properties || {})[pc.field];
+      if (msIsCssColor(v)) return String(v).trim();
+    }
+  } catch (e) {}
+  return base;
+}
+function msApplyPanelColor(layer, feature) {
+  var state = infoPanelState[layer.id]; if (!state) return;
+  var c = msPanelColorFor(layer, feature);
+  if (c === state.color) return;
+  state.color = c;
+  try { if (state.$style) state.$style.text(msPanelColorCss(state.divId, state.popupClass, c)); } catch (e) {}
+}
+try { window.msPanelColorFor = msPanelColorFor; window.msApplyPanelColor = msApplyPanelColor; } catch (e) {}
+
 function infoPanelDefaultHandle() {
   var anyFired = Object.keys(infoPanelClickFired).some(function(id) {
     return infoPanelClickFired[id];
@@ -145,6 +190,7 @@ function handlePanelClick(layer, event) {
 
   var mode = panel.mode || (panel.encyclopediaBase ? "drupal" : "notes");
   if (mode === "drupal" && !props[panel.nidProp]) return;   // drupal needs a nid; notes renders the feature's own title/notes
+  msApplyPanelColor(layer, event.features[0]);   // the frame + bubble colour for THIS feature (single / feature / field)
 
   // #13: no name/label content → no floating map bubble (empty pills looked broken); the side panel still opens
   var popupBody =

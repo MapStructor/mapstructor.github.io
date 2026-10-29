@@ -90,6 +90,15 @@
     if (typeof labelsOn === "boolean") window.__msLabelsOnTop = labelsOn;
   };
 
+  /* A LATE LOAD APPLIES THE ORDER ITSELF (10/28). On the public site this script is fetched after
+     the maps are built: the basemap's style.load fires while the browser is still fetching the
+     later script tags, mapinit's deferred add() runs with no MSLayerOrder yet, and the stack stays
+     in tree order — the owner saw the states' fills cover the US–Canada border on
+     mapstructor.com/homeprotection while the editor (fast localhost fetches) drew it. Applying
+     here is idempotent: moveLayer no-ops on a stack already in order or on ids not added yet
+     (then add() applies, as before). */
+  try { if (typeof beforeMap !== "undefined" && beforeMap && beforeMap.getStyle && stored()) LO.applyAll(); } catch (e) {}
+
   /* Persistence is injected by the editor (it owns the db handle and the project id); the viewer
      and standalone copies only ever READ an order, so they leave this unset. */
   LO.onSave = null;

@@ -12,14 +12,19 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     :root { --p: #7c5cbf; --p-dark: #6246a8; }
     body { font-family: 'Source Sans Pro', 'Helvetica Neue', Arial, sans-serif; background: #f0eaff; color: #1e1b2e; min-height: 100vh; }
-    nav { position: fixed; top: 0; right: 0; display: flex; align-items: center; gap: 4px; padding: 16px clamp(16px, 4vw, 40px); z-index: 20; }
+    /* a stationary white header (owner 10/28): the page's title on the left, the buttons on the right */
+    header.ms-hdr { position: fixed; top: 0; left: 0; right: 0; z-index: 20; background: #fff; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; padding: 10px clamp(16px, 4vw, 40px); border-bottom: 1px solid #e3e0d8; box-shadow: 0 2px 6px rgba(31,51,73,0.06); }
+    .ms-hdr .hdr-title { font-size: clamp(18px, 2.4vw, 26px); font-weight: 800; letter-spacing: -0.02em; color: #1e1b2e; text-decoration: none; min-width: 0; flex: 1 1 auto; }
+    nav { display: flex; align-items: center; gap: 4px; flex: none; }
     /* the same button the map header wears (engine .header-btn) — owner 10/27: "Make the map button here the
        same type of button we have on the map headers" */
     nav a { display: inline-block; color: #000; text-align: center; padding: 10px; text-decoration: none; font-size: 15px; line-height: 25px; border-radius: 4px; border: solid #000; font-weight: bold; font-family: Arial, sans-serif; background: rgba(255,255,255,0.95); white-space: nowrap; }
     nav a:hover { background: #f3effd; }
-    main { max-width: 960px; margin: 0 auto; padding: clamp(64px, 9vw, 96px) clamp(16px, 4vw, 40px) 60px; }
-    .crumb { color: #9490a8; font-size: 13px; text-decoration: none; }
-    h1 { margin-top: 8px; font-size: clamp(26px, 4.5vw, 38px); font-weight: 800; letter-spacing: -0.02em; }
+    /* the vetting buttons sit in the header too, in the same button (10/28) */
+    nav .ms-ct-hbtn { display: inline-block; color: #000; text-align: center; padding: 10px; text-decoration: none; font-size: 15px; line-height: 25px; border-radius: 4px; border: solid #000; font-weight: bold; font-family: Arial, sans-serif; background: rgba(255,255,255,0.95); white-space: nowrap; cursor: pointer; }
+    nav .ms-ct-hbtn:hover { background: #f3effd; }
+    main { max-width: 960px; margin: 0 auto; padding: 100px clamp(16px, 4vw, 40px) 60px; }
+    body.ms-wide main { max-width: 1240px; }
     .sub { margin-top: 6px; color: #6e6585; font-size: 15px; }
     .tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 18px 0 6px; }
     .tools input { flex: 1 1 260px; max-width: 420px; padding: 10px 12px; border: 1px solid rgba(124,92,191,0.3); border-radius: 8px; font-size: 15px; }
@@ -41,15 +46,16 @@
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="../platform/auth.js?v=c3e839f1"></script>
-  <script src="../platform/content.js?v=0a9f8f2f"></script>
+  <script src="../platform/content.js?v=cfd2992c"></script>
 </head>
 <body>
-  <nav>
-    <a id="nav-map" href="#">Map</a>
-  </nav>
+  <header class="ms-hdr" id="hdr">
+    <a class="hdr-title" id="title" href="#">Resource</a>
+    <nav>
+      <a id="nav-map" href="#">Map</a>
+    </nav>
+  </header>
   <main>
-    <a class="crumb" id="crumb" href="#">Map</a>
-    <h1 id="title">Resource</h1>
     <p class="sub" id="sub">Every entry on this map.</p>
     <div class="tools"><input id="q" type="search" placeholder="Filter by name…" autocomplete="off"><span class="n" id="n"></span></div>
     <div id="body"><p class="empty">Loading…</p></div>
@@ -64,21 +70,36 @@
       var body = document.getElementById('body');
       if (!pid) { body.innerHTML = '<p class="empty">This page needs a map id.</p>'; return; }
       var mapUrl = st ? (window.__msMapUrl || 'index.html') : 'index.html?id=' + encodeURIComponent(pid);   // a copy's resource/ pages name the map one folder over
-      document.getElementById('nav-map').href = mapUrl; document.getElementById('crumb').href = mapUrl;
+      document.getElementById('nav-map').href = mapUrl;
       var proj = await MSContent.project(pid);
       var mapName = (proj && proj.name) || 'Map';
-      document.getElementById('crumb').textContent = mapName;
       // the page is named after its map (owner 10/27): "Personal Home Protection Rights: Resource"
       var resName = await MSContent.resourceName(pid);   // "Resource", "Encyclopedia", … — the map's own word for these pages
       document.title = mapName + ': ' + resName;
-      document.getElementById('title').textContent = mapName + ': ' + resName;
-      // the owner's vetting notice (10/27): "Help Us Vet!" + About at the top, above the title
+      var ttl = document.getElementById('title'); ttl.textContent = mapName + ': ' + resName; ttl.href = location.pathname + location.search;
+      // the owner's vetting notice (10/27): "Help Us Vet!" + About — in the header beside Map (10/28, "all 3")
       MSContent.css();
       var vet = await MSContent.vetting(pid);
-      var bar = MSContent.topBar(vet);
-      if (bar) { var tb = document.createElement('div'); tb.innerHTML = bar; var h1 = document.getElementById('title'); while (tb.firstChild) h1.parentNode.insertBefore(tb.firstChild, h1); }
+      var hb = MSContent.headerButtons(vet);
+      if (hb.buttons) document.querySelector('nav').insertAdjacentHTML('afterbegin', hb.buttons);
+      if (hb.about) { var tb = document.createElement('div'); tb.innerHTML = hb.about; var sub0 = document.getElementById('sub'); while (tb.firstChild) sub0.parentNode.insertBefore(tb.firstChild, sub0); }
+      // the header is fixed: the page starts under it, whatever height it wraps to
+      var fitHdr = function () { document.querySelector('main').style.paddingTop = (document.getElementById('hdr').offsetHeight + 20) + 'px'; };
+      fitHdr(); window.addEventListener('resize', fitHdr);
       var types = await MSContent.types(pid);
       if (!types.length) { body.innerHTML = '<p class="empty">This map has no encyclopedia yet.</p>'; return; }
+      // a map that carries a whole document (10/28): the document's own front matter, map figure
+      // first, its sections in order (inline or as chapters), its directory in place of the A–Z
+      var doc = null; try { doc = await MSContent.v70.index(pid); } catch (eD) {}
+      if (doc) {
+        await MSContent.v70.style(pid);
+        document.getElementById('sub').textContent = '';
+        document.querySelector('.tools').style.display = 'none';
+        body.innerHTML = doc;
+        MSContent.groupDirectory(body);   // the directory by status (owner 10/28)
+        MSContent.restoreScroll();
+        return;
+      }
       body.innerHTML = '';
       var total = 0, all = [];
       for (var ti = 0; ti < types.length; ti++) {

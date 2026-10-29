@@ -117,7 +117,7 @@
     <script src="../platform/bookmarks.js?v=f3ed1315"></script>   <!-- Map Portal: ★ bookmark in the top bar (localStorage for anon, DB for real users) -->
     <script src="../platform/overlay.js?v=9ef160c7"></script>   <!-- Map Portal 5b: your own columns on Linked layers, merged into the rendered features -->
     <script src="../platform/customColumns.js?v=478b6d7f"></script>   <!-- Linked Tileset Custom Columns Table: this map's own columns on a layer, values by join key -->
-    <script src="../platform/content.js?v=0a9f8f2f"></script>   <!-- content system: entries for a clicked feature (panel mode "entries"), entry + encyclopedia pages -->
+    <script src="../platform/content.js?v=cfd2992c"></script>   <!-- content system: entries for a clicked feature (panel mode "entries"), entry + encyclopedia pages -->
     <link
       href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css"
       rel="stylesheet"
@@ -397,7 +397,7 @@
          (MSGuard.warnOnce / .save / .cliff). Loaded FIRST so every later file can use it; every
          call site checks window.MSGuard, so removing this line degrades cleanly to silence. -->
     <script src="../platform/guards.js?v=6e3e345a" onerror="void(0)"></script>
-    <script src="engine/infoPanel.js?v=ba4b8ca0"></script>
+    <script src="engine/infoPanel.js?v=e2ec47e5"></script>
     <script src="engine/mapinit.js?v=cd9c8e40"></script>
     <script src="engine/sliderpopups.js?v=ba8ab5a0"></script>
     <script src="../platform/configLoader.js?v=9bac21dc" onerror="void(0)"></script>
@@ -413,7 +413,7 @@
     <script src="../platform/deckScrub.js?v=8e4bcad4" onerror="void(0)"></script>
     <script src="../platform/modalLock.js?v=42b76e71" onerror="void(0)"></script>   <!-- the ONE owner of the modal lock (counted holds); must load before merge/layerOrder/editing -->
     <script src="../platform/merge.js?v=75bf391d" onerror="void(0)"></script>   <!-- merge two or more layers into one dataset -->
-    <script src="../platform/layerOrder.js?v=a363db8d" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
+    <script src="../platform/layerOrder.js?v=fc04b814" onerror="void(0)"></script>   <!-- explicit draw order (Layer order panel) -->
     <script src="../platform/rasterScrub.js?v=564f3212" onerror="void(0)"></script>   <!-- EXPERIMENTAL instant timeline scrub (delete this line + the file to remove) -->
     <script src="../platform/attrGrid.js?v=64ccee1b" onerror="void(0)"></script>   <!-- windowed table renderer (shared with the editor) -->
     <script src="../platform/viewerTable.js?v=09b2ab0a" onerror="void(0)"></script>   <!-- read-only attribute table in VIEW mode (per-row table icon) -->
